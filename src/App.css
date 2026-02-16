@@ -259,7 +259,7 @@
   position: relative;
   z-index: 2;
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: 1fr auto;
   align-items: center;
   gap: 0.9rem;
   padding: 0.95rem 1.1rem;
@@ -269,49 +269,6 @@
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34);
   position: sticky;
   top: 0;
-}
-
-.village-pill {
-  border: 1px solid rgba(150, 191, 224, 0.24);
-  border-radius: 12px;
-  padding: 0.48rem 0.72rem;
-  background: linear-gradient(140deg, rgba(10, 23, 37, 0.9), rgba(8, 16, 26, 0.9));
-  display: grid;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
-}
-
-.village-pill span {
-  color: var(--muted);
-  font-size: 0.78rem;
-}
-
-.village-pill strong {
-  font-size: 1rem;
-}
-
-.village-switcher {
-  margin-top: 0.36rem;
-  display: grid;
-  gap: 0.22rem;
-}
-
-.village-switcher span {
-  font-size: 0.72rem;
-  color: #b8d1e4;
-}
-
-.village-switcher select {
-  border: 1px solid rgba(160, 204, 236, 0.32);
-  border-radius: 8px;
-  padding: 0.3rem 0.4rem;
-  background: rgba(6, 14, 23, 0.9);
-  color: #deedf8;
-  font-size: 0.83rem;
-}
-
-.village-switcher select:focus {
-  outline: 2px solid rgba(214, 162, 74, 0.52);
-  outline-offset: 1px;
 }
 
 .top-navigation nav {
@@ -344,10 +301,10 @@
 
 .resource-strip {
   position: relative;
-  z-index: 2;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(160px, 210px));
-  justify-content: start;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
   gap: 0.58rem;
   padding: 0.56rem 1.1rem 0.62rem;
 }
@@ -385,6 +342,7 @@
   color: inherit;
   line-height: 1.2;
   min-height: 0;
+  flex: 0 1 198px;
 }
 
 .resource-card::before {
@@ -413,6 +371,123 @@
 
 .resource-strip small {
   color: var(--muted);
+}
+
+.village-resource-card {
+  flex: 1 1 340px;
+  min-width: 300px;
+  max-width: 460px;
+  gap: 0.24rem;
+}
+
+.village-menu-trigger {
+  margin-top: 0.16rem;
+  border: 0;
+  border-radius: 9px;
+  padding: 0.4rem 0.54rem;
+  background: linear-gradient(135deg, rgba(104, 145, 188, 0.95), rgba(66, 103, 142, 0.94));
+  color: #edf6ff;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-align: left;
+}
+
+.village-menu-trigger:hover {
+  filter: brightness(1.08);
+}
+
+.village-menu-trigger:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.research-spotlight-card {
+  flex: 1 1 240px;
+  min-width: 220px;
+  max-width: 320px;
+  margin-left: auto;
+}
+
+.village-menu-overlay {
+  position: fixed;
+  z-index: 5000;
+  border: 1px solid rgba(177, 189, 203, 0.34);
+  border-radius: 12px;
+  background: linear-gradient(170deg, rgba(33, 34, 40, 0.96), rgba(20, 22, 27, 0.96));
+  box-shadow: 0 20px 34px rgba(0, 0, 0, 0.56);
+  padding: 0.48rem;
+  backdrop-filter: blur(4px);
+}
+
+.village-menu-overlay header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+
+.village-menu-overlay header h4 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.village-menu-overlay header button {
+  border: 0;
+  border-radius: 8px;
+  width: 28px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e5edf6;
+}
+
+.village-menu-overlay ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.34rem;
+  max-height: min(58vh, 420px);
+  overflow: auto;
+}
+
+.village-menu-option {
+  width: 100%;
+  border: 1px solid rgba(174, 187, 202, 0.2);
+  border-radius: 9px;
+  background: rgba(14, 17, 23, 0.9);
+  color: inherit;
+  text-align: left;
+  display: grid;
+  gap: 0.14rem;
+  padding: 0.44rem 0.5rem;
+}
+
+.village-menu-option strong {
+  font-size: 0.88rem;
+}
+
+.village-menu-option span {
+  color: #b9c4d0;
+  font-size: 0.78rem;
+}
+
+.village-menu-option em {
+  color: #9cd0fa;
+  font-style: normal;
+  font-size: 0.75rem;
+}
+
+.village-menu-option.is-active {
+  border-color: rgba(157, 206, 245, 0.62);
+}
+
+.village-menu-empty {
+  border: 1px dashed rgba(183, 192, 204, 0.24);
+  border-radius: 8px;
+  padding: 0.46rem 0.52rem;
+  color: #b4bec9;
+  font-size: 0.82rem;
 }
 
 .game-canvas {
@@ -1131,6 +1206,16 @@
   font-size: 0.82rem;
 }
 
+.ranking-player-position-note {
+  margin: 0.28rem 0 0;
+  font-size: 0.84rem;
+  color: #bfcddb;
+}
+
+.ranking-player-position-note strong {
+  color: #e9c596;
+}
+
 .ranking-pagination {
   display: flex;
   flex-wrap: wrap;
@@ -1348,6 +1433,61 @@
 .messages-pagination span {
   color: #c4d9eb;
   font-size: 0.8rem;
+}
+
+.messages-signal-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.42rem;
+}
+
+.messages-signal-chip {
+  border: 1px solid rgba(157, 203, 239, 0.24);
+  border-radius: 10px;
+  background: rgba(7, 17, 27, 0.86);
+  padding: 0.4rem 0.5rem;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.38rem;
+  transition: opacity 0.2s ease, border-color 0.2s ease;
+}
+
+.messages-signal-chip.is-idle {
+  opacity: 0.26;
+}
+
+.messages-signal-chip.is-active {
+  opacity: 1;
+  border-color: rgba(143, 201, 255, 0.52);
+}
+
+.messages-signal-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 0.82rem;
+}
+
+.messages-signal-chip p,
+.messages-signal-chip small {
+  margin: 0;
+}
+
+.messages-signal-chip p {
+  font-size: 0.81rem;
+}
+
+.messages-signal-chip small {
+  color: #b8cddd;
+  font-size: 0.72rem;
+}
+
+.messages-signal-chip strong {
+  font-size: 0.94rem;
 }
 
 .messages-report-list {
@@ -3011,7 +3151,23 @@
   }
 
   .resource-strip {
-    grid-template-columns: repeat(2, minmax(160px, 210px));
+    gap: 0.48rem;
+  }
+
+  .resource-card {
+    flex: 1 1 180px;
+  }
+
+  .village-resource-card {
+    flex: 1 1 100%;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .research-spotlight-card {
+    flex: 1 1 220px;
+    max-width: none;
+    margin-left: 0;
   }
 
   .map-workspace {
@@ -3079,7 +3235,16 @@
   }
 
   .resource-strip {
-    grid-template-columns: minmax(160px, 210px);
+    padding: 0.5rem 0.65rem 0.56rem;
+  }
+
+  .resource-card {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+
+  .messages-signal-strip {
+    grid-template-columns: 1fr;
   }
 
   .game-canvas {

@@ -1,6 +1,5 @@
 ﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
-  ChangeEvent as ReactChangeEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   WheelEvent as ReactWheelEvent,
@@ -198,6 +197,12 @@ type ResizeState = {
 type WindowSize = {
   width: number;
   height: number;
+};
+
+type VillageMenuPosition = {
+  left: number;
+  top: number;
+  width: number;
 };
 
 type PersistedPanelWindow = Pick<
@@ -2426,6 +2431,8 @@ const MessagesPanel = ({
   const selectedReport =
     items.find((item) => item.id === selectedReportId) ??
     (selectedReportId == null ? items[0] ?? null : null);
+  const warNoticeCount = total;
+  const communicationUnreadCount = 0;
   const canGoPrev = page > 1;
   const canGoNext = page < totalPages;
 
@@ -2456,6 +2463,28 @@ const MessagesPanel = ({
           </button>
         </div>
         {error ? <p className="panel-feedback">{error}</p> : null}
+        <div className="messages-signal-strip" aria-label="Stav notifikací">
+          <article className={`messages-signal-chip ${warNoticeCount > 0 ? 'is-active' : 'is-idle'}`}>
+            <span className="messages-signal-icon" aria-hidden="true">
+              ⚔
+            </span>
+            <div>
+              <p>Nové oznámení</p>
+              <small>bitvy, podpory, přesuny</small>
+            </div>
+            <strong>{warNoticeCount.toLocaleString('cs-CZ')}</strong>
+          </article>
+          <article className={`messages-signal-chip ${communicationUnreadCount > 0 ? 'is-active' : 'is-idle'}`}>
+            <span className="messages-signal-icon" aria-hidden="true">
+              ✉
+            </span>
+            <div>
+              <p>Komunikace</p>
+              <small>zprávy od hráčů</small>
+            </div>
+            <strong>{communicationUnreadCount.toLocaleString('cs-CZ')}</strong>
+          </article>
+        </div>
         <ul className="messages-report-list">
           {items.map((report) => {
             const outcomeMeta = getBattleOutcomeMeta(report.payload);
@@ -2625,6 +2654,10 @@ const RankingPanel = ({
     }
     return kingdomRows.findIndex((entry) => entry.kingdom === currentKingdom);
   }, [mode, rows, currentUsername, currentKingdom, kingdomRows]);
+  const currentPlayerRow = useMemo(
+    () => rows.find((entry) => entry.username === currentUsername) ?? null,
+    [rows, currentUsername],
+  );
 
   const jumpToTop = () => {
     setCurrentPage(1);
@@ -2813,6 +2846,10 @@ const RankingPanel = ({
         </table>
 
         {renderPagination('bottom')}
+        <p className="ranking-player-position-note">
+          Aktuálně jsi na pozici{' '}
+          <strong>{currentPlayerRow ? `#${currentPlayerRow.rank}` : 'N/A'}</strong> mezi hráči.
+        </p>
       </section>
     </div>
   );
@@ -4053,6 +4090,8 @@ export const GamePage = () => {
   const mapWindowSizeRef = useRef<WindowSize | null>(readStoredMapWindowSize());
   const panelElementRefs = useRef<Record<string, HTMLElement | null>>({});
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const villageMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const villageMenuOverlayRef = useRef<HTMLDivElement | null>(null);
   const username = session?.username ?? 'Hayato';
   const getCanvasViewportSize = useCallback(() => {
     const bounds = canvasRef.current?.getBoundingClientRect();
@@ -4110,6 +4149,8 @@ export const GamePage = () => {
   const [battleReportsPage, setBattleReportsPage] = useState(1);
   const [selectedBattleReportId, setSelectedBattleReportId] = useState<number | null>(null);
   const [battleReportCacheById, setBattleReportCacheById] = useState<Record<number, BattleReportItem>>({});
+  const [isVillageMenuOpen, setVillageMenuOpen] = useState(false);
+  const [villageMenuPosition, setVillageMenuPosition] = useState<VillageMenuPosition | null>(null);
 
   const buildings = useMemo<Building[]>(() => {
     if (!gameState) {
@@ -4271,10 +4312,15 @@ export const GamePage = () => {
       },
     ];
   }, [gameState]);
+  const currentResearchTask = useMemo(
+    () => RESEARCH_TASKS.find((task) => task.progress < 100) ?? null,
+    [],
+  );
 
   const villageLabel = gameState
     ? `${gameState.village.name} (${gameState.village.coordX}|${gameState.village.coordY})`
     : 'Načítám město...';
+  const activeVillageResolvedId = gameState?.village.id ?? activeVillageId ?? null;
   const playerVillages = gameState?.villages ?? [];
   const currentVillageName = gameState?.village.name ?? 'Neznámé léno';
   const villageRegionLabel = gameState
@@ -4707,14 +4753,14 @@ export const GamePage = () => {
     };
   }, []);
 
-  const handleActiveVillageChange = useCallback(
-    (event: ReactChangeEvent<HTMLSelectElement>) => {
-      const nextVillageId = Number(event.target.value);
+  const applyActiveVillageSelection = useCallback(
+    (nextVillageIdRaw: number) => {
+      const nextVillageId = Math.floor(Number(nextVillageIdRaw));
       if (!Number.isFinite(nextVillageId) || nextVillageId <= 0) {
         return;
       }
 
-      if (activeVillageId === nextVillageId) {
+      if (activeVillageResolvedId === nextVillageId) {
         return;
       }
 
@@ -4724,8 +4770,91 @@ export const GamePage = () => {
       setBuildingNotices({});
       setStateError(null);
     },
-    [activeVillageId],
+    [activeVillageResolvedId],
   );
+
+  const closeVillageMenu = useCallback(() => {
+    setVillageMenuOpen(false);
+  }, []);
+
+  const updateVillageMenuPosition = useCallback(() => {
+    const trigger = villageMenuTriggerRef.current;
+    if (!trigger || typeof window === 'undefined') {
+      return;
+    }
+
+    const rect = trigger.getBoundingClientRect();
+    const width = Math.max(280, Math.floor(rect.width));
+    const safeLeft = clamp(Math.floor(rect.left), 8, Math.max(8, window.innerWidth - width - 8));
+    const safeTop = Math.floor(rect.bottom + 8);
+
+    setVillageMenuPosition({
+      left: safeLeft,
+      top: safeTop,
+      width,
+    });
+  }, []);
+
+  const toggleVillageMenu = useCallback(() => {
+    if (isVillageMenuOpen) {
+      closeVillageMenu();
+      return;
+    }
+    updateVillageMenuPosition();
+    setVillageMenuOpen(true);
+  }, [closeVillageMenu, isVillageMenuOpen, updateVillageMenuPosition]);
+
+  useEffect(() => {
+    if (!isVillageMenuOpen) {
+      return;
+    }
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (villageMenuOverlayRef.current?.contains(target)) {
+        return;
+      }
+      if (villageMenuTriggerRef.current?.contains(target)) {
+        return;
+      }
+
+      closeVillageMenu();
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeVillageMenu();
+      }
+    };
+
+    const onViewportChange = () => {
+      updateVillageMenuPosition();
+    };
+
+    updateVillageMenuPosition();
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('scroll', onViewportChange, true);
+
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onViewportChange);
+      window.removeEventListener('scroll', onViewportChange, true);
+    };
+  }, [closeVillageMenu, isVillageMenuOpen, updateVillageMenuPosition]);
+
+  useEffect(() => {
+    if (!isVillageMenuOpen) {
+      return;
+    }
+    closeVillageMenu();
+  }, [activeVillageResolvedId, closeVillageMenu, isVillageMenuOpen]);
 
   const openPanel = useCallback((type: StaticPanelType) => {
     setActivePanelId(type);
@@ -4947,6 +5076,15 @@ export const GamePage = () => {
     },
     [buildingsById, openBuildingPanel],
   );
+
+  const handleResearchSpotlightClick = useCallback(() => {
+    const universityBuilding = buildingsById.get('university');
+    if (universityBuilding) {
+      openBuildingPanel(universityBuilding);
+      return;
+    }
+    openPanel('research');
+  }, [buildingsById, openBuildingPanel, openPanel]);
 
   const focusPanel = (id: string) => {
     setActivePanelId(id);
@@ -5641,30 +5779,6 @@ export const GamePage = () => {
       <div className="game-grid-layer" />
 
       <header className="top-navigation">
-        <div className="village-pill">
-          <span>Aktivní město</span>
-          <strong>{villageLabel}</strong>
-          <label className="village-switcher" htmlFor="active-village-select">
-            <span>Seznam lén</span>
-            <select
-              id="active-village-select"
-              value={String(gameState?.village.id ?? activeVillageId ?? '')}
-              onChange={handleActiveVillageChange}
-              disabled={playerVillages.length === 0}
-            >
-              {playerVillages.length === 0 ? (
-                <option value="">Načítám...</option>
-              ) : (
-                playerVillages.map((village) => (
-                  <option key={village.id} value={village.id}>
-                    {village.name} ({village.coordX}|{village.coordY})
-                  </option>
-                ))
-              )}
-            </select>
-          </label>
-        </div>
-
         <nav>
           {NAV_BUTTONS.map((button) => (
             <button
@@ -5684,6 +5798,22 @@ export const GamePage = () => {
       </header>
 
       <section className="resource-strip">
+        <article className="resource-card village-resource-card" aria-label="Aktivní město a seznam lén">
+          <p>Aktivní město</p>
+          <strong>{villageLabel}</strong>
+          <span>{playerVillages.length.toLocaleString('cs-CZ')} dostupných lén</span>
+          <button
+            ref={villageMenuTriggerRef}
+            type="button"
+            className="village-menu-trigger"
+            onClick={toggleVillageMenu}
+            disabled={playerVillages.length === 0}
+            aria-haspopup="menu"
+            aria-expanded={isVillageMenuOpen}
+          >
+            {playerVillages.length === 0 ? 'Načítám léna...' : 'Seznam lén'}
+          </button>
+        </article>
         {resourceStocks.map((resource) => (
           <button
             key={resource.name}
@@ -5698,7 +5828,68 @@ export const GamePage = () => {
             <small>Cap {resource.cap.toLocaleString('cs-CZ')}</small>
           </button>
         ))}
+        {currentResearchTask ? (
+          <button
+            type="button"
+            className="resource-card research-spotlight-card"
+            onClick={handleResearchSpotlightClick}
+            title="Otevřít Univerzitu"
+          >
+            <p>Aktuální výzkum</p>
+            <strong>{currentResearchTask.name}</strong>
+            <span>
+              {Math.round(currentResearchTask.progress)} % · ETA {currentResearchTask.eta}
+            </span>
+            <small>Klikni pro detail v Univerzitě</small>
+          </button>
+        ) : null}
       </section>
+      {isVillageMenuOpen && villageMenuPosition ? (
+        <div
+          ref={villageMenuOverlayRef}
+          className="village-menu-overlay"
+          role="menu"
+          aria-label="Seznam lén"
+          style={{
+            left: `${villageMenuPosition.left}px`,
+            top: `${villageMenuPosition.top}px`,
+            width: `${villageMenuPosition.width}px`,
+          }}
+        >
+          <header>
+            <h4>Seznam lén</h4>
+            <button type="button" onClick={closeVillageMenu} aria-label="Zavřít seznam lén">
+              ✕
+            </button>
+          </header>
+          <ul>
+            {playerVillages.map((village) => {
+              const isActive = activeVillageResolvedId === village.id;
+              return (
+                <li key={`menu-village-${village.id}`}>
+                  <button
+                    type="button"
+                    className={`village-menu-option ${isActive ? 'is-active' : ''}`}
+                    onClick={() => {
+                      applyActiveVillageSelection(village.id);
+                      closeVillageMenu();
+                    }}
+                  >
+                    <strong>{village.name}</strong>
+                    <span>
+                      {village.coordX}|{village.coordY} · Region {village.region}
+                    </span>
+                    {isActive ? <em>Aktivní</em> : null}
+                  </button>
+                </li>
+              );
+            })}
+            {playerVillages.length === 0 ? (
+              <li className="village-menu-empty">Načítám dostupná léna...</li>
+            ) : null}
+          </ul>
+        </div>
+      ) : null}
 
       <section className="ux-help-strip" aria-label="Rychlá nápověda">
         <p>
