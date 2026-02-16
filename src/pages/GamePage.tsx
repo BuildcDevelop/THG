@@ -1,0 +1,5211 @@
+﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type {
+  ChangeEvent as ReactChangeEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  WheelEvent as ReactWheelEvent,
+} from 'react';
+import { useNavigate } from 'react-router-dom';
+import { getSession, logout } from '../auth';
+import {
+  fetchBattleReports,
+  fetchGameState,
+  issueArmyCommand,
+  recruitUnit,
+  upgradeBuilding,
+  type ArmyCommandType,
+  type ArmyMovementState,
+  type BattleReportListResponse,
+  type GameBuildingState,
+  type GameStateResponse,
+  type GameUnitState,
+  type LeaderboardRow,
+  type LootPriority,
+} from '../api/gameApi';
+
+type PanelType =
+  | 'city'
+  | 'map'
+  | 'army'
+  | 'research'
+  | 'messages'
+  | 'kingdom'
+  | 'rankings'
+  | 'profile'
+  | 'settings'
+  | 'kingdomProfile'
+  | 'playerProfile'
+  | 'village'
+  | 'building';
+
+type StaticPanelType = Exclude<PanelType, 'village' | 'building'>;
+
+type PinSide = 'left' | 'right';
+
+type SettlementKind = 'own' | 'player' | 'bot' | 'abandoned';
+type MapSettlementKind = SettlementKind | 'active';
+
+type RegionSettlement = {
+  id: string;
+  villageId?: number;
+  name: string;
+  kind: SettlementKind;
+  owner: string;
+  kingdom: string;
+  region: number;
+  localX: number;
+  localY: number;
+  globalX: number;
+  globalY: number;
+  prestige: number;
+  loyalty: number;
+  note: string;
+  visibility?: 'full' | 'public';
+  relation?: 'self' | 'ally' | 'enemy';
+};
+
+type SettlementOrderMarkerCounts = {
+  attack: number;
+  support: number;
+  move: number;
+};
+
+type PanelMeta = {
+  type: PanelType;
+  label: string;
+  side: PinSide;
+  width: number;
+  height: number;
+};
+
+type PanelWindow = PanelMeta & {
+  id: string;
+  settlementId?: string;
+  buildingId?: string;
+  villageName?: string;
+  kingdomName?: string;
+  playerUsername?: string;
+  x: number;
+  y: number;
+  z: number;
+  expanded: boolean;
+  alert: boolean;
+};
+
+type ResourceStock = {
+  name: string;
+  amount: number;
+  delta: string;
+  cap: number;
+  buildingId: string;
+};
+
+type Building = {
+  id: string;
+  name: string;
+  icon: string;
+  level: number;
+  category: string;
+  workers: string;
+  effect: string;
+  nextCost: string;
+  nextTime: string;
+  canUpgrade: boolean;
+  blockedReason: string | null;
+  isInProgress: boolean;
+  remainingSec: number | null;
+};
+
+type Unit = {
+  id: string;
+  name: string;
+  amount: number;
+  queuedCount: number;
+  role: string;
+  cost: string;
+  canRecruit: boolean;
+  blockedReason: string | null;
+  maxRecruitable: number;
+};
+
+type RecruitQueueOrder = {
+  id: number;
+  unitId: string;
+  unitName: string;
+  amount: number;
+  remainingSec: number;
+  finishAt: string;
+};
+
+type RankingMode = 'players' | 'kingdoms';
+type RankingPageSize = 20 | 50;
+
+type KingdomLeaderboardRow = {
+  rank: number;
+  kingdom: string;
+  prestige: number;
+  villages: number;
+  members: number;
+};
+
+type ResearchTask = {
+  name: string;
+  progress: number;
+  eta: string;
+  academics: number;
+};
+
+type DragState = {
+  id: string;
+  startX: number;
+  startY: number;
+  originX: number;
+  originY: number;
+  latestX: number;
+  latestY: number;
+  panelWidth: number;
+  panelHeight: number;
+  rafId: number | null;
+};
+
+type ResizeState = {
+  id: string;
+  panelType: PanelType;
+  startX: number;
+  startY: number;
+  originWidth: number;
+  originHeight: number;
+  latestWidth: number;
+  latestHeight: number;
+  minWidth: number;
+  minHeight: number;
+  panelX: number;
+  panelY: number;
+  rafId: number | null;
+};
+
+type WindowSize = {
+  width: number;
+  height: number;
+};
+
+type PersistedPanelWindow = Pick<
+  PanelWindow,
+  | 'id'
+  | 'type'
+  | 'label'
+  | 'side'
+  | 'width'
+  | 'height'
+  | 'x'
+  | 'y'
+  | 'z'
+  | 'expanded'
+  | 'alert'
+  | 'settlementId'
+  | 'buildingId'
+  | 'villageName'
+  | 'kingdomName'
+  | 'playerUsername'
+>;
+
+const PANEL_META: Record<PanelType, PanelMeta> = {
+  city: {
+    type: 'city',
+    label: 'Přehled města',
+    side: 'left',
+    width: 1040,
+    height: 620,
+  },
+  map: {
+    type: 'map',
+    label: 'Mapa regionu',
+    side: 'left',
+    width: 900,
+    height: 660,
+  },
+  army: {
+    type: 'army',
+    label: 'Armáda a nábor',
+    side: 'left',
+    width: 520,
+    height: 470,
+  },
+  research: {
+    type: 'research',
+    label: 'Výzkum',
+    side: 'right',
+    width: 500,
+    height: 470,
+  },
+  messages: {
+    type: 'messages',
+    label: 'Zprávy',
+    side: 'right',
+    width: 480,
+    height: 430,
+  },
+  kingdom: {
+    type: 'kingdom',
+    label: 'Království',
+    side: 'right',
+    width: 520,
+    height: 460,
+  },
+  rankings: {
+    type: 'rankings',
+    label: 'Žebříček',
+    side: 'right',
+    width: 820,
+    height: 540,
+  },
+  profile: {
+    type: 'profile',
+    label: 'Profil',
+    side: 'left',
+    width: 460,
+    height: 420,
+  },
+  settings: {
+    type: 'settings',
+    label: 'Nastavení',
+    side: 'left',
+    width: 420,
+    height: 390,
+  },
+  kingdomProfile: {
+    type: 'kingdomProfile',
+    label: 'Profil království',
+    side: 'right',
+    width: 660,
+    height: 560,
+  },
+  playerProfile: {
+    type: 'playerProfile',
+    label: 'Profil hráče',
+    side: 'left',
+    width: 640,
+    height: 560,
+  },
+  village: {
+    type: 'village',
+    label: 'Profil osady',
+    side: 'right',
+    width: 500,
+    height: 480,
+  },
+  building: {
+    type: 'building',
+    label: 'Detail budovy',
+    side: 'left',
+    width: 520,
+    height: 520,
+  },
+};
+
+const NAV_BUTTONS: { type: StaticPanelType; text: string }[] = [
+  { type: 'city', text: 'Přehled města' },
+  { type: 'map', text: 'Mapa regionu' },
+  { type: 'army', text: 'Armáda/Nábor' },
+  { type: 'research', text: 'Výzkum' },
+  { type: 'messages', text: 'Zprávy' },
+  { type: 'kingdom', text: 'Království' },
+  { type: 'rankings', text: 'Žebříček' },
+  { type: 'profile', text: 'Profil' },
+  { type: 'settings', text: 'Nastavení' },
+];
+
+const BUILDING_ART: Record<string, { icon: string; fallbackName: string; fallbackCategory: string }> = {
+  woodcutter: {
+    icon: '/assets/buildings/woodcutter.png',
+    fallbackName: 'Dřevorubec',
+    fallbackCategory: 'Produkce',
+  },
+  quarry: {
+    icon: '/assets/buildings/quarry.png',
+    fallbackName: 'Kamenolom',
+    fallbackCategory: 'Produkce',
+  },
+  'iron-mine': {
+    icon: '/assets/buildings/iron-mine.png',
+    fallbackName: 'Železný důl',
+    fallbackCategory: 'Produkce',
+  },
+  warehouse: {
+    icon: '/assets/buildings/warehouse.png',
+    fallbackName: 'Sklad surovin',
+    fallbackCategory: 'Podpora',
+  },
+  barracks: {
+    icon: '/assets/buildings/barracks.png',
+    fallbackName: 'Kasárna',
+    fallbackCategory: 'Vojenské',
+  },
+  stable: {
+    icon: '/assets/buildings/stable.png',
+    fallbackName: 'Stáje',
+    fallbackCategory: 'Vojenské',
+  },
+  workshop: {
+    icon: '/assets/buildings/workshop.png',
+    fallbackName: 'Dílna',
+    fallbackCategory: 'Vojenské',
+  },
+  fortification: {
+    icon: '/assets/buildings/fortification.png',
+    fallbackName: 'Opevnění',
+    fallbackCategory: 'Obrana',
+  },
+  gate: {
+    icon: '/assets/buildings/gate.png',
+    fallbackName: 'Brána',
+    fallbackCategory: 'Obrana',
+  },
+  townhall: {
+    icon: '/assets/buildings/townhall.png',
+    fallbackName: 'Radnice',
+    fallbackCategory: 'Administrativa',
+  },
+  university: {
+    icon: '/assets/buildings/university.png',
+    fallbackName: 'Univerzita',
+    fallbackCategory: 'Administrativa',
+  },
+  'residential-quarter': {
+    icon: '/assets/buildings/residential-quarter.png',
+    fallbackName: 'Obytná čtvrť',
+    fallbackCategory: 'Podpora',
+  },
+};
+
+const UNIT_META: Record<string, { fallbackName: string; fallbackRole: string }> = {
+  militia: { fallbackName: 'Ozbrojenci', fallbackRole: 'Základní pěchota' },
+  archer: { fallbackName: 'Lučištníci', fallbackRole: 'Obrana hradeb' },
+  cavalry: { fallbackName: 'Jezdci', fallbackRole: 'Rychlý útok' },
+  ram: { fallbackName: 'Beranidla', fallbackRole: 'Prolomení brány' },
+  caravan: { fallbackName: 'Karavany', fallbackRole: 'Převoz kořisti' },
+};
+const COMMAND_UNIT_ORDER = ['militia', 'archer', 'cavalry', 'ram', 'caravan'] as const;
+type CommandUnitId = (typeof COMMAND_UNIT_ORDER)[number];
+const UNIT_ATTACK_POWER: Record<CommandUnitId, number> = {
+  militia: 12,
+  archer: 8,
+  cavalry: 17,
+  ram: 7,
+  caravan: 0,
+};
+const UNIT_DEFENSE_POWER: Record<CommandUnitId, number> = {
+  militia: 12,
+  archer: 14,
+  cavalry: 9,
+  ram: 7,
+  caravan: 0,
+};
+const RAM_ATTACK_BONUS_MULTIPLIER = 1.1;
+const CARAVAN_LOOT_CAPACITY = 250;
+
+const ARMY_COMMAND_LABELS: Record<ArmyCommandType, string> = {
+  attack: 'Útok',
+  support: 'Podpora',
+  move: 'Přesun',
+  return: 'Návrat',
+};
+const LOOT_PRIORITY_LABELS: Record<LootPriority, string> = {
+  wood: 'Dřevo',
+  stone: 'Kámen',
+  iron: 'Železo',
+};
+
+const MAP_ORDER_ICON_LABELS: Record<keyof SettlementOrderMarkerCounts, string> = {
+  attack: 'Útok',
+  support: 'Podpora',
+  move: 'Přesun',
+};
+
+const MAP_ORDER_COMMAND_TYPES: (keyof SettlementOrderMarkerCounts)[] = ['attack', 'support', 'move'];
+
+const getArmyCommandSymbol = (commandType: ArmyCommandType | keyof SettlementOrderMarkerCounts): string => {
+  if (commandType === 'attack') {
+    return '⌖';
+  }
+  if (commandType === 'support') {
+    return '🛡';
+  }
+  if (commandType === 'move') {
+    return '➜';
+  }
+  return '↩';
+};
+
+const parseArmyOrderCommandType = (order: string): ArmyCommandType | null => {
+  const normalized = order.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+  if (!normalized.includes('armada:')) {
+    return null;
+  }
+  if (normalized.includes('utok')) {
+    return 'attack';
+  }
+  if (normalized.includes('podpora')) {
+    return 'support';
+  }
+  if (normalized.includes('presun')) {
+    return 'move';
+  }
+  if (normalized.includes('navrat')) {
+    return 'return';
+  }
+  return null;
+};
+
+const buildSelectedUnitsFromDraft = (
+  units: Unit[],
+  draftUnitAmounts: Record<string, string>,
+  options?: { excludeCaravan?: boolean },
+): Record<CommandUnitId, number> => {
+  const selectedUnits = {} as Record<CommandUnitId, number>;
+  for (const unitId of COMMAND_UNIT_ORDER) {
+    selectedUnits[unitId] = 0;
+  }
+
+  for (const unit of units) {
+    if (!COMMAND_UNIT_ORDER.includes(unit.id as CommandUnitId)) {
+      continue;
+    }
+    if (options?.excludeCaravan && unit.id === 'caravan') {
+      continue;
+    }
+    const rawValue = Number(draftUnitAmounts[unit.id] ?? 0);
+    if (!Number.isInteger(rawValue) || rawValue <= 0) {
+      continue;
+    }
+    selectedUnits[unit.id as CommandUnitId] = Math.min(unit.amount, rawValue);
+  }
+
+  return selectedUnits;
+};
+
+const calculateTotalUnitsInSelection = (selection: Record<CommandUnitId, number>): number =>
+  COMMAND_UNIT_ORDER.reduce((sum, unitId) => sum + Number(selection[unitId] ?? 0), 0);
+
+const calculateAttackPowerFromSelection = (selection: Record<CommandUnitId, number>): number =>
+  COMMAND_UNIT_ORDER.reduce((sum, unitId) => sum + Number(selection[unitId] ?? 0) * UNIT_ATTACK_POWER[unitId], 0);
+
+const calculateDefensePowerFromSelection = (selection: Record<CommandUnitId, number>): number =>
+  COMMAND_UNIT_ORDER.reduce((sum, unitId) => sum + Number(selection[unitId] ?? 0) * UNIT_DEFENSE_POWER[unitId], 0);
+
+const FALLBACK_ACTIVE_ORDERS = [
+  'Výstavba: žádná aktivní fronta',
+  'Ekonomika běží na backend cron tiku.',
+  'Nábor a upgrady zapisují změny do databáze.',
+];
+
+const RESEARCH_TASKS: ResearchTask[] = [
+  { name: 'Střelba I', progress: 62, eta: '1d 6h', academics: 2 },
+  { name: 'Jezdectví I', progress: 24, eta: '3d 4h', academics: 1 },
+  { name: 'Logistika', progress: 91, eta: '4h 20m', academics: 1 },
+];
+
+const RANKING_FALLBACK: LeaderboardRow[] = [];
+
+const REGION_SIZE = 50;
+const REGION_ORIGIN_X = 200;
+const REGION_ORIGIN_Y = 430;
+const REGION_CELL_SIZE = 25;
+const MAP_ZOOM_MIN = -50;
+const MAP_ZOOM_MAX = 50;
+const MAP_ZOOM_STEP = 10;
+const MAP_WINDOW_SIZE_STORAGE_KEY = 'thg_map_window_size';
+const PANEL_LAYOUT_STORAGE_KEY_PREFIX = 'thg_panel_layout';
+const LAST_OWN_SETTLEMENT_STORAGE_KEY_PREFIX = 'thg_last_own_settlement';
+const MAP_ZOOM_STORAGE_KEY_PREFIX = 'thg_map_zoom';
+const ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'thg_active_village';
+const MAP_WINDOW_MIN_WIDTH = 620;
+const MAP_WINDOW_MIN_HEIGHT = 460;
+const PANEL_DEFAULT_MIN_WIDTH = 360;
+const PANEL_DEFAULT_MIN_HEIGHT = 280;
+const PANEL_CITY_MIN_WIDTH = 920;
+const PANEL_CITY_MIN_HEIGHT = 600;
+const PANEL_VIEWPORT_MARGIN_X = 32;
+const PANEL_VIEWPORT_MARGIN_Y = 56;
+const PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH = 280;
+const PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT = 220;
+
+const REGION_SETTLEMENTS: RegionSettlement[] = [
+  {
+    id: 'vlg-hradisko',
+    name: 'Hradisko',
+    kind: 'own',
+    owner: 'Ty',
+    kingdom: 'Železná Liga',
+    region: 1,
+    localX: 14,
+    localY: 26,
+    globalX: 213,
+    globalY: 455,
+    prestige: 7420,
+    loyalty: 100,
+    note: 'Hlavní město hráče',
+  },
+  {
+    id: 'vlg-ticha',
+    name: 'Tichá osada',
+    kind: 'bot',
+    owner: 'Královská osada',
+    kingdom: 'Neutral',
+    region: 1,
+    localX: 20,
+    localY: 22,
+    globalX: 219,
+    globalY: 451,
+    prestige: 1210,
+    loyalty: 100,
+    note: 'PvE cíl vhodný pro farmení',
+  },
+  {
+    id: 'vlg-popel',
+    name: 'Popelavý brod',
+    kind: 'abandoned',
+    owner: 'Opuštěná osada',
+    kingdom: 'Neutral',
+    region: 1,
+    localX: 11,
+    localY: 31,
+    globalX: 210,
+    globalY: 460,
+    prestige: 640,
+    loyalty: 100,
+    note: 'Nízká obrana, vysoký loot potenciál',
+  },
+  {
+    id: 'vlg-kaleb',
+    name: 'Kalebova tvrz',
+    kind: 'player',
+    owner: 'Kaleb',
+    kingdom: 'Železná Liga',
+    region: 1,
+    localX: 18,
+    localY: 27,
+    globalX: 217,
+    globalY: 456,
+    prestige: 7010,
+    loyalty: 100,
+    note: 'Spojenecká obranná linie',
+  },
+  {
+    id: 'vlg-aria',
+    name: 'Aria Keep',
+    kind: 'player',
+    owner: 'Aria',
+    kingdom: 'Železná Liga',
+    region: 1,
+    localX: 23,
+    localY: 18,
+    globalX: 222,
+    globalY: 447,
+    prestige: 12820,
+    loyalty: 100,
+    note: 'Silná ekonomická osada',
+  },
+  {
+    id: 'vlg-varden',
+    name: 'Varden Hold',
+    kind: 'player',
+    owner: 'Varden',
+    kingdom: 'Železná Liga',
+    region: 1,
+    localX: 17,
+    localY: 34,
+    globalX: 216,
+    globalY: 463,
+    prestige: 6890,
+    loyalty: 100,
+    note: 'Krátká doba podpory na jižní křídlo',
+  },
+  {
+    id: 'vlg-mira',
+    name: 'Mirašín',
+    kind: 'player',
+    owner: 'Mira',
+    kingdom: 'Stínová Koruna',
+    region: 1,
+    localX: 34,
+    localY: 19,
+    globalX: 233,
+    globalY: 448,
+    prestige: 6340,
+    loyalty: 100,
+    note: 'Konkurenční klan na východě',
+  },
+  {
+    id: 'vlg-horska',
+    name: 'Horská hlídka',
+    kind: 'bot',
+    owner: 'Královská osada',
+    kingdom: 'Neutral',
+    region: 1,
+    localX: 31,
+    localY: 12,
+    globalX: 230,
+    globalY: 441,
+    prestige: 1800,
+    loyalty: 100,
+    note: 'Silnější PvE osada s hradbami',
+  },
+  {
+    id: 'vlg-brod',
+    name: 'Stříbrný brod',
+    kind: 'abandoned',
+    owner: 'Opuštěná osada',
+    kingdom: 'Neutral',
+    region: 1,
+    localX: 28,
+    localY: 30,
+    globalX: 227,
+    globalY: 459,
+    prestige: 540,
+    loyalty: 100,
+    note: 'Dobrá zásobárna železa',
+  },
+  {
+    id: 'vlg-trznice',
+    name: 'Tržní dvůr',
+    kind: 'player',
+    owner: 'Elandor',
+    kingdom: 'Stínová Koruna',
+    region: 1,
+    localX: 37,
+    localY: 26,
+    globalX: 236,
+    globalY: 455,
+    prestige: 5920,
+    loyalty: 100,
+    note: 'Obchodní uzel nepřátelského klanu',
+  },
+  {
+    id: 'vlg-kotlina',
+    name: 'Kotlina',
+    kind: 'bot',
+    owner: 'Královská osada',
+    kingdom: 'Neutral',
+    region: 1,
+    localX: 9,
+    localY: 16,
+    globalX: 208,
+    globalY: 445,
+    prestige: 970,
+    loyalty: 100,
+    note: 'Rychlý nájezd na dřevo',
+  },
+  {
+    id: 'vlg-step',
+    name: 'Šeptající step',
+    kind: 'abandoned',
+    owner: 'Opuštěná osada',
+    kingdom: 'Neutral',
+    region: 1,
+    localX: 40,
+    localY: 36,
+    globalX: 239,
+    globalY: 465,
+    prestige: 410,
+    loyalty: 100,
+    note: 'Nízké riziko, nízká obrana',
+  },
+];
+
+const settlementKindLabel: Record<MapSettlementKind, string> = {
+  active: 'Aktuální osada',
+  own: 'Moje osada',
+  player: 'Osada hráče',
+  bot: 'Královská osada',
+  abandoned: 'Opuštěná osada',
+};
+
+const VILLAGE_SCOPED_BUILDING_IDS = new Set<string>([
+  'woodcutter',
+  'quarry',
+  'iron-mine',
+  'warehouse',
+  'barracks',
+  'stable',
+  'workshop',
+  'fortification',
+  'gate',
+  'townhall',
+  'university',
+  'residential-quarter',
+]);
+
+const hasVillageContext = (panel: Pick<PanelWindow, 'type' | 'buildingId'>): boolean => {
+  if (panel.type === 'city' || panel.type === 'map' || panel.type === 'army') {
+    return true;
+  }
+
+  if (panel.type === 'building' && panel.buildingId) {
+    return VILLAGE_SCOPED_BUILDING_IDS.has(panel.buildingId);
+  }
+
+  return false;
+};
+
+const getSettlementMapKind = (
+  settlement: Pick<RegionSettlement, 'kind' | 'relation' | 'owner' | 'villageId'>,
+  activeVillageId: number | null = null,
+): MapSettlementKind => {
+  if (
+    activeVillageId != null &&
+    settlement.villageId != null &&
+    Number(settlement.villageId) === activeVillageId &&
+    (settlement.kind === 'own' || settlement.relation === 'self')
+  ) {
+    return 'active';
+  }
+
+  const ownerNormalized = settlement.owner.trim().toLowerCase();
+  if (
+    settlement.kind === 'abandoned' ||
+    ownerNormalized === 'opuštěná osada' ||
+    ownerNormalized === 'opustena osada'
+  ) {
+    return 'abandoned';
+  }
+
+  if (settlement.kind === 'player' && settlement.relation === 'ally') {
+    return 'bot';
+  }
+
+  return settlement.kind;
+};
+
+const isNeutralKingdom = (kingdom: string): boolean => {
+  const normalized = kingdom.trim().toLowerCase();
+  return (
+    normalized === 'neutral' || normalized === 'kralovska osada' || normalized === 'královská osada'
+  );
+};
+
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(Math.max(value, min), max);
+
+const calculateCellDistance = (
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+): number => Math.max(Math.abs(toX - fromX), Math.abs(toY - fromY));
+
+const getPanelMinSize = (type: PanelType): WindowSize => {
+  if (type === 'map') {
+    return { width: MAP_WINDOW_MIN_WIDTH, height: MAP_WINDOW_MIN_HEIGHT };
+  }
+  if (type === 'city') {
+    return { width: PANEL_CITY_MIN_WIDTH, height: PANEL_CITY_MIN_HEIGHT };
+  }
+  if (type === 'rankings') {
+    return { width: 760, height: 420 };
+  }
+  if (type === 'kingdomProfile' || type === 'playerProfile') {
+    return { width: 560, height: 420 };
+  }
+
+  return { width: PANEL_DEFAULT_MIN_WIDTH, height: PANEL_DEFAULT_MIN_HEIGHT };
+};
+
+type ClampPanelToViewportOptions = {
+  allowBelowMinSize?: boolean;
+  forceFullWidth?: boolean;
+};
+
+const clampPanelToViewport = (
+  panel: PanelWindow,
+  viewportWidth: number,
+  viewportHeight: number,
+  options: ClampPanelToViewportOptions = {},
+): PanelWindow => {
+  const allowBelowMinSize = options.allowBelowMinSize === true;
+  const forceFullWidth = options.forceFullWidth === true;
+  const minSize = getPanelMinSize(panel.type);
+
+  const minWidth = allowBelowMinSize
+    ? Math.min(
+        minSize.width,
+        Math.max(PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH, viewportWidth - PANEL_VIEWPORT_MARGIN_X),
+      )
+    : minSize.width;
+  const minHeight = allowBelowMinSize
+    ? Math.min(
+        minSize.height,
+        Math.max(PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT, viewportHeight - PANEL_VIEWPORT_MARGIN_Y),
+      )
+    : minSize.height;
+
+  const maxWidth = Math.max(minWidth, viewportWidth - PANEL_VIEWPORT_MARGIN_X);
+  const maxHeight = Math.max(minHeight, viewportHeight - PANEL_VIEWPORT_MARGIN_Y);
+  const nextWidth = forceFullWidth ? maxWidth : clamp(panel.width, minWidth, maxWidth);
+  const nextHeight = clamp(panel.height, minHeight, maxHeight);
+  const maxX = Math.max(8, viewportWidth - nextWidth - PANEL_VIEWPORT_MARGIN_X);
+  const maxY = Math.max(12, viewportHeight - nextHeight - PANEL_VIEWPORT_MARGIN_Y);
+  const nextX = forceFullWidth ? 8 : clamp(panel.x, 8, maxX);
+  const nextY = clamp(panel.y, 12, maxY);
+
+  if (
+    panel.width === nextWidth &&
+    panel.height === nextHeight &&
+    panel.x === nextX &&
+    panel.y === nextY
+  ) {
+    return panel;
+  }
+
+  return {
+    ...panel,
+    width: Math.round(nextWidth),
+    height: Math.round(nextHeight),
+    x: Math.round(nextX),
+    y: Math.round(nextY),
+  };
+};
+
+const readStoredMapWindowSize = (): WindowSize | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(MAP_WINDOW_SIZE_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as WindowSize;
+    if (!Number.isFinite(parsed.width) || !Number.isFinite(parsed.height)) {
+      return null;
+    }
+
+    return {
+      width: clamp(parsed.width, MAP_WINDOW_MIN_WIDTH, 1800),
+      height: clamp(parsed.height, MAP_WINDOW_MIN_HEIGHT, 1300),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const saveMapWindowSize = (size: WindowSize): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.localStorage.setItem(
+    MAP_WINDOW_SIZE_STORAGE_KEY,
+    JSON.stringify({
+      width: Math.round(size.width),
+      height: Math.round(size.height),
+    }),
+  );
+};
+
+const getLastOwnSettlementStorageKey = (username: string): string =>
+  `${LAST_OWN_SETTLEMENT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+
+const readStoredLastOwnSettlementId = (username: string): string | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(getLastOwnSettlementStorageKey(username));
+    if (!raw) {
+      return null;
+    }
+    return raw.trim() || null;
+  } catch {
+    return null;
+  }
+};
+
+const saveLastOwnSettlementId = (username: string, settlementId: string | null): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const key = getLastOwnSettlementStorageKey(username);
+
+  try {
+    if (!settlementId) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, settlementId);
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
+const getActiveVillageStorageKey = (username: string): string =>
+  `${ACTIVE_VILLAGE_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+
+const readStoredActiveVillageId = (username: string): number | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(getActiveVillageStorageKey(username));
+    if (!raw) {
+      return null;
+    }
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return null;
+    }
+    return Math.floor(parsed);
+  } catch {
+    return null;
+  }
+};
+
+const saveActiveVillageId = (username: string, villageId: number | null): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const key = getActiveVillageStorageKey(username);
+  try {
+    if (villageId == null || !Number.isFinite(villageId) || villageId <= 0) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, String(Math.floor(villageId)));
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
+const getMapZoomStorageKey = (username: string): string =>
+  `${MAP_ZOOM_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+
+const normalizeMapZoom = (value: number): number => {
+  const clamped = clamp(value, MAP_ZOOM_MIN, MAP_ZOOM_MAX);
+  return Math.round(clamped / MAP_ZOOM_STEP) * MAP_ZOOM_STEP;
+};
+
+const readStoredMapZoom = (username: string): number => {
+  if (typeof window === 'undefined') {
+    return 0;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(getMapZoomStorageKey(username));
+    if (!raw) {
+      return 0;
+    }
+
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+      return 0;
+    }
+
+    return normalizeMapZoom(parsed);
+  } catch {
+    return 0;
+  }
+};
+
+const saveStoredMapZoom = (username: string, zoomPercent: number): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(getMapZoomStorageKey(username), String(normalizeMapZoom(zoomPercent)));
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
+const getPanelLayoutStorageKey = (username: string): string =>
+  `${PANEL_LAYOUT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+
+const isPanelType = (value: unknown): value is PanelType =>
+  typeof value === 'string' && value in PANEL_META;
+
+const sanitizeStoredPanel = (value: unknown, index: number): PanelWindow | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const candidate = value as Partial<PersistedPanelWindow>;
+  if (!isPanelType(candidate.type)) {
+    return null;
+  }
+
+  const meta = PANEL_META[candidate.type];
+  const side: PinSide = candidate.side === 'right' ? 'right' : 'left';
+  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1440;
+  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 900;
+  const minSize = getPanelMinSize(candidate.type);
+  const minWidth = Math.min(
+    minSize.width,
+    Math.max(PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH, viewportWidth - PANEL_VIEWPORT_MARGIN_X),
+  );
+  const minHeight = Math.min(
+    minSize.height,
+    Math.max(PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT, viewportHeight - PANEL_VIEWPORT_MARGIN_Y),
+  );
+  const maxWidth = Math.max(minWidth, viewportWidth - PANEL_VIEWPORT_MARGIN_X);
+  const maxHeight = Math.max(minHeight, viewportHeight - PANEL_VIEWPORT_MARGIN_Y);
+  const width = clamp(Number(candidate.width ?? meta.width), minWidth, maxWidth);
+  const height = clamp(Number(candidate.height ?? meta.height), minHeight, maxHeight);
+  const maxX = Math.max(8, viewportWidth - width - PANEL_VIEWPORT_MARGIN_X);
+  const maxY = Math.max(12, viewportHeight - height - PANEL_VIEWPORT_MARGIN_Y);
+  const x = clamp(Number(candidate.x ?? 96), 8, maxX);
+  const y = clamp(Number(candidate.y ?? 136), 12, maxY);
+  const z = Number.isFinite(Number(candidate.z)) ? Number(candidate.z) : 40 + index;
+
+  const id =
+    typeof candidate.id === 'string' && candidate.id.trim().length > 0 ? candidate.id : `${meta.type}-${index}`;
+  const label =
+    typeof candidate.label === 'string' && candidate.label.trim().length > 0 ? candidate.label : meta.label;
+
+  return {
+    ...meta,
+    id,
+    type: meta.type,
+    label,
+    side,
+    width,
+    height,
+    x,
+    y,
+    z,
+    expanded: candidate.expanded !== false,
+    alert: false,
+    settlementId: typeof candidate.settlementId === 'string' ? candidate.settlementId : undefined,
+    buildingId: typeof candidate.buildingId === 'string' ? candidate.buildingId : undefined,
+    villageName: typeof candidate.villageName === 'string' ? candidate.villageName : undefined,
+    kingdomName: typeof candidate.kingdomName === 'string' ? candidate.kingdomName : undefined,
+    playerUsername: typeof candidate.playerUsername === 'string' ? candidate.playerUsername : undefined,
+  };
+};
+
+const readStoredPanelLayout = (username: string): PanelWindow[] | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(getPanelLayoutStorageKey(username));
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+
+    const seenIds = new Set<string>();
+    const restored = parsed
+      .map((panel, index) => sanitizeStoredPanel(panel, index))
+      .filter((panel): panel is PanelWindow => panel != null)
+      .filter((panel) => {
+        if (seenIds.has(panel.id)) {
+          return false;
+        }
+        seenIds.add(panel.id);
+        return true;
+      });
+
+    return restored.length > 0 ? restored : null;
+  } catch {
+    return null;
+  }
+};
+
+const savePanelLayout = (username: string, panels: PanelWindow[]): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const payload: PersistedPanelWindow[] = panels.map((panel) => ({
+    id: panel.id,
+    type: panel.type,
+    label: panel.label,
+    side: panel.side,
+    width: panel.width,
+    height: panel.height,
+    x: panel.x,
+    y: panel.y,
+    z: panel.z,
+    expanded: panel.expanded,
+    alert: false,
+    settlementId: panel.settlementId,
+    buildingId: panel.buildingId,
+    villageName: panel.villageName,
+    kingdomName: panel.kingdomName,
+    playerUsername: panel.playerUsername,
+  }));
+
+  try {
+    window.localStorage.setItem(getPanelLayoutStorageKey(username), JSON.stringify(payload));
+  } catch {
+    // Ignore storage errors in private mode/quota pressure.
+  }
+};
+
+const createPanelWindow = (
+  type: PanelType,
+  z: number,
+  index: number,
+  overrides: Partial<
+    Pick<
+      PanelWindow,
+      | 'id'
+      | 'label'
+      | 'side'
+      | 'width'
+      | 'height'
+      | 'settlementId'
+      | 'buildingId'
+      | 'villageName'
+      | 'kingdomName'
+      | 'playerUsername'
+    >
+  > = {},
+): PanelWindow => {
+  const meta = PANEL_META[type];
+  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1440;
+  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 900;
+  const minSize = getPanelMinSize(type);
+  const minWidth = Math.min(
+    minSize.width,
+    Math.max(PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH, viewportWidth - PANEL_VIEWPORT_MARGIN_X),
+  );
+  const minHeight = Math.min(
+    minSize.height,
+    Math.max(PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT, viewportHeight - PANEL_VIEWPORT_MARGIN_Y),
+  );
+  const maxWidth = Math.max(minWidth, viewportWidth - PANEL_VIEWPORT_MARGIN_X);
+  const maxHeight = Math.max(minHeight, viewportHeight - PANEL_VIEWPORT_MARGIN_Y);
+  const width = clamp(overrides.width ?? meta.width, minWidth, maxWidth);
+  const height = clamp(overrides.height ?? meta.height, minHeight, maxHeight);
+  const side = overrides.side ?? meta.side;
+  const usableWidth = width;
+  const rowOffset = index % 3;
+
+  const leftStart = 96 + rowOffset * 30;
+  const rightStart = Math.max(240, viewportWidth - usableWidth - 140 - rowOffset * 30);
+
+  return {
+    ...meta,
+    ...overrides,
+    id: overrides.id ?? meta.type,
+    label: overrides.label ?? meta.label,
+    side,
+    width,
+    height,
+    z,
+    x: side === 'left' ? leftStart : rightStart,
+    y: 136 + rowOffset * 34,
+    expanded: true,
+    alert: false,
+  };
+};
+
+const formatCostLabel = (cost: { wood: number; stone: number; iron: number } | null): string => {
+  if (!cost) {
+    return 'Max úroveň';
+  }
+
+  return `${cost.wood} dřevo, ${cost.stone} kámen, ${cost.iron} železo`;
+};
+
+const formatDurationLabel = (seconds: number | null): string => {
+  if (seconds == null) {
+    return '-';
+  }
+
+  const safe = Math.max(0, seconds);
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const secs = safe % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${secs}s`;
+  }
+
+  return `${secs}s`;
+};
+
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return 'Akce se nepodařila. Zkus to znovu.';
+};
+
+const isTypingElement = (target: EventTarget | null): boolean => {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const tagName = target.tagName.toLowerCase();
+  return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable;
+};
+
+const CityPanel = ({
+  villageLabel,
+  regionLabel,
+  ownerName,
+  prestige,
+  loyalty,
+  buildings,
+  units,
+  orders,
+  onOpenBuilding,
+}: {
+  villageLabel: string;
+  regionLabel: string;
+  ownerName: string;
+  prestige: number;
+  loyalty: number;
+  buildings: Building[];
+  units: Unit[];
+  orders: string[];
+  onOpenBuilding: (building: Building) => void;
+}) => {
+  return (
+    <div className="city-panel">
+      <div className="city-stats-grid">
+        <article>
+          <h4>Město</h4>
+          <strong>{villageLabel}</strong>
+          <span>{regionLabel}</span>
+        </article>
+        <article>
+          <h4>Prestiž</h4>
+          <strong>{prestige.toLocaleString('cs-CZ')} bodů</strong>
+          <span>Tier: opevněné město</span>
+        </article>
+        <article>
+          <h4>Vlastník</h4>
+          <strong>{ownerName}</strong>
+          <span>Aktuální držitel léna</span>
+        </article>
+        <article>
+          <h4>Oddanost</h4>
+          <strong>{loyalty} %</strong>
+          <span>Bez rizika převzetí</span>
+        </article>
+      </div>
+
+      <div className="city-layout">
+        <section className="city-core-view">
+          <h3>Centrum města</h3>
+          <p>Klikni na budovu pro detail, náklady a živý backend stav.</p>
+          <div className="building-grid">
+            {buildings.map((building) => (
+              <button
+                key={building.id}
+                className="building-card"
+                onClick={() => onOpenBuilding(building)}
+              >
+                <img src={building.icon} alt={building.name} loading="lazy" />
+                <span>{building.category}</span>
+                <strong>{building.name}</strong>
+                <em>Úroveň {building.level}</em>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <aside className="city-side-info">
+          <section>
+            <h3>Jednotky ve městě</h3>
+            <ul>
+              {units.map((unit) => (
+                <li key={unit.id}>
+                  <strong>{unit.amount}</strong>
+                  <span>{unit.name}</span>
+                  <em>{unit.role}</em>
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          <section>
+            <h3>Aktivní rozkazy</h3>
+            <ul>
+              {orders.map((order, index) => {
+                const commandType = parseArmyOrderCommandType(order);
+                return (
+                  <li key={`${index}-${order}`} className={commandType ? 'order-line with-icon' : 'order-line'}>
+                    {commandType ? (
+                      <span
+                        className={`command-badge ${commandType} compact`}
+                        aria-label={ARMY_COMMAND_LABELS[commandType]}
+                        title={ARMY_COMMAND_LABELS[commandType]}
+                      >
+                        <span className="symbol">{getArmyCommandSymbol(commandType)}</span>
+                      </span>
+                    ) : null}
+                    <span>{order}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        </aside>
+      </div>
+    </div>
+  );
+};
+
+const ArmyPanel = ({
+  units,
+  recruitQueueOrders,
+  activeMovements,
+  stationedSupports,
+  settlements,
+  currentVillageId,
+  currentUsername,
+  onRecruit,
+  onIssueArmyCommand,
+  onReturnSupport,
+  recruitPendingUnitId,
+  isArmyCommandPending,
+  notice,
+  commandNotice,
+}: {
+  units: Unit[];
+  recruitQueueOrders: RecruitQueueOrder[];
+  activeMovements: ArmyMovementState[];
+  stationedSupports: ArmyMovementState[];
+  settlements: RegionSettlement[];
+  currentVillageId: number | null;
+  currentUsername: string;
+  onRecruit: (unit: Unit, amount: number) => void;
+  onIssueArmyCommand: (payload: {
+    commandType: ArmyCommandType;
+    targetVillageId: number;
+    lootPriority?: LootPriority;
+    units: Record<string, number>;
+  }) => void;
+  onReturnSupport: (supportMovementId: number) => void;
+  recruitPendingUnitId: string | null;
+  isArmyCommandPending: boolean;
+  notice: string | null;
+  commandNotice: string | null;
+}) => {
+  const [commandType, setCommandType] = useState<ArmyCommandType>('move');
+  const [lootPriority, setLootPriority] = useState<LootPriority>('wood');
+  const [targetVillageId, setTargetVillageId] = useState<number | null>(null);
+  const [draftUnitAmounts, setDraftUnitAmounts] = useState<Record<string, string>>({});
+  const [recruitDraftAmounts, setRecruitDraftAmounts] = useState<Record<string, string>>({});
+
+  const availableTargets = useMemo(() => {
+    return settlements.filter((settlement) => {
+      if (settlement.villageId == null || settlement.villageId === currentVillageId) {
+        return false;
+      }
+
+      if (commandType === 'move') {
+        return settlement.owner === currentUsername || settlement.relation === 'self';
+      }
+
+      if (commandType === 'support') {
+        return settlement.owner === currentUsername || settlement.relation === 'self' || settlement.relation === 'ally';
+      }
+
+      if (commandType === 'attack') {
+        return settlement.owner !== currentUsername && settlement.relation !== 'ally' && settlement.relation !== 'self';
+      }
+
+      return false;
+    });
+  }, [commandType, currentUsername, currentVillageId, settlements]);
+
+  const resolvedTargetVillageId = useMemo(() => {
+    if (availableTargets.length === 0) {
+      return null;
+    }
+    if (targetVillageId != null && availableTargets.some((settlement) => settlement.villageId === targetVillageId)) {
+      return targetVillageId;
+    }
+    return availableTargets[0]?.villageId ?? null;
+  }, [availableTargets, targetVillageId]);
+
+  const activeMovementsForVillage = useMemo(
+    () => activeMovements.filter((movement) => movement.isRelatedToCurrentVillage),
+    [activeMovements],
+  );
+  const stationedSupportsForVillage = useMemo(
+    () => stationedSupports.filter((movement) => movement.isRelatedToCurrentVillage),
+    [stationedSupports],
+  );
+
+  const handleDraftAmountChange = (unitId: string, value: string) => {
+    setDraftUnitAmounts((previous) => ({
+      ...previous,
+      [unitId]: value,
+    }));
+  };
+
+  const handleRecruitAmountChange = (unitId: string, value: string) => {
+    setRecruitDraftAmounts((previous) => ({
+      ...previous,
+      [unitId]: value,
+    }));
+  };
+
+  const getRequestedRecruitAmount = (unit: Unit) => {
+    const raw = Number(recruitDraftAmounts[unit.id] ?? 0);
+    if (!Number.isInteger(raw) || raw <= 0) {
+      return 0;
+    }
+    return Math.min(unit.maxRecruitable, raw);
+  };
+
+  useEffect(() => {
+    if (commandType !== 'support') {
+      return;
+    }
+    setDraftUnitAmounts((previous) => {
+      if (!previous.caravan) {
+        return previous;
+      }
+      const next = { ...previous };
+      delete next.caravan;
+      return next;
+    });
+  }, [commandType]);
+
+  const selectedCommandUnits = useMemo(
+    () =>
+      buildSelectedUnitsFromDraft(units, draftUnitAmounts, {
+        excludeCaravan: commandType === 'support',
+      }),
+    [commandType, draftUnitAmounts, units],
+  );
+  const selectedCommandUnitCount = useMemo(
+    () => calculateTotalUnitsInSelection(selectedCommandUnits),
+    [selectedCommandUnits],
+  );
+  const selectedCaravanCount = Number(selectedCommandUnits.caravan ?? 0);
+  const baseAttackPower = useMemo(
+    () => calculateAttackPowerFromSelection(selectedCommandUnits),
+    [selectedCommandUnits],
+  );
+  const baseDefensePower = useMemo(
+    () => calculateDefensePowerFromSelection(selectedCommandUnits),
+    [selectedCommandUnits],
+  );
+  const hasRamAttackBonus = commandType === 'attack' && Number(selectedCommandUnits.ram ?? 0) > 0;
+  const attackPowerWithBonuses = hasRamAttackBonus
+    ? Math.round(baseAttackPower * RAM_ATTACK_BONUS_MULTIPLIER)
+    : baseAttackPower;
+  const caravanLootCapacity = selectedCaravanCount * CARAVAN_LOOT_CAPACITY;
+
+  const handleSendCommand = () => {
+    if (resolvedTargetVillageId == null) {
+      return;
+    }
+
+    if (selectedCommandUnitCount <= 0) {
+      return;
+    }
+
+    const selectedUnitsPayload: Record<string, number> = {};
+    for (const unitId of COMMAND_UNIT_ORDER) {
+      const amount = Number(selectedCommandUnits[unitId] ?? 0);
+      if (amount <= 0) {
+        continue;
+      }
+      selectedUnitsPayload[unitId] = amount;
+    }
+
+    onIssueArmyCommand({
+      commandType,
+      targetVillageId: resolvedTargetVillageId,
+      lootPriority: commandType === 'attack' ? lootPriority : undefined,
+      units: selectedUnitsPayload,
+    });
+    setDraftUnitAmounts({});
+  };
+
+  return (
+    <div className="panel-stack">
+      <section>
+        <h3>Nábor jednotek (live backend)</h3>
+        <p>Nábor běží ve frontě pro aktuální léno. Limitem je dostupná populace a suroviny.</p>
+        {notice ? <p className="panel-feedback">{notice}</p> : null}
+        <table>
+          <thead>
+            <tr>
+              <th>Jednotka</th>
+              <th>Počet</th>
+              <th>Role</th>
+              <th>Cena</th>
+              <th>Akce</th>
+            </tr>
+          </thead>
+          <tbody>
+            {units.map((unit) => {
+              const requestedRecruitAmount = getRequestedRecruitAmount(unit);
+              return (
+                <tr key={unit.id}>
+                  <td>{unit.name}</td>
+                  <td>
+                    {unit.amount.toLocaleString('cs-CZ')}
+                    <small className="row-help">
+                      maximálně {unit.maxRecruitable.toLocaleString('cs-CZ')} počet k rekrutu
+                    </small>
+                    {unit.queuedCount > 0 ? (
+                      <small className="row-help">ve fronte: +{unit.queuedCount.toLocaleString('cs-CZ')}</small>
+                    ) : null}
+                    {unit.blockedReason ? <small className="row-help">{unit.blockedReason}</small> : null}
+                  </td>
+                  <td>{unit.role}</td>
+                  <td>{unit.cost}</td>
+                  <td>
+                    <div className="recruit-controls">
+                      <input
+                        className="recruit-amount-input"
+                        type="number"
+                        min={1}
+                        max={Math.max(1, unit.maxRecruitable)}
+                        step={1}
+                        value={recruitDraftAmounts[unit.id] ?? ''}
+                        onChange={(event) => handleRecruitAmountChange(unit.id, event.target.value)}
+                        disabled={!unit.canRecruit || recruitPendingUnitId === unit.id}
+                        placeholder="1"
+                      />
+                      <button
+                        className="secondary-action recruit-action"
+                        onClick={() => onRecruit(unit, requestedRecruitAmount)}
+                        disabled={
+                          !unit.canRecruit ||
+                          recruitPendingUnitId === unit.id ||
+                          requestedRecruitAmount <= 0
+                        }
+                      >
+                        {recruitPendingUnitId === unit.id ? 'Nábor...' : 'Naverbovat'}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+      <section>
+        <h3>Fronta kasáren</h3>
+        <p>Každý záznam běží paralelně. ETA se odečítá podle backend ticku.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Jednotka</th>
+              <th>Počet</th>
+              <th>ETA</th>
+            </tr>
+          </thead>
+          <tbody>
+            {recruitQueueOrders.map((order, index) => (
+              <tr key={`rq-${order.id}`}>
+                <td>{index + 1}</td>
+                <td>{order.unitName}</td>
+                <td>+{order.amount}</td>
+                <td>{formatDurationLabel(order.remainingSec)}</td>
+              </tr>
+            ))}
+            {recruitQueueOrders.length === 0 ? (
+              <tr>
+                <td colSpan={4}>Náborová fronta je prázdná.</td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </section>
+      <section>
+        <h3>Přesuny armád a rozkazy</h3>
+        <div className="army-command-controls">
+          <label>
+            Rozkaz
+            <select
+              value={commandType}
+              onChange={(event) => setCommandType(event.target.value as ArmyCommandType)}
+              disabled={isArmyCommandPending}
+            >
+              <option value="move">{ARMY_COMMAND_LABELS.move}</option>
+              <option value="support">{ARMY_COMMAND_LABELS.support}</option>
+              <option value="attack">{ARMY_COMMAND_LABELS.attack}</option>
+            </select>
+          </label>
+          <label>
+            Cílové léno
+            <select
+              value={resolvedTargetVillageId == null ? '' : String(resolvedTargetVillageId)}
+              onChange={(event) => setTargetVillageId(Number(event.target.value))}
+              disabled={isArmyCommandPending || availableTargets.length === 0}
+            >
+              {availableTargets.length === 0 ? (
+                <option value="">Žádné dostupné cíle</option>
+              ) : (
+                availableTargets.map((settlement) => (
+                  <option key={settlement.id} value={settlement.villageId}>
+                    {settlement.name} ({settlement.globalX}|{settlement.globalY})
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+          {commandType === 'attack' ? (
+            <label>
+              Priorita drancování
+              <select
+                value={lootPriority}
+                onChange={(event) => setLootPriority(event.target.value as LootPriority)}
+                disabled={isArmyCommandPending}
+              >
+                <option value="wood">{LOOT_PRIORITY_LABELS.wood}</option>
+                <option value="stone">{LOOT_PRIORITY_LABELS.stone}</option>
+                <option value="iron">{LOOT_PRIORITY_LABELS.iron}</option>
+              </select>
+            </label>
+          ) : null}
+        </div>
+        <div className="army-draft-grid">
+          {units.map((unit) => (
+            <label key={`draft-${unit.id}`}>
+              <span>
+                {unit.name} <small className="row-help inline">k dispozici: {unit.amount.toLocaleString('cs-CZ')}</small>
+              </span>
+              <input
+                type="number"
+                min={0}
+                max={unit.amount}
+                step={1}
+                value={draftUnitAmounts[unit.id] ?? ''}
+                onChange={(event) => handleDraftAmountChange(unit.id, event.target.value)}
+                disabled={isArmyCommandPending || (commandType === 'support' && unit.id === 'caravan')}
+              />
+              {commandType === 'support' && unit.id === 'caravan' ? (
+                <small className="row-help">Karavany nelze posílat jako podporu.</small>
+              ) : null}
+            </label>
+          ))}
+        </div>
+        <div className="army-command-preview">
+          <p>
+            Vybráno jednotek: <strong>{selectedCommandUnitCount.toLocaleString('cs-CZ')}</strong>
+          </p>
+          {commandType === 'attack' ? (
+            <>
+              <p>
+                Síla útoku: <strong>{attackPowerWithBonuses.toLocaleString('cs-CZ')}</strong>{' '}
+                {hasRamAttackBonus ? <span>(včetně +10 % bonusu beranidel bez brány)</span> : null}
+              </p>
+              <p>
+                Kapacita kořisti (karavany):{' '}
+                <strong>{caravanLootCapacity.toLocaleString('cs-CZ')} surovin</strong>
+              </p>
+            </>
+          ) : (
+            <p>
+              Síla obrany vybraných jednotek: <strong>{baseDefensePower.toLocaleString('cs-CZ')}</strong>
+            </p>
+          )}
+        </div>
+        <button
+          className="secondary-action"
+          onClick={handleSendCommand}
+          disabled={isArmyCommandPending || resolvedTargetVillageId == null || selectedCommandUnitCount <= 0}
+        >
+          {isArmyCommandPending ? 'Odesílám rozkaz...' : 'Odeslat armádní rozkaz'}
+        </button>
+        {commandNotice ? <p className="panel-feedback">{commandNotice}</p> : null}
+      </section>
+      <section>
+        <h3>Aktivní přesuny armád</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Rozkaz</th>
+              <th>Trasa</th>
+              <th>Jednotky</th>
+              <th>ETA</th>
+            </tr>
+          </thead>
+          <tbody>
+            {activeMovementsForVillage.map((movement, index) => (
+              <tr key={`mv-${movement.id}`}>
+                <td>{index + 1}</td>
+                <td>
+                  <span className={`command-badge ${movement.commandType}`}>
+                    <span className="symbol">{getArmyCommandSymbol(movement.commandType)}</span>
+                    <span>{ARMY_COMMAND_LABELS[movement.commandType]}</span>
+                  </span>
+                </td>
+                <td>
+                  {movement.originName} → {movement.targetName}
+                </td>
+                <td>{movement.units.map((unit) => `${UNIT_META[unit.unitId]?.fallbackName ?? unit.unitId} ${unit.amount}`).join(', ')}</td>
+                <td>{formatDurationLabel(movement.remainingSec)}</td>
+              </tr>
+            ))}
+            {activeMovementsForVillage.length === 0 ? (
+              <tr>
+                <td colSpan={5}>Aktuálně není žádný aktivní přesun.</td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </section>
+      <section>
+        <h3>Stacionované podpory</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Osada</th>
+              <th>Jednotky</th>
+              <th>Akce</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stationedSupportsForVillage.map((support, index) => (
+              <tr key={`sp-${support.id}`}>
+                <td>{index + 1}</td>
+                <td>
+                  <span className="command-badge support compact">
+                    <span className="symbol">{getArmyCommandSymbol('support')}</span>
+                  </span>{' '}
+                  {support.targetName}
+                </td>
+                <td>{support.units.map((unit) => `${UNIT_META[unit.unitId]?.fallbackName ?? unit.unitId} ${unit.amount}`).join(', ')}</td>
+                <td>
+                  <button
+                    className="secondary-action recruit-action"
+                    onClick={() => onReturnSupport(support.id)}
+                    disabled={isArmyCommandPending}
+                  >
+                    Návrat
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {stationedSupportsForVillage.length === 0 ? (
+              <tr>
+                <td colSpan={4}>Žádná stacionovaná podpora.</td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  );
+};
+
+const ResearchPanel = () => (
+  <div className="panel-stack">
+    <section>
+      <h3>Univerzita - úroveň 2</h3>
+      <p>Aktivní akademici: 3 / 4. Výzkum je účetní (platný pro celý účet).</p>
+      <div className="research-list">
+        {RESEARCH_TASKS.map((task) => (
+          <article key={task.name}>
+            <header>
+              <strong>{task.name}</strong>
+              <span>{task.eta}</span>
+            </header>
+            <div className="progress-track" role="progressbar" aria-valuenow={task.progress}>
+              <span style={{ width: `${task.progress}%` }} />
+            </div>
+            <p>{task.progress}% dokončeno · akademici: {task.academics}</p>
+          </article>
+        ))}
+      </div>
+    </section>
+  </div>
+);
+
+const MessagesPanel = ({
+  reports,
+  selectedReportId,
+  loading,
+  error,
+  onSelectReport,
+  onSetPage,
+  onRefresh,
+}: {
+  reports: BattleReportListResponse | null;
+  selectedReportId: number | null;
+  loading: boolean;
+  error: string | null;
+  onSelectReport: (reportId: number) => void;
+  onSetPage: (page: number) => void;
+  onRefresh: () => void;
+}) => {
+  const page = reports?.page ?? 1;
+  const totalPages = reports?.totalPages ?? 1;
+  const total = reports?.total ?? 0;
+  const items = reports?.items ?? [];
+  const selectedReport =
+    items.find((item) => item.id === selectedReportId) ??
+    (selectedReportId == null ? items[0] ?? null : null);
+  const hasBattlePower =
+    selectedReport?.payload.battle?.finalAttackPower != null ||
+    selectedReport?.payload.battle?.finalDefensePower != null;
+  const showsUnknownAttacker = selectedReport?.payload.attackerForcesUnknown === true;
+
+  const canGoPrev = page > 1;
+  const canGoNext = page < totalPages;
+
+  return (
+    <div className="panel-stack messages">
+      <section>
+        <div className="messages-header">
+          <h3>Bitevní reporty</h3>
+          <button className="secondary-action" onClick={onRefresh} disabled={loading}>
+            {loading ? 'Načítám...' : 'Obnovit'}
+          </button>
+        </div>
+        <div className="messages-pagination">
+          <button onClick={() => onSetPage(1)} disabled={!canGoPrev || loading}>
+            První
+          </button>
+          <button onClick={() => onSetPage(page - 1)} disabled={!canGoPrev || loading}>
+            Předchozí
+          </button>
+          <span>
+            Strana {page} / {totalPages} · Celkem {total}
+          </span>
+          <button onClick={() => onSetPage(page + 1)} disabled={!canGoNext || loading}>
+            Další
+          </button>
+          <button onClick={() => onSetPage(totalPages)} disabled={!canGoNext || loading}>
+            Poslední
+          </button>
+        </div>
+        {error ? <p className="panel-feedback">{error}</p> : null}
+        <ul className="messages-report-list">
+          {items.map((report) => (
+            <li key={report.id}>
+              <button
+                className={`messages-report-item ${selectedReport?.id === report.id ? 'is-active' : ''}`}
+                onClick={() => onSelectReport(report.id)}
+              >
+                <strong>{report.title}</strong>
+                <span>{report.summary}</span>
+                <small>{new Date(report.createdAt).toLocaleString('cs-CZ')}</small>
+              </button>
+            </li>
+          ))}
+          {items.length === 0 && !loading ? <li>Žádné reporty pro tuto stránku.</li> : null}
+        </ul>
+        <div className="messages-pagination">
+          <button onClick={() => onSetPage(1)} disabled={!canGoPrev || loading}>
+            První
+          </button>
+          <button onClick={() => onSetPage(page - 1)} disabled={!canGoPrev || loading}>
+            Předchozí
+          </button>
+          <span>
+            Strana {page} / {totalPages} · Celkem {total}
+          </span>
+          <button onClick={() => onSetPage(page + 1)} disabled={!canGoNext || loading}>
+            Další
+          </button>
+          <button onClick={() => onSetPage(totalPages)} disabled={!canGoNext || loading}>
+            Poslední
+          </button>
+        </div>
+      </section>
+
+      <section>
+        <h3>Detail reportu</h3>
+        {selectedReport ? (
+          <div className="messages-detail">
+            <h4>{selectedReport.title}</h4>
+            <p>{selectedReport.summary}</p>
+            <p>
+              Čas bitvy: <strong>{new Date(selectedReport.battleAt).toLocaleString('cs-CZ')}</strong>
+            </p>
+            <p>
+              Útočník: <strong>{selectedReport.payload.attacker ?? 'Neznámý'}</strong> · Obránce:{' '}
+              <strong>{selectedReport.payload.defender ?? 'Neznámý'}</strong>
+            </p>
+            <p>
+              Výsledek:{' '}
+              <strong>
+                {selectedReport.payload.outcome === 'attacker_victory'
+                  ? 'Vítězství útočníka'
+                  : selectedReport.payload.outcome === 'defender_victory'
+                    ? 'Vítězství obránce'
+                    : 'N/A'}
+              </strong>
+            </p>
+            {selectedReport.payload.armyDestroyed ? (
+              <p>Armáda v útoku byla zcela zničena.</p>
+            ) : null}
+            {showsUnknownAttacker ? <p>Počty jednotek útočníka: neznámé.</p> : null}
+            {hasBattlePower ? (
+              <p>
+                Síla: útok {selectedReport.payload.battle?.finalAttackPower ?? 0} · obrana{' '}
+                {selectedReport.payload.battle?.finalDefensePower ?? 0}
+              </p>
+            ) : null}
+            {selectedReport.payload.battle?.bonuses?.length ? (
+              <ul>
+                {selectedReport.payload.battle.bonuses.map((bonus) => (
+                  <li key={bonus}>{bonus}</li>
+                ))}
+              </ul>
+            ) : null}
+            <p>
+              Kořist: {Math.floor(selectedReport.payload.lootTaken?.wood ?? 0)} dřeva,{' '}
+              {Math.floor(selectedReport.payload.lootTaken?.stone ?? 0)} kamene,{' '}
+              {Math.floor(selectedReport.payload.lootTaken?.iron ?? 0)} železa
+            </p>
+          </div>
+        ) : (
+          <p>Vyber report ze seznamu vlevo nahoře.</p>
+        )}
+      </section>
+    </div>
+  );
+};
+
+const KingdomPanel = () => (
+  <div className="panel-stack">
+    <section>
+      <h3>Království: Železná Liga</h3>
+      <p>
+        Defenzivní aliance se zaměřením na koordinaci podpory mezi regiony a kontrolu obchodních cest.
+      </p>
+      <ul>
+        <li>Členové: 18 hráčů</li>
+        <li>Regiony: 3 aktivní</li>
+        <li>Celková prestiž: 95 420</li>
+      </ul>
+    </section>
+    <section>
+      <h3>Aktivní přítomnost v regionu 1</h3>
+      <ul>
+        <li>Železná Liga: 41 % vlivu</li>
+        <li>Stínová Koruna: 34 % vlivu</li>
+        <li>Volné osady: 25 %</li>
+      </ul>
+    </section>
+  </div>
+);
+
+const RankingPanel = ({
+  rows,
+  currentUsername,
+  currentKingdom,
+  onOpenPlayerProfile,
+  onOpenKingdomProfile,
+}: {
+  rows: LeaderboardRow[];
+  currentUsername: string;
+  currentKingdom: string;
+  onOpenPlayerProfile: (username: string) => void;
+  onOpenKingdomProfile: (kingdomName: string) => void;
+}) => {
+  const [mode, setMode] = useState<RankingMode>('players');
+  const [pageSize, setPageSize] = useState<RankingPageSize>(20);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  const kingdomRows = useMemo<KingdomLeaderboardRow[]>(() => {
+    const byKingdom = new Map<string, Omit<KingdomLeaderboardRow, 'rank'>>();
+    for (const player of rows) {
+      if (isNeutralKingdom(player.kingdom)) {
+        continue;
+      }
+
+      const existing = byKingdom.get(player.kingdom) ?? {
+        kingdom: player.kingdom,
+        prestige: 0,
+        villages: 0,
+        members: 0,
+      };
+
+      existing.prestige += player.prestige;
+      existing.villages += player.villages;
+      existing.members += 1;
+      byKingdom.set(player.kingdom, existing);
+    }
+
+    return [...byKingdom.values()]
+      .sort((a, b) => {
+        if (b.prestige !== a.prestige) {
+          return b.prestige - a.prestige;
+        }
+        if (b.villages !== a.villages) {
+          return b.villages - a.villages;
+        }
+        if (b.members !== a.members) {
+          return b.members - a.members;
+        }
+        return a.kingdom.localeCompare(b.kingdom, 'cs');
+      })
+      .map((item, index) => ({
+        rank: index + 1,
+        kingdom: item.kingdom,
+        prestige: item.prestige,
+        villages: item.villages,
+        members: item.members,
+      }));
+  }, [rows]);
+
+  const activeRows = mode === 'players' ? rows : kingdomRows;
+  const totalRows = activeRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const normalizedCurrentPage = clamp(currentPage, 1, totalPages);
+  const pageStart = (normalizedCurrentPage - 1) * pageSize;
+  const pageRows = activeRows.slice(pageStart, pageStart + pageSize);
+  const visibleFrom = totalRows === 0 ? 0 : pageStart + 1;
+  const visibleTo = totalRows === 0 ? 0 : Math.min(pageStart + pageSize, totalRows);
+
+  const selfRowIndex = useMemo(() => {
+    if (mode === 'players') {
+      return rows.findIndex((entry) => entry.username === currentUsername);
+    }
+    if (isNeutralKingdom(currentKingdom)) {
+      return -1;
+    }
+    return kingdomRows.findIndex((entry) => entry.kingdom === currentKingdom);
+  }, [mode, rows, currentUsername, currentKingdom, kingdomRows]);
+
+  const jumpToTop = () => {
+    setCurrentPage(1);
+  };
+
+  const jumpToEnd = () => {
+    setCurrentPage(totalPages);
+  };
+
+  const centerOnSelf = () => {
+    if (selfRowIndex < 0) {
+      return;
+    }
+    setCurrentPage(Math.floor(selfRowIndex / pageSize) + 1);
+  };
+
+  const bestButtonLabel = mode === 'players' ? 'Ten nejlepší hráč' : 'To nejlepší království';
+  const centerButtonLabel =
+    mode === 'players' ? 'Vycentruj mě v žebříčku' : 'Vycentruj mě v žebříčku';
+
+  const renderPagination = (placement: 'top' | 'bottom') => (
+    <div className={`ranking-pagination ranking-pagination-${placement}`}>
+      <div className="ranking-pagination-main">
+        <button
+          onClick={() => setCurrentPage((previous) => Math.max(1, previous - 1))}
+          disabled={normalizedCurrentPage <= 1}
+        >
+          Předchozí
+        </button>
+        <span>
+          Strana {normalizedCurrentPage} / {totalPages}
+        </span>
+        <button
+          onClick={() => setCurrentPage((previous) => Math.min(totalPages, previous + 1))}
+          disabled={normalizedCurrentPage >= totalPages}
+        >
+          Další
+        </button>
+      </div>
+      <div className="ranking-pagination-jumps">
+        <button onClick={jumpToTop} disabled={totalRows === 0 || normalizedCurrentPage === 1}>
+          {bestButtonLabel}
+        </button>
+        <button onClick={jumpToEnd} disabled={totalRows === 0 || normalizedCurrentPage === totalPages}>
+          Na konec
+        </button>
+        <button onClick={centerOnSelf} disabled={selfRowIndex < 0}>
+          {centerButtonLabel}
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="panel-stack ranking-panel">
+      <section>
+        <h3>Globální žebříček podle prestiže</h3>
+
+        <div className="ranking-toolbar">
+          <div className="ranking-mode-switch">
+            <button
+              className={mode === 'players' ? 'is-active' : ''}
+              onClick={() => {
+                setMode('players');
+                setCurrentPage(1);
+              }}
+            >
+              Žebříček hráčů
+            </button>
+            <button
+              className={mode === 'kingdoms' ? 'is-active' : ''}
+              onClick={() => {
+                setMode('kingdoms');
+                setCurrentPage(1);
+              }}
+            >
+              Žebříček království
+            </button>
+          </div>
+
+          <span className="ranking-summary-inline">
+            Zobrazeno {visibleFrom}-{visibleTo} z {totalRows}{' '}
+            {mode === 'players' ? 'hráčů' : 'království'}.
+          </span>
+
+          <div className="ranking-limit-switch">
+            <button
+              className={pageSize === 20 ? 'is-active' : ''}
+              onClick={() => {
+                setPageSize(20);
+                setCurrentPage(1);
+              }}
+            >
+              20 nejlepších
+            </button>
+            <button
+              className={pageSize === 50 ? 'is-active' : ''}
+              onClick={() => {
+                setPageSize(50);
+                setCurrentPage(1);
+              }}
+            >
+              50 nejlepších
+            </button>
+          </div>
+        </div>
+
+        {renderPagination('top')}
+
+        <table>
+          <thead>
+            {mode === 'players' ? (
+              <tr>
+                <th>#</th>
+                <th>Hráč</th>
+                <th>Království</th>
+                <th>Prestiž</th>
+                <th>Vesnice</th>
+              </tr>
+            ) : (
+              <tr>
+                <th>#</th>
+                <th>Království</th>
+                <th>Prestiž</th>
+                <th>Osady</th>
+                <th>Členové</th>
+              </tr>
+            )}
+          </thead>
+          <tbody>
+            {mode === 'players'
+              ? pageRows.map((item) => {
+                  const playerRow = item as LeaderboardRow;
+                  const isSelf = playerRow.username === currentUsername;
+                  return (
+                    <tr key={playerRow.playerId} className={isSelf ? 'is-self' : ''}>
+                      <td>{playerRow.rank}</td>
+                      <td>
+                        <button
+                          className="ranking-link-button"
+                          onClick={() => onOpenPlayerProfile(playerRow.username)}
+                        >
+                          {playerRow.username}
+                        </button>
+                      </td>
+                      <td>
+                        <button
+                          className="ranking-link-button"
+                          onClick={() => onOpenKingdomProfile(playerRow.kingdom)}
+                        >
+                          {playerRow.kingdom}
+                        </button>
+                      </td>
+                      <td>{playerRow.prestige.toLocaleString('cs-CZ')}</td>
+                      <td>{playerRow.villages}</td>
+                    </tr>
+                  );
+                })
+              : pageRows.map((item) => {
+                  const kingdomRow = item as KingdomLeaderboardRow;
+                  const isSelf = kingdomRow.kingdom === currentKingdom;
+                  return (
+                    <tr key={kingdomRow.kingdom} className={isSelf ? 'is-self' : ''}>
+                      <td>{kingdomRow.rank}</td>
+                      <td>
+                        <button
+                          className="ranking-link-button"
+                          onClick={() => onOpenKingdomProfile(kingdomRow.kingdom)}
+                        >
+                          {kingdomRow.kingdom}
+                        </button>
+                      </td>
+                      <td>{kingdomRow.prestige.toLocaleString('cs-CZ')}</td>
+                      <td>{kingdomRow.villages}</td>
+                      <td>{kingdomRow.members}</td>
+                    </tr>
+                  );
+                })}
+
+            {pageRows.length === 0 ? (
+              <tr>
+                <td colSpan={5}>Žebříček zatím nemá data.</td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+
+        {renderPagination('bottom')}
+      </section>
+    </div>
+  );
+};
+
+const KingdomProfilePanel = ({
+  kingdomName,
+  rows,
+  settlements,
+  currentManagedVillage,
+  onOpenPlayerProfile,
+}: {
+  kingdomName: string;
+  rows: LeaderboardRow[];
+  settlements: RegionSettlement[];
+  currentManagedVillage: {
+    name: string;
+    coordX: number;
+    coordY: number;
+    region: number;
+  } | null;
+  onOpenPlayerProfile: (username: string) => void;
+}) => {
+  const [view, setView] = useState<'members' | 'villages'>('members');
+  const members = useMemo(
+    () =>
+      rows
+        .filter((row) => row.kingdom === kingdomName)
+        .sort((a, b) => {
+          if (b.prestige !== a.prestige) {
+            return b.prestige - a.prestige;
+          }
+          if (b.villages !== a.villages) {
+            return b.villages - a.villages;
+          }
+          return a.username.localeCompare(b.username, 'cs');
+        }),
+    [kingdomName, rows],
+  );
+
+  const memberSet = useMemo(() => new Set(members.map((member) => member.username)), [members]);
+  const visibleSettlements = useMemo(
+    () => settlements.filter((settlement) => memberSet.has(settlement.owner)),
+    [memberSet, settlements],
+  );
+  const totalPrestige = members.reduce((sum, member) => sum + member.prestige, 0);
+  const totalVillages = members.reduce((sum, member) => sum + member.villages, 0);
+  const membersByUsername = useMemo(() => new Map(members.map((member) => [member.username, member])), [members]);
+  const groupedVillages = useMemo(() => {
+    const bucket = new Map<string, RegionSettlement[]>();
+    for (const settlement of visibleSettlements) {
+      const list = bucket.get(settlement.owner) ?? [];
+      list.push(settlement);
+      bucket.set(settlement.owner, list);
+    }
+
+    return [...bucket.entries()]
+      .sort((a, b) => {
+        const aRow = membersByUsername.get(a[0]);
+        const bRow = membersByUsername.get(b[0]);
+        if (aRow && bRow) {
+          return aRow.rank - bRow.rank;
+        }
+        if (aRow) {
+          return -1;
+        }
+        if (bRow) {
+          return 1;
+        }
+        return a[0].localeCompare(b[0], 'cs');
+      })
+      .map(([owner, villages]) => ({
+        owner,
+        villages: [...villages].sort((a, b) => b.prestige - a.prestige),
+      }));
+  }, [membersByUsername, visibleSettlements]);
+  const managedVillageLabel = currentManagedVillage
+    ? `${currentManagedVillage.name} (${currentManagedVillage.coordX}|${currentManagedVillage.coordY})`
+    : 'Neznámá';
+
+  return (
+    <div className="panel-stack kingdom-profile-panel">
+      <section>
+        <h3>{kingdomName}</h3>
+        <ul>
+          <li>Počet členů: {members.length}</li>
+          <li>Prestiž království: {totalPrestige.toLocaleString('cs-CZ')}</li>
+          <li>Počet osad (součet členů): {totalVillages}</li>
+          <li>Viditelné osady v regionu: {visibleSettlements.length}</li>
+          <li>Aktivně spravovaná osada: {managedVillageLabel}</li>
+        </ul>
+      </section>
+      <section>
+        <div className="kingdom-profile-tabs">
+          <button
+            className={view === 'members' ? 'is-active' : ''}
+            onClick={() => setView('members')}
+          >
+            Členové království
+          </button>
+          <button
+            className={view === 'villages' ? 'is-active' : ''}
+            onClick={() => setView('villages')}
+          >
+            Léna království
+          </button>
+        </div>
+
+        {view === 'members' ? (
+          <>
+            <h3>Žebříček členů království</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Hráč</th>
+                  <th>Prestiž</th>
+                  <th>Osady</th>
+                </tr>
+              </thead>
+              <tbody>
+                {members.map((member, index) => (
+                  <tr key={`${kingdomName}-${member.username}`}>
+                    <td>{index + 1}</td>
+                    <td>
+                      <button
+                        className="ranking-link-button"
+                        onClick={() => onOpenPlayerProfile(member.username)}
+                      >
+                        {member.username}
+                      </button>
+                    </td>
+                    <td>{member.prestige.toLocaleString('cs-CZ')}</td>
+                    <td>{member.villages}</td>
+                  </tr>
+                ))}
+                {members.length === 0 ? (
+                  <tr>
+                    <td colSpan={4}>Království zatím nemá žádné členy.</td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </>
+        ) : (
+          <>
+            <h3>Léna království (seskupeno podle hráče)</h3>
+            <div className="kingdom-village-groups">
+              {groupedVillages.map((group) => (
+                <article key={`${kingdomName}-group-${group.owner}`} className="kingdom-village-group">
+                  <header>
+                    <button
+                      className="ranking-link-button"
+                      onClick={() => onOpenPlayerProfile(group.owner)}
+                    >
+                      {group.owner}
+                    </button>
+                    <span>{group.villages.length} lén</span>
+                  </header>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Léno</th>
+                        <th>Souřadnice</th>
+                        <th>Region</th>
+                        <th>Prestiž</th>
+                        <th>Vzdálenost</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {group.villages.map((village) => {
+                        const distance =
+                          currentManagedVillage == null
+                            ? null
+                            : calculateCellDistance(
+                                currentManagedVillage.coordX,
+                                currentManagedVillage.coordY,
+                                village.globalX,
+                                village.globalY,
+                              );
+
+                        return (
+                          <tr key={`${group.owner}-${village.id}`}>
+                            <td>{village.name}</td>
+                            <td>
+                              {village.globalX}|{village.globalY}
+                            </td>
+                            <td>{village.region}</td>
+                            <td>{village.prestige.toLocaleString('cs-CZ')}</td>
+                            <td>{distance == null ? '-' : `${distance} polí`}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </article>
+              ))}
+              {groupedVillages.length === 0 ? (
+                <p>Království zatím nemá v tomto regionu viditelná léna.</p>
+              ) : null}
+            </div>
+          </>
+        )}
+      </section>
+    </div>
+  );
+};
+
+const PlayerProfilePanel = ({
+  username,
+  rows,
+  settlements,
+  onOpenSettlement,
+}: {
+  username: string;
+  rows: LeaderboardRow[];
+  settlements: RegionSettlement[];
+  onOpenSettlement: (settlement: RegionSettlement) => void;
+}) => {
+  const playerRow = useMemo(() => rows.find((row) => row.username === username) ?? null, [rows, username]);
+  const villages = useMemo(
+    () =>
+      settlements
+        .filter((settlement) => settlement.owner === username)
+        .sort((a, b) => b.prestige - a.prestige),
+    [settlements, username],
+  );
+
+  return (
+    <div className="panel-stack player-profile-panel">
+      <section>
+        <h3>{username}</h3>
+        <ul>
+          <li>Království: {playerRow?.kingdom ?? 'Neznámé'}</li>
+          <li>Pořadí v globálním žebříčku: {playerRow ? `#${playerRow.rank}` : 'N/A'}</li>
+          <li>Prestiž: {(playerRow?.prestige ?? 0).toLocaleString('cs-CZ')}</li>
+          <li>Počet lén: {playerRow?.villages ?? villages.length}</li>
+        </ul>
+      </section>
+      <section>
+        <h3>Seznam lén hráče</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Léno</th>
+              <th>Souřadnice</th>
+              <th>Prestiž</th>
+              <th>Akce</th>
+            </tr>
+          </thead>
+          <tbody>
+            {villages.map((village) => (
+              <tr key={`${username}-${village.id}`}>
+                <td>{village.name}</td>
+                <td>
+                  {village.globalX}|{village.globalY}
+                </td>
+                <td>{village.prestige.toLocaleString('cs-CZ')}</td>
+                <td>
+                  <button className="ranking-link-button" onClick={() => onOpenSettlement(village)}>
+                    Otevřít
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {villages.length === 0 ? (
+              <tr>
+                <td colSpan={4}>V tomto regionu nejsou viditelná žádná léna hráče.</td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  );
+};
+
+const ProfilePanel = ({
+  username,
+  kingdom,
+  prestige,
+  villageCount,
+  rank,
+}: {
+  username: string;
+  kingdom: string;
+  prestige: number;
+  villageCount: number;
+  rank: number | null;
+}) => (
+  <div className="panel-stack">
+    <section>
+      <h3>Profil velitele</h3>
+      <ul>
+        <li>Jméno: {username}</li>
+        <li>Království: {kingdom}</li>
+        <li>Počet měst: {villageCount}</li>
+        <li>Celková prestiž: {prestige.toLocaleString('cs-CZ')}</li>
+        <li>Pořadí v žebříčku: {rank ? `#${rank}` : 'N/A'}</li>
+        <li>Poslední aktivita: ekonomický tick backendu</li>
+      </ul>
+    </section>
+  </div>
+);
+
+const SettingsPanel = ({ onLogout }: { onLogout: () => void }) => (
+  <div className="panel-stack">
+    <section>
+      <h3>Nastavení účtu</h3>
+      <p>V prototypu je k dispozici pouze základní odhlášení ze session.</p>
+      <button className="danger-button" onClick={onLogout}>
+        Odhlásit účet
+      </button>
+    </section>
+  </div>
+);
+
+const MapPanel = memo(({
+  settlements,
+  regionId,
+  regionSize,
+  regionOriginX,
+  regionOriginY,
+  focusedSettlementId,
+  activeVillageId,
+  zoomPercent,
+  orderMarkersByVillageId,
+  onZoomChange,
+  onOpenSettlement,
+}: {
+  settlements: RegionSettlement[];
+  regionId: number;
+  regionSize: number;
+  regionOriginX: number;
+  regionOriginY: number;
+  focusedSettlementId: string | null;
+  activeVillageId: number | null;
+  zoomPercent: number;
+  orderMarkersByVillageId: Map<number, SettlementOrderMarkerCounts>;
+  onZoomChange: (zoomPercent: number) => void;
+  onOpenSettlement: (settlement: RegionSettlement) => void;
+}) => {
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const gridWrapRef = useRef<HTMLDivElement | null>(null);
+  const miniMapRef = useRef<HTMLDivElement | null>(null);
+  const miniViewportRef = useRef<HTMLDivElement | null>(null);
+  const miniViewportRafRef = useRef<number | null>(null);
+  const miniViewportInitializedRef = useRef(false);
+  const miniViewportStateRef = useRef({
+    leftPct: 0,
+    topPct: 0,
+    widthPct: 100,
+    heightPct: 100,
+  });
+  const panStateRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startLeft: number;
+    startTop: number;
+  } | null>(null);
+  const ownSettlement = useMemo(() => {
+    if (focusedSettlementId) {
+      const focused = settlements.find((settlement) => settlement.id === focusedSettlementId);
+      if (focused) {
+        return focused;
+      }
+    }
+
+    return (
+      settlements.find((settlement) => settlement.kind === 'own' || settlement.relation === 'self') ?? null
+    );
+  }, [focusedSettlementId, settlements]);
+
+  const settlementsByCell = useMemo(() => {
+    const map = new Map<string, RegionSettlement>();
+    for (const settlement of settlements) {
+      map.set(`${settlement.localX}|${settlement.localY}`, settlement);
+    }
+    return map;
+  }, [settlements]);
+
+  const settlementsById = useMemo(() => {
+    const map = new Map<string, RegionSettlement>();
+    for (const settlement of settlements) {
+      map.set(settlement.id, settlement);
+    }
+    return map;
+  }, [settlements]);
+
+  const hoveredSettlement = hoveredId ? settlementsById.get(hoveredId) ?? null : null;
+  const zoomScale = 1 + zoomPercent / 100;
+  const cellSize = Math.max(8, REGION_CELL_SIZE * zoomScale);
+
+  const updateMiniViewportImmediate = useCallback(() => {
+    const wrap = gridWrapRef.current;
+    if (!wrap) {
+      return;
+    }
+
+    const scrollWidth = Math.max(1, wrap.scrollWidth);
+    const scrollHeight = Math.max(1, wrap.scrollHeight);
+    const clientWidth = Math.max(1, wrap.clientWidth);
+    const clientHeight = Math.max(1, wrap.clientHeight);
+
+    const widthPct = clamp((clientWidth / scrollWidth) * 100, 5, 100);
+    const heightPct = clamp((clientHeight / scrollHeight) * 100, 5, 100);
+    const leftPct = clamp((wrap.scrollLeft / scrollWidth) * 100, 0, 100 - widthPct);
+    const topPct = clamp((wrap.scrollTop / scrollHeight) * 100, 0, 100 - heightPct);
+
+    const nextViewport = {
+      leftPct,
+      topPct,
+      widthPct,
+      heightPct,
+    };
+    const previousViewport = miniViewportStateRef.current;
+    const hasMeaningfulDelta =
+      Math.abs(previousViewport.leftPct - nextViewport.leftPct) >= 0.05 ||
+      Math.abs(previousViewport.topPct - nextViewport.topPct) >= 0.05 ||
+      Math.abs(previousViewport.widthPct - nextViewport.widthPct) >= 0.05 ||
+      Math.abs(previousViewport.heightPct - nextViewport.heightPct) >= 0.05;
+
+    if (!hasMeaningfulDelta && miniViewportInitializedRef.current) {
+      return;
+    }
+
+    miniViewportStateRef.current = nextViewport;
+    const viewportNode = miniViewportRef.current;
+    if (viewportNode) {
+      miniViewportInitializedRef.current = true;
+      viewportNode.style.left = `${nextViewport.leftPct}%`;
+      viewportNode.style.top = `${nextViewport.topPct}%`;
+      viewportNode.style.width = `${nextViewport.widthPct}%`;
+      viewportNode.style.height = `${nextViewport.heightPct}%`;
+    }
+  }, []);
+
+  const updateMiniViewport = useCallback(() => {
+    if (miniViewportRafRef.current != null) {
+      return;
+    }
+
+    miniViewportRafRef.current = window.requestAnimationFrame(() => {
+      miniViewportRafRef.current = null;
+      updateMiniViewportImmediate();
+    });
+  }, [updateMiniViewportImmediate]);
+
+  const applyZoom = useCallback(
+    (nextZoomPercent: number, anchor?: { clientX: number; clientY: number }) => {
+      const normalizedNext = normalizeMapZoom(nextZoomPercent);
+      if (normalizedNext === zoomPercent) {
+        return;
+      }
+
+      const wrap = gridWrapRef.current;
+      if (!wrap) {
+        onZoomChange(normalizedNext);
+        return;
+      }
+
+      const rect = wrap.getBoundingClientRect();
+      const fallbackAnchor = {
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+      };
+      const anchorPoint = anchor ?? fallbackAnchor;
+      const anchorOffsetX = anchorPoint.clientX - rect.left;
+      const anchorOffsetY = anchorPoint.clientY - rect.top;
+      const worldX = wrap.scrollLeft + anchorOffsetX;
+      const worldY = wrap.scrollTop + anchorOffsetY;
+      const prevScale = 1 + zoomPercent / 100;
+      const nextScale = 1 + normalizedNext / 100;
+      const scaleFactor = nextScale / prevScale;
+
+      onZoomChange(normalizedNext);
+
+      window.requestAnimationFrame(() => {
+        const nextWrap = gridWrapRef.current;
+        if (!nextWrap) {
+          return;
+        }
+
+        nextWrap.scrollLeft = worldX * scaleFactor - anchorOffsetX;
+        nextWrap.scrollTop = worldY * scaleFactor - anchorOffsetY;
+        updateMiniViewport();
+      });
+    },
+    [onZoomChange, updateMiniViewport, zoomPercent],
+  );
+
+  const centerOnSettlement = useCallback(
+    (settlementId: string | null, behavior: ScrollBehavior = 'auto') => {
+      if (!settlementId) {
+        return;
+      }
+
+      const wrap = gridWrapRef.current;
+      if (!wrap) {
+        return;
+      }
+
+      const target = wrap.querySelector(`[data-settlement-id="${settlementId}"]`) as HTMLElement | null;
+      if (!target) {
+        return;
+      }
+
+      const targetLeft = target.offsetLeft + target.offsetWidth / 2 - wrap.clientWidth / 2;
+      const targetTop = target.offsetTop + target.offsetHeight / 2 - wrap.clientHeight / 2;
+
+      wrap.scrollTo({
+        left: targetLeft,
+        top: targetTop,
+        behavior,
+      });
+      updateMiniViewport();
+    },
+    [updateMiniViewport],
+  );
+
+  useEffect(() => {
+    const wrap = gridWrapRef.current;
+    if (!wrap) {
+      return;
+    }
+
+    const onScroll = () => updateMiniViewport();
+    wrap.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    updateMiniViewport();
+
+    return () => {
+      if (miniViewportRafRef.current != null) {
+        window.cancelAnimationFrame(miniViewportRafRef.current);
+        miniViewportRafRef.current = null;
+      }
+      wrap.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
+    };
+  }, [updateMiniViewport]);
+
+  useEffect(() => {
+    centerOnSettlement(focusedSettlementId, 'auto');
+  }, [centerOnSettlement, focusedSettlementId, settlements.length]);
+
+  useEffect(() => {
+    const onPointerMove = (event: PointerEvent) => {
+      const panState = panStateRef.current;
+      const wrap = gridWrapRef.current;
+      if (!panState || !wrap) {
+        return;
+      }
+
+      const deltaX = event.clientX - panState.startX;
+      const deltaY = event.clientY - panState.startY;
+      wrap.scrollLeft = panState.startLeft - deltaX;
+      wrap.scrollTop = panState.startTop - deltaY;
+    };
+
+    const finishPan = () => {
+      const panState = panStateRef.current;
+      const wrap = gridWrapRef.current;
+      if (!panState || !wrap) {
+        return;
+      }
+
+      wrap.classList.remove('panning');
+      panStateRef.current = null;
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', finishPan);
+    window.addEventListener('pointercancel', finishPan);
+
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', finishPan);
+      window.removeEventListener('pointercancel', finishPan);
+    };
+  }, []);
+
+  const handleGridPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const target = event.target as HTMLElement;
+    if (target.closest('button.settlement')) {
+      return;
+    }
+
+    const wrap = gridWrapRef.current;
+    if (!wrap) {
+      return;
+    }
+
+    panStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startLeft: wrap.scrollLeft,
+      startTop: wrap.scrollTop,
+    };
+    wrap.classList.add('panning');
+    event.preventDefault();
+  };
+
+  const handleRegionWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    if (event.deltaY === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    const delta = event.deltaY < 0 ? MAP_ZOOM_STEP : -MAP_ZOOM_STEP;
+    applyZoom(zoomPercent + delta, { clientX: event.clientX, clientY: event.clientY });
+  };
+
+  const jumpToMinimapPoint = useCallback(
+    (clientX: number, clientY: number) => {
+      const miniMap = miniMapRef.current;
+      const wrap = gridWrapRef.current;
+      if (!miniMap || !wrap) {
+        return;
+      }
+
+      const rect = miniMap.getBoundingClientRect();
+      const ratioX = clamp((clientX - rect.left) / rect.width, 0, 1);
+      const ratioY = clamp((clientY - rect.top) / rect.height, 0, 1);
+
+      wrap.scrollLeft = ratioX * wrap.scrollWidth - wrap.clientWidth / 2;
+      wrap.scrollTop = ratioY * wrap.scrollHeight - wrap.clientHeight / 2;
+    },
+    [],
+  );
+
+  const handleMinimapPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    jumpToMinimapPoint(event.clientX, event.clientY);
+  };
+
+  const regionGridCells = useMemo(
+    () =>
+      Array.from({ length: regionSize * regionSize }, (_, index) => {
+        const localX = (index % regionSize) + 1;
+        const localY = Math.floor(index / regionSize) + 1;
+        const settlement = settlementsByCell.get(`${localX}|${localY}`);
+
+        if (!settlement) {
+          return <div key={`${localX}-${localY}`} className="region-cell" />;
+        }
+
+        const markerState =
+          settlement.villageId != null
+            ? orderMarkersByVillageId.get(Number(settlement.villageId)) ?? null
+            : null;
+        const coverageCommandTypes = markerState
+          ? MAP_ORDER_COMMAND_TYPES.filter((commandType) => Number(markerState[commandType] ?? 0) > 0)
+          : [];
+
+        return (
+          <button
+            key={settlement.id}
+            className={`region-cell settlement ${getSettlementMapKind(settlement, activeVillageId)} ${focusedSettlementId === settlement.id ? 'focused' : ''}`}
+            data-settlement-id={settlement.id}
+            onMouseEnter={() =>
+              setHoveredId((previous) => (previous === settlement.id ? previous : settlement.id))
+            }
+            onMouseLeave={() =>
+              setHoveredId((previous) => (previous === settlement.id ? null : previous))
+            }
+            onFocus={() =>
+              setHoveredId((previous) => (previous === settlement.id ? previous : settlement.id))
+            }
+            onBlur={() => setHoveredId((previous) => (previous === settlement.id ? null : previous))}
+            onClick={() => onOpenSettlement(settlement)}
+            title={`${settlement.name} (${settlement.globalX}|${settlement.globalY})`}
+          >
+            {coverageCommandTypes.length > 0 ? (
+              <div className="settlement-order-coverage" aria-hidden="true">
+                {coverageCommandTypes.map((commandType, index) => (
+                  <span
+                    key={`${settlement.id}-coverage-${commandType}`}
+                    className={`coverage-dot ${commandType} layer-${index + 1}`}
+                  />
+                ))}
+              </div>
+            ) : null}
+            <span className="settlement-core-dot" />
+            {markerState ? (
+              <div className="settlement-order-icons" aria-hidden="true">
+                {MAP_ORDER_COMMAND_TYPES.map((commandType) => {
+                  const markerCount = Number(markerState[commandType] ?? 0);
+                  if (markerCount <= 0) {
+                    return null;
+                  }
+
+                  const symbol = getArmyCommandSymbol(commandType);
+
+                  return (
+                    <span
+                      key={`${settlement.id}-${commandType}`}
+                      className={`settlement-order-icon ${commandType}`}
+                      title={`${MAP_ORDER_ICON_LABELS[commandType]}${markerCount > 1 ? ` x${markerCount}` : ''}`}
+                    >
+                      <span className="symbol">{symbol}</span>
+                      {markerCount > 1 ? <small>{markerCount}</small> : null}
+                    </span>
+                  );
+                })}
+              </div>
+            ) : null}
+          </button>
+        );
+      }),
+    [
+      activeVillageId,
+      focusedSettlementId,
+      onOpenSettlement,
+      orderMarkersByVillageId,
+      regionSize,
+      settlementsByCell,
+    ],
+  );
+
+  const miniMapDots = useMemo(
+    () =>
+      settlements.map((settlement) => (
+        <span
+          key={`mini-${settlement.id}`}
+          className={`mini-map-dot ${getSettlementMapKind(settlement, activeVillageId)} ${focusedSettlementId === settlement.id ? 'focused' : ''}`}
+          style={{
+            left: `${((settlement.localX - 0.5) / regionSize) * 100}%`,
+            top: `${((settlement.localY - 0.5) / regionSize) * 100}%`,
+          }}
+          aria-hidden="true"
+        />
+      )),
+    [activeVillageId, focusedSettlementId, regionSize, settlements],
+  );
+
+  return (
+    <div className="map-panel">
+      <section className="map-header">
+        <div>
+          <h3>
+            Region {regionId} - mřížka {regionSize}x{regionSize}
+          </h3>
+          <p>
+            Rozsah regionu: {regionOriginX}|{regionOriginY} až {regionOriginX + regionSize - 1}|
+            {regionOriginY + regionSize - 1}
+          </p>
+        </div>
+        {ownSettlement ? (
+          <div className="map-header-actions">
+            <button onClick={() => centerOnSettlement(ownSettlement.id, 'smooth')}>Centrovat</button>
+            <button onClick={() => onOpenSettlement(ownSettlement)}>Otevřít moje město</button>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="map-legend">
+        <span className="legend active">Aktuální osada</span>
+        <span className="legend own">Moje osada</span>
+        <span className="legend player">Osada hráče</span>
+        <span className="legend bot">Královská / spojenecká osada</span>
+        <span className="legend abandoned">Opuštěná</span>
+      </section>
+
+      <div className="map-workspace">
+        <div
+          className="region-grid-wrap"
+          ref={gridWrapRef}
+          onPointerDown={handleGridPointerDown}
+          onWheel={handleRegionWheel}
+        >
+          <div
+              className="region-grid"
+              style={{
+                gridTemplateColumns: `repeat(${regionSize}, ${cellSize}px)`,
+              }}
+            >
+            {regionGridCells}
+          </div>
+        </div>
+
+        <section className="map-navigation">
+          <div className="mini-map-shell">
+            <h4>Minimapa</h4>
+            <div
+              className="mini-map"
+              ref={miniMapRef}
+              onPointerDown={handleMinimapPointerDown}
+              role="button"
+              aria-label="Minimapa pro rychlou navigaci"
+              tabIndex={0}
+            >
+              {miniMapDots}
+              <div
+                className="mini-map-viewport"
+                ref={miniViewportRef}
+              />
+            </div>
+            <div className="map-zoom-controls">
+              <label htmlFor="map-zoom-range">
+                Měřítko: {zoomPercent > 0 ? `+${zoomPercent}` : zoomPercent}%
+              </label>
+              <input
+                id="map-zoom-range"
+                type="range"
+                min={MAP_ZOOM_MIN}
+                max={MAP_ZOOM_MAX}
+                step={MAP_ZOOM_STEP}
+                value={zoomPercent}
+                onChange={(event) => applyZoom(Number(event.target.value))}
+              />
+              <div className="map-zoom-buttons">
+                <button onClick={() => applyZoom(0)}>0</button>
+                <button onClick={() => applyZoom(MAP_ZOOM_MAX)}>+50%</button>
+                <button onClick={() => applyZoom(MAP_ZOOM_MIN)}>-50%</button>
+              </div>
+            </div>
+          </div>
+          <div className="map-nav-hint">
+            <p>Zoom mapy: kolečko myši po 10 %. Rozsah je od -50 % do +50 %.</p>
+            <p>Značky rozkazů: <strong className="order-legend attack">⌖ útok</strong>, <strong className="order-legend support">🛡 podpora</strong>, <strong className="order-legend move">➜ přesun</strong>.</p>
+          </div>
+        </section>
+      </div>
+
+      <section className="map-hover-card">
+        {hoveredSettlement ? (
+          <>
+            <h4>
+              {hoveredSettlement.name} ({hoveredSettlement.globalX}|{hoveredSettlement.globalY})
+            </h4>
+            <p>{settlementKindLabel[getSettlementMapKind(hoveredSettlement, activeVillageId)]}</p>
+            <p>Vlastník: {hoveredSettlement.owner}</p>
+            <p>Království: {hoveredSettlement.kingdom}</p>
+            <p>Prestiž: {hoveredSettlement.prestige.toLocaleString('cs-CZ')}</p>
+          </>
+        ) : (
+          <>
+            <h4>Regionální přehled</h4>
+            <p>Najeď na osadu nebo ji klikni pro otevření panelu.</p>
+            <p>Celkem osad v regionu: {settlements.length}</p>
+          </>
+        )}
+      </section>
+    </div>
+  );
+});
+
+const VillagePanel = memo(({
+  settlement,
+  activeVillageId,
+  currentVillageId,
+  currentVillageName,
+  currentUsername,
+  units,
+  activeMovements,
+  stationedSupports,
+  isArmyCommandPending,
+  commandNotice,
+  onOpenCity,
+  onIssueArmyCommand,
+  onReturnSupport,
+}: {
+  settlement: RegionSettlement;
+  activeVillageId: number | null;
+  currentVillageId: number | null;
+  currentVillageName: string;
+  currentUsername: string;
+  units: Unit[];
+  activeMovements: ArmyMovementState[];
+  stationedSupports: ArmyMovementState[];
+  isArmyCommandPending: boolean;
+  commandNotice: string | null;
+  onOpenCity: () => void;
+  onIssueArmyCommand: (payload: {
+    commandType: Extract<ArmyCommandType, 'attack' | 'support' | 'move'>;
+    targetVillageId: number;
+    lootPriority?: LootPriority;
+    units: Record<string, number>;
+  }) => void;
+  onReturnSupport: (supportMovementId: number) => void;
+}) => {
+  const settlementKind = getSettlementMapKind(settlement, activeVillageId);
+  const [draftUnitAmounts, setDraftUnitAmounts] = useState<Record<string, string>>({});
+  const [attackLootPriority, setAttackLootPriority] = useState<LootPriority>('wood');
+  const normalizedUsername = currentUsername.trim().toLowerCase();
+  const targetVillageId =
+    settlement.villageId != null && Number.isFinite(settlement.villageId)
+      ? Number(settlement.villageId)
+      : null;
+  const isSameAsCurrentVillage =
+    targetVillageId != null && currentVillageId != null && targetVillageId === currentVillageId;
+  const isOwnTarget =
+    settlement.kind === 'own' ||
+    settlement.relation === 'self' ||
+    settlement.owner.trim().toLowerCase() === normalizedUsername;
+  const isAlliedTarget = settlement.relation === 'ally';
+  const availableCommandTypes = useMemo<Extract<ArmyCommandType, 'attack' | 'support' | 'move'>[]>(
+    () => {
+      if (targetVillageId == null || isSameAsCurrentVillage) {
+        return [];
+      }
+
+      if (isOwnTarget) {
+        return ['move', 'support'];
+      }
+
+      if (isAlliedTarget) {
+        return ['support'];
+      }
+
+      return ['attack'];
+    },
+    [isAlliedTarget, isOwnTarget, isSameAsCurrentVillage, targetVillageId],
+  );
+  const selectedUnits = useMemo(() => {
+    return buildSelectedUnitsFromDraft(units, draftUnitAmounts);
+  }, [draftUnitAmounts, units]);
+  const selectedUnitCount = useMemo(
+    () => calculateTotalUnitsInSelection(selectedUnits),
+    [selectedUnits],
+  );
+  const selectedCaravanCount = Number(selectedUnits.caravan ?? 0);
+  const villageAttackPower = useMemo(() => calculateAttackPowerFromSelection(selectedUnits), [selectedUnits]);
+  const villageDefensePower = useMemo(() => calculateDefensePowerFromSelection(selectedUnits), [selectedUnits]);
+  const villageHasRamAttackBonus = Number(selectedUnits.ram ?? 0) > 0;
+  const villageAttackPowerWithBonus = villageHasRamAttackBonus
+    ? Math.round(villageAttackPower * RAM_ATTACK_BONUS_MULTIPLIER)
+    : villageAttackPower;
+  const villageLootCapacity = selectedCaravanCount * CARAVAN_LOOT_CAPACITY;
+  const supportWithCaravansSelected = selectedCaravanCount > 0;
+  const supportMovementsAtSettlement = useMemo(
+    () =>
+      targetVillageId == null
+        ? []
+        : stationedSupports.filter((movement) => Number(movement.targetVillageId) === targetVillageId),
+    [stationedSupports, targetVillageId],
+  );
+  const activeMovementsAtSettlement = useMemo(
+    () =>
+      targetVillageId == null
+        ? []
+        : activeMovements.filter(
+            (movement) =>
+              Number(movement.targetVillageId) === targetVillageId ||
+              Number(movement.originVillageId) === targetVillageId,
+          ),
+    [activeMovements, targetVillageId],
+  );
+  const canViewSettlementActions = activeMovementsAtSettlement.length > 0 || supportMovementsAtSettlement.length > 0;
+  const handleDraftAmountChange = (unitId: string, value: string) => {
+    setDraftUnitAmounts((previous) => ({
+      ...previous,
+      [unitId]: value,
+    }));
+  };
+  const handleIssueVillageCommand = (commandType: Extract<ArmyCommandType, 'attack' | 'support' | 'move'>) => {
+    if (targetVillageId == null || selectedUnitCount <= 0) {
+      return;
+    }
+    if (commandType === 'support' && supportWithCaravansSelected) {
+      return;
+    }
+
+    onIssueArmyCommand({
+      commandType,
+      targetVillageId,
+      lootPriority: commandType === 'attack' ? attackLootPriority : undefined,
+      units: selectedUnits,
+    });
+    setDraftUnitAmounts({});
+  };
+
+  return (
+    <div className="panel-stack village-panel">
+      <section>
+        <h3>
+          {settlement.name} ({settlement.globalX}|{settlement.globalY})
+        </h3>
+        <p>{settlement.note}</p>
+        <ul>
+          <li>Typ osady: {settlementKindLabel[settlementKind]}</li>
+          <li>Vlastník: {settlement.owner}</li>
+          <li>Království: {settlement.kingdom}</li>
+          <li>Region: {settlement.region}</li>
+          <li>Prestiž: {settlement.prestige.toLocaleString('cs-CZ')}</li>
+          <li>
+            {settlementKind === 'own' || settlementKind === 'active'
+              ? `Oddanost: ${settlement.loyalty}%`
+              : 'Oddanost: skryto'}
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h3>Průzkumné informace</h3>
+        {settlementKind === 'own' || settlementKind === 'active' ? (
+          <>
+            <p>Jde o tvoji osadu. Přepni se do plného městského managementu.</p>
+            <button className="upgrade-action" onClick={onOpenCity}>
+              Otevřít městský panel
+            </button>
+          </>
+        ) : (
+          <ul>
+            <li>Veřejná data: souřadnice, vlastník, království, prestiž.</li>
+            <li>Skrytá data: přesné počty jednotek a úrovně budov.</li>
+            <li>Doporučení: před útokem poslat průzkum nebo podporu spojence.</li>
+          </ul>
+        )}
+      </section>
+      <section>
+        <h3>Vojenské akce z aktivní osady</h3>
+        <p>
+          Zdroj jednotek: <strong>{currentVillageName}</strong>
+        </p>
+        {targetVillageId == null ? (
+          <p>Tato osada nemá validní cílový identifikátor. Rozkazy nelze odeslat.</p>
+        ) : isSameAsCurrentVillage ? (
+          <p>Jsi v této osadě. Pro přesun nebo útok otevři jiné léno na mapě.</p>
+        ) : (
+          <>
+            <div className="army-draft-grid village-action-draft">
+              {units.map((unit) => (
+                <label key={`village-draft-${settlement.id}-${unit.id}`}>
+                  <span>
+                    {unit.name}{' '}
+                    <small className="row-help inline">k dispozici: {unit.amount.toLocaleString('cs-CZ')}</small>
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={unit.amount}
+                    step={1}
+                    value={draftUnitAmounts[unit.id] ?? ''}
+                    onChange={(event) => handleDraftAmountChange(unit.id, event.target.value)}
+                    disabled={isArmyCommandPending}
+                  />
+                </label>
+              ))}
+            </div>
+            <div className="army-command-preview">
+              <p>
+                Vybráno jednotek: <strong>{selectedUnitCount.toLocaleString('cs-CZ')}</strong>
+              </p>
+              <p>
+                Síla útoku: <strong>{villageAttackPowerWithBonus.toLocaleString('cs-CZ')}</strong>{' '}
+                {villageHasRamAttackBonus ? <span>(+10 % bez brány)</span> : null}
+              </p>
+              <p>
+                Síla obrany: <strong>{villageDefensePower.toLocaleString('cs-CZ')}</strong>
+              </p>
+              <p>
+                Kapacita kořisti (karavany): <strong>{villageLootCapacity.toLocaleString('cs-CZ')}</strong>
+              </p>
+            </div>
+            <div className="village-action-buttons">
+              {availableCommandTypes.map((commandType) => (
+                <button
+                  key={`${settlement.id}-${commandType}`}
+                  className={`secondary-action village-action-btn ${commandType}`}
+                  onClick={() => handleIssueVillageCommand(commandType)}
+                  disabled={
+                    isArmyCommandPending ||
+                    selectedUnitCount <= 0 ||
+                    (commandType === 'support' && supportWithCaravansSelected)
+                  }
+                >
+                  {commandType === 'attack' ? '⌖ ' : commandType === 'support' ? '🛡 ' : '➜ '}
+                  {ARMY_COMMAND_LABELS[commandType]}
+                </button>
+              ))}
+            </div>
+            {supportWithCaravansSelected && availableCommandTypes.includes('support') ? (
+              <p className="panel-feedback">Karavany nelze poslat jako podporu. Odeber je z výběru.</p>
+            ) : null}
+            {availableCommandTypes.includes('attack') ? (
+              <label className="village-loot-priority">
+                Priorita drancování
+                <select
+                  value={attackLootPriority}
+                  onChange={(event) => setAttackLootPriority(event.target.value as LootPriority)}
+                  disabled={isArmyCommandPending}
+                >
+                  <option value="wood">{LOOT_PRIORITY_LABELS.wood}</option>
+                  <option value="stone">{LOOT_PRIORITY_LABELS.stone}</option>
+                  <option value="iron">{LOOT_PRIORITY_LABELS.iron}</option>
+                </select>
+              </label>
+            ) : null}
+          </>
+        )}
+        {selectedUnitCount <= 0 && targetVillageId != null && !isSameAsCurrentVillage ? (
+          <p className="panel-feedback">Vyber alespoň jednu jednotku pro odeslání rozkazu.</p>
+        ) : null}
+        {commandNotice ? <p className="panel-feedback">{commandNotice}</p> : null}
+      </section>
+      <section>
+        <h3>Viditelné akce u osady</h3>
+        {canViewSettlementActions ? (
+          <ul>
+            {activeMovementsAtSettlement.map((movement) => (
+              <li key={`movement-${movement.id}`} className="village-action-line">
+                <span className={`command-badge ${movement.commandType} compact`}>
+                  <span className="symbol">{getArmyCommandSymbol(movement.commandType)}</span>
+                </span>
+                <span>
+                  {ARMY_COMMAND_LABELS[movement.commandType]}: {movement.originName} → {movement.targetName} · ETA{' '}
+                  {formatDurationLabel(movement.remainingSec)}
+                </span>
+              </li>
+            ))}
+            {supportMovementsAtSettlement.map((movement) => (
+              <li key={`support-stationed-${movement.id}`} className="village-action-line">
+                <span className="command-badge support compact">
+                  <span className="symbol">{getArmyCommandSymbol('support')}</span>
+                </span>
+                <span>
+                  Stacionovaná podpora z {movement.originName} ·{' '}
+                  {movement.units
+                    .map((unit) => `${UNIT_META[unit.unitId]?.fallbackName ?? unit.unitId} ${unit.amount}`)
+                    .join(', ')}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>Pro tuto osadu aktuálně nevidíš žádné aktivní akce.</p>
+        )}
+      </section>
+      {supportMovementsAtSettlement.length > 0 ? (
+        <section>
+          <h3>Podpora v osadě</h3>
+          <ul>
+            {supportMovementsAtSettlement.map((movement) => (
+              <li key={`support-${movement.id}`} className="village-support-row">
+                <div>
+                  Podpora z {movement.originName}:{' '}
+                  {movement.units
+                    .map((unit) => `${UNIT_META[unit.unitId]?.fallbackName ?? unit.unitId} ${unit.amount}`)
+                    .join(', ')}
+                </div>
+                <button
+                  className="secondary-action recruit-action"
+                  onClick={() => onReturnSupport(movement.id)}
+                  disabled={isArmyCommandPending}
+                >
+                  Návrat
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+    </div>
+  );
+});
+
+const BuildingPanel = memo(({
+  building,
+  onBackToCity,
+  onUpgrade,
+  isUpgradePending,
+  notice,
+}: {
+  building: Building;
+  onBackToCity: () => void;
+  onUpgrade: (building: Building) => void;
+  isUpgradePending: boolean;
+  notice: string | null;
+}) => (
+  <div className="panel-stack building-panel">
+    <section>
+      <h3>{building.name}</h3>
+      <p>{building.effect}</p>
+      <div className="building-hero-art">
+        <img src={building.icon} alt={building.name} loading="lazy" />
+      </div>
+      <dl className="building-meta-grid">
+        <div>
+          <dt>Kategorie</dt>
+          <dd>{building.category}</dd>
+        </div>
+        <div>
+          <dt>Aktuální úroveň</dt>
+          <dd>{building.level}</dd>
+        </div>
+        <div>
+          <dt>Pracovní síla</dt>
+          <dd>{building.workers}</dd>
+        </div>
+        <div>
+          <dt>Další náklady</dt>
+          <dd>{building.nextCost}</dd>
+        </div>
+        <div>
+          <dt>Čas výstavby</dt>
+          <dd>{building.nextTime}</dd>
+        </div>
+        <div>
+          <dt>Stav</dt>
+          <dd>
+            {building.isInProgress
+              ? `Probíhá (${building.nextTime})`
+              : building.blockedReason ?? 'Připraveno k upgradu'}
+          </dd>
+        </div>
+      </dl>
+      <div className="building-actions">
+        <button
+          className="upgrade-action"
+          onClick={() => onUpgrade(building)}
+          disabled={!building.canUpgrade || isUpgradePending}
+        >
+          {isUpgradePending ? 'Spouštím...' : 'Naplánovat upgrade'}
+        </button>
+        {notice ? <p className="panel-feedback">{notice}</p> : null}
+        <button className="secondary-action" onClick={onBackToCity}>
+          Zpět do města
+        </button>
+      </div>
+    </section>
+  </div>
+));
+
+export const GamePage = () => {
+  const navigate = useNavigate();
+  const session = useMemo(() => getSession(), []);
+  const topZ = useRef(40);
+  const dragState = useRef<DragState | null>(null);
+  const resizeState = useRef<ResizeState | null>(null);
+  const mapWindowSizeRef = useRef<WindowSize | null>(readStoredMapWindowSize());
+  const panelElementRefs = useRef<Record<string, HTMLElement | null>>({});
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const username = session?.username ?? 'Hayato';
+  const getCanvasViewportSize = useCallback(() => {
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    const viewportWidth = Math.max(
+      PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH + PANEL_VIEWPORT_MARGIN_X,
+      Math.floor(bounds?.width ?? window.innerWidth - 16),
+    );
+    const viewportHeight = Math.max(
+      PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT + PANEL_VIEWPORT_MARGIN_Y,
+      Math.floor(bounds?.height ?? window.innerHeight - 120),
+    );
+
+    return { viewportWidth, viewportHeight };
+  }, []);
+  const [selectedOwnSettlementId, setSelectedOwnSettlementId] = useState<string | null>(() =>
+    readStoredLastOwnSettlementId(username),
+  );
+  const [activeVillageId, setActiveVillageId] = useState<number | null>(() =>
+    readStoredActiveVillageId(username),
+  );
+  const [mapZoomPercent, setMapZoomPercent] = useState<number>(() => readStoredMapZoom(username));
+
+  const [panels, setPanels] = useState<PanelWindow[]>(() => {
+    const restored = readStoredPanelLayout(username);
+    if (restored && restored.length > 0) {
+      const highestZ = restored.reduce((maxZ, panel) => Math.max(maxZ, panel.z), 40);
+      topZ.current = Math.max(40, highestZ);
+
+      const mapPanel = restored.find((panel) => panel.type === 'map');
+      if (mapPanel) {
+        mapWindowSizeRef.current = {
+          width: mapPanel.width,
+          height: mapPanel.height,
+        };
+      }
+
+      return restored;
+    }
+
+    return [createPanelWindow('city', 40, 0)];
+  });
+  const [activePanelId, setActivePanelId] = useState<string | null>(null);
+  const [gameState, setGameState] = useState<GameStateResponse | null>(null);
+  const [loadingState, setLoadingState] = useState(true);
+  const [stateError, setStateError] = useState<string | null>(null);
+  const [armyNotice, setArmyNotice] = useState<string | null>(null);
+  const [armyCommandNotice, setArmyCommandNotice] = useState<string | null>(null);
+  const [recruitPendingUnitId, setRecruitPendingUnitId] = useState<string | null>(null);
+  const [armyCommandPending, setArmyCommandPending] = useState(false);
+  const [upgradePendingBuildingId, setUpgradePendingBuildingId] = useState<string | null>(null);
+  const [buildingNotices, setBuildingNotices] = useState<Record<string, string>>({});
+  const [battleReports, setBattleReports] = useState<BattleReportListResponse | null>(null);
+  const [battleReportsLoading, setBattleReportsLoading] = useState(false);
+  const [battleReportsError, setBattleReportsError] = useState<string | null>(null);
+  const [battleReportsPage, setBattleReportsPage] = useState(1);
+  const [selectedBattleReportId, setSelectedBattleReportId] = useState<number | null>(null);
+
+  const buildings = useMemo<Building[]>(() => {
+    if (!gameState) {
+      return [];
+    }
+
+    return gameState.buildings.map((building: GameBuildingState) => {
+      const art = BUILDING_ART[building.id];
+      const isBuildingInProgress = building.isInProgress && building.remainingSec != null;
+      return {
+        id: building.id,
+        name: art?.fallbackName ?? building.name,
+        icon: art?.icon ?? '/assets/buildings/warehouse.png',
+        level: building.level,
+        category: art?.fallbackCategory ?? building.category,
+        workers: `${building.workersUsed}`,
+        effect: building.effect,
+        nextCost: formatCostLabel(building.nextCost),
+        nextTime: isBuildingInProgress
+          ? formatDurationLabel(building.remainingSec)
+          : formatDurationLabel(building.nextDurationSec),
+        canUpgrade: building.canUpgrade,
+        blockedReason: building.blockedReason,
+        isInProgress: building.isInProgress,
+        remainingSec: building.remainingSec,
+      };
+    });
+  }, [gameState]);
+
+  const units = useMemo<Unit[]>(() => {
+    if (!gameState) {
+      return [];
+    }
+
+    return gameState.units.map((unit: GameUnitState) => {
+      const unitMeta = UNIT_META[unit.id];
+      return {
+        id: unit.id,
+        name: unitMeta?.fallbackName ?? unit.name,
+        amount: unit.amount,
+        queuedCount: unit.queuedCount ?? 0,
+        role: unitMeta?.fallbackRole ?? unit.role,
+        cost: formatCostLabel(unit.cost),
+        canRecruit: unit.canRecruit,
+        blockedReason: unit.blockedReason,
+        maxRecruitable: unit.maxRecruitable,
+      };
+    });
+  }, [gameState]);
+
+  const recruitQueueOrders = useMemo<RecruitQueueOrder[]>(() => {
+    if (!gameState) {
+      return [];
+    }
+
+    return [...(gameState.activeRecruitments ?? [])]
+      .sort((a, b) => {
+        const byEta = a.remainingSec - b.remainingSec;
+        if (byEta !== 0) {
+          return byEta;
+        }
+        return a.id - b.id;
+      })
+      .map((order) => ({
+        id: order.id,
+        unitId: order.unitId,
+        unitName: UNIT_META[order.unitId]?.fallbackName ?? order.unitId,
+        amount: order.amount,
+        remainingSec: order.remainingSec,
+        finishAt: order.finishAt,
+      }));
+  }, [gameState]);
+  const armyActiveMovements = useMemo<ArmyMovementState[]>(
+    () => gameState?.army?.activeMovements ?? [],
+    [gameState],
+  );
+  const armyStationedSupports = useMemo<ArmyMovementState[]>(
+    () => gameState?.army?.stationedSupports ?? [],
+    [gameState],
+  );
+  const mapOrderMarkersByVillageId = useMemo<Map<number, SettlementOrderMarkerCounts>>(() => {
+    const markerMap = new Map<number, SettlementOrderMarkerCounts>();
+    const addMarker = (villageIdRaw: number, commandType: keyof SettlementOrderMarkerCounts) => {
+      const villageId = Number(villageIdRaw);
+      if (!Number.isFinite(villageId)) {
+        return;
+      }
+
+      const current = markerMap.get(villageId) ?? { attack: 0, support: 0, move: 0 };
+      current[commandType] += 1;
+      markerMap.set(villageId, current);
+    };
+
+    for (const movement of armyActiveMovements) {
+      if (movement.commandType === 'attack' || movement.commandType === 'support' || movement.commandType === 'move') {
+        addMarker(movement.targetVillageId, movement.commandType);
+      }
+    }
+    for (const movement of armyStationedSupports) {
+      addMarker(movement.targetVillageId, 'support');
+    }
+
+    return markerMap;
+  }, [armyActiveMovements, armyStationedSupports]);
+
+  const resourceStocks = useMemo<ResourceStock[]>(() => {
+    if (!gameState) {
+      return [
+        { name: 'Dřevo', amount: 0, delta: '+0 / h', cap: 0, buildingId: 'woodcutter' },
+        { name: 'Kámen', amount: 0, delta: '+0 / h', cap: 0, buildingId: 'quarry' },
+        { name: 'Železo', amount: 0, delta: '+0 / h', cap: 0, buildingId: 'iron-mine' },
+        { name: 'Populace', amount: 0, delta: 'kapacita 0', cap: 0, buildingId: 'residential-quarter' },
+      ];
+    }
+
+    return [
+      {
+        name: 'Dřevo',
+        amount: gameState.resources.wood,
+        delta: `+${gameState.resources.productionPerHour.wood.toLocaleString('cs-CZ')} / h`,
+        cap: gameState.resources.cap,
+        buildingId: 'woodcutter',
+      },
+      {
+        name: 'Kámen',
+        amount: gameState.resources.stone,
+        delta: `+${gameState.resources.productionPerHour.stone.toLocaleString('cs-CZ')} / h`,
+        cap: gameState.resources.cap,
+        buildingId: 'quarry',
+      },
+      {
+        name: 'Železo',
+        amount: gameState.resources.iron,
+        delta: `+${gameState.resources.productionPerHour.iron.toLocaleString('cs-CZ')} / h`,
+        cap: gameState.resources.cap,
+        buildingId: 'iron-mine',
+      },
+      {
+        name: 'Populace',
+        amount: gameState.population.used,
+        delta: `kapacita ${gameState.population.cap.toLocaleString('cs-CZ')}`,
+        cap: gameState.population.cap,
+        buildingId: 'residential-quarter',
+      },
+    ];
+  }, [gameState]);
+
+  const villageLabel = gameState
+    ? `${gameState.village.name} (${gameState.village.coordX}|${gameState.village.coordY})`
+    : 'Načítám město...';
+  const playerVillages = gameState?.villages ?? [];
+  const currentVillageName = gameState?.village.name ?? 'Neznámé léno';
+  const villageRegionLabel = gameState
+    ? `Region ${gameState.village.region}, království ${gameState.village.kingdom}`
+    : 'Čekám na data backendu';
+  const activeOrders = gameState?.activeOrders.length ? gameState.activeOrders : FALLBACK_ACTIVE_ORDERS;
+  const leaderboardRows = useMemo(() => {
+    const rows = gameState?.leaderboard?.length ? gameState.leaderboard : RANKING_FALLBACK;
+    return rows.filter((entry) => !entry.username.startsWith('__abandoned_ai__'));
+  }, [gameState]);
+  const playerLeaderboardEntry = useMemo(
+    () => leaderboardRows.find((entry) => entry.username === username) ?? null,
+    [leaderboardRows, username],
+  );
+  const mapRegionSize = gameState?.world.size ?? REGION_SIZE;
+  const mapRegionOriginX = gameState?.world.originX ?? REGION_ORIGIN_X;
+  const mapRegionOriginY = gameState?.world.originY ?? REGION_ORIGIN_Y;
+  const mapRegionId = gameState?.world.region ?? 1;
+  const mapSettlements = useMemo<RegionSettlement[]>(
+    () => gameState?.world.settlements ?? REGION_SETTLEMENTS,
+    [gameState],
+  );
+  const isOwnSettlementForPlayer = useCallback(
+    (settlement: RegionSettlement) =>
+      settlement.owner === username || settlement.kind === 'own' || settlement.relation === 'self',
+    [username],
+  );
+  const ownSettlements = useMemo(
+    () => mapSettlements.filter((settlement) => isOwnSettlementForPlayer(settlement)),
+    [isOwnSettlementForPlayer, mapSettlements],
+  );
+  const focusedOwnSettlementId = useMemo(() => {
+    if (selectedOwnSettlementId && ownSettlements.some((settlement) => settlement.id === selectedOwnSettlementId)) {
+      return selectedOwnSettlementId;
+    }
+    return ownSettlements[0]?.id ?? null;
+  }, [ownSettlements, selectedOwnSettlementId]);
+  const settlementsById = useMemo(
+    () => new Map(mapSettlements.map((settlement) => [settlement.id, settlement])),
+    [mapSettlements],
+  );
+
+  const buildingsById = useMemo(() => new Map(buildings.map((building) => [building.id, building])), [buildings]);
+
+  const loadGameState = useCallback(
+    async (silent = false) => {
+      if (!session) {
+        return;
+      }
+
+      if (!silent) {
+        setLoadingState(true);
+      }
+
+      try {
+        const nextState = await fetchGameState(username, activeVillageId);
+        setGameState(nextState);
+        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
+          setActiveVillageId(nextState.village.id);
+        }
+        setStateError(null);
+      } catch (error) {
+        setStateError(getErrorMessage(error));
+      } finally {
+        if (!silent) {
+          setLoadingState(false);
+        }
+      }
+    },
+    [activeVillageId, session, username],
+  );
+
+  const loadBattleReports = useCallback(
+    async (silent = false) => {
+      if (!session) {
+        return;
+      }
+
+      if (!silent) {
+        setBattleReportsLoading(true);
+      }
+
+      try {
+        const nextReports = await fetchBattleReports(username, battleReportsPage, 20);
+        setBattleReports(nextReports);
+        setBattleReportsPage(nextReports.page);
+        setBattleReportsError(null);
+        setSelectedBattleReportId((previous) => {
+          if (previous != null && nextReports.items.some((item) => item.id === previous)) {
+            return previous;
+          }
+          return nextReports.items[0]?.id ?? null;
+        });
+      } catch (error) {
+        setBattleReportsError(getErrorMessage(error));
+      } finally {
+        if (!silent) {
+          setBattleReportsLoading(false);
+        }
+      }
+    },
+    [battleReportsPage, session, username],
+  );
+
+  useEffect(() => {
+    if (!session) {
+      navigate('/', { replace: true });
+      return;
+    }
+
+    void loadGameState(false);
+    const pollTimer = window.setInterval(() => {
+      void loadGameState(true);
+    }, 5000);
+
+    return () => window.clearInterval(pollTimer);
+  }, [loadGameState, navigate, session]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    void loadBattleReports(false);
+    const reportsTimer = window.setInterval(() => {
+      void loadBattleReports(true);
+    }, 5000);
+
+    return () => window.clearInterval(reportsTimer);
+  }, [loadBattleReports, session]);
+
+  useEffect(() => {
+    const notifyTimer = window.setInterval(() => {
+      setPanels((previous) =>
+        previous.map((panel) => {
+          if (panel.type === 'messages' && !panel.expanded) {
+            return { ...panel, alert: true };
+          }
+
+          return panel;
+        }),
+      );
+    }, 35000);
+
+    return () => window.clearInterval(notifyTimer);
+  }, []);
+
+  useEffect(() => {
+    if (ownSettlements.length === 0) {
+      if (selectedOwnSettlementId != null) {
+        setSelectedOwnSettlementId(null);
+        saveLastOwnSettlementId(username, null);
+      }
+      if (activeVillageId != null) {
+        setActiveVillageId(null);
+      }
+      return;
+    }
+
+    if (selectedOwnSettlementId && ownSettlements.some((settlement) => settlement.id === selectedOwnSettlementId)) {
+      return;
+    }
+
+    const fallbackId = ownSettlements[0].id;
+    setSelectedOwnSettlementId(fallbackId);
+    saveLastOwnSettlementId(username, fallbackId);
+    if (ownSettlements[0].villageId != null && Number.isFinite(ownSettlements[0].villageId)) {
+      setActiveVillageId(ownSettlements[0].villageId);
+    }
+  }, [activeVillageId, ownSettlements, selectedOwnSettlementId, username]);
+
+  useEffect(() => {
+    if (activeVillageId == null) {
+      return;
+    }
+
+    const activeOwnSettlement = ownSettlements.find(
+      (settlement) => settlement.villageId != null && Number(settlement.villageId) === activeVillageId,
+    );
+    if (!activeOwnSettlement) {
+      return;
+    }
+
+    if (selectedOwnSettlementId === activeOwnSettlement.id) {
+      return;
+    }
+
+    setSelectedOwnSettlementId(activeOwnSettlement.id);
+    saveLastOwnSettlementId(username, activeOwnSettlement.id);
+  }, [activeVillageId, ownSettlements, selectedOwnSettlementId, username]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      savePanelLayout(username, panels);
+    }, 120);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [panels, session, username]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    saveStoredMapZoom(username, mapZoomPercent);
+  }, [mapZoomPercent, session, username]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    saveActiveVillageId(username, activeVillageId);
+  }, [activeVillageId, session, username]);
+
+  useEffect(() => {
+    if (!gameState) {
+      return;
+    }
+
+    setPanels((previous) => {
+      let changed = false;
+      const nextPanels = previous.map((panel) => {
+        if (!hasVillageContext(panel) || panel.villageName) {
+          return panel;
+        }
+
+        changed = true;
+        return {
+          ...panel,
+          villageName: currentVillageName,
+        };
+      });
+
+      return changed ? nextPanels : previous;
+    });
+  }, [currentVillageName, gameState]);
+
+  useEffect(() => {
+    const normalizePanelsToViewport = () => {
+      const { viewportWidth, viewportHeight } = getCanvasViewportSize();
+      let nextMapSize: WindowSize | null = null;
+
+      setPanels((previous) => {
+        let changed = false;
+        const nextPanels = previous.map((panel) => {
+          const adjusted = clampPanelToViewport(panel, viewportWidth, viewportHeight, {
+            allowBelowMinSize: true,
+          });
+
+          if (adjusted !== panel) {
+            changed = true;
+            if (panel.type === 'map') {
+              nextMapSize = { width: adjusted.width, height: adjusted.height };
+            }
+          }
+
+          return adjusted;
+        });
+
+        return changed ? nextPanels : previous;
+      });
+
+      if (nextMapSize) {
+        mapWindowSizeRef.current = nextMapSize;
+        saveMapWindowSize(nextMapSize);
+      }
+    };
+
+    const initRaf = window.requestAnimationFrame(normalizePanelsToViewport);
+    window.addEventListener('resize', normalizePanelsToViewport);
+
+    return () => {
+      window.cancelAnimationFrame(initRaf);
+      window.removeEventListener('resize', normalizePanelsToViewport);
+    };
+  }, [getCanvasViewportSize]);
+
+  useEffect(() => {
+    const applyDragFrame = () => {
+      const activeDrag = dragState.current;
+      if (!activeDrag) {
+        return;
+      }
+
+      activeDrag.rafId = null;
+      const node = panelElementRefs.current[activeDrag.id];
+      if (!node) {
+        return;
+      }
+
+      const deltaX = activeDrag.latestX - activeDrag.originX;
+      const deltaY = activeDrag.latestY - activeDrag.originY;
+      node.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
+    };
+
+    const applyResizeFrame = () => {
+      const activeResize = resizeState.current;
+      if (!activeResize) {
+        return;
+      }
+
+      activeResize.rafId = null;
+      const node = panelElementRefs.current[activeResize.id];
+      if (!node) {
+        return;
+      }
+
+      node.style.width = `${activeResize.latestWidth}px`;
+      node.style.height = `${activeResize.latestHeight}px`;
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      const activeResize = resizeState.current;
+      if (activeResize && canvasRef.current) {
+        const deltaX = event.clientX - activeResize.startX;
+        const deltaY = event.clientY - activeResize.startY;
+        const bounds = canvasRef.current.getBoundingClientRect();
+        const maxWidth = Math.max(activeResize.minWidth, bounds.width - activeResize.panelX - 12);
+        const maxHeight = Math.max(activeResize.minHeight, bounds.height - activeResize.panelY - 12);
+
+        activeResize.latestWidth = clamp(activeResize.originWidth + deltaX, activeResize.minWidth, maxWidth);
+        activeResize.latestHeight = clamp(
+          activeResize.originHeight + deltaY,
+          activeResize.minHeight,
+          maxHeight,
+        );
+
+        if (activeResize.rafId == null) {
+          activeResize.rafId = window.requestAnimationFrame(applyResizeFrame);
+        }
+        return;
+      }
+
+      const activeDrag = dragState.current;
+      if (!activeDrag || !canvasRef.current) {
+        return;
+      }
+
+      const deltaX = event.clientX - activeDrag.startX;
+      const deltaY = event.clientY - activeDrag.startY;
+      const bounds = canvasRef.current.getBoundingClientRect();
+      const maxX = Math.max(8, bounds.width - activeDrag.panelWidth - 32);
+      const maxY = Math.max(24, bounds.height - activeDrag.panelHeight - 56);
+
+      activeDrag.latestX = clamp(activeDrag.originX + deltaX, 8, maxX);
+      activeDrag.latestY = clamp(activeDrag.originY + deltaY, 12, maxY);
+
+      if (activeDrag.rafId == null) {
+        activeDrag.rafId = window.requestAnimationFrame(applyDragFrame);
+      }
+    };
+
+    const onPointerUp = () => {
+      const activeResize = resizeState.current;
+      if (activeResize) {
+        if (activeResize.rafId != null) {
+          window.cancelAnimationFrame(activeResize.rafId);
+          activeResize.rafId = null;
+        }
+
+        const { id, latestWidth, latestHeight, panelType } = activeResize;
+        const node = panelElementRefs.current[id];
+        if (node) {
+          node.classList.remove('resizing');
+        }
+
+        resizeState.current = null;
+        if (panelType === 'map') {
+          mapWindowSizeRef.current = { width: latestWidth, height: latestHeight };
+          saveMapWindowSize({ width: latestWidth, height: latestHeight });
+        }
+
+        setPanels((previous) =>
+          previous.map((panel) =>
+            panel.id === id ? { ...panel, width: latestWidth, height: latestHeight } : panel,
+          ),
+        );
+        return;
+      }
+
+      const activeDrag = dragState.current;
+      if (!activeDrag) {
+        return;
+      }
+
+      if (activeDrag.rafId != null) {
+        window.cancelAnimationFrame(activeDrag.rafId);
+        activeDrag.rafId = null;
+      }
+
+      const { id, latestX, latestY } = activeDrag;
+      const node = panelElementRefs.current[id];
+      if (node) {
+        node.style.transform = '';
+        node.classList.remove('dragging');
+      }
+
+      dragState.current = null;
+      setPanels((previous) =>
+        previous.map((panel) => (panel.id === id ? { ...panel, x: latestX, y: latestY } : panel)),
+      );
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+
+    return () => {
+      if (dragState.current?.rafId != null) {
+        window.cancelAnimationFrame(dragState.current.rafId);
+      }
+      if (resizeState.current?.rafId != null) {
+        window.cancelAnimationFrame(resizeState.current.rafId);
+      }
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+  }, []);
+
+  const handleActiveVillageChange = useCallback(
+    (event: ReactChangeEvent<HTMLSelectElement>) => {
+      const nextVillageId = Number(event.target.value);
+      if (!Number.isFinite(nextVillageId) || nextVillageId <= 0) {
+        return;
+      }
+
+      if (activeVillageId === nextVillageId) {
+        return;
+      }
+
+      setActiveVillageId(nextVillageId);
+      setArmyNotice(null);
+      setArmyCommandNotice(null);
+      setBuildingNotices({});
+      setStateError(null);
+    },
+    [activeVillageId],
+  );
+
+  const openPanel = useCallback((type: StaticPanelType) => {
+    setActivePanelId(type);
+    const panelVillageName =
+      type === 'city' || type === 'map' || type === 'army' ? currentVillageName : undefined;
+
+    setPanels((previous) => {
+      const existing = previous.find((panel) => panel.type === type);
+      const nextZ = ++topZ.current;
+
+      if (existing) {
+        return previous.map((panel) => {
+          if (panel.type !== type) {
+            return panel;
+          }
+
+          return {
+            ...panel,
+            z: nextZ,
+            expanded: true,
+            alert: false,
+            villageName: panelVillageName ?? panel.villageName,
+          };
+        });
+      }
+
+      const mapSizeOverride =
+        type === 'map' && mapWindowSizeRef.current
+          ? {
+              width: clamp(
+                mapWindowSizeRef.current.width,
+                MAP_WINDOW_MIN_WIDTH,
+                Math.max(MAP_WINDOW_MIN_WIDTH, window.innerWidth - 180),
+              ),
+              height: clamp(
+                mapWindowSizeRef.current.height,
+                MAP_WINDOW_MIN_HEIGHT,
+                Math.max(MAP_WINDOW_MIN_HEIGHT, window.innerHeight - 160),
+              ),
+            }
+          : undefined;
+
+      const created = createPanelWindow(type, nextZ, previous.length, {
+        ...(mapSizeOverride ?? {}),
+        villageName: panelVillageName,
+      });
+      return [...previous, created];
+    });
+  }, [currentVillageName]);
+
+  const openSettlementPanel = useCallback((settlement: RegionSettlement) => {
+    if (isOwnSettlementForPlayer(settlement)) {
+      setSelectedOwnSettlementId(settlement.id);
+      saveLastOwnSettlementId(username, settlement.id);
+    }
+
+    const id = `village-${settlement.id}`;
+    setActivePanelId(id);
+    const label = `${settlement.name} (${settlement.globalX}|${settlement.globalY})`;
+
+    setPanels((previous) => {
+      const existing = previous.find((panel) => panel.id === id);
+      const nextZ = ++topZ.current;
+
+      if (existing) {
+        return previous.map((panel) =>
+          panel.id === id
+            ? {
+                ...panel,
+                z: nextZ,
+                expanded: true,
+                alert: false,
+              }
+            : panel,
+        );
+      }
+
+      const created = createPanelWindow('village', nextZ, previous.length, {
+        id,
+        settlementId: settlement.id,
+        label,
+        side: settlement.kind === 'own' ? 'left' : 'right',
+        width: 520,
+        height: 460,
+      });
+
+      return [...previous, created];
+    });
+  }, [isOwnSettlementForPlayer, username]);
+
+  const openBuildingPanel = useCallback((building: Building) => {
+    const id = `building-${building.id}`;
+    setActivePanelId(id);
+    const label = `${building.name} (Úroveň ${building.level})`;
+    const villageName = currentVillageName;
+
+    setPanels((previous) => {
+      const existing = previous.find((panel) => panel.id === id);
+      const nextZ = ++topZ.current;
+
+      if (existing) {
+        return previous.map((panel) =>
+          panel.id === id
+            ? {
+                ...panel,
+                z: nextZ,
+                expanded: true,
+                alert: false,
+                label,
+                villageName,
+              }
+            : panel,
+        );
+      }
+
+      const created = createPanelWindow('building', nextZ, previous.length, {
+        id,
+        buildingId: building.id,
+        label,
+        side: 'left',
+        width: 540,
+        height: 560,
+        villageName,
+      });
+
+      return [...previous, created];
+    });
+  }, [currentVillageName]);
+
+  const openKingdomProfilePanel = useCallback((kingdomName: string) => {
+    if (!kingdomName || isNeutralKingdom(kingdomName)) {
+      return;
+    }
+
+    const id = `kingdom-profile-${encodeURIComponent(kingdomName)}`;
+    const label = `Profil království: ${kingdomName}`;
+    setActivePanelId(id);
+
+    setPanels((previous) => {
+      const existing = previous.find((panel) => panel.id === id);
+      const nextZ = ++topZ.current;
+
+      if (existing) {
+        return previous.map((panel) =>
+          panel.id === id
+            ? {
+                ...panel,
+                z: nextZ,
+                expanded: true,
+                alert: false,
+                label,
+                kingdomName,
+              }
+            : panel,
+        );
+      }
+
+      const created = createPanelWindow('kingdomProfile', nextZ, previous.length, {
+        id,
+        label,
+        side: 'right',
+        width: 680,
+        height: 560,
+        kingdomName,
+      });
+
+      return [...previous, created];
+    });
+  }, []);
+
+  const openPlayerProfilePanel = useCallback((targetUsername: string) => {
+    if (!targetUsername) {
+      return;
+    }
+
+    const id = `player-profile-${encodeURIComponent(targetUsername)}`;
+    const label = `Profil hráče: ${targetUsername}`;
+    setActivePanelId(id);
+
+    setPanels((previous) => {
+      const existing = previous.find((panel) => panel.id === id);
+      const nextZ = ++topZ.current;
+
+      if (existing) {
+        return previous.map((panel) =>
+          panel.id === id
+            ? {
+                ...panel,
+                z: nextZ,
+                expanded: true,
+                alert: false,
+                label,
+                playerUsername: targetUsername,
+              }
+            : panel,
+        );
+      }
+
+      const created = createPanelWindow('playerProfile', nextZ, previous.length, {
+        id,
+        label,
+        side: 'left',
+        width: 660,
+        height: 560,
+        playerUsername: targetUsername,
+      });
+
+      return [...previous, created];
+    });
+  }, []);
+
+  const handleResourceCardClick = useCallback(
+    (resource: ResourceStock) => {
+      const building = buildingsById.get(resource.buildingId);
+      if (!building) {
+        return;
+      }
+      openBuildingPanel(building);
+    },
+    [buildingsById, openBuildingPanel],
+  );
+
+  const focusPanel = (id: string) => {
+    setActivePanelId(id);
+    setPanels((previous) => {
+      const target = previous.find((panel) => panel.id === id);
+      if (!target) {
+        return previous;
+      }
+
+      const currentTop = previous.reduce((max, panel) => (panel.z > max ? panel.z : max), 0);
+      if (target.z >= currentTop && !target.alert) {
+        return previous;
+      }
+
+      const nextZ = ++topZ.current;
+      return previous.map((panel) => (panel.id === id ? { ...panel, z: nextZ, alert: false } : panel));
+    });
+  };
+
+  const togglePanelVisibility = (id: string) => {
+    setPanels((previous) => {
+      const target = previous.find((panel) => panel.id === id);
+      if (!target) {
+        return previous;
+      }
+
+      const nextZ = target.expanded ? target.z : ++topZ.current;
+
+      return previous.map((panel) => {
+        if (panel.id !== id) {
+          return panel;
+        }
+
+        return {
+          ...panel,
+          expanded: !panel.expanded,
+          z: nextZ,
+          alert: false,
+        };
+      });
+    });
+  };
+
+  const closePanel = (id: string) => {
+    setActivePanelId((previous) => (previous === id ? null : previous));
+    setPanels((previous) => previous.filter((panel) => panel.id !== id));
+  };
+
+  const fitPanelToViewport = useCallback(
+    (id: string) => {
+      const { viewportWidth, viewportHeight } = getCanvasViewportSize();
+      let nextMapSize: WindowSize | null = null;
+
+      setPanels((previous) => {
+        let changed = false;
+        const nextPanels = previous.map((panel) => {
+          if (panel.id !== id) {
+            return panel;
+          }
+
+          const adjusted = clampPanelToViewport(panel, viewportWidth, viewportHeight, {
+            allowBelowMinSize: true,
+            forceFullWidth: true,
+          });
+
+          if (adjusted !== panel) {
+            changed = true;
+            if (panel.type === 'map') {
+              nextMapSize = { width: adjusted.width, height: adjusted.height };
+            }
+          }
+
+          return adjusted;
+        });
+
+        return changed ? nextPanels : previous;
+      });
+
+      if (nextMapSize) {
+        mapWindowSizeRef.current = nextMapSize;
+        saveMapWindowSize(nextMapSize);
+      }
+    },
+    [getCanvasViewportSize],
+  );
+
+  const closePanelOnMiddleClick = (
+    event: ReactMouseEvent<HTMLElement>,
+    panelId: string,
+  ): boolean => {
+    if (event.button !== 1) {
+      return false;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    closePanel(panelId);
+    return true;
+  };
+
+  const switchSide = (id: string) => {
+    setPanels((previous) =>
+      previous.map((panel) => {
+        if (panel.id !== id) {
+          return panel;
+        }
+
+        return {
+          ...panel,
+          side: panel.side === 'left' ? 'right' : 'left',
+        };
+      }),
+    );
+  };
+
+  const movePinToSideAndMinimize = (id: string, side: PinSide) => {
+    setPanels((previous) =>
+      previous.map((panel) => {
+        if (panel.id !== id) {
+          return panel;
+        }
+
+        return {
+          ...panel,
+          side,
+          expanded: false,
+          alert: false,
+        };
+      }),
+    );
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isTypingElement(event.target)) {
+        return;
+      }
+
+      const activePanel = panels.find((panel) => panel.id === activePanelId && panel.expanded);
+      if (!activePanel) {
+        return;
+      }
+
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        movePinToSideAndMinimize(activePanel.id, 'left');
+        return;
+      }
+
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        movePinToSideAndMinimize(activePanel.id, 'right');
+        return;
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        switchSide(activePanel.id);
+        return;
+      }
+
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        closePanel(activePanel.id);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activePanelId, panels]);
+
+  const startDrag = (event: ReactPointerEvent<HTMLElement>, panel: PanelWindow) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    if (window.innerWidth < 900) {
+      return;
+    }
+
+    event.preventDefault();
+    const node = panelElementRefs.current[panel.id];
+    if (node) {
+      node.classList.add('dragging');
+    }
+
+    dragState.current = {
+      id: panel.id,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: panel.x,
+      originY: panel.y,
+      latestX: panel.x,
+      latestY: panel.y,
+      panelWidth: panel.width,
+      panelHeight: panel.height,
+      rafId: null,
+    };
+
+    focusPanel(panel.id);
+  };
+
+  const startResize = (event: ReactPointerEvent<HTMLElement>, panel: PanelWindow) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const node = panelElementRefs.current[panel.id];
+    if (node) {
+      node.classList.add('resizing');
+    }
+    const minSize = getPanelMinSize(panel.type);
+
+    resizeState.current = {
+      id: panel.id,
+      panelType: panel.type,
+      startX: event.clientX,
+      startY: event.clientY,
+      originWidth: panel.width,
+      originHeight: panel.height,
+      latestWidth: panel.width,
+      latestHeight: panel.height,
+      minWidth: minSize.width,
+      minHeight: minSize.height,
+      panelX: panel.x,
+      panelY: panel.y,
+      rafId: null,
+    };
+
+    focusPanel(panel.id);
+  };
+
+  useEffect(() => {
+    setPanels((previous) => {
+      let changed = false;
+      const nextPanels = previous.map((panel) => {
+        if (panel.type !== 'building' || !panel.buildingId) {
+          return panel;
+        }
+
+        const building = buildingsById.get(panel.buildingId);
+        if (!building) {
+          return panel;
+        }
+
+        const nextLabel = `${building.name} (Úroveň ${building.level})`;
+        if (panel.label === nextLabel) {
+          return panel;
+        }
+
+        changed = true;
+        return { ...panel, label: nextLabel };
+      });
+
+      return changed ? nextPanels : previous;
+    });
+  }, [buildingsById]);
+
+  const handleRecruit = useCallback(
+    async (unit: Unit, amount: number) => {
+      const normalizedAmount = Math.max(0, Math.floor(amount));
+      if (normalizedAmount <= 0) {
+        return;
+      }
+
+      setRecruitPendingUnitId(unit.id);
+      setArmyNotice(null);
+
+      try {
+        const nextState = await recruitUnit(
+          username,
+          unit.id,
+          normalizedAmount,
+          gameState?.village.id ?? activeVillageId,
+        );
+        setGameState(nextState);
+        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
+          setActiveVillageId(nextState.village.id);
+        }
+        setStateError(null);
+        setArmyNotice(`${unit.name}: +${normalizedAmount.toLocaleString('cs-CZ')} jednotek`);
+      } catch (error) {
+        setArmyNotice(getErrorMessage(error));
+      } finally {
+        setRecruitPendingUnitId(null);
+      }
+    },
+    [activeVillageId, gameState?.village.id, username],
+  );
+
+  const handleIssueArmyCommand = useCallback(
+    async (payload: {
+      commandType: ArmyCommandType;
+      targetVillageId: number;
+      lootPriority?: LootPriority;
+      units: Record<string, number>;
+    }) => {
+      setArmyCommandPending(true);
+      setArmyCommandNotice(null);
+
+      try {
+        const response = await issueArmyCommand(username, {
+          commandType: payload.commandType,
+          villageId: gameState?.village.id ?? activeVillageId,
+          targetVillageId: payload.targetVillageId,
+          lootPriority: payload.lootPriority,
+          units: payload.units,
+        });
+        const nextState = response.data;
+        setGameState(nextState);
+        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
+          setActiveVillageId(nextState.village.id);
+        }
+        setStateError(null);
+        setArmyCommandNotice(`Rozkaz ${ARMY_COMMAND_LABELS[payload.commandType]} byl odeslán.`);
+      } catch (error) {
+        setArmyCommandNotice(getErrorMessage(error));
+      } finally {
+        setArmyCommandPending(false);
+      }
+    },
+    [activeVillageId, gameState?.village.id, username],
+  );
+
+  const handleReturnSupport = useCallback(
+    async (supportMovementId: number) => {
+      setArmyCommandPending(true);
+      setArmyCommandNotice(null);
+
+      try {
+        const response = await issueArmyCommand(username, {
+          commandType: 'return',
+          villageId: gameState?.village.id ?? activeVillageId,
+          supportMovementId,
+        });
+        const nextState = response.data;
+        setGameState(nextState);
+        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
+          setActiveVillageId(nextState.village.id);
+        }
+        setStateError(null);
+        setArmyCommandNotice('Návrat podpory byl spuštěn.');
+      } catch (error) {
+        setArmyCommandNotice(getErrorMessage(error));
+      } finally {
+        setArmyCommandPending(false);
+      }
+    },
+    [activeVillageId, gameState?.village.id, username],
+  );
+
+  const handleBuildingUpgrade = useCallback(
+    async (building: Building) => {
+      setUpgradePendingBuildingId(building.id);
+      setBuildingNotices((previous) => ({
+        ...previous,
+        [building.id]: '',
+      }));
+
+      try {
+        const nextState = await upgradeBuilding(
+          username,
+          building.id,
+          gameState?.village.id ?? activeVillageId,
+        );
+        setGameState(nextState);
+        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
+          setActiveVillageId(nextState.village.id);
+        }
+        setStateError(null);
+        setBuildingNotices((previous) => ({
+          ...previous,
+          [building.id]: 'Upgrade byl úspěšně spuštěn.',
+        }));
+      } catch (error) {
+        setBuildingNotices((previous) => ({
+          ...previous,
+          [building.id]: getErrorMessage(error),
+        }));
+      } finally {
+        setUpgradePendingBuildingId(null);
+      }
+    },
+    [activeVillageId, gameState?.village.id, username],
+  );
+
+  const handleLogout = useCallback(() => {
+    logout();
+    navigate('/', { replace: true });
+  }, [navigate]);
+
+  const handleSelectBattleReport = useCallback((reportId: number) => {
+    setSelectedBattleReportId(reportId);
+  }, []);
+
+  const handleBattleReportsPageChange = useCallback((page: number) => {
+    if (!Number.isFinite(page)) {
+      return;
+    }
+    setBattleReportsPage(Math.max(1, Math.floor(page)));
+  }, []);
+
+  const handleBattleReportsRefresh = useCallback(() => {
+    void loadBattleReports(false);
+  }, [loadBattleReports]);
+
+  const getPinnedPanelLabel = useCallback((panel: PanelWindow): string => {
+    if (!hasVillageContext(panel) || !panel.villageName) {
+      return panel.label;
+    }
+
+    return `${panel.label} · ${panel.villageName}`;
+  }, []);
+
+  const leftPins = panels.filter((panel) => panel.side === 'left');
+  const rightPins = panels.filter((panel) => panel.side === 'right');
+
+  const renderPanelContent = (panel: PanelWindow) => {
+    switch (panel.type) {
+      case 'city':
+        return (
+          <CityPanel
+            villageLabel={villageLabel}
+            regionLabel={villageRegionLabel}
+            ownerName={gameState?.player.username ?? username}
+            prestige={gameState?.village.prestige ?? 0}
+            loyalty={gameState?.village.loyalty ?? 0}
+            buildings={buildings}
+            units={units}
+            orders={activeOrders}
+            onOpenBuilding={openBuildingPanel}
+          />
+        );
+      case 'map':
+        return (
+          <MapPanel
+            settlements={mapSettlements}
+            regionId={mapRegionId}
+            regionSize={mapRegionSize}
+            regionOriginX={mapRegionOriginX}
+            regionOriginY={mapRegionOriginY}
+            focusedSettlementId={focusedOwnSettlementId}
+            activeVillageId={gameState?.village.id ?? activeVillageId}
+            zoomPercent={mapZoomPercent}
+            orderMarkersByVillageId={mapOrderMarkersByVillageId}
+            onZoomChange={setMapZoomPercent}
+            onOpenSettlement={openSettlementPanel}
+          />
+        );
+      case 'army':
+        return (
+          <ArmyPanel
+            units={units}
+            recruitQueueOrders={recruitQueueOrders}
+            activeMovements={armyActiveMovements}
+            stationedSupports={armyStationedSupports}
+            settlements={mapSettlements}
+            currentVillageId={gameState?.village.id ?? activeVillageId}
+            currentUsername={username}
+            onRecruit={handleRecruit}
+            onIssueArmyCommand={handleIssueArmyCommand}
+            onReturnSupport={handleReturnSupport}
+            recruitPendingUnitId={recruitPendingUnitId}
+            isArmyCommandPending={armyCommandPending}
+            notice={armyNotice}
+            commandNotice={armyCommandNotice}
+          />
+        );
+      case 'research':
+        return <ResearchPanel />;
+      case 'messages':
+        return (
+          <MessagesPanel
+            reports={battleReports}
+            selectedReportId={selectedBattleReportId}
+            loading={battleReportsLoading}
+            error={battleReportsError}
+            onSelectReport={handleSelectBattleReport}
+            onSetPage={handleBattleReportsPageChange}
+            onRefresh={handleBattleReportsRefresh}
+          />
+        );
+      case 'kingdom':
+        return <KingdomPanel />;
+      case 'rankings':
+        return (
+          <RankingPanel
+            rows={leaderboardRows}
+            currentUsername={username}
+            currentKingdom={gameState?.village.kingdom ?? 'Neutral'}
+            onOpenPlayerProfile={openPlayerProfilePanel}
+            onOpenKingdomProfile={openKingdomProfilePanel}
+          />
+        );
+      case 'kingdomProfile': {
+        if (!panel.kingdomName) {
+          return (
+            <div className="panel-stack">
+              <section>
+                <h3>Království nenalezeno</h3>
+                <p>Panel odkazuje na neplatné království.</p>
+              </section>
+            </div>
+          );
+        }
+
+        return (
+          <KingdomProfilePanel
+            kingdomName={panel.kingdomName}
+            rows={leaderboardRows}
+            settlements={mapSettlements}
+            currentManagedVillage={
+              gameState
+                ? {
+                    name: gameState.village.name,
+                    coordX: gameState.village.coordX,
+                    coordY: gameState.village.coordY,
+                    region: gameState.village.region,
+                  }
+                : null
+            }
+            onOpenPlayerProfile={openPlayerProfilePanel}
+          />
+        );
+      }
+      case 'playerProfile': {
+        if (!panel.playerUsername) {
+          return (
+            <div className="panel-stack">
+              <section>
+                <h3>Hráč nenalezen</h3>
+                <p>Panel odkazuje na neplatný profil hráče.</p>
+              </section>
+            </div>
+          );
+        }
+
+        return (
+          <PlayerProfilePanel
+            username={panel.playerUsername}
+            rows={leaderboardRows}
+            settlements={mapSettlements}
+            onOpenSettlement={openSettlementPanel}
+          />
+        );
+      }
+      case 'profile':
+        return (
+          <ProfilePanel
+            username={username}
+            kingdom={gameState?.village.kingdom ?? 'Nezname kralovstvi'}
+            prestige={gameState?.village.prestige ?? 0}
+            villageCount={playerLeaderboardEntry?.villages ?? 1}
+            rank={playerLeaderboardEntry?.rank ?? null}
+          />
+        );
+      case 'settings':
+        return <SettingsPanel onLogout={handleLogout} />;
+      case 'village': {
+        const settlement = panel.settlementId ? settlementsById.get(panel.settlementId) : undefined;
+
+        if (!settlement) {
+          return (
+            <div className="panel-stack">
+              <section>
+                <h3>Osada nenalezena</h3>
+                <p>Panel odkazuje na neexistující osadu.</p>
+              </section>
+            </div>
+          );
+        }
+
+        return (
+          <VillagePanel
+            settlement={settlement}
+            activeVillageId={gameState?.village.id ?? activeVillageId}
+            currentVillageId={gameState?.village.id ?? activeVillageId}
+            currentVillageName={villageLabel}
+            currentUsername={username}
+            units={units}
+            activeMovements={armyActiveMovements}
+            stationedSupports={armyStationedSupports}
+            isArmyCommandPending={armyCommandPending}
+            commandNotice={armyCommandNotice}
+            onOpenCity={() => openPanel('city')}
+            onIssueArmyCommand={handleIssueArmyCommand}
+            onReturnSupport={handleReturnSupport}
+          />
+        );
+      }
+      case 'building': {
+        const building = panel.buildingId ? buildingsById.get(panel.buildingId) : undefined;
+
+        if (!building) {
+          return (
+            <div className="panel-stack">
+              <section>
+                <h3>Budova nenalezena</h3>
+                <p>Panel odkazuje na neexistující budovu.</p>
+              </section>
+            </div>
+          );
+        }
+
+        return (
+          <BuildingPanel
+            building={building}
+            onBackToCity={() => openPanel('city')}
+            onUpgrade={handleBuildingUpgrade}
+            isUpgradePending={upgradePendingBuildingId === building.id}
+            notice={buildingNotices[building.id] ?? null}
+          />
+        );
+      }
+      default:
+        return null;
+    }
+  };
+
+  if (!session) {
+    return null;
+  }
+
+  return (
+    <div className="game-page">
+      <div className="game-bg-layer" />
+      <div className="game-grid-layer" />
+
+      <header className="top-navigation">
+        <div className="village-pill">
+          <span>Aktivní město</span>
+          <strong>{villageLabel}</strong>
+          <label className="village-switcher" htmlFor="active-village-select">
+            <span>Seznam lén</span>
+            <select
+              id="active-village-select"
+              value={String(gameState?.village.id ?? activeVillageId ?? '')}
+              onChange={handleActiveVillageChange}
+              disabled={playerVillages.length === 0}
+            >
+              {playerVillages.length === 0 ? (
+                <option value="">Načítám...</option>
+              ) : (
+                playerVillages.map((village) => (
+                  <option key={village.id} value={village.id}>
+                    {village.name} ({village.coordX}|{village.coordY})
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+        </div>
+
+        <nav>
+          {NAV_BUTTONS.map((button) => (
+            <button
+              key={button.type}
+              className="nav-action"
+              onClick={() => openPanel(button.type)}
+              title={`Otevřít panel: ${button.text}`}
+            >
+              {button.text}
+            </button>
+          ))}
+        </nav>
+
+        <button className="quick-logout" onClick={handleLogout}>
+          Odhlásit
+        </button>
+      </header>
+
+      <section className="resource-strip">
+        {resourceStocks.map((resource) => (
+          <button
+            key={resource.name}
+            type="button"
+            className="resource-card"
+            onClick={() => handleResourceCardClick(resource)}
+            title={`Otevřít budovu: ${resource.name}`}
+          >
+            <p>{resource.name}</p>
+            <strong>{resource.amount.toLocaleString('cs-CZ')}</strong>
+            <span>{resource.delta}</span>
+            <small>Cap {resource.cap.toLocaleString('cs-CZ')}</small>
+          </button>
+        ))}
+      </section>
+
+      <section className="ux-help-strip" aria-label="Rychlá nápověda">
+        <p>
+          Přetahuj okna za horní lištu, klikej na piny vlevo/vpravo pro rychlé sbalení a mapu zvětši
+          tažením pravého dolního rohu.
+        </p>
+        <p>
+          {loadingState
+            ? 'Načítám data z backendu...'
+            : stateError
+              ? `Backend chyba: ${stateError}`
+              : 'Backend běží: suroviny, upgrady a jednotky se synchronizují každých 5s.'}
+        </p>
+      </section>
+
+      <div className="game-canvas" ref={canvasRef}>
+        <aside className="pin-column left">
+          <h4>Připnuté (L)</h4>
+          {leftPins.map((panel) => (
+            <button
+              key={panel.id}
+              className={`pin-tab ${panel.expanded ? 'active' : ''}`}
+              onMouseDown={(event) => {
+                closePanelOnMiddleClick(event, panel.id);
+              }}
+              onClick={() => togglePanelVisibility(panel.id)}
+            >
+              <span>{getPinnedPanelLabel(panel)}</span>
+              {panel.alert ? <i /> : null}
+            </button>
+          ))}
+        </aside>
+
+        <aside className="pin-column right">
+          <h4>Připnuté (P)</h4>
+          {rightPins.map((panel) => (
+            <button
+              key={panel.id}
+              className={`pin-tab ${panel.expanded ? 'active' : ''}`}
+              onMouseDown={(event) => {
+                closePanelOnMiddleClick(event, panel.id);
+              }}
+              onClick={() => togglePanelVisibility(panel.id)}
+            >
+              <span>{getPinnedPanelLabel(panel)}</span>
+              {panel.alert ? <i /> : null}
+            </button>
+          ))}
+        </aside>
+
+        {panels
+          .filter((panel) => panel.expanded)
+          .map((panel) => (
+            <article
+              key={panel.id}
+              className={`floating-window ${panel.type === 'map' ? 'map-window' : ''}`}
+              ref={(node) => {
+                panelElementRefs.current[panel.id] = node;
+              }}
+              style={{
+                left: `${panel.x}px`,
+                top: `${panel.y}px`,
+                zIndex: panel.z,
+                width: `${panel.width}px`,
+                height: `${panel.height}px`,
+              }}
+              onMouseDown={(event) => {
+                if (closePanelOnMiddleClick(event, panel.id)) {
+                  return;
+                }
+                focusPanel(panel.id);
+              }}
+            >
+              <header className="window-header" onPointerDown={(event) => startDrag(event, panel)}>
+                <div>
+                  <span>{panel.label}</span>
+                </div>
+                <div className="window-actions" onPointerDown={(event) => event.stopPropagation()}>
+                  <button
+                    onClick={() => movePinToSideAndMinimize(panel.id, 'left')}
+                    title="Přesunout pin na levou stranu"
+                    aria-label="Přesunout pin na levou stranu"
+                  >
+                    ←
+                  </button>
+                  <button
+                    onClick={() => switchSide(panel.id)}
+                    title="Přesunout pin na druhou stranu"
+                    aria-label="Přesunout pin na druhou stranu"
+                  >
+                    ↔
+                  </button>
+                  <button
+                    onClick={() => movePinToSideAndMinimize(panel.id, 'right')}
+                    title="Přesunout pin na pravou stranu"
+                    aria-label="Přesunout pin na pravou stranu"
+                  >
+                    →
+                  </button>
+                  <button
+                    className="window-action-fit"
+                    onClick={() => fitPanelToViewport(panel.id)}
+                    title="Srovnat okno"
+                    aria-label="Srovnat okno"
+                  >
+                    Srovnat
+                  </button>
+                  <button
+                    onClick={() => togglePanelVisibility(panel.id)}
+                    title="Sbalit okno"
+                    aria-label="Sbalit okno"
+                  >
+                    −
+                  </button>
+                  <button onClick={() => closePanel(panel.id)} title="Zavřít okno" aria-label="Zavřít okno">
+                    ✕
+                  </button>
+                </div>
+              </header>
+
+              <div className="window-body">{renderPanelContent(panel)}</div>
+              <div
+                className="window-resize-handle"
+                onPointerDown={(event) => startResize(event, panel)}
+                role="separator"
+                aria-label={`Změnit velikost okna ${panel.label}`}
+              />
+            </article>
+          ))}
+      </div>
+    </div>
+  );
+};
+
+

@@ -1,0 +1,80 @@
+﻿@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Nunito+Sans:wght@400;600;700&display=swap');
+
+:root {
+  --bg-0: #04080f;
+  --bg-1: #0a1522;
+  --bg-2: #121f2f;
+  --surface: rgba(10, 20, 33, 0.86);
+  --surface-soft: rgba(12, 27, 42, 0.84);
+  --surface-strong: rgba(6, 14, 24, 0.94);
+  --line: rgba(134, 173, 208, 0.22);
+  --line-bright: rgba(176, 214, 245, 0.5);
+  --text: #edf2f8;
+  --muted: #9eb2c5;
+  --accent: #d7a45b;
+  --accent-strong: #f2cc8a;
+  --danger: #ff7a65;
+  --ink: #0a0f15;
+  --panel-glow: 0 0 0 1px rgba(166, 206, 240, 0.08), 0 22px 44px rgba(0, 0, 0, 0.5);
+  --shadow: 0 22px 44px rgba(0, 0, 0, 0.52);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  font-family: 'Nunito Sans', 'Segoe UI', sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at 10% -5%, #1c3450 0%, var(--bg-0) 38%) fixed;
+}
+
+h1,
+h2 {
+  font-family: 'Cinzel', 'Segoe UI', serif;
+  letter-spacing: 0.03em;
+}
+
+h3,
+h4 {
+  letter-spacing: 0.01em;
+}
+
+button,
+input {
+  color: inherit;
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, color 0.18s ease, background 0.18s ease;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid rgba(242, 204, 138, 0.8);
+  outline-offset: 2px;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(210, 163, 93, 0.6), rgba(120, 153, 187, 0.6));
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(8, 16, 26, 0.65);
+}
