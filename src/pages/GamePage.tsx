@@ -339,6 +339,10 @@ const NAV_BUTTONS: { type: StaticPanelType; text: string }[] = [
   { type: 'settings', text: 'Nastavení' },
 ];
 
+const STRETCHABLE_PANEL_TYPES = new Set<PanelType>(['city', 'map', 'army']);
+
+const isStretchablePanelType = (panelType: PanelType): boolean => STRETCHABLE_PANEL_TYPES.has(panelType);
+
 const BUILDING_ART: Record<string, { icon: string; fallbackName: string; fallbackCategory: string }> = {
   woodcutter: {
     icon: '/assets/buildings/woodcutter.png',
@@ -810,29 +814,34 @@ const getSettlementMapKind = (
   settlement: Pick<RegionSettlement, 'kind' | 'relation' | 'owner' | 'villageId'>,
   activeVillageId: number | null = null,
 ): MapSettlementKind => {
+  const ownerNormalized = settlement.owner.trim().toLowerCase();
+  const isAbandonedSettlement =
+    settlement.kind === 'abandoned' ||
+    ownerNormalized === 'opuštěná osada' ||
+    ownerNormalized === 'opustena osada';
+  if (isAbandonedSettlement) {
+    return 'abandoned';
+  }
+
+  const isOwnSettlement = settlement.kind === 'own' || settlement.relation === 'self';
   if (
     activeVillageId != null &&
     settlement.villageId != null &&
     Number(settlement.villageId) === activeVillageId &&
-    (settlement.kind === 'own' || settlement.relation === 'self')
+    isOwnSettlement
   ) {
     return 'active';
   }
 
-  const ownerNormalized = settlement.owner.trim().toLowerCase();
-  if (
-    settlement.kind === 'abandoned' ||
-    ownerNormalized === 'opuštěná osada' ||
-    ownerNormalized === 'opustena osada'
-  ) {
-    return 'abandoned';
+  if (isOwnSettlement) {
+    return 'own';
   }
 
-  if (settlement.kind === 'player' && settlement.relation === 'ally') {
+  if (settlement.kind === 'bot' || (settlement.kind === 'player' && settlement.relation === 'ally')) {
     return 'bot';
   }
 
-  return settlement.kind;
+  return 'player';
 };
 
 const isNeutralKingdom = (kingdom: string): boolean => {
@@ -4849,10 +4858,19 @@ export const GamePage = () => {
     };
   }, [closeVillageMenu, isVillageMenuOpen, updateVillageMenuPosition]);
 
+  const previousActiveVillageRef = useRef<number | null>(activeVillageResolvedId);
   useEffect(() => {
+    const previousActiveVillageId = previousActiveVillageRef.current;
+    previousActiveVillageRef.current = activeVillageResolvedId;
+
     if (!isVillageMenuOpen) {
       return;
     }
+
+    if (previousActiveVillageId == null || previousActiveVillageId === activeVillageResolvedId) {
+      return;
+    }
+
     closeVillageMenu();
   }, [activeVillageResolvedId, closeVillageMenu, isVillageMenuOpen]);
 
@@ -5133,30 +5151,76 @@ export const GamePage = () => {
     setPanels((previous) => previous.filter((panel) => panel.id !== id));
   };
 
-  const fitPanelToViewport = useCallback(
+  const stretchPanelToViewport = useCallback(
     (id: string) => {
+      const canvasNode = canvasRef.current;
       const { viewportWidth, viewportHeight } = getCanvasViewportSize();
       let nextMapSize: WindowSize | null = null;
+
+      const leftPinNode = canvasNode?.querySelector('.pin-column.left') as HTMLElement | null;
+      const rightPinNode = canvasNode?.querySelector('.pin-column.right') as HTMLElement | null;
+      const pinClearance = 12;
+
+      const leftPinEnd = leftPinNode
+        ? Math.floor(leftPinNode.offsetLeft + leftPinNode.offsetWidth + pinClearance)
+        : 8;
+      const rightPinStart = rightPinNode
+        ? Math.floor(rightPinNode.offsetLeft - pinClearance)
+        : viewportWidth - PANEL_VIEWPORT_MARGIN_X;
 
       setPanels((previous) => {
         let changed = false;
         const nextPanels = previous.map((panel) => {
-          if (panel.id !== id) {
+          if (panel.id !== id || !isStretchablePanelType(panel.type)) {
             return panel;
           }
 
-          const adjusted = clampPanelToViewport(panel, viewportWidth, viewportHeight, {
-            allowBelowMinSize: true,
-            forceFullWidth: true,
-          });
+          const availableLeft = clamp(
+            leftPinEnd,
+            8,
+            Math.max(8, viewportWidth - PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH),
+          );
+          const maxRight = Math.max(
+            availableLeft + PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
+            viewportWidth - PANEL_VIEWPORT_MARGIN_X,
+          );
+          const availableRight = clamp(
+            rightPinStart,
+            availableLeft + PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
+            maxRight,
+          );
+          const stretchedWidth = clamp(
+            availableRight - availableLeft,
+            PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
+            viewportWidth - PANEL_VIEWPORT_MARGIN_X,
+          );
+          const stretchedHeight = clamp(
+            viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
+            PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT,
+            viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
+          );
 
-          if (adjusted !== panel) {
-            changed = true;
-            if (panel.type === 'map') {
-              nextMapSize = { width: adjusted.width, height: adjusted.height };
-            }
+          const adjusted: PanelWindow = {
+            ...panel,
+            x: availableLeft,
+            y: 12,
+            width: stretchedWidth,
+            height: stretchedHeight,
+          };
+
+          if (
+            adjusted.x === panel.x &&
+            adjusted.y === panel.y &&
+            adjusted.width === panel.width &&
+            adjusted.height === panel.height
+          ) {
+            return panel;
           }
 
+          changed = true;
+          if (panel.type === 'map') {
+            nextMapSize = { width: adjusted.width, height: adjusted.height };
+          }
           return adjusted;
         });
 
@@ -5989,14 +6053,16 @@ export const GamePage = () => {
                   >
                     →
                   </button>
-                  <button
-                    className="window-action-fit"
-                    onClick={() => fitPanelToViewport(panel.id)}
-                    title="Srovnat okno"
-                    aria-label="Srovnat okno"
-                  >
-                    Srovnat
-                  </button>
+                  {isStretchablePanelType(panel.type) ? (
+                    <button
+                      className="window-action-fit"
+                      onClick={() => stretchPanelToViewport(panel.id)}
+                      title="Roztáhnout okno"
+                      aria-label="Roztáhnout okno"
+                    >
+                      Roztáhnout
+                    </button>
+                  ) : null}
                   <button
                     onClick={() => togglePanelVisibility(panel.id)}
                     title="Sbalit okno"

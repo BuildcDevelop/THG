@@ -1932,6 +1932,11 @@
   gap: 0.66rem;
   height: 100%;
   min-height: 0;
+  --settlement-color-active: #f8fbff;
+  --settlement-color-own: #f2c269;
+  --settlement-color-player: #8b5a2b;
+  --settlement-color-bot: #8fc9ff;
+  --settlement-color-abandoned: #8f97a0;
 }
 
 .map-workspace {
@@ -2009,23 +2014,23 @@
 }
 
 .legend.own::before {
-  background: #f2c269;
+  background: var(--settlement-color-own);
 }
 
 .legend.active::before {
-  background: #f8fbff;
+  background: var(--settlement-color-active);
 }
 
 .legend.player::before {
-  background: #8b5a2b;
+  background: var(--settlement-color-player);
 }
 
 .legend.bot::before {
-  background: #8fc9ff;
+  background: var(--settlement-color-bot);
 }
 
 .legend.abandoned::before {
-  background: #8f97a0;
+  background: var(--settlement-color-abandoned);
 }
 
 .region-grid-wrap {
@@ -2197,43 +2202,48 @@
 }
 
 .region-cell.settlement.own {
-  background: rgba(149, 205, 247, 0.2);
+  background: rgba(242, 194, 105, 0.24);
+  border-color: rgba(242, 194, 105, 0.66);
 }
 
 .region-cell.settlement.own .settlement-core-dot {
-  background: #95cdf7;
+  background: var(--settlement-color-own);
 }
 
 .region-cell.settlement.active {
   background: rgba(248, 251, 255, 0.22);
+  border-color: rgba(248, 251, 255, 0.82);
 }
 
 .region-cell.settlement.active .settlement-core-dot {
-  background: #f8fbff;
+  background: var(--settlement-color-active);
 }
 
 .region-cell.settlement.player {
-  background: rgba(82, 129, 176, 0.28);
+  background: rgba(139, 90, 43, 0.26);
+  border-color: rgba(167, 116, 67, 0.64);
 }
 
 .region-cell.settlement.player .settlement-core-dot {
-  background: #5f8fc2;
+  background: var(--settlement-color-player);
 }
 
 .region-cell.settlement.bot {
   background: rgba(143, 201, 255, 0.28);
+  border-color: rgba(143, 201, 255, 0.72);
 }
 
 .region-cell.settlement.bot .settlement-core-dot {
-  background: #8fc9ff;
+  background: var(--settlement-color-bot);
 }
 
 .region-cell.settlement.abandoned {
   background: rgba(130, 139, 149, 0.22);
+  border-color: rgba(143, 151, 160, 0.6);
 }
 
 .region-cell.settlement.abandoned .settlement-core-dot {
-  background: #8f97a0;
+  background: var(--settlement-color-abandoned);
 }
 
 .region-cell.settlement:hover,
@@ -2300,24 +2310,24 @@
 }
 
 .mini-map-dot.own {
-  background: #95cdf7;
+  background: var(--settlement-color-own);
 }
 
 .mini-map-dot.active {
-  background: #f8fbff;
+  background: var(--settlement-color-active);
   box-shadow: 0 0 0 1px rgba(15, 28, 39, 0.85), 0 0 8px rgba(248, 251, 255, 0.45);
 }
 
 .mini-map-dot.player {
-  background: #5f8fc2;
+  background: var(--settlement-color-player);
 }
 
 .mini-map-dot.bot {
-  background: #8fc9ff;
+  background: var(--settlement-color-bot);
 }
 
 .mini-map-dot.abandoned {
-  background: #8f97a0;
+  background: var(--settlement-color-abandoned);
 }
 
 .mini-map-dot.focused {
