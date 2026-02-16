@@ -281,24 +281,21 @@ export const calculateArmyTravelDurationSec = (unitAmounts, distanceTiles) => {
     return 0;
   }
 
-  let slowestSpeed = Number.POSITIVE_INFINITY;
+  let hasUnits = false;
   for (const unitId of UNIT_ORDER) {
     const amount = Math.max(0, Math.floor(Number(unitAmounts[unitId] ?? 0)));
     if (amount <= 0) {
       continue;
     }
-
-    const speed = Math.max(1, Number(UNIT_DEFS[unitId]?.speedTilesPerHour ?? 12));
-    slowestSpeed = Math.min(slowestSpeed, speed);
+    hasUnits = true;
+    break;
   }
 
-  if (!Number.isFinite(slowestSpeed)) {
+  if (!hasUnits) {
     return 0;
   }
 
-  const durationHours = safeDistance / slowestSpeed;
-  const durationSec = durationHours * 3600;
-  return Math.max(30, Math.round(durationSec));
+  return 5;
 };
 
 export const calculateResourceCap = (warehouseLevel) => {
@@ -318,7 +315,10 @@ export const calculateResourceCap = (warehouseLevel) => {
   );
 };
 
-export const calculatePopulationCap = (residentialLevel) => 120 + residentialLevel * 30;
+export const calculatePopulationCap = (residentialLevel) => {
+  const level = Math.max(0, Math.floor(Number(residentialLevel ?? 0)));
+  return 220 + level * 80 + level * level * 5;
+};
 
 export const calculatePopulationUsed = (buildingLevels, unitCounts) => {
   let workers = 0;

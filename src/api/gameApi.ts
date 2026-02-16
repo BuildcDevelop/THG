@@ -254,6 +254,23 @@ export type BattleReportPayload = {
     stone: number;
     iron: number;
   };
+  returnMovement?: {
+    movementId?: number;
+    startedAt?: string;
+    arriveAt?: string;
+    durationSec?: number;
+    distanceTiles?: number;
+    fromVillageId?: number;
+    fromVillageName?: string;
+    toVillageId?: number;
+    toVillageName?: string;
+    units?: Record<string, number>;
+    lootTaken?: {
+      wood: number;
+      stone: number;
+      iron: number;
+    };
+  };
   support?: {
     start?: Record<string, number>;
     losses?: Record<string, number>;
@@ -314,6 +331,19 @@ export type IssueArmyCommandPayload = {
   supportMovementId?: number;
   lootPriority?: LootPriority;
   units?: Partial<Record<'militia' | 'archer' | 'cavalry' | 'ram' | 'caravan', number>>;
+};
+
+export type IssueArmyCommandResult = {
+  orderId: number;
+  commandType: ArmyCommandType;
+  originVillageId: number;
+  targetVillageId: number;
+  totalUnits: number;
+  distanceTiles: number;
+  durationSec: number;
+  arriveAt: string;
+  totalCost?: ResourceCost;
+  lootPriority?: LootPriority | null;
 };
 
 type ApiOk<T> = {
@@ -442,7 +472,7 @@ export const conquerVillage = async (
 export const issueArmyCommand = async (
   username: string,
   payload: IssueArmyCommandPayload,
-): Promise<{ result: unknown; data: GameStateResponse }> => {
+): Promise<{ result: IssueArmyCommandResult; data: GameStateResponse }> => {
   const requestBody = {
     username,
     villageId: payload.villageId,
@@ -453,10 +483,13 @@ export const issueArmyCommand = async (
     units: payload.units,
   };
 
-  const response = await request<ApiOk<GameStateResponse> & { result: unknown }>('/api/v1/army/command', {
-    method: 'POST',
-    body: JSON.stringify(requestBody),
-  });
+  const response = await request<ApiOk<GameStateResponse> & { result: IssueArmyCommandResult }>(
+    '/api/v1/army/command',
+    {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    },
+  );
 
   return {
     result: response.result,

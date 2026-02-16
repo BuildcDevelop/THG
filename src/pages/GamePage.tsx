@@ -14,8 +14,10 @@ import {
   recruitUnit,
   upgradeBuilding,
   type ArmyCommandType,
+  type BattleReportItem,
   type ArmyMovementState,
   type BattleReportListResponse,
+  type BattleReportPayload,
   type GameBuildingState,
   type GameStateResponse,
   type GameUnitState,
@@ -29,6 +31,7 @@ type PanelType =
   | 'army'
   | 'research'
   | 'messages'
+  | 'battleReport'
   | 'kingdom'
   | 'rankings'
   | 'profile'
@@ -38,7 +41,7 @@ type PanelType =
   | 'village'
   | 'building';
 
-type StaticPanelType = Exclude<PanelType, 'village' | 'building'>;
+type StaticPanelType = Exclude<PanelType, 'village' | 'building' | 'battleReport'>;
 
 type PinSide = 'left' | 'right';
 
@@ -82,6 +85,7 @@ type PanelWindow = PanelMeta & {
   id: string;
   settlementId?: string;
   buildingId?: string;
+  battleReportId?: number;
   villageName?: string;
   kingdomName?: string;
   playerUsername?: string;
@@ -100,6 +104,12 @@ type ResourceStock = {
   buildingId: string;
 };
 
+type ResourceCost = {
+  wood: number;
+  stone: number;
+  iron: number;
+};
+
 type Building = {
   id: string;
   name: string;
@@ -108,6 +118,7 @@ type Building = {
   category: string;
   workers: string;
   effect: string;
+  nextCostRaw: ResourceCost | null;
   nextCost: string;
   nextTime: string;
   canUpgrade: boolean;
@@ -204,6 +215,7 @@ type PersistedPanelWindow = Pick<
   | 'alert'
   | 'settlementId'
   | 'buildingId'
+  | 'battleReportId'
   | 'villageName'
   | 'kingdomName'
   | 'playerUsername'
@@ -214,8 +226,8 @@ const PANEL_META: Record<PanelType, PanelMeta> = {
     type: 'city',
     label: 'Přehled města',
     side: 'left',
-    width: 1040,
-    height: 620,
+    width: 1280,
+    height: 660,
   },
   map: {
     type: 'map',
@@ -244,6 +256,13 @@ const PANEL_META: Record<PanelType, PanelMeta> = {
     side: 'right',
     width: 480,
     height: 430,
+  },
+  battleReport: {
+    type: 'battleReport',
+    label: 'Bitevní hlášení',
+    side: 'right',
+    width: 760,
+    height: 620,
   },
   kingdom: {
     type: 'kingdom',
@@ -416,6 +435,40 @@ const LOOT_PRIORITY_LABELS: Record<LootPriority, string> = {
   iron: 'Železo',
 };
 
+const RESOURCE_COST_TYPES: (keyof ResourceCost)[] = ['wood', 'stone', 'iron'];
+
+const CITY_OVERVIEW_GROUPS: {
+  id: string;
+  label: string;
+  subtitle: string;
+  buildingIds: string[];
+}[] = [
+  {
+    id: 'capital',
+    label: 'Hlavní město',
+    subtitle: 'Správa, zásoby a populace',
+    buildingIds: ['townhall', 'warehouse', 'residential-quarter', 'university'],
+  },
+  {
+    id: 'economy',
+    label: 'Infrastruktura',
+    subtitle: 'Produkce základních surovin',
+    buildingIds: ['woodcutter', 'quarry', 'iron-mine'],
+  },
+  {
+    id: 'military',
+    label: 'Vojenský okruh',
+    subtitle: 'Nábor a rozšíření armády',
+    buildingIds: ['barracks', 'stable', 'workshop'],
+  },
+  {
+    id: 'defense',
+    label: 'Obrana',
+    subtitle: 'Pevnostní a vstupní prvky',
+    buildingIds: ['fortification', 'gate'],
+  },
+];
+
 const MAP_ORDER_ICON_LABELS: Record<keyof SettlementOrderMarkerCounts, string> = {
   attack: 'Útok',
   support: 'Podpora',
@@ -523,7 +576,7 @@ const MAP_WINDOW_MIN_WIDTH = 620;
 const MAP_WINDOW_MIN_HEIGHT = 460;
 const PANEL_DEFAULT_MIN_WIDTH = 360;
 const PANEL_DEFAULT_MIN_HEIGHT = 280;
-const PANEL_CITY_MIN_WIDTH = 920;
+const PANEL_CITY_MIN_WIDTH = 1080;
 const PANEL_CITY_MIN_HEIGHT = 600;
 const PANEL_VIEWPORT_MARGIN_X = 32;
 const PANEL_VIEWPORT_MARGIN_Y = 56;
@@ -804,7 +857,7 @@ const getPanelMinSize = (type: PanelType): WindowSize => {
   if (type === 'rankings') {
     return { width: 760, height: 420 };
   }
-  if (type === 'kingdomProfile' || type === 'playerProfile') {
+  if (type === 'kingdomProfile' || type === 'playerProfile' || type === 'battleReport') {
     return { width: 560, height: 420 };
   }
 
@@ -1083,6 +1136,9 @@ const sanitizeStoredPanel = (value: unknown, index: number): PanelWindow | null 
     alert: false,
     settlementId: typeof candidate.settlementId === 'string' ? candidate.settlementId : undefined,
     buildingId: typeof candidate.buildingId === 'string' ? candidate.buildingId : undefined,
+    battleReportId: Number.isFinite(Number(candidate.battleReportId))
+      ? Number(candidate.battleReportId)
+      : undefined,
     villageName: typeof candidate.villageName === 'string' ? candidate.villageName : undefined,
     kingdomName: typeof candidate.kingdomName === 'string' ? candidate.kingdomName : undefined,
     playerUsername: typeof candidate.playerUsername === 'string' ? candidate.playerUsername : undefined,
@@ -1142,6 +1198,7 @@ const savePanelLayout = (username: string, panels: PanelWindow[]): void => {
     alert: false,
     settlementId: panel.settlementId,
     buildingId: panel.buildingId,
+    battleReportId: panel.battleReportId,
     villageName: panel.villageName,
     kingdomName: panel.kingdomName,
     playerUsername: panel.playerUsername,
@@ -1168,6 +1225,7 @@ const createPanelWindow = (
       | 'height'
       | 'settlementId'
       | 'buildingId'
+      | 'battleReportId'
       | 'villageName'
       | 'kingdomName'
       | 'playerUsername'
@@ -1213,7 +1271,7 @@ const createPanelWindow = (
   };
 };
 
-const formatCostLabel = (cost: { wood: number; stone: number; iron: number } | null): string => {
+const formatCostLabel = (cost: ResourceCost | null): string => {
   if (!cost) {
     return 'Max úroveň';
   }
@@ -1264,103 +1322,231 @@ const CityPanel = ({
   ownerName,
   prestige,
   loyalty,
+  availableResources,
   buildings,
   units,
   orders,
   onOpenBuilding,
+  onUpgradeBuilding,
+  upgradePendingBuildingId,
+  buildingNotices,
 }: {
   villageLabel: string;
   regionLabel: string;
   ownerName: string;
   prestige: number;
   loyalty: number;
+  availableResources: ResourceCost;
   buildings: Building[];
   units: Unit[];
   orders: string[];
   onOpenBuilding: (building: Building) => void;
+  onUpgradeBuilding: (building: Building) => void;
+  upgradePendingBuildingId: string | null;
+  buildingNotices: Record<string, string>;
 }) => {
+  const buildingsById = useMemo(
+    () => new Map(buildings.map((building) => [building.id, building])),
+    [buildings],
+  );
+
+  const groupedBuildings = useMemo(() => {
+    const seenBuildingIds = new Set<string>();
+    const grouped = CITY_OVERVIEW_GROUPS.map((group) => {
+      const orderedBuildings = group.buildingIds
+        .map((buildingId) => {
+          const resolvedBuilding = buildingsById.get(buildingId);
+          if (resolvedBuilding) {
+            seenBuildingIds.add(buildingId);
+          }
+          return resolvedBuilding;
+        })
+        .filter((building): building is Building => building != null);
+
+      return {
+        ...group,
+        buildings: orderedBuildings,
+      };
+    }).filter((group) => group.buildings.length > 0);
+
+    const additionalBuildings = buildings.filter((building) => !seenBuildingIds.has(building.id));
+    if (additionalBuildings.length > 0) {
+      grouped.push({
+        id: 'additional',
+        label: 'Další stavby',
+        subtitle: 'Speciální řetězce a unikátní budovy',
+        buildingIds: additionalBuildings.map((building) => building.id),
+        buildings: additionalBuildings,
+      });
+    }
+
+    return grouped;
+  }, [buildings, buildingsById]);
+
   return (
     <div className="city-panel">
-      <div className="city-stats-grid">
-        <article>
-          <h4>Město</h4>
-          <strong>{villageLabel}</strong>
-          <span>{regionLabel}</span>
-        </article>
-        <article>
-          <h4>Prestiž</h4>
-          <strong>{prestige.toLocaleString('cs-CZ')} bodů</strong>
-          <span>Tier: opevněné město</span>
-        </article>
-        <article>
-          <h4>Vlastník</h4>
-          <strong>{ownerName}</strong>
-          <span>Aktuální držitel léna</span>
-        </article>
-        <article>
-          <h4>Oddanost</h4>
-          <strong>{loyalty} %</strong>
-          <span>Bez rizika převzetí</span>
-        </article>
-      </div>
-
-      <div className="city-layout">
-        <section className="city-core-view">
-          <h3>Centrum města</h3>
-          <p>Klikni na budovu pro detail, náklady a živý backend stav.</p>
-          <div className="building-grid">
-            {buildings.map((building) => (
-              <button
-                key={building.id}
-                className="building-card"
-                onClick={() => onOpenBuilding(building)}
-              >
-                <img src={building.icon} alt={building.name} loading="lazy" />
-                <span>{building.category}</span>
-                <strong>{building.name}</strong>
-                <em>Úroveň {building.level}</em>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <aside className="city-side-info">
-          <section>
-            <h3>Jednotky ve městě</h3>
-            <ul>
-              {units.map((unit) => (
-                <li key={unit.id}>
-                  <strong>{unit.amount}</strong>
-                  <span>{unit.name}</span>
-                  <em>{unit.role}</em>
-                </li>
-              ))}
-            </ul>
-          </section>
-
-          <section>
-            <h3>Aktivní rozkazy</h3>
-            <ul>
-              {orders.map((order, index) => {
-                const commandType = parseArmyOrderCommandType(order);
-                return (
-                  <li key={`${index}-${order}`} className={commandType ? 'order-line with-icon' : 'order-line'}>
-                    {commandType ? (
-                      <span
-                        className={`command-badge ${commandType} compact`}
-                        aria-label={ARMY_COMMAND_LABELS[commandType]}
-                        title={ARMY_COMMAND_LABELS[commandType]}
-                      >
-                        <span className="symbol">{getArmyCommandSymbol(commandType)}</span>
-                      </span>
-                    ) : null}
-                    <span>{order}</span>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
+      <div className="city-overview-layout">
+        <aside className="city-stats-grid">
+          <article>
+            <h4>Město</h4>
+            <strong>{villageLabel}</strong>
+            <span>{regionLabel}</span>
+          </article>
+          <article>
+            <h4>Prestiž</h4>
+            <strong>{prestige.toLocaleString('cs-CZ')} bodů</strong>
+            <span>Tier: opevněné město</span>
+          </article>
+          <article>
+            <h4>Vlastník</h4>
+            <strong>{ownerName}</strong>
+            <span>Aktuální držitel léna</span>
+          </article>
+          <article>
+            <h4>Oddanost</h4>
+            <strong>{loyalty} %</strong>
+            <span>Bez rizika převzetí</span>
+          </article>
         </aside>
+
+        <div className="city-layout">
+          <section className="city-core-view">
+            <div className="city-core-headline">
+              <h3>Strom rozvoje osady</h3>
+              <p>
+                Každá karta zobrazuje cenu a čas další úrovně. Upgrady můžeš spustit rovnou tady bez přepnutí do
+                detailu.
+              </p>
+            </div>
+            <div className="city-upgrade-board">
+              {groupedBuildings.map((group) => (
+                <section key={group.id} className="city-upgrade-column">
+                  <header>
+                    <h4>{group.label}</h4>
+                    <p>{group.subtitle}</p>
+                  </header>
+                  <div className="city-building-list">
+                    {group.buildings.map((building) => {
+                      const isUpgradePending = upgradePendingBuildingId === building.id;
+                      const notice = buildingNotices[building.id] ?? '';
+                      const normalizedNotice = notice
+                        .normalize('NFD')
+                        .replace(/\p{Diacritic}/gu, '')
+                        .toLowerCase();
+                      const isPositiveNotice = normalizedNotice.includes('uspesne');
+                      const statusText = building.isInProgress
+                        ? `Probíhá upgrade (${building.nextTime})`
+                        : building.canUpgrade
+                          ? `Připraveno (${building.nextTime})`
+                          : building.blockedReason ?? 'Max úroveň';
+                      const statusToneClass = building.isInProgress
+                        ? 'progress'
+                        : building.canUpgrade
+                          ? 'ready'
+                          : 'blocked';
+
+                      return (
+                        <article key={building.id} className="city-building-card">
+                          <div className="city-building-main">
+                            <img src={building.icon} alt={building.name} loading="lazy" />
+                            <div>
+                              <span>{building.category}</span>
+                              <strong>{building.name}</strong>
+                              <em>Úroveň {building.level}</em>
+                            </div>
+                          </div>
+                          <p className={`city-building-status ${statusToneClass}`}>{statusText}</p>
+                          <div className="city-building-costs">
+                            {building.nextCostRaw ? (
+                              RESOURCE_COST_TYPES.map((resourceType) => {
+                                const requiredAmount = building.nextCostRaw?.[resourceType] ?? 0;
+                                const availableAmount = availableResources[resourceType];
+                                const canAffordResource = availableAmount >= requiredAmount;
+                                return (
+                                  <span
+                                    key={`${building.id}-${resourceType}`}
+                                    className={`city-cost-chip ${canAffordResource ? 'ok' : 'missing'}`}
+                                    title={`${LOOT_PRIORITY_LABELS[resourceType]}: máš ${availableAmount.toLocaleString('cs-CZ')}`}
+                                  >
+                                    <b>{LOOT_PRIORITY_LABELS[resourceType]}</b>
+                                    <i>{requiredAmount.toLocaleString('cs-CZ')}</i>
+                                  </span>
+                                );
+                              })
+                            ) : (
+                              <span className="city-cost-chip maxed">Max úroveň</span>
+                            )}
+                          </div>
+                          <div className="city-building-actions">
+                            <button
+                              type="button"
+                              className="secondary-action city-building-action detail"
+                              onClick={() => onOpenBuilding(building)}
+                            >
+                              Detail
+                            </button>
+                            <button
+                              type="button"
+                              className="upgrade-action city-building-action"
+                              onClick={() => onUpgradeBuilding(building)}
+                              disabled={!building.canUpgrade || isUpgradePending}
+                              title={building.blockedReason ?? undefined}
+                            >
+                              {isUpgradePending ? 'Spouštím...' : 'Upgradovat'}
+                            </button>
+                          </div>
+                          {notice ? (
+                            <p className={`city-building-notice ${isPositiveNotice ? 'success' : 'error'}`}>
+                              {notice}
+                            </p>
+                          ) : null}
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+            </div>
+          </section>
+
+          <aside className="city-side-info">
+            <section>
+              <h3>Jednotky ve městě</h3>
+              <ul>
+                {units.map((unit) => (
+                  <li key={unit.id}>
+                    <strong>{unit.amount}</strong>
+                    <span>{unit.name}</span>
+                    <em>{unit.role}</em>
+                  </li>
+                ))}
+              </ul>
+            </section>
+
+            <section>
+              <h3>Aktivní rozkazy</h3>
+              <ul>
+                {orders.map((order, index) => {
+                  const commandType = parseArmyOrderCommandType(order);
+                  return (
+                    <li key={`${index}-${order}`} className={commandType ? 'order-line with-icon' : 'order-line'}>
+                      {commandType ? (
+                        <span
+                          className={`command-badge ${commandType} compact`}
+                          aria-label={ARMY_COMMAND_LABELS[commandType]}
+                          title={ARMY_COMMAND_LABELS[commandType]}
+                        >
+                          <span className="symbol">{getArmyCommandSymbol(commandType)}</span>
+                        </span>
+                      ) : null}
+                      <span>{order}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          </aside>
+        </div>
       </div>
     </div>
   );
@@ -1837,12 +2023,391 @@ const ResearchPanel = () => (
   </div>
 );
 
+type BattleUnitSnapshot = {
+  start?: Record<string, number>;
+  losses?: Record<string, number>;
+  survivors?: Record<string, number>;
+  survivorsTotal?: number;
+};
+
+type BattleUnitRow = {
+  unitId: string;
+  start: number;
+  losses: number;
+  survivors: number;
+};
+
+type BattleOutcomeTone = 'victory' | 'defeat' | 'neutral';
+
+const isCommandUnitId = (unitId: string): unitId is CommandUnitId =>
+  COMMAND_UNIT_ORDER.includes(unitId as CommandUnitId);
+
+const normalizeBattleAmount = (value: number | undefined): number => {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(parsed));
+};
+
+const sumBattleSelection = (selection?: Record<string, number>): number => {
+  if (!selection) {
+    return 0;
+  }
+  return Object.values(selection).reduce((sum, amount) => sum + normalizeBattleAmount(amount), 0);
+};
+
+const collectBattleUnitRows = (
+  start?: Record<string, number>,
+  losses?: Record<string, number>,
+  survivors?: Record<string, number>,
+): BattleUnitRow[] => {
+  const ids = new Set<string>();
+  for (const source of [start, losses, survivors]) {
+    if (!source) {
+      continue;
+    }
+    for (const [unitId, amount] of Object.entries(source)) {
+      if (normalizeBattleAmount(amount) > 0) {
+        ids.add(unitId);
+      }
+    }
+  }
+
+  const orderedKnown = COMMAND_UNIT_ORDER.filter((unitId) => ids.has(unitId));
+  const orderedUnknown = [...ids]
+    .filter((unitId) => !isCommandUnitId(unitId))
+    .sort((a, b) => a.localeCompare(b, 'cs'));
+  const orderedIds = [...orderedKnown, ...orderedUnknown];
+
+  return orderedIds.map((unitId) => ({
+    unitId,
+    start: normalizeBattleAmount(start?.[unitId]),
+    losses: normalizeBattleAmount(losses?.[unitId]),
+    survivors: normalizeBattleAmount(survivors?.[unitId]),
+  }));
+};
+
+const collectSelectionRows = (selection?: Record<string, number>): { unitId: string; amount: number }[] => {
+  if (!selection) {
+    return [];
+  }
+
+  const ids = new Set<string>();
+  for (const [unitId, amount] of Object.entries(selection)) {
+    if (normalizeBattleAmount(amount) > 0) {
+      ids.add(unitId);
+    }
+  }
+
+  const orderedKnown = COMMAND_UNIT_ORDER.filter((unitId) => ids.has(unitId));
+  const orderedUnknown = [...ids]
+    .filter((unitId) => !isCommandUnitId(unitId))
+    .sort((a, b) => a.localeCompare(b, 'cs'));
+  const orderedIds = [...orderedKnown, ...orderedUnknown];
+
+  return orderedIds.map((unitId) => ({
+    unitId,
+    amount: normalizeBattleAmount(selection[unitId]),
+  }));
+};
+
+const getBattleOutcomeMeta = (payload: BattleReportPayload): { label: string; tone: BattleOutcomeTone } => {
+  const perspective = payload.perspective ?? 'attacker';
+  if (payload.outcome === 'attacker_victory') {
+    if (perspective === 'attacker') {
+      return { label: 'Vítězství', tone: 'victory' };
+    }
+    return { label: 'Obrana prolomena', tone: 'defeat' };
+  }
+  if (payload.outcome === 'defender_victory') {
+    if (perspective === 'defender') {
+      return { label: 'Obrana úspěšná', tone: 'victory' };
+    }
+    return { label: 'Útok odražen', tone: 'defeat' };
+  }
+  return { label: 'Střet bez výsledku', tone: 'neutral' };
+};
+
+const hasBattleIntel = (payload: BattleReportPayload): boolean =>
+  Boolean(
+    payload.battle ||
+      payload.support ||
+      payload.returnMovement ||
+      payload.armyDestroyed ||
+      (payload.lootTaken &&
+        (normalizeBattleAmount(payload.lootTaken.wood) > 0 ||
+          normalizeBattleAmount(payload.lootTaken.stone) > 0 ||
+          normalizeBattleAmount(payload.lootTaken.iron) > 0)),
+  );
+
+const formatBattlePower = (value: number | undefined): string =>
+  value == null ? '-' : normalizeBattleAmount(value).toLocaleString('cs-CZ');
+
+const formatBattleMultiplier = (value: number | undefined): string =>
+  value == null || !Number.isFinite(value) ? '-' : `${value.toFixed(2)}×`;
+
+const formatBattlePercent = (value: number | undefined): string =>
+  value == null || !Number.isFinite(value) ? '-' : `${(value * 100).toFixed(1)} %`;
+
+const BattleArmyBreakdownCard = ({
+  heading,
+  subheading,
+  tone,
+  snapshot,
+  hidden,
+  hiddenReason,
+}: {
+  heading: string;
+  subheading?: string;
+  tone: 'attacker' | 'defender' | 'support';
+  snapshot?: BattleUnitSnapshot;
+  hidden?: boolean;
+  hiddenReason?: string;
+}) => {
+  const rows = collectBattleUnitRows(snapshot?.start, snapshot?.losses, snapshot?.survivors);
+  const startTotal = sumBattleSelection(snapshot?.start);
+  const lossesTotal = sumBattleSelection(snapshot?.losses);
+  const survivorsTotalFromSnapshot = Number(snapshot?.survivorsTotal);
+  const survivorsTotal = Number.isFinite(survivorsTotalFromSnapshot)
+    ? Math.max(0, Math.floor(survivorsTotalFromSnapshot))
+    : sumBattleSelection(snapshot?.survivors);
+
+  return (
+    <article className={`battle-army-card ${tone}`}>
+      <header>
+        <h4>{heading}</h4>
+        {subheading ? <p>{subheading}</p> : null}
+      </header>
+      {hidden ? (
+        <p className="battle-army-hidden">{hiddenReason ?? 'Průzkum nepřinesl přesné počty.'}</p>
+      ) : rows.length === 0 ? (
+        <p className="battle-army-hidden">Pro tuto stranu nejsou dostupná jednotková data.</p>
+      ) : (
+        <>
+          <div className="battle-army-kpis">
+            <span>
+              Start: <strong>{startTotal.toLocaleString('cs-CZ')}</strong>
+            </span>
+            <span>
+              Ztráty: <strong>{lossesTotal.toLocaleString('cs-CZ')}</strong>
+            </span>
+            <span>
+              Přežilo: <strong>{survivorsTotal.toLocaleString('cs-CZ')}</strong>
+            </span>
+          </div>
+          <table className="battle-army-table">
+            <thead>
+              <tr>
+                <th>Jednotka</th>
+                <th>Start</th>
+                <th>Ztráty</th>
+                <th>Přežilo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={`${heading}-${row.unitId}`}>
+                  <td>{UNIT_META[row.unitId]?.fallbackName ?? row.unitId}</td>
+                  <td>{row.start.toLocaleString('cs-CZ')}</td>
+                  <td>{row.losses.toLocaleString('cs-CZ')}</td>
+                  <td>{row.survivors.toLocaleString('cs-CZ')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </article>
+  );
+};
+
+const BattleReportPanel = ({ report }: { report: BattleReportItem | null }) => {
+  if (!report) {
+    return (
+      <div className="panel-stack battle-report-view">
+        <section>
+          <h3>Bitevní hlášení není dostupné</h3>
+          <p>Report se nenačetl. Otevři panel Zprávy a obnov seznam.</p>
+        </section>
+      </div>
+    );
+  }
+
+  const payload = report.payload;
+  const battle = payload.battle;
+  const outcomeMeta = getBattleOutcomeMeta(payload);
+  const attackerName = payload.attacker ?? 'Neznámý útočník';
+  const defenderName = payload.defender ?? 'Neznámý obránce';
+  const defenderCardTitle = payload.role === 'support' ? 'Podpora obránce' : `Obránce · ${defenderName}`;
+  const defenderSnapshot = payload.role === 'support' ? payload.support : battle?.defender;
+  const attackerIsUnknown = payload.attackerForcesUnknown === true && payload.perspective === 'defender';
+  const bonuses = battle?.bonuses ?? [];
+  const returnMovement = payload.returnMovement;
+  const returnRows = collectSelectionRows(returnMovement?.units);
+  const lootTaken = returnMovement?.lootTaken ?? payload.lootTaken;
+  const lootWood = normalizeBattleAmount(lootTaken?.wood);
+  const lootStone = normalizeBattleAmount(lootTaken?.stone);
+  const lootIron = normalizeBattleAmount(lootTaken?.iron);
+  const totalLoot = lootWood + lootStone + lootIron;
+  const attackerLosses = sumBattleSelection(battle?.attacker?.losses);
+  const defenderLosses = sumBattleSelection(defenderSnapshot?.losses);
+  const hasPowerIntel =
+    battle?.baseAttackPower != null ||
+    battle?.baseDefensePower != null ||
+    battle?.finalAttackPower != null ||
+    battle?.finalDefensePower != null;
+
+  return (
+    <div className="panel-stack battle-report-view">
+      <section className="battle-report-hero">
+        <div className="battle-report-title-wrap">
+          <p className="battle-report-kicker">War Ledger · Report #{report.id}</p>
+          <h3>{report.title}</h3>
+          <p>{report.summary}</p>
+        </div>
+        <div className={`battle-outcome-pill ${outcomeMeta.tone}`}>{outcomeMeta.label}</div>
+        <div className="battle-report-meta">
+          <span>
+            Čas střetu: <strong>{new Date(report.battleAt).toLocaleString('cs-CZ')}</strong>
+          </span>
+          <span>
+            Útočník: <strong>{attackerName}</strong>
+          </span>
+          <span>
+            Obránce: <strong>{defenderName}</strong>
+          </span>
+          <span>
+            Trasa: <strong>{payload.originVillageName ?? 'Neznámý původ'} → {payload.targetVillageName ?? 'Neznámý cíl'}</strong>
+          </span>
+        </div>
+        {payload.armyDestroyed ? <p className="battle-alert">Útočná armáda byla zcela zničena.</p> : null}
+      </section>
+
+      <section>
+        <h3>Armády ve střetu</h3>
+        <div className="battle-frontline-grid">
+          <BattleArmyBreakdownCard
+            heading={`Útočník · ${attackerName}`}
+            subheading={payload.originVillageName}
+            tone="attacker"
+            snapshot={battle?.attacker}
+            hidden={attackerIsUnknown}
+            hiddenReason="Obranná strana byla zničena. Přesné počty útočníka nejsou známé."
+          />
+          <BattleArmyBreakdownCard
+            heading={defenderCardTitle}
+            subheading={payload.targetVillageName}
+            tone={payload.role === 'support' ? 'support' : 'defender'}
+            snapshot={defenderSnapshot}
+          />
+        </div>
+      </section>
+
+      <section>
+        <h3>Bojová síla a bonusy</h3>
+        {hasPowerIntel ? (
+          <div className="battle-power-grid">
+            <article>
+              <span>Základ útok/obrana</span>
+              <strong>
+                {formatBattlePower(battle?.baseAttackPower)} / {formatBattlePower(battle?.baseDefensePower)}
+              </strong>
+            </article>
+            <article>
+              <span>Finální útok/obrana</span>
+              <strong>
+                {formatBattlePower(battle?.finalAttackPower)} / {formatBattlePower(battle?.finalDefensePower)}
+              </strong>
+            </article>
+            <article>
+              <span>Multiplikátor útok/obrana</span>
+              <strong>
+                {formatBattleMultiplier(battle?.attackMultiplier)} / {formatBattleMultiplier(battle?.defenseMultiplier)}
+              </strong>
+            </article>
+            <article>
+              <span>Ztráty útok/obrana</span>
+              <strong>
+                {attackerLosses.toLocaleString('cs-CZ')} / {defenderLosses.toLocaleString('cs-CZ')}
+              </strong>
+              <small>
+                Poměr: {formatBattlePercent(battle?.attackerLossRatio)} / {formatBattlePercent(battle?.defenderLossRatio)}
+              </small>
+            </article>
+          </div>
+        ) : (
+          <p>Není dostupný kompletní rozklad síly střetu.</p>
+        )}
+        {bonuses.length > 0 ? (
+          <ul className="battle-bonus-list">
+            {bonuses.map((bonus) => (
+              <li key={`${report.id}-${bonus}`}>{bonus}</li>
+            ))}
+          </ul>
+        ) : (
+          <p>Žádné aktivní bojové bonusy.</p>
+        )}
+      </section>
+
+      <section>
+        <h3>Návrat armády a kořist</h3>
+        {returnMovement ? (
+          <div className="battle-return-block">
+            <p>
+              Návrat: <strong>{returnMovement.fromVillageName ?? 'Cíl'} → {returnMovement.toVillageName ?? 'Domov'}</strong>{' '}
+              · ETA <strong>{new Date(returnMovement.arriveAt ?? report.createdAt).toLocaleString('cs-CZ')}</strong> ·{' '}
+              trvání <strong>{formatDurationLabel(returnMovement.durationSec ?? null)}</strong>
+            </p>
+            {returnRows.length > 0 ? (
+              <table className="battle-return-table">
+                <thead>
+                  <tr>
+                    <th>Vracející se jednotka</th>
+                    <th>Počet</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {returnRows.map((row) => (
+                    <tr key={`${report.id}-return-${row.unitId}`}>
+                      <td>{UNIT_META[row.unitId]?.fallbackName ?? row.unitId}</td>
+                      <td>{row.amount.toLocaleString('cs-CZ')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="battle-army-hidden">Žádná vracející se armáda nebyla zaznamenána.</p>
+            )}
+          </div>
+        ) : (
+          <p>Po bitvě nevznikl návratový přesun (armáda padla nebo nebyly jednotky k návratu).</p>
+        )}
+        <div className="battle-loot-strip">
+          <span>
+            Dřevo <strong>{lootWood.toLocaleString('cs-CZ')}</strong>
+          </span>
+          <span>
+            Kámen <strong>{lootStone.toLocaleString('cs-CZ')}</strong>
+          </span>
+          <span>
+            Železo <strong>{lootIron.toLocaleString('cs-CZ')}</strong>
+          </span>
+          <span>
+            Celkem <strong>{totalLoot.toLocaleString('cs-CZ')}</strong>
+          </span>
+        </div>
+      </section>
+    </div>
+  );
+};
+
 const MessagesPanel = ({
   reports,
   selectedReportId,
   loading,
   error,
-  onSelectReport,
+  onOpenReport,
   onSetPage,
   onRefresh,
 }: {
@@ -1850,7 +2415,7 @@ const MessagesPanel = ({
   selectedReportId: number | null;
   loading: boolean;
   error: string | null;
-  onSelectReport: (reportId: number) => void;
+  onOpenReport: (reportId: number) => void;
   onSetPage: (page: number) => void;
   onRefresh: () => void;
 }) => {
@@ -1861,11 +2426,6 @@ const MessagesPanel = ({
   const selectedReport =
     items.find((item) => item.id === selectedReportId) ??
     (selectedReportId == null ? items[0] ?? null : null);
-  const hasBattlePower =
-    selectedReport?.payload.battle?.finalAttackPower != null ||
-    selectedReport?.payload.battle?.finalDefensePower != null;
-  const showsUnknownAttacker = selectedReport?.payload.attackerForcesUnknown === true;
-
   const canGoPrev = page > 1;
   const canGoNext = page < totalPages;
 
@@ -1897,18 +2457,30 @@ const MessagesPanel = ({
         </div>
         {error ? <p className="panel-feedback">{error}</p> : null}
         <ul className="messages-report-list">
-          {items.map((report) => (
-            <li key={report.id}>
-              <button
-                className={`messages-report-item ${selectedReport?.id === report.id ? 'is-active' : ''}`}
-                onClick={() => onSelectReport(report.id)}
-              >
-                <strong>{report.title}</strong>
-                <span>{report.summary}</span>
-                <small>{new Date(report.createdAt).toLocaleString('cs-CZ')}</small>
-              </button>
-            </li>
-          ))}
+          {items.map((report) => {
+            const outcomeMeta = getBattleOutcomeMeta(report.payload);
+            const intelKnown = hasBattleIntel(report.payload);
+            return (
+              <li key={report.id}>
+                <button
+                  className={`messages-report-item war-notice ${selectedReport?.id === report.id ? 'is-active' : ''}`}
+                  onClick={() => onOpenReport(report.id)}
+                >
+                  <div className="messages-report-topline">
+                    <span className={`messages-outcome-pill ${outcomeMeta.tone}`}>{outcomeMeta.label}</span>
+                    <span className={`messages-intel-pill ${intelKnown ? 'known' : 'limited'}`}>
+                      {intelKnown ? 'Detail známý' : 'Omezený intel'}
+                    </span>
+                  </div>
+                  <strong>{report.title}</strong>
+                  <span>{report.summary}</span>
+                  <small>
+                    {new Date(report.createdAt).toLocaleString('cs-CZ')} · Otevřít válečný report ↗
+                  </small>
+                </button>
+              </li>
+            );
+          })}
           {items.length === 0 && !loading ? <li>Žádné reporty pro tuto stránku.</li> : null}
         </ul>
         <div className="messages-pagination">
@@ -1930,54 +2502,22 @@ const MessagesPanel = ({
         </div>
       </section>
 
-      <section>
-        <h3>Detail reportu</h3>
+      <section className="messages-detail">
+        <h3>Náhled vybraného reportu</h3>
         {selectedReport ? (
-          <div className="messages-detail">
+          <div className="messages-detail-card">
             <h4>{selectedReport.title}</h4>
             <p>{selectedReport.summary}</p>
-            <p>
-              Čas bitvy: <strong>{new Date(selectedReport.battleAt).toLocaleString('cs-CZ')}</strong>
-            </p>
             <p>
               Útočník: <strong>{selectedReport.payload.attacker ?? 'Neznámý'}</strong> · Obránce:{' '}
               <strong>{selectedReport.payload.defender ?? 'Neznámý'}</strong>
             </p>
-            <p>
-              Výsledek:{' '}
-              <strong>
-                {selectedReport.payload.outcome === 'attacker_victory'
-                  ? 'Vítězství útočníka'
-                  : selectedReport.payload.outcome === 'defender_victory'
-                    ? 'Vítězství obránce'
-                    : 'N/A'}
-              </strong>
-            </p>
-            {selectedReport.payload.armyDestroyed ? (
-              <p>Armáda v útoku byla zcela zničena.</p>
-            ) : null}
-            {showsUnknownAttacker ? <p>Počty jednotek útočníka: neznámé.</p> : null}
-            {hasBattlePower ? (
-              <p>
-                Síla: útok {selectedReport.payload.battle?.finalAttackPower ?? 0} · obrana{' '}
-                {selectedReport.payload.battle?.finalDefensePower ?? 0}
-              </p>
-            ) : null}
-            {selectedReport.payload.battle?.bonuses?.length ? (
-              <ul>
-                {selectedReport.payload.battle.bonuses.map((bonus) => (
-                  <li key={bonus}>{bonus}</li>
-                ))}
-              </ul>
-            ) : null}
-            <p>
-              Kořist: {Math.floor(selectedReport.payload.lootTaken?.wood ?? 0)} dřeva,{' '}
-              {Math.floor(selectedReport.payload.lootTaken?.stone ?? 0)} kamene,{' '}
-              {Math.floor(selectedReport.payload.lootTaken?.iron ?? 0)} železa
-            </p>
+            <button className="secondary-action" onClick={() => onOpenReport(selectedReport.id)}>
+              Otevřít detailní válečný report
+            </button>
           </div>
         ) : (
-          <p>Vyber report ze seznamu vlevo nahoře.</p>
+          <p>Vyber hlášení ze seznamu a otevři ho v samostatném okně.</p>
         )}
       </section>
     </div>
@@ -3569,6 +4109,7 @@ export const GamePage = () => {
   const [battleReportsError, setBattleReportsError] = useState<string | null>(null);
   const [battleReportsPage, setBattleReportsPage] = useState(1);
   const [selectedBattleReportId, setSelectedBattleReportId] = useState<number | null>(null);
+  const [battleReportCacheById, setBattleReportCacheById] = useState<Record<number, BattleReportItem>>({});
 
   const buildings = useMemo<Building[]>(() => {
     if (!gameState) {
@@ -3586,6 +4127,7 @@ export const GamePage = () => {
         category: art?.fallbackCategory ?? building.category,
         workers: `${building.workersUsed}`,
         effect: building.effect,
+        nextCostRaw: building.nextCost,
         nextCost: formatCostLabel(building.nextCost),
         nextTime: isBuildingInProgress
           ? formatDurationLabel(building.remainingSec)
@@ -3649,6 +4191,20 @@ export const GamePage = () => {
     () => gameState?.army?.stationedSupports ?? [],
     [gameState],
   );
+  const battleReportsById = useMemo(() => {
+    const byId = new Map<number, BattleReportItem>();
+    for (const [id, report] of Object.entries(battleReportCacheById)) {
+      const numericId = Number(id);
+      if (!Number.isFinite(numericId) || numericId <= 0) {
+        continue;
+      }
+      byId.set(numericId, report);
+    }
+    for (const report of battleReports?.items ?? []) {
+      byId.set(report.id, report);
+    }
+    return byId;
+  }, [battleReportCacheById, battleReports]);
   const mapOrderMarkersByVillageId = useMemo<Map<number, SettlementOrderMarkerCounts>>(() => {
     const markerMap = new Map<number, SettlementOrderMarkerCounts>();
     const addMarker = (villageIdRaw: number, commandType: keyof SettlementOrderMarkerCounts) => {
@@ -3804,6 +4360,13 @@ export const GamePage = () => {
       try {
         const nextReports = await fetchBattleReports(username, battleReportsPage, 20);
         setBattleReports(nextReports);
+        setBattleReportCacheById((previous) => {
+          const merged = { ...previous };
+          for (const report of nextReports.items) {
+            merged[report.id] = report;
+          }
+          return merged;
+        });
         setBattleReportsPage(nextReports.page);
         setBattleReportsError(null);
         setSelectedBattleReportId((previous) => {
@@ -4701,7 +5264,11 @@ export const GamePage = () => {
           setActiveVillageId(nextState.village.id);
         }
         setStateError(null);
-        setArmyCommandNotice(`Rozkaz ${ARMY_COMMAND_LABELS[payload.commandType]} byl odeslán.`);
+        const etaLabel = formatDurationLabel(response.result.durationSec);
+        const testingHint = payload.commandType === 'attack' ? ' Test režim: útok max 5s.' : '';
+        setArmyCommandNotice(
+          `Rozkaz ${ARMY_COMMAND_LABELS[payload.commandType]} byl odeslán. ETA ${etaLabel}.${testingHint}`,
+        );
       } catch (error) {
         setArmyCommandNotice(getErrorMessage(error));
       } finally {
@@ -4778,9 +5345,55 @@ export const GamePage = () => {
     navigate('/', { replace: true });
   }, [navigate]);
 
-  const handleSelectBattleReport = useCallback((reportId: number) => {
-    setSelectedBattleReportId(reportId);
-  }, []);
+  const openBattleReportPanel = useCallback(
+    (reportId: number) => {
+      if (!Number.isFinite(reportId) || reportId <= 0) {
+        return;
+      }
+
+      const numericReportId = Math.floor(reportId);
+      const report = battleReportsById.get(numericReportId);
+      const fallbackLabel = `Bitevní hlášení #${numericReportId}`;
+      const trimmedTitle = report?.title?.trim() ?? '';
+      const label = trimmedTitle ? `Bitevní hlášení · ${trimmedTitle}` : fallbackLabel;
+      const id = `battle-report-${numericReportId}`;
+
+      setSelectedBattleReportId(numericReportId);
+      setActivePanelId(id);
+
+      setPanels((previous) => {
+        const existing = previous.find((panel) => panel.id === id);
+        const nextZ = ++topZ.current;
+
+        if (existing) {
+          return previous.map((panel) =>
+            panel.id === id
+              ? {
+                  ...panel,
+                  z: nextZ,
+                  expanded: true,
+                  alert: false,
+                  label,
+                  battleReportId: numericReportId,
+                }
+              : panel,
+          );
+        }
+
+        const created = createPanelWindow('battleReport', nextZ, previous.length, {
+          id,
+          label,
+          side: 'right',
+          width: 780,
+          height: 640,
+          battleReportId: numericReportId,
+        });
+
+        return [...previous, created];
+      });
+    },
+    [battleReportsById],
+  );
 
   const handleBattleReportsPageChange = useCallback((page: number) => {
     if (!Number.isFinite(page)) {
@@ -4814,10 +5427,18 @@ export const GamePage = () => {
             ownerName={gameState?.player.username ?? username}
             prestige={gameState?.village.prestige ?? 0}
             loyalty={gameState?.village.loyalty ?? 0}
+            availableResources={{
+              wood: gameState?.resources.wood ?? 0,
+              stone: gameState?.resources.stone ?? 0,
+              iron: gameState?.resources.iron ?? 0,
+            }}
             buildings={buildings}
             units={units}
             orders={activeOrders}
             onOpenBuilding={openBuildingPanel}
+            onUpgradeBuilding={handleBuildingUpgrade}
+            upgradePendingBuildingId={upgradePendingBuildingId}
+            buildingNotices={buildingNotices}
           />
         );
       case 'map':
@@ -4864,11 +5485,15 @@ export const GamePage = () => {
             selectedReportId={selectedBattleReportId}
             loading={battleReportsLoading}
             error={battleReportsError}
-            onSelectReport={handleSelectBattleReport}
+            onOpenReport={openBattleReportPanel}
             onSetPage={handleBattleReportsPageChange}
             onRefresh={handleBattleReportsRefresh}
           />
         );
+      case 'battleReport': {
+        const report = panel.battleReportId != null ? battleReportsById.get(panel.battleReportId) ?? null : null;
+        return <BattleReportPanel report={report} />;
+      }
       case 'kingdom':
         return <KingdomPanel />;
       case 'rankings':
@@ -5129,7 +5754,7 @@ export const GamePage = () => {
           .map((panel) => (
             <article
               key={panel.id}
-              className={`floating-window ${panel.type === 'map' ? 'map-window' : ''}`}
+              className={`floating-window${panel.type === 'map' ? ' map-window' : ''}${panel.type === 'battleReport' ? ' battle-report-window' : ''}`}
               ref={(node) => {
                 panelElementRefs.current[panel.id] = node;
               }}

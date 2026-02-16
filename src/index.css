@@ -1,22 +1,22 @@
-﻿@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Nunito+Sans:wght@400;600;700&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700;800&display=swap");
 
 :root {
-  --bg-0: #04080f;
-  --bg-1: #0a1522;
-  --bg-2: #121f2f;
-  --surface: rgba(10, 20, 33, 0.86);
-  --surface-soft: rgba(12, 27, 42, 0.84);
-  --surface-strong: rgba(6, 14, 24, 0.94);
-  --line: rgba(134, 173, 208, 0.22);
-  --line-bright: rgba(176, 214, 245, 0.5);
-  --text: #edf2f8;
-  --muted: #9eb2c5;
-  --accent: #d7a45b;
-  --accent-strong: #f2cc8a;
-  --danger: #ff7a65;
-  --ink: #0a0f15;
-  --panel-glow: 0 0 0 1px rgba(166, 206, 240, 0.08), 0 22px 44px rgba(0, 0, 0, 0.5);
-  --shadow: 0 22px 44px rgba(0, 0, 0, 0.52);
+  --bg-0: #09080a;
+  --bg-1: #151218;
+  --bg-2: #1f1a22;
+  --surface: rgba(21, 18, 23, 0.9);
+  --surface-soft: rgba(27, 22, 30, 0.88);
+  --surface-strong: rgba(15, 12, 18, 0.96);
+  --line: rgba(119, 161, 199, 0.26);
+  --line-bright: rgba(158, 206, 245, 0.52);
+  --text: #edf4fc;
+  --muted: #aebfd0;
+  --accent: #5d90c8;
+  --accent-strong: #9cd0fa;
+  --danger: #dc6767;
+  --ink: #0c0a0f;
+  --panel-glow: 0 0 0 1px rgba(128, 171, 208, 0.14), 0 26px 46px rgba(0, 0, 0, 0.56);
+  --shadow: 0 24px 48px rgba(0, 0, 0, 0.62);
 }
 
 * {
@@ -32,26 +32,32 @@ body,
 body {
   margin: 0;
   min-width: 320px;
-  font-family: 'Nunito Sans', 'Segoe UI', sans-serif;
+  font-family: "Cinzel", "Times New Roman", serif;
   color: var(--text);
-  background: radial-gradient(circle at 10% -5%, #1c3450 0%, var(--bg-0) 38%) fixed;
+  background:
+    radial-gradient(circle at 14% -8%, rgba(90, 132, 174, 0.24), transparent 42%),
+    radial-gradient(circle at 84% 0%, rgba(73, 96, 133, 0.22), transparent 40%),
+    linear-gradient(170deg, #09101a 16%, #121c29 56%, #0b111a 100%) fixed;
+  letter-spacing: 0.008em;
 }
 
 h1,
 h2 {
-  font-family: 'Cinzel', 'Segoe UI', serif;
+  font-family: "Cinzel", serif;
   letter-spacing: 0.03em;
 }
 
 h3,
 h4 {
-  letter-spacing: 0.01em;
+  font-family: "Cinzel", serif;
+  letter-spacing: 0.03em;
 }
 
 button,
 input {
   color: inherit;
   font: inherit;
+  letter-spacing: 0.02em;
 }
 
 button {
@@ -61,7 +67,7 @@ button {
 
 button:focus-visible,
 input:focus-visible {
-  outline: 2px solid rgba(242, 204, 138, 0.8);
+  outline: 2px solid rgba(156, 208, 246, 0.85);
   outline-offset: 2px;
 }
 
@@ -71,7 +77,7 @@ input:focus-visible {
 }
 
 *::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, rgba(210, 163, 93, 0.6), rgba(120, 153, 187, 0.6));
+  background: linear-gradient(180deg, rgba(143, 194, 235, 0.66), rgba(90, 133, 178, 0.66));
   border-radius: 999px;
 }
 

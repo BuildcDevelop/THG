@@ -46,6 +46,22 @@ const STARTING_BUILDING_LEVELS = {
   woodcutter: 1,
   quarry: 1,
   'iron-mine': 1,
+  warehouse: 1,
+  'residential-quarter': 1,
+};
+const VILLAGE_BUILDING_LEVEL_FLOORS = {
+  woodcutter: 1,
+  quarry: 1,
+  'iron-mine': 1,
+  warehouse: 1,
+  barracks: 0,
+  stable: 0,
+  workshop: 0,
+  fortification: 0,
+  gate: 0,
+  townhall: 0,
+  university: 0,
+  'residential-quarter': 1,
 };
 const ABANDONED_STARTING_BUILDING_LEVELS = {
   woodcutter: 5,
@@ -711,6 +727,25 @@ const ensureSpecialPlayerAccounts = db.transaction(() => {
   }
 });
 
+const ensureVillageBuildingLevelFloors = db.transaction(() => {
+  const selectVillageIdsStmt = db.prepare('SELECT id FROM villages');
+  const upsertBuildingStmt = db.prepare(
+    `INSERT INTO buildings (village_id, building_id, level)
+     VALUES (?, ?, ?)
+     ON CONFLICT(village_id, building_id) DO UPDATE SET
+       level = CASE WHEN buildings.level < excluded.level THEN excluded.level ELSE buildings.level END`,
+  );
+
+  const villages = selectVillageIdsStmt.all();
+  for (const village of villages) {
+    const villageId = Number(village.id);
+    for (const buildingId of BUILDING_ORDER) {
+      const targetLevel = Math.max(0, Number(VILLAGE_BUILDING_LEVEL_FLOORS[buildingId] ?? 0));
+      upsertBuildingStmt.run(villageId, buildingId, targetLevel);
+    }
+  }
+});
+
 const shouldReseedWorld = () => {
   const playerRows = db.prepare('SELECT username FROM players').all();
   if (playerRows.length === 0) {
@@ -731,4 +766,5 @@ if (shouldReseedWorld()) {
 ensureBotFlagConsistency();
 ensureAbandonedVillages();
 ensureSpecialPlayerAccounts();
+ensureVillageBuildingLevelFloors();
 ensureHayatoOwnsAbandonedVillage13();

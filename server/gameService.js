@@ -82,7 +82,7 @@ const selectActiveUpgradesByVillageStmt = db.prepare(
    WHERE village_id = ? AND status = 'in_progress'
    ORDER BY finish_at ASC, id ASC`,
 );
-const selectActiveUpgradeByVillageAndBuildingStmt = db.prepare(
+const selectActiveUpgradesByVillageAndBuildingStmt = db.prepare(
   `SELECT
       id,
       building_id AS buildingId,
@@ -95,8 +95,7 @@ const selectActiveUpgradeByVillageAndBuildingStmt = db.prepare(
       finish_at AS finishAt
    FROM building_upgrades
    WHERE village_id = ? AND building_id = ? AND status = 'in_progress'
-   ORDER BY id DESC
-   LIMIT 1`,
+   ORDER BY finish_at ASC, id ASC`,
 );
 const selectActiveRecruitmentsByVillageStmt = db.prepare(
   `SELECT
@@ -1079,6 +1078,19 @@ const toActiveUpgradeByBuildingMap = (rows) => {
   return byBuilding;
 };
 
+const toHighestQueuedUpgradeLevelByBuildingMap = (rows) => {
+  const highestByBuilding = new Map();
+  for (const row of rows) {
+    const buildingId = row.buildingId;
+    const toLevel = Math.max(0, Math.floor(Number(row.toLevel ?? 0)));
+    const currentHighest = highestByBuilding.get(buildingId);
+    if (currentHighest == null || toLevel > currentHighest) {
+      highestByBuilding.set(buildingId, toLevel);
+    }
+  }
+  return highestByBuilding;
+};
+
 const buildArmyState = (playerId, currentVillageId) => {
   const activeMovements = selectActiveArmyMovementsByPlayerStmt
     .all(Number(playerId))
@@ -1329,6 +1341,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         }
       }
 
+      let returnMovementPayload = null;
       if (battle.attackerWins && Number(battle.attacker.survivorsTotal) > 0) {
         const returnUnits = battle.attacker.survivors;
         const distanceTiles = calculateTileDistance(targetVillage, homeVillage);
@@ -1357,6 +1370,19 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           }
           insertArmyMovementUnitStmt.run(returnMovementId, unitId, amount);
         }
+        returnMovementPayload = {
+          movementId: returnMovementId,
+          startedAt: startedAtIso,
+          arriveAt: arriveAtIso,
+          durationSec,
+          distanceTiles,
+          fromVillageId: Number(targetVillage.id),
+          fromVillageName: String(targetVillage.name ?? ''),
+          toVillageId: Number(homeVillage.id),
+          toVillageName: String(homeVillage.name ?? ''),
+          units: returnUnits,
+          lootTaken,
+        };
         spawnedReturnMovements += 1;
       }
 
@@ -1387,6 +1413,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             outcome: battle.attackerWins ? 'attacker_victory' : 'defender_victory',
             lootPriority,
             lootTaken,
+            returnMovement: returnMovementPayload ?? undefined,
             battle,
           };
           reportId = createBattleReport({
@@ -1451,6 +1478,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           lootPriority,
           lootTaken,
           attackerForcesUnknown: defenderForcesDestroyed,
+          returnMovement: defenderForcesDestroyed ? undefined : returnMovementPayload ?? undefined,
           battle: defenderForcesDestroyed
             ? {
                 defenseMultiplier: battle.defenseMultiplier,
@@ -1511,6 +1539,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             defender: defenderName,
             outcome: battle.attackerWins ? 'attacker_victory' : 'defender_victory',
             attackerForcesUnknown: supportForcesDestroyed,
+            returnMovement: supportForcesDestroyed ? undefined : returnMovementPayload ?? undefined,
             support: {
               start: supportResult.start,
               losses: supportResult.losses,
@@ -1722,6 +1751,7 @@ export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = nul
   const production = calculateProductionPerHour(buildingLevels, populationUsed, populationCap);
   const activeUpgrades = selectActiveUpgradesByVillageStmt.all(village.id);
   const activeUpgradeByBuilding = toActiveUpgradeByBuildingMap(activeUpgrades);
+  const highestQueuedUpgradeLevelByBuilding = toHighestQueuedUpgradeLevelByBuildingMap(activeUpgrades);
   const activeRecruitments = selectActiveRecruitmentsByVillageStmt.all(village.id);
   const armyState = buildArmyState(player.id, village.id);
   const relevantArmyMovements = armyState.activeMovements.filter((movement) => movement.isRelatedToCurrentVillage);
@@ -1752,20 +1782,19 @@ export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = nul
   const buildings = BUILDING_ORDER.map((buildingId) => {
     const def = BUILDING_DEFS[buildingId];
     const level = buildingLevels[buildingId] ?? 0;
+    const effectiveLevel = Math.max(level, Number(highestQueuedUpgradeLevelByBuilding.get(buildingId) ?? level));
     const maxLevel = getMaxBuildingLevel(buildingId);
-    const nextCost = calculateUpgradeCost(buildingId, level);
+    const nextCost = calculateUpgradeCost(buildingId, effectiveLevel);
     const nextDurationSec =
-      nextCost == null ? null : calculateUpgradeDurationSec(buildingId, level, townhallLevel);
+      nextCost == null ? null : calculateUpgradeDurationSec(buildingId, effectiveLevel, townhallLevel);
     const workersUsed = (def.workerPerLevel ?? 0) * level;
     const activeUpgradeForBuilding = activeUpgradeByBuilding.get(buildingId) ?? null;
     const isInProgress = activeUpgradeForBuilding != null;
     let blockedReason = null;
     let canUpgrade = false;
 
-    if (level >= maxLevel) {
+    if (effectiveLevel >= maxLevel) {
       blockedReason = 'Maximalni uroven dosazena';
-    } else if (isInProgress) {
-      blockedReason = 'Upgrade prave probiha';
     } else if (nextCost && !canAfford(currentResources, nextCost)) {
       blockedReason = 'Nedostatek surovin';
     } else {
@@ -2193,13 +2222,13 @@ const startUpgradeTransaction = db.transaction((username, buildingId, startedAtI
     throw new GameRuleError('Neznama budova.');
   }
   const maxLevel = getMaxBuildingLevel(buildingId);
-  if (currentLevel >= maxLevel) {
+  const queuedUpgradesForBuilding = selectActiveUpgradesByVillageAndBuildingStmt.all(village.id, buildingId);
+  const queuedHighestLevel = queuedUpgradesForBuilding.reduce(
+    (maxQueuedLevel, upgrade) => Math.max(maxQueuedLevel, Number(upgrade.toLevel ?? currentLevel)),
+    currentLevel,
+  );
+  if (queuedHighestLevel >= maxLevel) {
     throw new GameRuleError('Budova je na maximalni urovni.');
-  }
-
-  const activeUpgradeOnBuilding = selectActiveUpgradeByVillageAndBuildingStmt.get(village.id, buildingId);
-  if (activeUpgradeOnBuilding) {
-    throw new GameRuleError('Tato budova uz ma aktivni upgrade.');
   }
 
   const resources = selectResourcesByVillageStmt.get(village.id);
@@ -2207,13 +2236,24 @@ const startUpgradeTransaction = db.transaction((username, buildingId, startedAtI
     throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
   }
 
-  const cost = calculateUpgradeCost(buildingId, currentLevel);
+  const effectiveFromLevel = Math.max(0, Math.floor(queuedHighestLevel));
+  const cost = calculateUpgradeCost(buildingId, effectiveFromLevel);
   if (!cost) {
     throw new GameRuleError('Upgrade neni dostupny.');
   }
   const townhallLevel = buildingLevels.townhall ?? 0;
-  const durationSec = calculateUpgradeDurationSec(buildingId, currentLevel, townhallLevel);
-  const finishAtIso = new Date(Date.parse(startedAtIso) + durationSec * 1000).toISOString();
+  const durationSec = calculateUpgradeDurationSec(buildingId, effectiveFromLevel, townhallLevel);
+  const nowMs = Date.parse(startedAtIso);
+  const queueTailFinishMs = queuedUpgradesForBuilding.reduce((latestFinishMs, upgrade) => {
+    const finishMs = Date.parse(String(upgrade.finishAt));
+    if (!Number.isFinite(finishMs)) {
+      return latestFinishMs;
+    }
+    return Math.max(latestFinishMs, finishMs);
+  }, nowMs);
+  const queueStartMs = Math.max(nowMs, queueTailFinishMs);
+  const queueStartIso = new Date(queueStartMs).toISOString();
+  const finishAtIso = new Date(queueStartMs + durationSec * 1000).toISOString();
 
   const pocket = {
     wood: Number(resources.wood),
@@ -2234,21 +2274,22 @@ const startUpgradeTransaction = db.transaction((username, buildingId, startedAtI
   insertUpgradeStmt.run(
     village.id,
     buildingId,
-    currentLevel,
-    currentLevel + 1,
+    effectiveFromLevel,
+    effectiveFromLevel + 1,
     cost.wood,
     cost.stone,
     cost.iron,
-    startedAtIso,
+    queueStartIso,
     finishAtIso,
   );
 
   return {
     buildingId,
-    fromLevel: currentLevel,
-    toLevel: currentLevel + 1,
+    fromLevel: effectiveFromLevel,
+    toLevel: effectiveFromLevel + 1,
     cost,
     durationSec,
+    startedAt: queueStartIso,
     finishAt: finishAtIso,
   };
 });
