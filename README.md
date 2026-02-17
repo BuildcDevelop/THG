@@ -53,6 +53,120 @@ npm run build
 npm run preview
 ```
 
+## Convex databaze
+
+Projekt je pripraveny na public provoz pres Convex.
+
+### 1) Konfigurace a deploy Convex funkcí
+
+```bash
+npm run convex:codegen
+npm run convex:deploy
+```
+
+Pokud jeste neni Convex projekt sparovany, CLI te provede konfiguraci deploymentu.
+
+### 2) Migrace dat ze SQLite do Convex
+
+Pred migraci nastav env promenne:
+
+- `CONVEX_URL` - URL deploymentu
+- `CONVEX_DEPLOY_KEY` - admin key deploymentu
+- `SQLITE_PATH` (volitelne) - cesta k SQLite souboru, default `server/data/game.sqlite`
+- `WIPE_BEFORE_IMPORT` (volitelne) - `true`/`false`, default `true`
+
+Pak spust:
+
+```bash
+npm run db:migrate:convex
+```
+
+Skript zavola Convex mutation `migrations:importSqliteSnapshot` a vypise souhrn importu.
+
+### 3) Rezimy API
+
+- `USE_CONVEX_FULL=true`:
+  - vsechny endpointy bez zmenn ve frontendu bezi nad Convex,
+  - backend pouziva snapshot sync (optimistic lock s `revision`),
+  - vhodne pro public nasazeni na Netlify.
+- `USE_CONVEX_AUTH=true` a `USE_CONVEX_STATE=true`:
+  - prechodovy rezim po endpointu,
+  - lze nechat vypnute, pokud bezis v `USE_CONVEX_FULL=true`.
+
+Priklad lokalniho full rezimu:
+
+```powershell
+$env:CONVEX_URL='https://<deployment>.convex.cloud'
+$env:CONVEX_DEPLOY_KEY='dev:<deployment>|...'
+$env:USE_CONVEX_FULL='true'
+npm run dev:server
+```
+
+## Netlify deploy
+
+Projekt je pripraveny pro Netlify:
+
+- frontend se builduje do `dist/`,
+- API je routovane pres Netlify Function (`netlify/functions/api.mjs`),
+- vsechny `'/api/*'` requesty jdou na funkci pres `netlify.toml`.
+
+### Netlify nastaveni
+
+V Netlify UI nastav:
+
+- Build command: `npm run build`
+- Publish directory: `dist`
+
+Jednorazove propojeni projektu:
+
+```bash
+npx netlify link
+```
+
+Environment variables:
+
+- `CONVEX_URL`
+- `CONVEX_DEPLOY_KEY`
+- `USE_CONVEX_FULL=true`
+
+Volitelne:
+
+- `USE_CONVEX_AUTH=true` (prechodovy rezim pro login)
+- `USE_CONVEX_STATE=true` (prechodovy rezim pro state)
+- `GAME_TICK_SCHEDULE` (hlavne pro lokalni server, v serverless full rezimu se cron nepouziva)
+- `THG_DATA_DIR` (custom cesta pro SQLite fallback)
+
+### Lokalni simulace Netlify
+
+```bash
+npm run dev:netlify
+```
+
+To spusti Vite + Netlify Functions lokalne pod jednim hostem.
+
+### Deploy prikazy
+
+Preview deploy:
+
+```bash
+npx netlify deploy --build
+```
+
+Production deploy:
+
+```bash
+npx netlify deploy --prod --build
+```
+
+Poznamka pro deploy z Windows (native `better-sqlite3`):
+
+- pred deployem priprav Linux binarku:
+  - `npm_config_platform=linux npm_config_arch=x64 npm rebuild better-sqlite3 --build-from-source=false`
+- deploy spoustet s `--skip-functions-cache`, aby se prebundlovala funkce:
+  - `npx netlify deploy --prod --build --skip-functions-cache`
+- po deployi vrat lokalni Windows binarku:
+  - `npm rebuild better-sqlite3 --build-from-source=false`
+
 ## Prihlaseni (prototyp)
 
 - Specialni ucty:

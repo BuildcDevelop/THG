@@ -1,12 +1,16 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { BUILDING_ORDER, UNIT_ORDER } from './gameConfig.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const dataDir = path.join(__dirname, 'data');
+const configuredDataDir = String(process.env.THG_DATA_DIR ?? '').trim();
+const isNetlifyRuntime = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const localDataDir = path.join(process.cwd(), 'server', 'data');
+const dataDir = configuredDataDir
+  ? path.resolve(configuredDataDir)
+  : isNetlifyRuntime
+    ? path.join('/tmp', 'thg-data')
+    : localDataDir;
 const dbPath = path.join(dataDir, 'game.sqlite');
 
 if (!fs.existsSync(dataDir)) {

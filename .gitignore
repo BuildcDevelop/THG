@@ -13,12 +13,14 @@ dist-ssr
 *.local
 server/data/*.sqlite
 server/data/*.sqlite-*
+convex/_generated
 
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
+.netlify
 *.suo
 *.ntvs*
 *.njsproj
