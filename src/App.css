@@ -1357,21 +1357,45 @@
   width: fit-content;
 }
 
-.kingdom-invite-controls {
+.kingdom-invite-candidate-grid {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 0.46rem;
 }
 
-.kingdom-invite-controls select {
+.kingdom-invite-candidate-card {
   border: 1px solid rgba(157, 203, 239, 0.28);
   border-radius: 9px;
   padding: 0.48rem 0.58rem;
   background: linear-gradient(180deg, rgba(9, 20, 30, 0.95), rgba(7, 15, 24, 0.95));
   color: #d6e5f4;
   font: inherit;
+  text-align: left;
+  display: grid;
+  gap: 0.16rem;
 }
 
-.kingdom-invite-controls select:disabled {
+.kingdom-invite-candidate-card strong {
+  font-size: 0.9rem;
+}
+
+.kingdom-invite-candidate-card span {
+  color: #bbd2e6;
+  font-size: 0.78rem;
+}
+
+.kingdom-invite-candidate-card em {
+  color: #e6be79;
+  font-style: normal;
+  font-size: 0.74rem;
+}
+
+.kingdom-invite-candidate-card:hover {
+  border-color: rgba(214, 162, 74, 0.72);
+  color: #f5dcab;
+}
+
+.kingdom-invite-candidate-card:disabled {
   opacity: 0.56;
 }
 

@@ -2593,7 +2593,6 @@ const KingdomPanel = ({
   onOpenPlayerProfile: (username: string) => void;
   onOpenKingdomProfile: (kingdomName: string) => void;
 }) => {
-  const [selectedInviteCandidate, setSelectedInviteCandidate] = useState<string>('');
   const [createKingdomName, setCreateKingdomName] = useState('');
   const availableKingdoms: KingdomAvailableSummary[] =
     kingdomHub?.availableKingdoms ?? EMPTY_KINGDOM_AVAILABLE;
@@ -2606,17 +2605,6 @@ const KingdomPanel = ({
   const canManageInvites = kingdomHub?.canManageInvites ?? false;
   const totalKingdomPrestige = members.reduce((sum, member) => sum + member.prestige, 0);
   const totalKingdomVillages = members.reduce((sum, member) => sum + member.villages, 0);
-  const selectedInviteCandidateResolved = useMemo(() => {
-    if (inviteCandidates.length === 0) {
-      return '';
-    }
-
-    if (inviteCandidates.some((candidate) => candidate.username === selectedInviteCandidate)) {
-      return selectedInviteCandidate;
-    }
-
-    return inviteCandidates[0].username;
-  }, [inviteCandidates, selectedInviteCandidate]);
 
   const handleCreateKingdomSubmit = () => {
     const normalizedKingdomName = createKingdomName.trim();
@@ -2626,11 +2614,17 @@ const KingdomPanel = ({
     onCreateKingdom(normalizedKingdomName);
   };
 
-  const handleInviteSubmit = () => {
-    const normalizedTarget = selectedInviteCandidateResolved.trim();
+  const handleInviteCardClick = (targetUsername: string) => {
+    const normalizedTarget = targetUsername.trim();
     if (!normalizedTarget) {
       return;
     }
+
+    const confirmed = window.confirm(`Poslat pozvanku hraci ${normalizedTarget}?`);
+    if (!confirmed) {
+      return;
+    }
+
     onInvitePlayer(normalizedTarget);
   };
 
@@ -2868,33 +2862,30 @@ const KingdomPanel = ({
       {canManageInvites ? (
         <section>
           <h3>Pozvat hráče do království</h3>
-          <p>Pozvánku může poslat pouze vůdce. Hráč musí být aktuálně bez království.</p>
-          <div className="kingdom-invite-controls">
-            <select
-              value={selectedInviteCandidateResolved}
-              onChange={(event) => setSelectedInviteCandidate(event.target.value)}
-              disabled={actionPending || inviteCandidates.length === 0}
-            >
-              {inviteCandidates.length > 0 ? (
-                inviteCandidates.map((candidate) => (
-                  <option key={`invite-candidate-${candidate.playerId}`} value={candidate.username}>
-                    {candidate.username} · prestiž {candidate.prestige.toLocaleString('cs-CZ')} · osady{' '}
-                    {candidate.villages}
-                  </option>
-                ))
-              ) : (
-                <option value="">Nikdo neni dostupny</option>
-              )}
-            </select>
-            <button
-              type="button"
-              className="upgrade-action kingdom-action-button"
-              onClick={handleInviteSubmit}
-              disabled={actionPending || inviteCandidates.length === 0}
-            >
-              Poslat pozvánku
-            </button>
-          </div>
+          <p>
+            Pozvánku může poslat pouze vůdce. Klikni na kartu hráče a po potvrzení se pozvánka
+            odešle.
+          </p>
+          {inviteCandidates.length > 0 ? (
+            <div className="kingdom-invite-candidate-grid">
+              {inviteCandidates.map((candidate) => (
+                <button
+                  key={`invite-candidate-card-${candidate.playerId}`}
+                  type="button"
+                  className="kingdom-invite-candidate-card"
+                  onClick={() => handleInviteCardClick(candidate.username)}
+                  disabled={actionPending}
+                >
+                  <strong>{candidate.username}</strong>
+                  <span>Prestiž: {candidate.prestige.toLocaleString('cs-CZ')}</span>
+                  <span>Počet osad: {candidate.villages}</span>
+                  <em>Klikni pro pozvánku</em>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p>Nikdo není aktuálně dostupný pro pozvání.</p>
+          )}
         </section>
       ) : null}
 
