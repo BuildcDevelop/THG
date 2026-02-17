@@ -38,6 +38,9 @@ const nowIso = () => new Date().toISOString();
 const selectPlayerByUsernameStmt = db.prepare(
   'SELECT id, username, password FROM players WHERE username = ? AND is_bot = 0 LIMIT 1',
 );
+const selectNonBotPlayerByUsernameStmt = db.prepare(
+  'SELECT id, username FROM players WHERE username = ? AND is_bot = 0 LIMIT 1',
+);
 const selectPlayerByIdStmt = db.prepare(
   'SELECT id, username, is_bot AS isBot FROM players WHERE id = ? LIMIT 1',
 );
@@ -442,6 +445,9 @@ const selectPrimaryKingdomByPlayerStmt = db.prepare(
 const updateVillageOwnerForConquestStmt = db.prepare(
   'UPDATE villages SET player_id = ?, kingdom = ?, loyalty = 100 WHERE id = ?',
 );
+const updateVillagesKingdomByPlayerStmt = db.prepare(
+  'UPDATE villages SET kingdom = ?, loyalty = 100 WHERE player_id = ?',
+);
 const insertBattleReportStmt = db.prepare(
   `INSERT INTO battle_reports (
       player_id,
@@ -473,8 +479,366 @@ const selectBattleReportsByPlayerStmt = db.prepare(
    ORDER BY created_at DESC, id DESC
    LIMIT ? OFFSET ?`,
 );
+const selectKingdomLeaderByKingdomStmt = db.prepare(
+  `SELECT
+      p.id AS playerId,
+      p.username
+   FROM villages v
+   INNER JOIN players p ON p.id = v.player_id
+   WHERE p.is_bot = 0
+     AND p.username NOT GLOB '__abandoned_ai__*'
+     AND v.kingdom = ?
+   GROUP BY p.id, p.username
+   ORDER BY p.id ASC
+   LIMIT 1`,
+);
+const selectKingdomMembersByKingdomStmt = db.prepare(
+  `SELECT
+      p.id AS playerId,
+      p.username,
+      COUNT(v.id) AS villageCount,
+      COALESCE(SUM(v.prestige), 0) AS prestige
+   FROM villages v
+   INNER JOIN players p ON p.id = v.player_id
+   WHERE p.is_bot = 0
+     AND p.username NOT GLOB '__abandoned_ai__*'
+     AND v.kingdom = ?
+   GROUP BY p.id, p.username
+   ORDER BY prestige DESC, villageCount DESC, p.username COLLATE NOCASE ASC`,
+);
+const selectKingdomOverviewRowsStmt = db.prepare(
+  `SELECT
+      v.kingdom,
+      COUNT(v.id) AS villages,
+      COUNT(DISTINCT p.id) AS members,
+      COALESCE(SUM(v.prestige), 0) AS prestige
+   FROM villages v
+   INNER JOIN players p ON p.id = v.player_id
+   WHERE p.is_bot = 0
+     AND p.username NOT GLOB '__abandoned_ai__*'
+   GROUP BY v.kingdom
+   ORDER BY prestige DESC, villages DESC, v.kingdom COLLATE NOCASE ASC`,
+);
+const selectDistinctPlayerKingdomNamesStmt = db.prepare(
+  `SELECT DISTINCT v.kingdom
+   FROM villages v
+   INNER JOIN players p ON p.id = v.player_id
+   WHERE p.is_bot = 0
+     AND p.username NOT GLOB '__abandoned_ai__*'`,
+);
+const insertKingdomInviteStmt = db.prepare(
+  `INSERT INTO kingdom_invites (
+      kingdom,
+      inviter_player_id,
+      target_player_id,
+      status,
+      created_at
+   ) VALUES (?, ?, ?, 'pending', ?)`,
+);
+const selectPendingKingdomInviteByTargetStmt = db.prepare(
+  `SELECT
+      id,
+      kingdom,
+      inviter_player_id AS inviterPlayerId,
+      target_player_id AS targetPlayerId,
+      created_at AS createdAt
+   FROM kingdom_invites
+   WHERE target_player_id = ? AND status = 'pending'
+   ORDER BY created_at DESC, id DESC
+   LIMIT 1`,
+);
+const selectPendingKingdomInviteTargetIdsStmt = db.prepare(
+  `SELECT
+      target_player_id AS targetPlayerId
+   FROM kingdom_invites
+   WHERE status = 'pending'`,
+);
+const selectPendingKingdomInviteByIdForTargetStmt = db.prepare(
+  `SELECT
+      ki.id,
+      ki.kingdom,
+      ki.inviter_player_id AS inviterPlayerId,
+      ki.target_player_id AS targetPlayerId,
+      ki.created_at AS createdAt,
+      p.username AS inviterUsername
+   FROM kingdom_invites ki
+   INNER JOIN players p ON p.id = ki.inviter_player_id
+   WHERE ki.id = ?
+     AND ki.target_player_id = ?
+     AND ki.status = 'pending'
+   LIMIT 1`,
+);
+const selectIncomingKingdomInvitesByTargetStmt = db.prepare(
+  `SELECT
+      ki.id,
+      ki.kingdom,
+      ki.created_at AS createdAt,
+      p.username AS inviterUsername
+   FROM kingdom_invites ki
+   INNER JOIN players p ON p.id = ki.inviter_player_id
+   WHERE ki.target_player_id = ?
+     AND ki.status = 'pending'
+   ORDER BY ki.created_at DESC, ki.id DESC`,
+);
+const updateKingdomInviteStatusByIdStmt = db.prepare(
+  'UPDATE kingdom_invites SET status = ?, responded_at = ? WHERE id = ?',
+);
+const rejectOtherPendingKingdomInvitesForTargetStmt = db.prepare(
+  `UPDATE kingdom_invites
+   SET status = 'rejected',
+       responded_at = ?
+   WHERE target_player_id = ?
+     AND status = 'pending'
+     AND id != ?`,
+);
+const rejectAllPendingKingdomInvitesForTargetStmt = db.prepare(
+  `UPDATE kingdom_invites
+   SET status = 'rejected',
+       responded_at = ?
+   WHERE target_player_id = ?
+     AND status = 'pending'`,
+);
+const cancelPendingKingdomInvitesByInviterStmt = db.prepare(
+  `UPDATE kingdom_invites
+   SET status = 'rejected',
+       responded_at = ?
+   WHERE inviter_player_id = ?
+     AND status = 'pending'`,
+);
+const insertKingdomEventStmt = db.prepare(
+  `INSERT INTO kingdom_events (
+      kingdom,
+      event_type,
+      actor_player_id,
+      target_player_id,
+      payload_json,
+      created_at
+   ) VALUES (?, ?, ?, ?, ?, ?)`,
+);
+const selectKingdomEventsByKingdomStmt = db.prepare(
+  `SELECT
+      ke.id,
+      ke.kingdom,
+      ke.event_type AS eventType,
+      ke.actor_player_id AS actorPlayerId,
+      ke.target_player_id AS targetPlayerId,
+      ke.payload_json AS payloadJson,
+      ke.created_at AS createdAt,
+      actor.username AS actorUsername,
+      target.username AS targetUsername
+   FROM kingdom_events ke
+   LEFT JOIN players actor ON actor.id = ke.actor_player_id
+   LEFT JOIN players target ON target.id = ke.target_player_id
+   WHERE ke.kingdom = ?
+   ORDER BY ke.created_at DESC, ke.id DESC
+   LIMIT ?`,
+);
+const selectKingdomEventsByPlayerStmt = db.prepare(
+  `SELECT
+      ke.id,
+      ke.kingdom,
+      ke.event_type AS eventType,
+      ke.actor_player_id AS actorPlayerId,
+      ke.target_player_id AS targetPlayerId,
+      ke.payload_json AS payloadJson,
+      ke.created_at AS createdAt,
+      actor.username AS actorUsername,
+      target.username AS targetUsername
+   FROM kingdom_events ke
+   LEFT JOIN players actor ON actor.id = ke.actor_player_id
+   LEFT JOIN players target ON target.id = ke.target_player_id
+   WHERE ke.actor_player_id = ?
+      OR ke.target_player_id = ?
+   ORDER BY ke.created_at DESC, ke.id DESC
+   LIMIT ?`,
+);
 
 const roundResource = (value) => Number(Math.max(0, value).toFixed(3));
+
+const normalizeKingdomValue = (value) => String(value ?? '').trim();
+
+const isNeutralKingdom = (kingdom) => {
+  const normalized = normalizeKingdomValue(kingdom)
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  return normalized === '' || normalized === 'neutral' || normalized === 'kralovska osada';
+};
+
+const normalizeKingdomComparable = (value) =>
+  normalizeKingdomValue(value)
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+
+const normalizeUsername = (value) => String(value ?? '').trim();
+
+const parseJsonSafe = (value, fallback = {}) => {
+  if (value == null || value === '') {
+    return fallback;
+  }
+  try {
+    const parsed = JSON.parse(String(value));
+    return parsed && typeof parsed === 'object' ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const createKingdomEvent = ({ kingdom = null, eventType, actorPlayerId = null, targetPlayerId = null, payload = null }) =>
+  insertKingdomEventStmt.run(
+    kingdom == null ? null : String(kingdom),
+    String(eventType),
+    actorPlayerId == null ? null : Number(actorPlayerId),
+    targetPlayerId == null ? null : Number(targetPlayerId),
+    payload == null ? null : JSON.stringify(payload),
+    nowIso(),
+  );
+
+const buildKingdomAuditLog = (playerId, kingdomName) => {
+  const rows =
+    kingdomName && !isNeutralKingdom(kingdomName)
+      ? selectKingdomEventsByKingdomStmt.all(String(kingdomName), 30)
+      : selectKingdomEventsByPlayerStmt.all(Number(playerId), Number(playerId), 30);
+
+  return rows.map((row) => {
+    const payload = parseJsonSafe(row.payloadJson, {});
+    const actorUsername = row.actorUsername ? String(row.actorUsername) : 'Neznámý hráč';
+    const targetUsername = row.targetUsername ? String(row.targetUsername) : 'Neznámý hráč';
+    const eventKingdom = row.kingdom ? String(row.kingdom) : null;
+    let message = 'Neznámá královská událost.';
+
+    if (row.eventType === 'kingdom_created') {
+      message = `${actorUsername} založil království ${eventKingdom ?? 'bez názvu'}.`;
+    } else if (row.eventType === 'invite_sent') {
+      message = `${actorUsername} poslal pozvánku hráči ${targetUsername}.`;
+    } else if (row.eventType === 'invite_accepted') {
+      message = `${actorUsername} přijal pozvánku do království ${eventKingdom ?? 'bez názvu'}.`;
+    } else if (row.eventType === 'invite_rejected') {
+      message = `${actorUsername} odmítl pozvánku do království ${eventKingdom ?? 'bez názvu'}.`;
+    } else if (row.eventType === 'member_left') {
+      message = `${actorUsername} opustil království ${eventKingdom ?? 'bez názvu'}.`;
+    } else if (row.eventType === 'member_kicked') {
+      message = `${actorUsername} vyhodil hráče ${targetUsername} z království.`;
+    } else if (typeof payload.message === 'string' && payload.message.trim()) {
+      message = payload.message.trim();
+    }
+
+    return {
+      id: Number(row.id),
+      kingdom: eventKingdom,
+      eventType: String(row.eventType),
+      createdAt: String(row.createdAt),
+      actorUsername,
+      targetUsername: row.targetUsername == null ? null : targetUsername,
+      message,
+    };
+  });
+};
+
+const resolvePrimaryKingdomByPlayerId = (playerId) => {
+  const row = selectPrimaryKingdomByPlayerStmt.get(Number(playerId));
+  return normalizeKingdomValue(row?.kingdom || 'Neutral') || 'Neutral';
+};
+
+const resolveKingdomLeader = (kingdomName) => {
+  if (isNeutralKingdom(kingdomName)) {
+    return null;
+  }
+  const row = selectKingdomLeaderByKingdomStmt.get(String(kingdomName));
+  if (!row) {
+    return null;
+  }
+  return {
+    playerId: Number(row.playerId),
+    username: String(row.username),
+  };
+};
+
+const listKingdomMembers = (kingdomName, leaderPlayerId = null) => {
+  if (isNeutralKingdom(kingdomName)) {
+    return [];
+  }
+  return selectKingdomMembersByKingdomStmt.all(String(kingdomName)).map((member) => ({
+    playerId: Number(member.playerId),
+    username: String(member.username),
+    villages: Number(member.villageCount),
+    prestige: Number(member.prestige),
+    isLeader: leaderPlayerId != null && Number(member.playerId) === Number(leaderPlayerId),
+  }));
+};
+
+const listAvailableKingdoms = () =>
+  selectKingdomOverviewRowsStmt
+    .all()
+    .map((row) => ({
+      kingdom: String(row.kingdom),
+      villages: Number(row.villages),
+      members: Number(row.members),
+      prestige: Number(row.prestige),
+    }))
+    .filter((row) => !isNeutralKingdom(row.kingdom));
+
+const listIncomingKingdomInvites = (playerId) =>
+  selectIncomingKingdomInvitesByTargetStmt.all(Number(playerId)).map((invite) => ({
+    id: Number(invite.id),
+    kingdom: String(invite.kingdom),
+    inviterUsername: String(invite.inviterUsername),
+    createdAt: String(invite.createdAt),
+  }));
+
+const listKingdomInviteCandidates = (viewerUsername) =>
+  {
+    const pendingInviteTargetIds = new Set(
+      selectPendingKingdomInviteTargetIdsStmt
+        .all()
+        .map((row) => Number(row.targetPlayerId))
+        .filter((playerId) => Number.isFinite(playerId) && playerId > 0),
+    );
+
+    return selectLeaderboardStmt
+      .all()
+      .filter((row) => {
+        if (String(row.username) === String(viewerUsername)) {
+          return false;
+        }
+        if (!isNeutralKingdom(row.kingdom)) {
+          return false;
+        }
+        return !pendingInviteTargetIds.has(Number(row.playerId));
+      })
+      .map((row) => ({
+        playerId: Number(row.playerId),
+        username: String(row.username),
+        villages: Number(row.villageCount),
+        prestige: Number(row.prestige),
+      }));
+  };
+
+const buildKingdomHubState = (player, village) => {
+  const playerId = Number(player.id);
+  const kingdomNameRaw = normalizeKingdomValue(village.kingdom);
+  const isMember = !isNeutralKingdom(kingdomNameRaw);
+  const kingdomName = isMember ? kingdomNameRaw : null;
+  const leader = kingdomName ? resolveKingdomLeader(kingdomName) : null;
+  const canManageInvites = leader != null && Number(leader.playerId) === playerId;
+  const members = kingdomName ? listKingdomMembers(kingdomName, leader?.playerId ?? null) : [];
+  const inviteCandidates = canManageInvites ? listKingdomInviteCandidates(player.username) : [];
+  const incomingInvites = listIncomingKingdomInvites(playerId);
+  const auditLog = buildKingdomAuditLog(playerId, kingdomName);
+
+  return {
+    isMember,
+    kingdom: kingdomName,
+    leaderUsername: leader?.username ?? null,
+    canManageInvites,
+    members,
+    inviteCandidates,
+    incomingInvites,
+    availableKingdoms: listAvailableKingdoms(),
+    auditLog,
+  };
+};
 
 const toBuildingLevelMap = (rows) => {
   const levelMap = {};
@@ -1920,6 +2284,7 @@ export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = nul
   const activeUpgrade = activeUpgrades.length > 0 ? activeUpgrades[0] : null;
   const settlements = buildWorldSettlements(village, player.username);
   const leaderboard = listPlayerLeaderboard();
+  const kingdomHub = buildKingdomHubState(player, village);
 
   return {
     serverTime: nowIso(),
@@ -1927,6 +2292,7 @@ export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = nul
       id: Number(player.id),
       username: player.username,
     },
+    kingdomHub,
     villages: villages.map((entry) => ({
       id: Number(entry.id),
       name: entry.name,
@@ -2332,6 +2698,268 @@ const conquerVillageTransaction = db.transaction((username, villageIdRaw) => {
 });
 
 export const conquerVillage = (username, villageId) => conquerVillageTransaction(username, villageId);
+
+const requireKingdomLeadership = (player, kingdomName) => {
+  if (isNeutralKingdom(kingdomName)) {
+    throw new GameRuleError('Nejsi clenem zadneho kralovstvi.', 400);
+  }
+
+  const leader = resolveKingdomLeader(kingdomName);
+  if (!leader || Number(leader.playerId) !== Number(player.id)) {
+    throw new GameRuleError('Pouze vudce kralovstvi muze provest tuto akci.', 403);
+  }
+
+  return leader;
+};
+
+const validateKingdomName = (rawValue) => {
+  const normalized = normalizeKingdomValue(rawValue).replace(/\s+/g, ' ');
+  if (normalized.length < 3) {
+    throw new GameRuleError('Nazev kralovstvi musi mit alespon 3 znaky.', 400);
+  }
+  if (normalized.length > 28) {
+    throw new GameRuleError('Nazev kralovstvi muze mit maximalne 28 znaku.', 400);
+  }
+  if (!/^[\p{L}\p{N}\s-]+$/u.test(normalized)) {
+    throw new GameRuleError('Nazev kralovstvi obsahuje nepovolene znaky.', 400);
+  }
+  if (isNeutralKingdom(normalized)) {
+    throw new GameRuleError('Tento nazev kralovstvi neni povolen.', 400);
+  }
+
+  const normalizedComparable = normalizeKingdomComparable(normalized);
+  const existing = selectDistinctPlayerKingdomNamesStmt
+    .all()
+    .map((row) => String(row.kingdom))
+    .find((kingdomName) => normalizeKingdomComparable(kingdomName) === normalizedComparable);
+  if (existing) {
+    throw new GameRuleError('Království s tímto názvem už existuje.', 400);
+  }
+
+  return normalized;
+};
+
+const createKingdomTransaction = db.transaction((username, kingdomNameRaw) => {
+  const { player, village } = requireVillageForUser(username);
+  const currentKingdom = normalizeKingdomValue(village.kingdom) || 'Neutral';
+  if (!isNeutralKingdom(currentKingdom)) {
+    throw new GameRuleError('Už jsi členem království. Nejprve musíš odejít.', 400);
+  }
+
+  const kingdomName = validateKingdomName(kingdomNameRaw);
+  updateVillagesKingdomByPlayerStmt.run(kingdomName, Number(player.id));
+  const respondedAt = nowIso();
+  rejectAllPendingKingdomInvitesForTargetStmt.run(respondedAt, Number(player.id));
+  createKingdomEvent({
+    kingdom: kingdomName,
+    eventType: 'kingdom_created',
+    actorPlayerId: Number(player.id),
+    payload: { founderUsername: player.username },
+  });
+
+  return {
+    kingdom: kingdomName,
+    founderUsername: player.username,
+    createdAt: respondedAt,
+  };
+});
+
+const invitePlayerToKingdomTransaction = db.transaction((username, targetUsernameRaw) => {
+  const { player, village } = requireVillageForUser(username);
+  const inviterKingdom = normalizeKingdomValue(village.kingdom) || 'Neutral';
+  requireKingdomLeadership(player, inviterKingdom);
+
+  const targetUsername = normalizeUsername(targetUsernameRaw);
+  if (!targetUsername) {
+    throw new GameRuleError("Pole 'targetUsername' je povinne.");
+  }
+
+  const targetPlayer = selectNonBotPlayerByUsernameStmt.get(targetUsername);
+  if (!targetPlayer) {
+    throw new GameRuleError(`Hrac '${targetUsername}' neexistuje.`, 404);
+  }
+  if (Number(targetPlayer.id) === Number(player.id)) {
+    throw new GameRuleError('Do kralovstvi nemuzes pozvat sam sebe.', 400);
+  }
+
+  const targetKingdom = resolvePrimaryKingdomByPlayerId(Number(targetPlayer.id));
+  if (!isNeutralKingdom(targetKingdom)) {
+    throw new GameRuleError('Cilovy hrac uz je clenem jineho kralovstvi.', 400);
+  }
+
+  const existingInvite = selectPendingKingdomInviteByTargetStmt.get(Number(targetPlayer.id));
+  if (existingInvite) {
+    throw new GameRuleError('Cilovy hrac uz ma aktivni pozvanku.', 400);
+  }
+
+  const createdAt = nowIso();
+  const insertion = insertKingdomInviteStmt.run(
+    inviterKingdom,
+    Number(player.id),
+    Number(targetPlayer.id),
+    createdAt,
+  );
+  const inviteId = Number(insertion.lastInsertRowid);
+  createKingdomEvent({
+    kingdom: inviterKingdom,
+    eventType: 'invite_sent',
+    actorPlayerId: Number(player.id),
+    targetPlayerId: Number(targetPlayer.id),
+    payload: { inviteId },
+  });
+
+  return {
+    inviteId,
+    kingdom: inviterKingdom,
+    inviterUsername: player.username,
+    targetUsername: String(targetPlayer.username),
+    createdAt,
+  };
+});
+
+const acceptKingdomInviteTransaction = db.transaction((username, inviteIdRaw) => {
+  const { player, village } = requireVillageForUser(username);
+  const inviteId = requirePositiveInteger(inviteIdRaw, 'inviteId');
+
+  if (!isNeutralKingdom(village.kingdom)) {
+    throw new GameRuleError('Uz jsi clenem kralovstvi. Nejdrive odejdi.', 400);
+  }
+
+  const invite = selectPendingKingdomInviteByIdForTargetStmt.get(inviteId, Number(player.id));
+  if (!invite) {
+    throw new GameRuleError('Pozvanka nebyla nalezena nebo uz neni aktivni.', 404);
+  }
+
+  const targetKingdom = normalizeKingdomValue(invite.kingdom) || 'Neutral';
+  if (isNeutralKingdom(targetKingdom)) {
+    updateKingdomInviteStatusByIdStmt.run('rejected', nowIso(), inviteId);
+    throw new GameRuleError('Pozvanka odkazuje na neplatne kralovstvi.', 400);
+  }
+
+  updateVillagesKingdomByPlayerStmt.run(targetKingdom, Number(player.id));
+  const respondedAt = nowIso();
+  updateKingdomInviteStatusByIdStmt.run('accepted', respondedAt, inviteId);
+  rejectOtherPendingKingdomInvitesForTargetStmt.run(respondedAt, Number(player.id), inviteId);
+  createKingdomEvent({
+    kingdom: targetKingdom,
+    eventType: 'invite_accepted',
+    actorPlayerId: Number(player.id),
+    targetPlayerId: Number(invite.inviterPlayerId),
+    payload: { inviteId },
+  });
+
+  return {
+    inviteId,
+    kingdom: targetKingdom,
+    inviterUsername: String(invite.inviterUsername),
+    acceptedAt: respondedAt,
+  };
+});
+
+const rejectKingdomInviteTransaction = db.transaction((username, inviteIdRaw) => {
+  const { player } = requireVillageForUser(username);
+  const inviteId = requirePositiveInteger(inviteIdRaw, 'inviteId');
+  const invite = selectPendingKingdomInviteByIdForTargetStmt.get(inviteId, Number(player.id));
+  if (!invite) {
+    throw new GameRuleError('Pozvanka nebyla nalezena nebo uz neni aktivni.', 404);
+  }
+
+  const respondedAt = nowIso();
+  updateKingdomInviteStatusByIdStmt.run('rejected', respondedAt, inviteId);
+  createKingdomEvent({
+    kingdom: String(invite.kingdom),
+    eventType: 'invite_rejected',
+    actorPlayerId: Number(player.id),
+    targetPlayerId: Number(invite.inviterPlayerId),
+    payload: { inviteId },
+  });
+  return {
+    inviteId,
+    kingdom: String(invite.kingdom),
+    rejectedAt: respondedAt,
+  };
+});
+
+const leaveKingdomTransaction = db.transaction((username) => {
+  const { player, village } = requireVillageForUser(username);
+  const currentKingdom = normalizeKingdomValue(village.kingdom) || 'Neutral';
+  if (isNeutralKingdom(currentKingdom)) {
+    throw new GameRuleError('Nejsi clenem zadneho kralovstvi.', 400);
+  }
+
+  updateVillagesKingdomByPlayerStmt.run('Neutral', Number(player.id));
+  const respondedAt = nowIso();
+  cancelPendingKingdomInvitesByInviterStmt.run(respondedAt, Number(player.id));
+  createKingdomEvent({
+    kingdom: currentKingdom,
+    eventType: 'member_left',
+    actorPlayerId: Number(player.id),
+  });
+
+  return {
+    username: player.username,
+    previousKingdom: currentKingdom,
+    leftAt: respondedAt,
+  };
+});
+
+const kickKingdomMemberTransaction = db.transaction((username, targetUsernameRaw) => {
+  const { player, village } = requireVillageForUser(username);
+  const managerKingdom = normalizeKingdomValue(village.kingdom) || 'Neutral';
+  requireKingdomLeadership(player, managerKingdom);
+
+  const targetUsername = normalizeUsername(targetUsernameRaw);
+  if (!targetUsername) {
+    throw new GameRuleError("Pole 'targetUsername' je povinne.");
+  }
+
+  const targetPlayer = selectNonBotPlayerByUsernameStmt.get(targetUsername);
+  if (!targetPlayer) {
+    throw new GameRuleError(`Hrac '${targetUsername}' neexistuje.`, 404);
+  }
+  if (Number(targetPlayer.id) === Number(player.id)) {
+    throw new GameRuleError('Pro odchod pouzij akci Odejit z kralovstvi.', 400);
+  }
+
+  const targetKingdom = resolvePrimaryKingdomByPlayerId(Number(targetPlayer.id));
+  if (String(targetKingdom) !== String(managerKingdom)) {
+    throw new GameRuleError('Cilovy hrac neni clenem tveho kralovstvi.', 400);
+  }
+
+  updateVillagesKingdomByPlayerStmt.run('Neutral', Number(targetPlayer.id));
+  const respondedAt = nowIso();
+  rejectAllPendingKingdomInvitesForTargetStmt.run(respondedAt, Number(targetPlayer.id));
+  cancelPendingKingdomInvitesByInviterStmt.run(respondedAt, Number(targetPlayer.id));
+  createKingdomEvent({
+    kingdom: managerKingdom,
+    eventType: 'member_kicked',
+    actorPlayerId: Number(player.id),
+    targetPlayerId: Number(targetPlayer.id),
+  });
+
+  return {
+    kickedUsername: String(targetPlayer.username),
+    kingdom: managerKingdom,
+    kickedAt: respondedAt,
+  };
+});
+
+export const createKingdom = (username, kingdomName) =>
+  createKingdomTransaction(username, kingdomName);
+
+export const invitePlayerToKingdom = (username, targetUsername) =>
+  invitePlayerToKingdomTransaction(username, targetUsername);
+
+export const acceptKingdomInvite = (username, inviteId) =>
+  acceptKingdomInviteTransaction(username, inviteId);
+
+export const rejectKingdomInvite = (username, inviteId) =>
+  rejectKingdomInviteTransaction(username, inviteId);
+
+export const leaveKingdom = (username) => leaveKingdomTransaction(username);
+
+export const kickKingdomMember = (username, targetUsername) =>
+  kickKingdomMemberTransaction(username, targetUsername);
 
 const recruitTransaction = db.transaction((username, unitId, amount, requestedVillageId) => {
   const { village } = requireVillageForUser(username, requestedVillageId);

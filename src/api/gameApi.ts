@@ -102,12 +102,64 @@ export type LeaderboardRow = {
   prestige: number;
 };
 
+export type KingdomHubMember = {
+  playerId: number;
+  username: string;
+  villages: number;
+  prestige: number;
+  isLeader: boolean;
+};
+
+export type KingdomInviteCandidate = {
+  playerId: number;
+  username: string;
+  villages: number;
+  prestige: number;
+};
+
+export type KingdomIncomingInvite = {
+  id: number;
+  kingdom: string;
+  inviterUsername: string;
+  createdAt: string;
+};
+
+export type KingdomAvailableSummary = {
+  kingdom: string;
+  villages: number;
+  members: number;
+  prestige: number;
+};
+
+export type KingdomAuditLogEntry = {
+  id: number;
+  kingdom: string | null;
+  eventType: string;
+  createdAt: string;
+  actorUsername: string;
+  targetUsername: string | null;
+  message: string;
+};
+
+export type KingdomHubState = {
+  isMember: boolean;
+  kingdom: string | null;
+  leaderUsername: string | null;
+  canManageInvites: boolean;
+  members: KingdomHubMember[];
+  inviteCandidates: KingdomInviteCandidate[];
+  incomingInvites: KingdomIncomingInvite[];
+  availableKingdoms: KingdomAvailableSummary[];
+  auditLog: KingdomAuditLogEntry[];
+};
+
 export type GameStateResponse = {
   serverTime: string;
   player: {
     id: number;
     username: string;
   };
+  kingdomHub?: KingdomHubState;
   villages: {
     id: number;
     name: string;
@@ -346,6 +398,45 @@ export type IssueArmyCommandResult = {
   lootPriority?: LootPriority | null;
 };
 
+export type KingdomInviteResult = {
+  inviteId: number;
+  kingdom: string;
+  inviterUsername: string;
+  targetUsername: string;
+  createdAt: string;
+};
+
+export type KingdomCreateResult = {
+  kingdom: string;
+  founderUsername: string;
+  createdAt: string;
+};
+
+export type KingdomInviteAcceptResult = {
+  inviteId: number;
+  kingdom: string;
+  inviterUsername: string;
+  acceptedAt: string;
+};
+
+export type KingdomInviteRejectResult = {
+  inviteId: number;
+  kingdom: string;
+  rejectedAt: string;
+};
+
+export type KingdomLeaveResult = {
+  username: string;
+  previousKingdom: string;
+  leftAt: string;
+};
+
+export type KingdomKickResult = {
+  kickedUsername: string;
+  kingdom: string;
+  kickedAt: string;
+};
+
 type ApiOk<T> = {
   ok: true;
   data: T;
@@ -509,4 +600,117 @@ export const fetchBattleReports = async (
   });
   const payload = await request<ApiOk<BattleReportListResponse>>(`/api/v1/reports?${params.toString()}`);
   return payload.data;
+};
+
+export const createKingdom = async (
+  username: string,
+  kingdomName: string,
+  villageId?: number | null,
+): Promise<{ result: KingdomCreateResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: KingdomCreateResult }>(
+    '/api/v1/kingdom/create',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, kingdomName, villageId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const invitePlayerToKingdom = async (
+  username: string,
+  targetUsername: string,
+  villageId?: number | null,
+): Promise<{ result: KingdomInviteResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: KingdomInviteResult }>(
+    '/api/v1/kingdom/invite',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, targetUsername, villageId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const acceptKingdomInvite = async (
+  username: string,
+  inviteId: number,
+  villageId?: number | null,
+): Promise<{ result: KingdomInviteAcceptResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: KingdomInviteAcceptResult }>(
+    `/api/v1/kingdom/invite/${encodeURIComponent(String(inviteId))}/accept`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, villageId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const rejectKingdomInvite = async (
+  username: string,
+  inviteId: number,
+  villageId?: number | null,
+): Promise<{ result: KingdomInviteRejectResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: KingdomInviteRejectResult }>(
+    `/api/v1/kingdom/invite/${encodeURIComponent(String(inviteId))}/reject`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, villageId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const leaveKingdom = async (
+  username: string,
+  villageId?: number | null,
+): Promise<{ result: KingdomLeaveResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: KingdomLeaveResult }>(
+    '/api/v1/kingdom/leave',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, villageId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const kickKingdomMember = async (
+  username: string,
+  targetUsername: string,
+  villageId?: number | null,
+): Promise<{ result: KingdomKickResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: KingdomKickResult }>(
+    '/api/v1/kingdom/kick',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, targetUsername, villageId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
 };

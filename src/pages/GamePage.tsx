@@ -7,9 +7,15 @@ import type {
 import { useNavigate } from 'react-router-dom';
 import { getSession, logout } from '../auth';
 import {
+  acceptKingdomInvite as acceptKingdomInviteRequest,
+  createKingdom as createKingdomRequest,
   fetchBattleReports,
   fetchGameState,
+  invitePlayerToKingdom as invitePlayerToKingdomRequest,
   issueArmyCommand,
+  kickKingdomMember as kickKingdomMemberRequest,
+  leaveKingdom as leaveKingdomRequest,
+  rejectKingdomInvite as rejectKingdomInviteRequest,
   recruitUnit,
   upgradeBuilding,
   type ArmyCommandType,
@@ -20,6 +26,11 @@ import {
   type GameBuildingState,
   type GameStateResponse,
   type GameUnitState,
+  type KingdomHubState,
+  type KingdomIncomingInvite,
+  type KingdomInviteCandidate,
+  type KingdomAvailableSummary,
+  type KingdomAuditLogEntry,
   type LeaderboardRow,
   type LootPriority,
 } from '../api/gameApi';
@@ -568,6 +579,11 @@ const RESEARCH_TASKS: ResearchTask[] = [
 ];
 
 const RANKING_FALLBACK: LeaderboardRow[] = [];
+const EMPTY_KINGDOM_AVAILABLE: KingdomAvailableSummary[] = [];
+const EMPTY_KINGDOM_INVITES: KingdomIncomingInvite[] = [];
+const EMPTY_KINGDOM_INVITE_CANDIDATES: KingdomInviteCandidate[] = [];
+const EMPTY_KINGDOM_MEMBERS: KingdomHubState['members'] = [];
+const EMPTY_KINGDOM_AUDIT_LOG: KingdomAuditLogEntry[] = [];
 
 const REGION_SIZE = 50;
 const REGION_ORIGIN_X = 200;
@@ -1673,20 +1689,6 @@ const ArmyPanel = ({
     return Math.min(unit.maxRecruitable, raw);
   };
 
-  useEffect(() => {
-    if (commandType !== 'support') {
-      return;
-    }
-    setDraftUnitAmounts((previous) => {
-      if (!previous.caravan) {
-        return previous;
-      }
-      const next = { ...previous };
-      delete next.caravan;
-      return next;
-    });
-  }, [commandType]);
-
   const selectedCommandUnits = useMemo(
     () =>
       buildSelectedUnitsFromDraft(units, draftUnitAmounts, {
@@ -2564,29 +2566,356 @@ const MessagesPanel = ({
   );
 };
 
-const KingdomPanel = () => (
-  <div className="panel-stack">
-    <section>
-      <h3>Království: Železná Liga</h3>
-      <p>
-        Defenzivní aliance se zaměřením na koordinaci podpory mezi regiony a kontrolu obchodních cest.
-      </p>
-      <ul>
-        <li>Členové: 18 hráčů</li>
-        <li>Regiony: 3 aktivní</li>
-        <li>Celková prestiž: 95 420</li>
-      </ul>
-    </section>
-    <section>
-      <h3>Aktivní přítomnost v regionu 1</h3>
-      <ul>
-        <li>Železná Liga: 41 % vlivu</li>
-        <li>Stínová Koruna: 34 % vlivu</li>
-        <li>Volné osady: 25 %</li>
-      </ul>
-    </section>
-  </div>
-);
+const KingdomPanel = ({
+  kingdomHub,
+  currentUsername,
+  notice,
+  actionPending,
+  onCreateKingdom,
+  onInvitePlayer,
+  onAcceptInvite,
+  onRejectInvite,
+  onLeaveKingdom,
+  onKickMember,
+  onOpenPlayerProfile,
+  onOpenKingdomProfile,
+}: {
+  kingdomHub: KingdomHubState | null;
+  currentUsername: string;
+  notice: string | null;
+  actionPending: boolean;
+  onCreateKingdom: (kingdomName: string) => void;
+  onInvitePlayer: (targetUsername: string) => void;
+  onAcceptInvite: (inviteId: number) => void;
+  onRejectInvite: (inviteId: number) => void;
+  onLeaveKingdom: () => void;
+  onKickMember: (targetUsername: string) => void;
+  onOpenPlayerProfile: (username: string) => void;
+  onOpenKingdomProfile: (kingdomName: string) => void;
+}) => {
+  const [selectedInviteCandidate, setSelectedInviteCandidate] = useState<string>('');
+  const [createKingdomName, setCreateKingdomName] = useState('');
+  const availableKingdoms: KingdomAvailableSummary[] =
+    kingdomHub?.availableKingdoms ?? EMPTY_KINGDOM_AVAILABLE;
+  const incomingInvites: KingdomIncomingInvite[] = kingdomHub?.incomingInvites ?? EMPTY_KINGDOM_INVITES;
+  const inviteCandidates: KingdomInviteCandidate[] =
+    kingdomHub?.inviteCandidates ?? EMPTY_KINGDOM_INVITE_CANDIDATES;
+  const members = kingdomHub?.members ?? EMPTY_KINGDOM_MEMBERS;
+  const auditLog = kingdomHub?.auditLog ?? EMPTY_KINGDOM_AUDIT_LOG;
+  const currentKingdom = kingdomHub?.isMember ? kingdomHub.kingdom : null;
+  const canManageInvites = kingdomHub?.canManageInvites ?? false;
+  const totalKingdomPrestige = members.reduce((sum, member) => sum + member.prestige, 0);
+  const totalKingdomVillages = members.reduce((sum, member) => sum + member.villages, 0);
+  const selectedInviteCandidateResolved = useMemo(() => {
+    if (inviteCandidates.length === 0) {
+      return '';
+    }
+
+    if (inviteCandidates.some((candidate) => candidate.username === selectedInviteCandidate)) {
+      return selectedInviteCandidate;
+    }
+
+    return inviteCandidates[0].username;
+  }, [inviteCandidates, selectedInviteCandidate]);
+
+  const handleCreateKingdomSubmit = () => {
+    const normalizedKingdomName = createKingdomName.trim();
+    if (!normalizedKingdomName) {
+      return;
+    }
+    onCreateKingdom(normalizedKingdomName);
+  };
+
+  const handleInviteSubmit = () => {
+    const normalizedTarget = selectedInviteCandidateResolved.trim();
+    if (!normalizedTarget) {
+      return;
+    }
+    onInvitePlayer(normalizedTarget);
+  };
+
+  const handleLeaveClick = () => {
+    const confirmed = window.confirm(
+      'Opravdu chces odejit z kralovstvi? Budes prepnuty do neutralniho stavu.',
+    );
+    if (!confirmed) {
+      return;
+    }
+    onLeaveKingdom();
+  };
+
+  const handleKickClick = (targetUsername: string) => {
+    const confirmed = window.confirm(
+      `Opravdu chces vyhodit hrace ${targetUsername} z kralovstvi?`,
+    );
+    if (!confirmed) {
+      return;
+    }
+    onKickMember(targetUsername);
+  };
+
+  if (!kingdomHub) {
+    return (
+      <div className="panel-stack kingdom-panel">
+        <section>
+          <h3>Království</h3>
+          <p>Načítám data o království...</p>
+        </section>
+      </div>
+    );
+  }
+
+  if (!currentKingdom) {
+    return (
+      <div className="panel-stack kingdom-panel">
+        <section>
+          <h3>Království</h3>
+          <p>
+            Tady v žebříčku království najdeš ostatní hráčské skupiny, do kterých se můžeš pokusit
+            přidat přes pozvánku od jejich vůdce.
+          </p>
+          {notice ? <p className="panel-feedback">{notice}</p> : null}
+        </section>
+
+        <section>
+          <h3>Založit nové království</h3>
+          <p>Jestli nejsi v žádném království, můžeš si založit vlastní a stát se jeho vůdcem.</p>
+          <div className="kingdom-create-controls">
+            <input
+              type="text"
+              value={createKingdomName}
+              onChange={(event) => setCreateKingdomName(event.target.value)}
+              maxLength={28}
+              placeholder="Název království"
+              disabled={actionPending}
+            />
+            <button
+              type="button"
+              className="upgrade-action kingdom-action-button"
+              onClick={handleCreateKingdomSubmit}
+              disabled={actionPending || createKingdomName.trim().length < 3}
+            >
+              Založit království
+            </button>
+          </div>
+        </section>
+
+        <section>
+          <h3>Příchozí pozvánky</h3>
+          {incomingInvites.length > 0 ? (
+            <ul className="kingdom-invite-list">
+              {incomingInvites.map((invite) => (
+                <li key={`incoming-invite-${invite.id}`} className="kingdom-invite-item">
+                  <div>
+                    <strong>{invite.kingdom}</strong>
+                    <span>
+                      Poslal: {invite.inviterUsername} · {new Date(invite.createdAt).toLocaleString('cs-CZ')}
+                    </span>
+                  </div>
+                  <div className="kingdom-inline-actions">
+                    <button
+                      type="button"
+                      className="upgrade-action kingdom-action-button"
+                      onClick={() => onAcceptInvite(invite.id)}
+                      disabled={actionPending}
+                    >
+                      Přijmout
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-action kingdom-action-button"
+                      onClick={() => onRejectInvite(invite.id)}
+                      disabled={actionPending}
+                    >
+                      Odmítnout
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>Zatím nemáš žádnou aktivní pozvánku.</p>
+          )}
+        </section>
+
+        <section>
+          <h3>Žebříček království</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Království</th>
+                <th>Prestiž</th>
+                <th>Osady</th>
+                <th>Členové</th>
+              </tr>
+            </thead>
+            <tbody>
+              {availableKingdoms.map((entry) => (
+                <tr key={`kingdom-summary-${entry.kingdom}`}>
+                  <td>
+                    <button
+                      type="button"
+                      className="ranking-link-button"
+                      onClick={() => onOpenKingdomProfile(entry.kingdom)}
+                    >
+                      {entry.kingdom}
+                    </button>
+                  </td>
+                  <td>{entry.prestige.toLocaleString('cs-CZ')}</td>
+                  <td>{entry.villages}</td>
+                  <td>{entry.members}</td>
+                </tr>
+              ))}
+              {availableKingdoms.length === 0 ? (
+                <tr>
+                  <td colSpan={4}>Žádné hráčské království zatím není aktivní.</td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </section>
+
+        <section>
+          <h3>Audit log (debug)</h3>
+          {auditLog.length > 0 ? (
+            <ul className="kingdom-audit-list">
+              {auditLog.map((entry) => (
+                <li key={`kingdom-audit-${entry.id}`} className="kingdom-audit-item">
+                  <strong>{entry.message}</strong>
+                  <span>{new Date(entry.createdAt).toLocaleString('cs-CZ')}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>Zatím nejsou žádné královské události.</p>
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="panel-stack kingdom-panel">
+      <section>
+        <h3>Jsi součástí království {currentKingdom}</h3>
+        <ul>
+          <li>Vůdce: {kingdomHub.leaderUsername ?? 'Neznámý'}</li>
+          <li>Počet členů: {members.length}</li>
+          <li>Počet osad: {totalKingdomVillages}</li>
+          <li>Celková prestiž: {totalKingdomPrestige.toLocaleString('cs-CZ')}</li>
+        </ul>
+        <button
+          type="button"
+          className="danger-button kingdom-leave-button"
+          onClick={handleLeaveClick}
+          disabled={actionPending}
+        >
+          Odejít z kmene
+        </button>
+        {notice ? <p className="panel-feedback">{notice}</p> : null}
+      </section>
+
+      <section>
+        <h3>Členové království</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Hráč</th>
+              <th>Prestiž</th>
+              <th>Osady</th>
+              <th>Akce</th>
+            </tr>
+          </thead>
+          <tbody>
+            {members.map((member) => {
+              const isSelf = member.username === currentUsername;
+              const canKick = canManageInvites && !isSelf;
+              return (
+                <tr key={`kingdom-member-${member.playerId}`} className={isSelf ? 'is-self' : ''}>
+                  <td>
+                    <button
+                      type="button"
+                      className="ranking-link-button"
+                      onClick={() => onOpenPlayerProfile(member.username)}
+                    >
+                      {member.username}
+                    </button>
+                    {member.isLeader ? <span className="row-help inline">vůdce</span> : null}
+                  </td>
+                  <td>{member.prestige.toLocaleString('cs-CZ')}</td>
+                  <td>{member.villages}</td>
+                  <td>
+                    {canKick ? (
+                      <button
+                        type="button"
+                        className="secondary-action kingdom-action-button"
+                        onClick={() => handleKickClick(member.username)}
+                        disabled={actionPending}
+                      >
+                        Vyhodit
+                      </button>
+                    ) : (
+                      <span className="row-help inline">-</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+
+      {canManageInvites ? (
+        <section>
+          <h3>Pozvat hráče do království</h3>
+          <p>Pozvánku může poslat pouze vůdce. Hráč musí být aktuálně bez království.</p>
+          <div className="kingdom-invite-controls">
+            <select
+              value={selectedInviteCandidateResolved}
+              onChange={(event) => setSelectedInviteCandidate(event.target.value)}
+              disabled={actionPending || inviteCandidates.length === 0}
+            >
+              {inviteCandidates.length > 0 ? (
+                inviteCandidates.map((candidate) => (
+                  <option key={`invite-candidate-${candidate.playerId}`} value={candidate.username}>
+                    {candidate.username} · prestiž {candidate.prestige.toLocaleString('cs-CZ')} · osady{' '}
+                    {candidate.villages}
+                  </option>
+                ))
+              ) : (
+                <option value="">Nikdo neni dostupny</option>
+              )}
+            </select>
+            <button
+              type="button"
+              className="upgrade-action kingdom-action-button"
+              onClick={handleInviteSubmit}
+              disabled={actionPending || inviteCandidates.length === 0}
+            >
+              Poslat pozvánku
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      <section>
+        <h3>Audit log (debug)</h3>
+        {auditLog.length > 0 ? (
+          <ul className="kingdom-audit-list">
+            {auditLog.map((entry) => (
+              <li key={`kingdom-audit-${entry.id}`} className="kingdom-audit-item">
+                <strong>{entry.message}</strong>
+                <span>{new Date(entry.createdAt).toLocaleString('cs-CZ')}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>Zatím nejsou žádné královské události.</p>
+        )}
+      </section>
+    </div>
+  );
+};
 
 const RankingPanel = ({
   rows,
@@ -4163,14 +4492,16 @@ export const GamePage = () => {
   const [battleReportsPage, setBattleReportsPage] = useState(1);
   const [selectedBattleReportId, setSelectedBattleReportId] = useState<number | null>(null);
   const [battleReportCacheById, setBattleReportCacheById] = useState<Record<number, BattleReportItem>>({});
+  const [kingdomActionPending, setKingdomActionPending] = useState(false);
+  const [kingdomNotice, setKingdomNotice] = useState<string | null>(null);
   const [isVillageMenuOpen, setVillageMenuOpen] = useState(false);
   const [villageMenuPosition, setVillageMenuPosition] = useState<VillageMenuPosition | null>(null);
 
   useEffect(() => {
     mutationPendingRef.current = Boolean(
-      recruitPendingUnitId || upgradePendingBuildingId || armyCommandPending,
+      recruitPendingUnitId || upgradePendingBuildingId || armyCommandPending || kingdomActionPending,
     );
-  }, [armyCommandPending, recruitPendingUnitId, upgradePendingBuildingId]);
+  }, [armyCommandPending, kingdomActionPending, recruitPendingUnitId, upgradePendingBuildingId]);
 
   const buildings = useMemo<Building[]>(() => {
     if (!gameState) {
@@ -4351,6 +4682,7 @@ export const GamePage = () => {
     const rows = gameState?.leaderboard?.length ? gameState.leaderboard : RANKING_FALLBACK;
     return rows.filter((entry) => !entry.username.startsWith('__abandoned_ai__'));
   }, [gameState]);
+  const kingdomHub = gameState?.kingdomHub ?? null;
   const playerLeaderboardEntry = useMemo(
     () => leaderboardRows.find((entry) => entry.username === username) ?? null,
     [leaderboardRows, username],
@@ -5591,6 +5923,184 @@ export const GamePage = () => {
     [activeVillageId, gameState?.village.id, username],
   );
 
+  const handleCreateKingdom = useCallback(
+    async (kingdomName: string) => {
+      const normalizedKingdomName = kingdomName.trim();
+      if (!normalizedKingdomName) {
+        return;
+      }
+
+      setKingdomActionPending(true);
+      setKingdomNotice(null);
+
+      try {
+        const response = await createKingdomRequest(
+          username,
+          normalizedKingdomName,
+          gameState?.village.id ?? activeVillageId,
+        );
+        const nextState = response.data;
+        setGameState(nextState);
+        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
+          setActiveVillageId(nextState.village.id);
+        }
+        setStateError(null);
+        setKingdomNotice(`Království ${response.result.kingdom} bylo založeno.`);
+      } catch (error) {
+        setKingdomNotice(getErrorMessage(error));
+      } finally {
+        setKingdomActionPending(false);
+      }
+    },
+    [activeVillageId, gameState?.village.id, username],
+  );
+
+  const handleInvitePlayerToKingdom = useCallback(
+    async (targetUsername: string) => {
+      const normalizedTarget = targetUsername.trim();
+      if (!normalizedTarget) {
+        return;
+      }
+
+      setKingdomActionPending(true);
+      setKingdomNotice(null);
+
+      try {
+        const response = await invitePlayerToKingdomRequest(
+          username,
+          normalizedTarget,
+          gameState?.village.id ?? activeVillageId,
+        );
+        const nextState = response.data;
+        setGameState(nextState);
+        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
+          setActiveVillageId(nextState.village.id);
+        }
+        setStateError(null);
+        setKingdomNotice(`Pozvánka pro hráče ${response.result.targetUsername} byla odeslána.`);
+      } catch (error) {
+        setKingdomNotice(getErrorMessage(error));
+      } finally {
+        setKingdomActionPending(false);
+      }
+    },
+    [activeVillageId, gameState?.village.id, username],
+  );
+
+  const handleAcceptKingdomInvite = useCallback(
+    async (inviteId: number) => {
+      if (!Number.isFinite(inviteId) || inviteId <= 0) {
+        return;
+      }
+
+      setKingdomActionPending(true);
+      setKingdomNotice(null);
+
+      try {
+        const response = await acceptKingdomInviteRequest(
+          username,
+          inviteId,
+          gameState?.village.id ?? activeVillageId,
+        );
+        const nextState = response.data;
+        setGameState(nextState);
+        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
+          setActiveVillageId(nextState.village.id);
+        }
+        setStateError(null);
+        setKingdomNotice(`Pozvánka přijata. Nyní jsi členem království ${response.result.kingdom}.`);
+      } catch (error) {
+        setKingdomNotice(getErrorMessage(error));
+      } finally {
+        setKingdomActionPending(false);
+      }
+    },
+    [activeVillageId, gameState?.village.id, username],
+  );
+
+  const handleRejectKingdomInvite = useCallback(
+    async (inviteId: number) => {
+      if (!Number.isFinite(inviteId) || inviteId <= 0) {
+        return;
+      }
+
+      setKingdomActionPending(true);
+      setKingdomNotice(null);
+
+      try {
+        const response = await rejectKingdomInviteRequest(
+          username,
+          inviteId,
+          gameState?.village.id ?? activeVillageId,
+        );
+        const nextState = response.data;
+        setGameState(nextState);
+        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
+          setActiveVillageId(nextState.village.id);
+        }
+        setStateError(null);
+        setKingdomNotice(`Pozvánka do království ${response.result.kingdom} byla odmítnuta.`);
+      } catch (error) {
+        setKingdomNotice(getErrorMessage(error));
+      } finally {
+        setKingdomActionPending(false);
+      }
+    },
+    [activeVillageId, gameState?.village.id, username],
+  );
+
+  const handleLeaveKingdom = useCallback(async () => {
+    setKingdomActionPending(true);
+    setKingdomNotice(null);
+
+    try {
+      const response = await leaveKingdomRequest(username, gameState?.village.id ?? activeVillageId);
+      const nextState = response.data;
+      setGameState(nextState);
+      if (activeVillageId == null || activeVillageId !== nextState.village.id) {
+        setActiveVillageId(nextState.village.id);
+      }
+      setStateError(null);
+      setKingdomNotice(`Opustil jsi království ${response.result.previousKingdom}.`);
+    } catch (error) {
+      setKingdomNotice(getErrorMessage(error));
+    } finally {
+      setKingdomActionPending(false);
+    }
+  }, [activeVillageId, gameState?.village.id, username]);
+
+  const handleKickKingdomMember = useCallback(
+    async (targetUsername: string) => {
+      const normalizedTarget = targetUsername.trim();
+      if (!normalizedTarget) {
+        return;
+      }
+
+      setKingdomActionPending(true);
+      setKingdomNotice(null);
+
+      try {
+        const response = await kickKingdomMemberRequest(
+          username,
+          normalizedTarget,
+          gameState?.village.id ?? activeVillageId,
+        );
+        const nextState = response.data;
+        setGameState(nextState);
+        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
+          setActiveVillageId(nextState.village.id);
+        }
+        setStateError(null);
+        setKingdomNotice(`Hráč ${response.result.kickedUsername} byl vyhozen z království.`);
+      } catch (error) {
+        setKingdomNotice(getErrorMessage(error));
+      } finally {
+        setKingdomActionPending(false);
+      }
+    },
+    [activeVillageId, gameState?.village.id, username],
+  );
+
   const handleLogout = useCallback(() => {
     logout();
     navigate('/', { replace: true });
@@ -5746,7 +6256,22 @@ export const GamePage = () => {
         return <BattleReportPanel report={report} />;
       }
       case 'kingdom':
-        return <KingdomPanel />;
+        return (
+          <KingdomPanel
+            kingdomHub={kingdomHub}
+            currentUsername={username}
+            notice={kingdomNotice}
+            actionPending={kingdomActionPending}
+            onCreateKingdom={handleCreateKingdom}
+            onInvitePlayer={handleInvitePlayerToKingdom}
+            onAcceptInvite={handleAcceptKingdomInvite}
+            onRejectInvite={handleRejectKingdomInvite}
+            onLeaveKingdom={handleLeaveKingdom}
+            onKickMember={handleKickKingdomMember}
+            onOpenPlayerProfile={openPlayerProfilePanel}
+            onOpenKingdomProfile={openKingdomProfilePanel}
+          />
+        );
       case 'rankings':
         return (
           <RankingPanel

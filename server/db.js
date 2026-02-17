@@ -218,6 +218,49 @@ CREATE TABLE IF NOT EXISTS battle_reports (
 CREATE INDEX IF NOT EXISTS idx_battle_reports_player_created
   ON battle_reports(player_id, created_at DESC, id DESC);
 
+CREATE TABLE IF NOT EXISTS kingdom_invites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kingdom TEXT NOT NULL,
+  inviter_player_id INTEGER NOT NULL,
+  target_player_id INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL,
+  responded_at TEXT,
+  FOREIGN KEY (inviter_player_id) REFERENCES players(id),
+  FOREIGN KEY (target_player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kingdom_invites_target_status
+  ON kingdom_invites(target_player_id, status, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_kingdom_invites_inviter_status
+  ON kingdom_invites(inviter_player_id, status, created_at DESC, id DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_kingdom_invites_target_pending
+  ON kingdom_invites(target_player_id)
+  WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS kingdom_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kingdom TEXT,
+  event_type TEXT NOT NULL,
+  actor_player_id INTEGER,
+  target_player_id INTEGER,
+  payload_json TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (actor_player_id) REFERENCES players(id),
+  FOREIGN KEY (target_player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kingdom_events_kingdom_created
+  ON kingdom_events(kingdom, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_kingdom_events_actor_created
+  ON kingdom_events(actor_player_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_kingdom_events_target_created
+  ON kingdom_events(target_player_id, created_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS game_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   last_tick_at TEXT NOT NULL
@@ -289,6 +332,8 @@ DELETE FROM unit_recruitments;
 DELETE FROM army_movement_units;
 DELETE FROM army_movements;
 DELETE FROM battle_reports;
+DELETE FROM kingdom_invites;
+DELETE FROM kingdom_events;
 DELETE FROM units;
 DELETE FROM buildings;
 DELETE FROM resources;
