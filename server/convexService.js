@@ -50,3 +50,11 @@ export const replaceEngineSnapshotConvex = async (snapshot, expectedRevision) =>
     expectedRevision: Number(expectedRevision),
   });
 };
+
+export const applyEngineSnapshotPatchConvex = async (patch, expectedRevision) => {
+  const client = requireClient();
+  return client.mutation('engine.js:applySnapshotPatchIfRevision', {
+    patch,
+    expectedRevision: Number(expectedRevision),
+  });
+};

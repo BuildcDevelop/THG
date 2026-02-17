@@ -583,6 +583,8 @@ const MAP_ZOOM_STORAGE_KEY_PREFIX = 'thg_map_zoom';
 const ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'thg_active_village';
 const MAP_WINDOW_MIN_WIDTH = 620;
 const MAP_WINDOW_MIN_HEIGHT = 460;
+const STATE_POLL_INTERVAL_MS = 7000;
+const REPORTS_POLL_INTERVAL_MS = 7000;
 const PANEL_DEFAULT_MIN_WIDTH = 360;
 const PANEL_DEFAULT_MIN_HEIGHT = 280;
 const PANEL_CITY_MIN_WIDTH = 1080;
@@ -4101,6 +4103,9 @@ export const GamePage = () => {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const villageMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const villageMenuOverlayRef = useRef<HTMLDivElement | null>(null);
+  const stateRequestPromiseRef = useRef<Promise<void> | null>(null);
+  const reportsRequestPromiseRef = useRef<Promise<void> | null>(null);
+  const mutationPendingRef = useRef(false);
   const username = session?.username ?? 'Hayato';
   const getCanvasViewportSize = useCallback(() => {
     const bounds = canvasRef.current?.getBoundingClientRect();
@@ -4160,6 +4165,12 @@ export const GamePage = () => {
   const [battleReportCacheById, setBattleReportCacheById] = useState<Record<number, BattleReportItem>>({});
   const [isVillageMenuOpen, setVillageMenuOpen] = useState(false);
   const [villageMenuPosition, setVillageMenuPosition] = useState<VillageMenuPosition | null>(null);
+
+  useEffect(() => {
+    mutationPendingRef.current = Boolean(
+      recruitPendingUnitId || upgradePendingBuildingId || armyCommandPending,
+    );
+  }, [armyCommandPending, recruitPendingUnitId, upgradePendingBuildingId]);
 
   const buildings = useMemo<Building[]>(() => {
     if (!gameState) {
@@ -4380,22 +4391,38 @@ export const GamePage = () => {
         return;
       }
 
-      if (!silent) {
-        setLoadingState(true);
+      if (stateRequestPromiseRef.current) {
+        return stateRequestPromiseRef.current;
       }
 
-      try {
-        const nextState = await fetchGameState(username, activeVillageId);
-        setGameState(nextState);
-        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
-          setActiveVillageId(nextState.village.id);
-        }
-        setStateError(null);
-      } catch (error) {
-        setStateError(getErrorMessage(error));
-      } finally {
+      const requestPromise = (async () => {
         if (!silent) {
-          setLoadingState(false);
+          setLoadingState(true);
+        }
+
+        try {
+          const nextState = await fetchGameState(username, activeVillageId);
+          setGameState(nextState);
+          if (activeVillageId == null || activeVillageId !== nextState.village.id) {
+            setActiveVillageId(nextState.village.id);
+          }
+          setStateError(null);
+        } catch (error) {
+          setStateError(getErrorMessage(error));
+        } finally {
+          if (!silent) {
+            setLoadingState(false);
+          }
+        }
+      })();
+
+      stateRequestPromiseRef.current = requestPromise;
+
+      try {
+        await requestPromise;
+      } finally {
+        if (stateRequestPromiseRef.current === requestPromise) {
+          stateRequestPromiseRef.current = null;
         }
       }
     },
@@ -4408,33 +4435,49 @@ export const GamePage = () => {
         return;
       }
 
-      if (!silent) {
-        setBattleReportsLoading(true);
+      if (reportsRequestPromiseRef.current) {
+        return reportsRequestPromiseRef.current;
       }
 
-      try {
-        const nextReports = await fetchBattleReports(username, battleReportsPage, 20);
-        setBattleReports(nextReports);
-        setBattleReportCacheById((previous) => {
-          const merged = { ...previous };
-          for (const report of nextReports.items) {
-            merged[report.id] = report;
-          }
-          return merged;
-        });
-        setBattleReportsPage(nextReports.page);
-        setBattleReportsError(null);
-        setSelectedBattleReportId((previous) => {
-          if (previous != null && nextReports.items.some((item) => item.id === previous)) {
-            return previous;
-          }
-          return nextReports.items[0]?.id ?? null;
-        });
-      } catch (error) {
-        setBattleReportsError(getErrorMessage(error));
-      } finally {
+      const requestPromise = (async () => {
         if (!silent) {
-          setBattleReportsLoading(false);
+          setBattleReportsLoading(true);
+        }
+
+        try {
+          const nextReports = await fetchBattleReports(username, battleReportsPage, 20);
+          setBattleReports(nextReports);
+          setBattleReportCacheById((previous) => {
+            const merged = { ...previous };
+            for (const report of nextReports.items) {
+              merged[report.id] = report;
+            }
+            return merged;
+          });
+          setBattleReportsPage(nextReports.page);
+          setBattleReportsError(null);
+          setSelectedBattleReportId((previous) => {
+            if (previous != null && nextReports.items.some((item) => item.id === previous)) {
+              return previous;
+            }
+            return nextReports.items[0]?.id ?? null;
+          });
+        } catch (error) {
+          setBattleReportsError(getErrorMessage(error));
+        } finally {
+          if (!silent) {
+            setBattleReportsLoading(false);
+          }
+        }
+      })();
+
+      reportsRequestPromiseRef.current = requestPromise;
+
+      try {
+        await requestPromise;
+      } finally {
+        if (reportsRequestPromiseRef.current === requestPromise) {
+          reportsRequestPromiseRef.current = null;
         }
       }
     },
@@ -4449,8 +4492,11 @@ export const GamePage = () => {
 
     void loadGameState(false);
     const pollTimer = window.setInterval(() => {
+      if (mutationPendingRef.current) {
+        return;
+      }
       void loadGameState(true);
-    }, 5000);
+    }, STATE_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(pollTimer);
   }, [loadGameState, navigate, session]);
@@ -4462,8 +4508,11 @@ export const GamePage = () => {
 
     void loadBattleReports(false);
     const reportsTimer = window.setInterval(() => {
+      if (mutationPendingRef.current) {
+        return;
+      }
       void loadBattleReports(true);
-    }, 5000);
+    }, REPORTS_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(reportsTimer);
   }, [loadBattleReports, session]);
@@ -6089,5 +6138,3 @@ export const GamePage = () => {
     </div>
   );
 };
-
-

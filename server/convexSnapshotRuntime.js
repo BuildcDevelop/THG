@@ -1,7 +1,13 @@
 import { db } from './db.js';
-import { extractSqliteSnapshot, applySqliteSnapshot } from './sqliteSnapshot.js';
+import {
+  extractSqliteSnapshot,
+  applySqliteSnapshot,
+  createSnapshotPatch,
+  isSnapshotPatchEmpty,
+} from './sqliteSnapshot.js';
 import {
   getEngineSnapshotConvex,
+  applyEngineSnapshotPatchConvex,
   replaceEngineSnapshotConvex,
   isConvexConfigured,
 } from './convexService.js';
@@ -49,10 +55,28 @@ export const runWithConvexSnapshotPersistence = async (
     }
 
     const nextSnapshot = extractSqliteSnapshot(db);
+    const snapshotPatch = createSnapshotPatch(engine.snapshot, nextSnapshot);
+
+    if (isSnapshotPatchEmpty(snapshotPatch)) {
+      return result;
+    }
+
     try {
-      await replaceEngineSnapshotConvex(nextSnapshot, Number(engine.revision));
+      await applyEngineSnapshotPatchConvex(snapshotPatch, Number(engine.revision));
       return result;
     } catch (error) {
+      if (!isSnapshotConflictError(error)) {
+        try {
+          await replaceEngineSnapshotConvex(nextSnapshot, Number(engine.revision));
+          return result;
+        } catch (fallbackError) {
+          if (isSnapshotConflictError(fallbackError) && attempt < maxRetries) {
+            lastConflictError = fallbackError;
+            continue;
+          }
+          throw fallbackError;
+        }
+      }
       if (isSnapshotConflictError(error) && attempt < maxRetries) {
         lastConflictError = error;
         continue;

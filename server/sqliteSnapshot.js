@@ -23,6 +23,93 @@ const TABLE_SELECT_QUERIES = {
     'SELECT id, last_tick_at FROM game_state ORDER BY id ASC',
 };
 
+const SNAPSHOT_TABLE_KEYS = {
+  players: ['id'],
+  villages: ['id'],
+  resources: ['village_id'],
+  buildings: ['village_id', 'building_id'],
+  units: ['village_id', 'unit_id'],
+  buildingUpgrades: ['id'],
+  unitRecruitments: ['id'],
+  armyMovements: ['id'],
+  armyMovementUnits: ['movement_id', 'unit_id'],
+  battleReports: ['id'],
+  gameState: ['id'],
+};
+
+const normalizeRows = (value) => (Array.isArray(value) ? value : []);
+
+const buildRowKey = (row, keys) =>
+  keys
+    .map((key) => {
+      const value = row?.[key];
+      return value == null ? 'null' : String(value);
+    })
+    .join('::');
+
+const areRowsEqual = (left, right) => {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') {
+    return false;
+  }
+
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  for (const key of leftKeys) {
+    if (!(key in right)) {
+      return false;
+    }
+    if (left[key] !== right[key]) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+export const createSnapshotPatch = (previousSnapshot, nextSnapshot) => {
+  const patch = {};
+
+  for (const [tableName, keyColumns] of Object.entries(SNAPSHOT_TABLE_KEYS)) {
+    const previousRows = normalizeRows(previousSnapshot?.[tableName]);
+    const nextRows = normalizeRows(nextSnapshot?.[tableName]);
+
+    const previousByKey = new Map();
+    for (const row of previousRows) {
+      previousByKey.set(buildRowKey(row, keyColumns), row);
+    }
+
+    const changedRows = [];
+    for (const row of nextRows) {
+      const rowKey = buildRowKey(row, keyColumns);
+      const previousRow = previousByKey.get(rowKey);
+      if (!previousRow || !areRowsEqual(previousRow, row)) {
+        changedRows.push(row);
+      }
+    }
+
+    if (changedRows.length > 0) {
+      patch[tableName] = changedRows;
+    }
+  }
+
+  return patch;
+};
+
+export const isSnapshotPatchEmpty = (patch) => {
+  if (!patch || typeof patch !== 'object') {
+    return true;
+  }
+
+  return Object.values(patch).every((rows) => !Array.isArray(rows) || rows.length === 0);
+};
+
 export const extractSqliteSnapshot = (db) => {
   const selectAll = (query) => db.prepare(query).all();
   return {
