@@ -30,8 +30,12 @@ const WORLD_REGION = {
 const BASE_ACCOUNTS = ['Hayato', 'Torreya', 'Pegak', 'Sentryn', 'TSN'];
 const EXTRA_ACCOUNTS = Array.from({ length: 100 }, (_, index) => `Player${String(index + 1).padStart(3, '0')}`);
 const SPECIAL_PLAYER_ACCOUNTS = [
-  { username: '-SaThAn?!', password: '123' },
-  { username: '*333*', password: '123' },
+  { username: '-SaThAn?!', password: '123', boostedStart: true },
+  { username: '*333*', password: '123', boostedStart: true },
+  { username: 'Wild', password: '7777dd95' },
+  { username: 'Insanity', password: '98854657da5' },
+  { username: 'Nicol', password: '22244444433a' },
+  { username: 'Chakitis', password: '5555s6s6s5' },
 ];
 const ALL_ACCOUNTS = [...BASE_ACCOUNTS, ...EXTRA_ACCOUNTS, ...SPECIAL_PLAYER_ACCOUNTS.map((entry) => entry.username)];
 const SPECIAL_PLAYER_ACCOUNT_BY_USERNAME = new Map(
@@ -331,7 +335,7 @@ const seedWorld = db.transaction(() => {
     const username = ALL_ACCOUNTS[index];
     const specialAccount = SPECIAL_PLAYER_ACCOUNT_BY_USERNAME.get(username);
     const password = specialAccount?.password ?? '123';
-    const boostedStartLevels = specialAccount ? SPECIAL_PLAYER_BOOSTED_BUILDING_LEVELS : null;
+    const boostedStartLevels = specialAccount?.boostedStart ? SPECIAL_PLAYER_BOOSTED_BUILDING_LEVELS : null;
     const kingdom = KINGDOMS[index % KINGDOMS.length];
     const spawn = spawns[index];
     const coordX = WORLD_REGION.originX + spawn.localX - 1;
@@ -719,7 +723,8 @@ const ensureSpecialPlayerAccounts = db.transaction(() => {
       );
 
       for (const buildingId of BUILDING_ORDER) {
-        const targetLevel = SPECIAL_PLAYER_BOOSTED_BUILDING_LEVELS[buildingId] ?? STARTING_BUILDING_LEVELS[buildingId] ?? 0;
+        const boostedStartLevels = account.boostedStart ? SPECIAL_PLAYER_BOOSTED_BUILDING_LEVELS : null;
+        const targetLevel = boostedStartLevels?.[buildingId] ?? STARTING_BUILDING_LEVELS[buildingId] ?? 0;
         upsertBuildingStmt.run(villageId, buildingId, targetLevel);
       }
 
