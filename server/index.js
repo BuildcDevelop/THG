@@ -110,10 +110,12 @@ app.post('/api/v1/auth/login', async (req, res, next) => {
 
 app.get('/api/v1/admin/players', async (_req, res, next) => {
   try {
-    const data = await executeWithConvexPersistence(() => {
-      runGameTick();
-      return listAdminPlayers();
-    });
+    const data = useConvexFull
+      ? await executeWithConvexRead(() => listAdminPlayers())
+      : await executeWithConvexPersistence(() => {
+          runGameTick();
+          return listAdminPlayers();
+        });
 
     res.json({
       ok: true,
@@ -134,10 +136,7 @@ app.get('/api/v1/state', async (req, res, next) => {
         : Number(String(villageIdRaw).trim());
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const resolvedState = useConvexFull
-      ? await executeWithConvexPersistence(() => {
-          runGameTick();
-          return getVillageSnapshot(username, normalizedVillageId);
-        })
+      ? await executeWithConvexRead(() => getVillageSnapshot(username, normalizedVillageId))
       : useConvexState
         ? await getVillageSnapshotConvex(username, normalizedVillageId)
         : (() => {
@@ -156,10 +155,12 @@ app.get('/api/v1/state', async (req, res, next) => {
 
 app.get('/api/v1/ranking', async (_req, res, next) => {
   try {
-    const data = await executeWithConvexPersistence(() => {
-      runGameTick();
-      return listPlayerLeaderboard();
-    });
+    const data = useConvexFull
+      ? await executeWithConvexRead(() => listPlayerLeaderboard())
+      : await executeWithConvexPersistence(() => {
+          runGameTick();
+          return listPlayerLeaderboard();
+        });
 
     res.json({
       ok: true,
@@ -175,13 +176,20 @@ app.get('/api/v1/reports', async (req, res, next) => {
     const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
     const page = Number(req.query.page ?? 1);
     const pageSize = Number(req.query.pageSize ?? 20);
-    const data = await executeWithConvexPersistence(() => {
-      runGameTick();
-      return listBattleReports(username, {
-        page: Number.isFinite(page) ? page : 1,
-        pageSize: Number.isFinite(pageSize) ? pageSize : 20,
-      });
-    });
+    const data = useConvexFull
+      ? await executeWithConvexRead(() =>
+          listBattleReports(username, {
+            page: Number.isFinite(page) ? page : 1,
+            pageSize: Number.isFinite(pageSize) ? pageSize : 20,
+          }),
+        )
+      : await executeWithConvexPersistence(() => {
+          runGameTick();
+          return listBattleReports(username, {
+            page: Number.isFinite(page) ? page : 1,
+            pageSize: Number.isFinite(pageSize) ? pageSize : 20,
+          });
+        });
 
     res.json({
       ok: true,
