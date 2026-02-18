@@ -353,65 +353,68 @@ const NAV_BUTTONS: { type: StaticPanelType; text: string }[] = [
 const STRETCHABLE_PANEL_TYPES = new Set<PanelType>(['city', 'map', 'army']);
 
 const isStretchablePanelType = (panelType: PanelType): boolean => STRETCHABLE_PANEL_TYPES.has(panelType);
+const BUILDING_ICON_BASE_PATH = '/assets/buildings';
+const getBuildingIconPath = (fileName: string): string => `${BUILDING_ICON_BASE_PATH}/${fileName}`;
+const DEFAULT_BUILDING_ICON = getBuildingIconPath('warehouse.png');
 
 const BUILDING_ART: Record<string, { icon: string; fallbackName: string; fallbackCategory: string }> = {
   woodcutter: {
-    icon: '/assets/buildings/woodcutter.png',
+    icon: getBuildingIconPath('woodcutter.png'),
     fallbackName: 'Dřevorubec',
     fallbackCategory: 'Produkce',
   },
   quarry: {
-    icon: '/assets/buildings/quarry.png',
+    icon: getBuildingIconPath('quarry.png'),
     fallbackName: 'Kamenolom',
     fallbackCategory: 'Produkce',
   },
   'iron-mine': {
-    icon: '/assets/buildings/iron-mine.png',
+    icon: getBuildingIconPath('iron-mine.png'),
     fallbackName: 'Železný důl',
     fallbackCategory: 'Produkce',
   },
   warehouse: {
-    icon: '/assets/buildings/warehouse.png',
+    icon: getBuildingIconPath('warehouse.png'),
     fallbackName: 'Sklad surovin',
     fallbackCategory: 'Podpora',
   },
   barracks: {
-    icon: '/assets/buildings/barracks.png',
+    icon: getBuildingIconPath('barracks.png'),
     fallbackName: 'Kasárna',
     fallbackCategory: 'Vojenské',
   },
   stable: {
-    icon: '/assets/buildings/stable.png',
+    icon: getBuildingIconPath('stable.png'),
     fallbackName: 'Stáje',
     fallbackCategory: 'Vojenské',
   },
   workshop: {
-    icon: '/assets/buildings/workshop.png',
+    icon: getBuildingIconPath('workshop.png'),
     fallbackName: 'Dílna',
     fallbackCategory: 'Vojenské',
   },
   fortification: {
-    icon: '/assets/buildings/fortification.png',
+    icon: getBuildingIconPath('fortification.png'),
     fallbackName: 'Opevnění',
     fallbackCategory: 'Obrana',
   },
   gate: {
-    icon: '/assets/buildings/gate.png',
+    icon: getBuildingIconPath('gate.png'),
     fallbackName: 'Brána',
     fallbackCategory: 'Obrana',
   },
   townhall: {
-    icon: '/assets/buildings/townhall.png',
+    icon: getBuildingIconPath('townhall.png'),
     fallbackName: 'Radnice',
     fallbackCategory: 'Administrativa',
   },
   university: {
-    icon: '/assets/buildings/university.png',
+    icon: getBuildingIconPath('university.png'),
     fallbackName: 'Univerzita',
     fallbackCategory: 'Administrativa',
   },
   'residential-quarter': {
-    icon: '/assets/buildings/residential-quarter.png',
+    icon: getBuildingIconPath('residential-quarter.png'),
     fallbackName: 'Obytná čtvrť',
     fallbackCategory: 'Podpora',
   },
@@ -4631,7 +4634,7 @@ export const GamePage = () => {
       return {
         id: building.id,
         name: art?.fallbackName ?? building.name,
-        icon: art?.icon ?? '/assets/buildings/warehouse.png',
+        icon: art?.icon ?? DEFAULT_BUILDING_ICON,
         level: building.level,
         category: art?.fallbackCategory ?? building.category,
         workers: `${building.workersUsed}`,

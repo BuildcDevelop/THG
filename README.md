@@ -192,3 +192,4 @@ Poznamka pro deploy z Windows (native `better-sqlite3`):
 - Ikony budov: **Kenney - Medieval RTS** (CC0)
 - Zdroj: `https://kenney.nl/assets/medieval-rts`
 - Lokalni ulozene v `public/assets/buildings/` (vcetne `LICENSE_KENNEY.txt`)
+- Slozka `for_public/` slouzi jen jako vstup pro nove obrazky; hra cte assety pouze z `public/assets/buildings/`.
