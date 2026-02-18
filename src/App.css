@@ -1432,12 +1432,14 @@
   opacity: 0.56;
 }
 
-.kingdom-create-controls {
+.kingdom-create-controls,
+.kingdom-invite-controls {
   display: grid;
   gap: 0.46rem;
 }
 
-.kingdom-create-controls input {
+.kingdom-create-controls input,
+.kingdom-invite-controls input {
   border: 1px solid rgba(157, 203, 239, 0.28);
   border-radius: 9px;
   padding: 0.48rem 0.58rem;
@@ -1446,7 +1448,8 @@
   font: inherit;
 }
 
-.kingdom-create-controls input:disabled {
+.kingdom-create-controls input:disabled,
+.kingdom-invite-controls input:disabled {
   opacity: 0.56;
 }
 

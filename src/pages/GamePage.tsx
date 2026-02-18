@@ -28,7 +28,6 @@ import {
   type GameUnitState,
   type KingdomHubState,
   type KingdomIncomingInvite,
-  type KingdomInviteCandidate,
   type KingdomAvailableSummary,
   type KingdomAuditLogEntry,
   type LeaderboardRow,
@@ -581,7 +580,6 @@ const RESEARCH_TASKS: ResearchTask[] = [
 const RANKING_FALLBACK: LeaderboardRow[] = [];
 const EMPTY_KINGDOM_AVAILABLE: KingdomAvailableSummary[] = [];
 const EMPTY_KINGDOM_INVITES: KingdomIncomingInvite[] = [];
-const EMPTY_KINGDOM_INVITE_CANDIDATES: KingdomInviteCandidate[] = [];
 const EMPTY_KINGDOM_MEMBERS: KingdomHubState['members'] = [];
 const EMPTY_KINGDOM_AUDIT_LOG: KingdomAuditLogEntry[] = [];
 
@@ -2677,26 +2675,19 @@ const KingdomPanel = ({
   onOpenKingdomProfile: (kingdomName: string) => void;
 }) => {
   const [createKingdomName, setCreateKingdomName] = useState('');
+  const [inviteTargetUsername, setInviteTargetUsername] = useState('');
   const [selectedIncomingInviteId, setSelectedIncomingInviteId] = useState<number | null>(null);
   const availableKingdoms: KingdomAvailableSummary[] =
     kingdomHub?.availableKingdoms ?? EMPTY_KINGDOM_AVAILABLE;
   const incomingInvites: KingdomIncomingInvite[] = kingdomHub?.incomingInvites ?? EMPTY_KINGDOM_INVITES;
-  const rawInviteCandidates: KingdomInviteCandidate[] =
-    kingdomHub?.inviteCandidates ?? EMPTY_KINGDOM_INVITE_CANDIDATES;
   const members = kingdomHub?.members ?? EMPTY_KINGDOM_MEMBERS;
-  const inviteCandidates: KingdomInviteCandidate[] = useMemo(
-    () =>
-      rawInviteCandidates.filter(
-        (candidate) => !members.some((member) => Number(member.playerId) === Number(candidate.playerId)),
-      ),
-    [members, rawInviteCandidates],
-  );
   const selectedIncomingInvite =
     incomingInvites.find((invite) => invite.id === selectedIncomingInviteId) ??
     (selectedIncomingInviteId == null ? incomingInvites[0] ?? null : null);
   const auditLog = kingdomHub?.auditLog ?? EMPTY_KINGDOM_AUDIT_LOG;
   const currentKingdom = kingdomHub?.isMember ? kingdomHub.kingdom : null;
   const canManageInvites = kingdomHub?.canManageInvites ?? false;
+  const isKingdomLeader = kingdomHub?.leaderUsername === currentUsername;
   const totalKingdomPrestige = members.reduce((sum, member) => sum + member.prestige, 0);
   const totalKingdomVillages = members.reduce((sum, member) => sum + member.villages, 0);
 
@@ -2722,18 +2713,14 @@ const KingdomPanel = ({
     onCreateKingdom(normalizedKingdomName);
   };
 
-  const handleInviteCardClick = (targetUsername: string) => {
-    const normalizedTarget = targetUsername.trim();
+  const handleInviteSubmit = () => {
+    const normalizedTarget = inviteTargetUsername.trim();
     if (!normalizedTarget) {
       return;
     }
 
-    const confirmed = window.confirm(`Poslat pozvanku hraci ${normalizedTarget}?`);
-    if (!confirmed) {
-      return;
-    }
-
     onInvitePlayer(normalizedTarget);
+    setInviteTargetUsername('');
   };
 
   const handleLeaveClick = () => {
@@ -2978,33 +2965,28 @@ const KingdomPanel = ({
         </table>
       </section>
 
-      {canManageInvites ? (
+      {isKingdomLeader ? (
         <section>
           <h3>Pozvat hráče do království</h3>
-          <p>
-            Pozvánku může poslat pouze vůdce. Klikni na kartu hráče a po potvrzení se pozvánka
-            odešle.
-          </p>
-          {inviteCandidates.length > 0 ? (
-            <div className="kingdom-invite-candidate-grid">
-              {inviteCandidates.map((candidate) => (
-                <button
-                  key={`invite-candidate-card-${candidate.playerId}`}
-                  type="button"
-                  className="kingdom-invite-candidate-card"
-                  onClick={() => handleInviteCardClick(candidate.username)}
-                  disabled={actionPending}
-                >
-                  <strong>{candidate.username}</strong>
-                  <span>Prestiž: {candidate.prestige.toLocaleString('cs-CZ')}</span>
-                  <span>Počet osad: {candidate.villages}</span>
-                  <em>Klikni pro pozvánku</em>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p>Nikdo není aktuálně dostupný pro pozvání.</p>
-          )}
+          <p>Pouze vůdce může posílat pozvánky. Zadej přesný nick hráče a odešli pozvánku.</p>
+          <div className="kingdom-invite-controls">
+            <input
+              type="text"
+              value={inviteTargetUsername}
+              onChange={(event) => setInviteTargetUsername(event.target.value)}
+              maxLength={32}
+              placeholder="Nick hráče"
+              disabled={actionPending}
+            />
+            <button
+              type="button"
+              className="upgrade-action kingdom-action-button"
+              onClick={handleInviteSubmit}
+              disabled={actionPending || inviteTargetUsername.trim().length === 0}
+            >
+              Poslat pozvánku
+            </button>
+          </div>
         </section>
       ) : null}
 

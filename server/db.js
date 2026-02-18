@@ -19,6 +19,7 @@ if (!fs.existsSync(dataDir)) {
 
 export const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
 
 const WORLD_REGION = {
   id: 1,
@@ -800,6 +801,141 @@ const ensureVillageBuildingLevelFloors = db.transaction(() => {
   }
 });
 
+const ensureReferentialIntegrity = db.transaction(() => {
+  const cleanupStatements = [
+    db.prepare(
+      `DELETE FROM army_movement_units
+       WHERE NOT EXISTS (
+         SELECT 1
+         FROM army_movements m
+         WHERE m.id = army_movement_units.movement_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM battle_reports
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = battle_reports.player_id
+         )
+          OR (
+           battle_reports.origin_village_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM villages v WHERE v.id = battle_reports.origin_village_id
+           )
+         )
+          OR (
+           battle_reports.target_village_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM villages v WHERE v.id = battle_reports.target_village_id
+           )
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM kingdom_invites
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = kingdom_invites.inviter_player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = kingdom_invites.target_player_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM kingdom_events
+       WHERE (
+           kingdom_events.actor_player_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM players p WHERE p.id = kingdom_events.actor_player_id
+           )
+         )
+          OR (
+           kingdom_events.target_player_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM players p WHERE p.id = kingdom_events.target_player_id
+           )
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM army_movements
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = army_movements.player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = army_movements.origin_village_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = army_movements.target_village_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = army_movements.home_village_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM building_upgrades
+       WHERE NOT EXISTS (
+         SELECT 1 FROM villages v WHERE v.id = building_upgrades.village_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM unit_recruitments
+       WHERE NOT EXISTS (
+         SELECT 1 FROM villages v WHERE v.id = unit_recruitments.village_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM resources
+       WHERE NOT EXISTS (
+         SELECT 1 FROM villages v WHERE v.id = resources.village_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM buildings
+       WHERE NOT EXISTS (
+         SELECT 1 FROM villages v WHERE v.id = buildings.village_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM units
+       WHERE NOT EXISTS (
+         SELECT 1 FROM villages v WHERE v.id = units.village_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM villages
+       WHERE NOT EXISTS (
+         SELECT 1 FROM players p WHERE p.id = villages.player_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM army_movement_units
+       WHERE NOT EXISTS (
+         SELECT 1
+         FROM army_movements m
+         WHERE m.id = army_movement_units.movement_id
+       )`,
+    ),
+  ];
+
+  let totalDeletedRows = 0;
+  for (let pass = 0; pass < 5; pass += 1) {
+    let passDeletedRows = 0;
+    for (const statement of cleanupStatements) {
+      passDeletedRows += Number(statement.run().changes ?? 0);
+    }
+    totalDeletedRows += passDeletedRows;
+    if (passDeletedRows === 0) {
+      break;
+    }
+  }
+
+  const violations = db.prepare('PRAGMA foreign_key_check').all();
+  if (violations.length > 0) {
+    console.warn(
+      `[db] Referential integrity check still reports ${violations.length} violation(s) after cleanup.`,
+    );
+  } else if (totalDeletedRows > 0) {
+    console.warn(`[db] Referential integrity cleanup removed ${totalDeletedRows} orphan row(s).`);
+  }
+});
+
 const shouldReseedWorld = () => {
   const playerRows = db.prepare('SELECT username FROM players').all();
   if (playerRows.length === 0) {
@@ -822,3 +958,4 @@ ensureAbandonedVillages();
 ensureSpecialPlayerAccounts();
 ensureVillageBuildingLevelFloors();
 ensureHayatoOwnsAbandonedVillage13();
+ensureReferentialIntegrity();
