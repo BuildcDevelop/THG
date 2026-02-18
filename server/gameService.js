@@ -442,6 +442,11 @@ const selectPrimaryKingdomByPlayerStmt = db.prepare(
       LIMIT 1
     ), 'Neutral') AS kingdom`,
 );
+const selectDistinctVillageKingdomsByPlayerStmt = db.prepare(
+  `SELECT DISTINCT kingdom
+   FROM villages
+   WHERE player_id = ?`,
+);
 const updateVillageOwnerForConquestStmt = db.prepare(
   'UPDATE villages SET player_id = ?, kingdom = ?, loyalty = 100 WHERE id = ?',
 );
@@ -787,33 +792,41 @@ const listIncomingKingdomInvites = (playerId) =>
     createdAt: String(invite.createdAt),
   }));
 
-const listKingdomInviteCandidates = (viewerUsername) =>
-  {
-    const pendingInviteTargetIds = new Set(
-      selectPendingKingdomInviteTargetIdsStmt
-        .all()
-        .map((row) => Number(row.targetPlayerId))
-        .filter((playerId) => Number.isFinite(playerId) && playerId > 0),
-    );
-
-    return selectLeaderboardStmt
+const listKingdomInviteCandidates = (viewerUsername) => {
+  const pendingInviteTargetIds = new Set(
+    selectPendingKingdomInviteTargetIdsStmt
       .all()
-      .filter((row) => {
-        if (String(row.username) === String(viewerUsername)) {
-          return false;
-        }
-        if (!isNeutralKingdom(row.kingdom)) {
-          return false;
-        }
-        return !pendingInviteTargetIds.has(Number(row.playerId));
-      })
-      .map((row) => ({
-        playerId: Number(row.playerId),
-        username: String(row.username),
-        villages: Number(row.villageCount),
-        prestige: Number(row.prestige),
-      }));
-  };
+      .map((row) => Number(row.targetPlayerId))
+      .filter((playerId) => Number.isFinite(playerId) && playerId > 0),
+  );
+
+  return selectLeaderboardStmt
+    .all()
+    .filter((row) => {
+      if (String(row.username) === String(viewerUsername)) {
+        return false;
+      }
+      if (!isNeutralKingdom(row.kingdom)) {
+        return false;
+      }
+
+      const playerKingdomRows = selectDistinctVillageKingdomsByPlayerStmt.all(Number(row.playerId));
+      const hasNonNeutralVillageKingdom = playerKingdomRows.some((kingdomRow) =>
+        !isNeutralKingdom(kingdomRow.kingdom),
+      );
+      if (hasNonNeutralVillageKingdom) {
+        return false;
+      }
+
+      return !pendingInviteTargetIds.has(Number(row.playerId));
+    })
+    .map((row) => ({
+      playerId: Number(row.playerId),
+      username: String(row.username),
+      villages: Number(row.villageCount),
+      prestige: Number(row.prestige),
+    }));
+};
 
 const buildKingdomHubState = (player, village) => {
   const playerId = Number(player.id);

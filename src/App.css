@@ -1338,6 +1338,39 @@
   font-size: 0.82rem;
 }
 
+.kingdom-invite-picker {
+  width: 100%;
+  border: 1px solid rgba(157, 203, 239, 0.28);
+  border-radius: 9px;
+  padding: 0.48rem 0.58rem;
+  background: linear-gradient(180deg, rgba(9, 20, 30, 0.95), rgba(7, 15, 24, 0.95));
+  color: #d6e5f4;
+  font: inherit;
+  text-align: left;
+  display: grid;
+  gap: 0.16rem;
+  cursor: pointer;
+}
+
+.kingdom-invite-picker strong {
+  font-size: 0.9rem;
+}
+
+.kingdom-invite-picker span {
+  color: #bbd2e6;
+  font-size: 0.78rem;
+}
+
+.kingdom-invite-picker:hover,
+.kingdom-invite-picker.is-active {
+  border-color: rgba(214, 162, 74, 0.72);
+}
+
+.kingdom-invite-picker:disabled {
+  opacity: 0.56;
+  cursor: default;
+}
+
 .kingdom-inline-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1563,6 +1596,15 @@
   gap: 0.42rem;
 }
 
+.messages-invite-block {
+  display: grid;
+  gap: 0.42rem;
+}
+
+.messages-invite-block h4 {
+  margin: 0;
+}
+
 .messages-signal-chip {
   border: 1px solid rgba(157, 203, 239, 0.24);
   border-radius: 10px;
@@ -1680,6 +1722,15 @@
 .messages-report-item.is-active {
   border-color: rgba(154, 210, 249, 0.76);
   box-shadow: 0 0 0 1px rgba(147, 199, 238, 0.18), 0 14px 24px rgba(0, 0, 0, 0.38);
+}
+
+.messages-report-item.kingdom-invite {
+  border-color: rgba(205, 170, 107, 0.54);
+}
+
+.messages-report-item.kingdom-invite:hover,
+.messages-report-item.kingdom-invite.is-active {
+  border-color: rgba(226, 192, 129, 0.82);
 }
 
 .messages-report-topline {

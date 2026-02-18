@@ -2422,32 +2422,58 @@ const BattleReportPanel = ({ report }: { report: BattleReportItem | null }) => {
 
 const MessagesPanel = ({
   reports,
+  incomingInvites,
   selectedReportId,
   loading,
   error,
+  actionPending,
   onOpenReport,
   onSetPage,
   onRefresh,
+  onAcceptInvite,
+  onRejectInvite,
 }: {
   reports: BattleReportListResponse | null;
+  incomingInvites: KingdomIncomingInvite[];
   selectedReportId: number | null;
   loading: boolean;
   error: string | null;
+  actionPending: boolean;
   onOpenReport: (reportId: number) => void;
   onSetPage: (page: number) => void;
   onRefresh: () => void;
+  onAcceptInvite: (inviteId: number) => void;
+  onRejectInvite: (inviteId: number) => void;
 }) => {
+  const [selectedInviteId, setSelectedInviteId] = useState<number | null>(null);
   const page = reports?.page ?? 1;
   const totalPages = reports?.totalPages ?? 1;
   const total = reports?.total ?? 0;
   const items = reports?.items ?? [];
+  const selectedInvite =
+    incomingInvites.find((invite) => invite.id === selectedInviteId) ??
+    (selectedInviteId == null ? incomingInvites[0] ?? null : null);
   const selectedReport =
     items.find((item) => item.id === selectedReportId) ??
     (selectedReportId == null ? items[0] ?? null : null);
   const warNoticeCount = total;
-  const communicationUnreadCount = 0;
+  const communicationUnreadCount = incomingInvites.length;
   const canGoPrev = page > 1;
   const canGoNext = page < totalPages;
+
+  useEffect(() => {
+    setSelectedInviteId((previous) => {
+      if (incomingInvites.length === 0) {
+        return null;
+      }
+
+      if (previous != null && incomingInvites.some((invite) => invite.id === previous)) {
+        return previous;
+      }
+
+      return incomingInvites[0].id;
+    });
+  }, [incomingInvites]);
 
   return (
     <div className="panel-stack messages">
@@ -2498,6 +2524,33 @@ const MessagesPanel = ({
             <strong>{communicationUnreadCount.toLocaleString('cs-CZ')}</strong>
           </article>
         </div>
+        <div className="messages-invite-block">
+          <h4>Pozvánky do království</h4>
+          {incomingInvites.length > 0 ? (
+            <ul className="messages-report-list">
+              {incomingInvites.map((invite) => (
+                <li key={`messages-invite-${invite.id}`}>
+                  <button
+                    type="button"
+                    className={`messages-report-item kingdom-invite ${
+                      selectedInvite?.id === invite.id ? 'is-active' : ''
+                    }`}
+                    onClick={() => setSelectedInviteId(invite.id)}
+                    disabled={actionPending}
+                  >
+                    <strong>Pozvánka do království {invite.kingdom}</strong>
+                    <span>Poslal: {invite.inviterUsername}</span>
+                    <small>
+                      {new Date(invite.createdAt).toLocaleString('cs-CZ')} · Klikni pro rozhodnutí ↗
+                    </small>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>Zatím nemáš žádnou aktivní pozvánku.</p>
+          )}
+        </div>
         <ul className="messages-report-list">
           {items.map((report) => {
             const outcomeMeta = getBattleOutcomeMeta(report.payload);
@@ -2545,6 +2598,36 @@ const MessagesPanel = ({
       </section>
 
       <section className="messages-detail">
+        <h3>Vybraná pozvánka</h3>
+        {selectedInvite ? (
+          <div className="messages-detail-card">
+            <h4>{selectedInvite.kingdom}</h4>
+            <p>
+              Pozvánku poslal hráč <strong>{selectedInvite.inviterUsername}</strong>.
+            </p>
+            <p>Vytvořeno: {new Date(selectedInvite.createdAt).toLocaleString('cs-CZ')}</p>
+            <div className="kingdom-inline-actions">
+              <button
+                type="button"
+                className="upgrade-action kingdom-action-button"
+                onClick={() => onAcceptInvite(selectedInvite.id)}
+                disabled={actionPending}
+              >
+                Přijmout
+              </button>
+              <button
+                type="button"
+                className="secondary-action kingdom-action-button"
+                onClick={() => onRejectInvite(selectedInvite.id)}
+                disabled={actionPending}
+              >
+                Odmítnout
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p>Vyber pozvánku ze seznamu. Pokud žádná není, někdo tě zatím nepozval.</p>
+        )}
         <h3>Náhled vybraného reportu</h3>
         {selectedReport ? (
           <div className="messages-detail-card">
@@ -2594,17 +2677,42 @@ const KingdomPanel = ({
   onOpenKingdomProfile: (kingdomName: string) => void;
 }) => {
   const [createKingdomName, setCreateKingdomName] = useState('');
+  const [selectedIncomingInviteId, setSelectedIncomingInviteId] = useState<number | null>(null);
   const availableKingdoms: KingdomAvailableSummary[] =
     kingdomHub?.availableKingdoms ?? EMPTY_KINGDOM_AVAILABLE;
   const incomingInvites: KingdomIncomingInvite[] = kingdomHub?.incomingInvites ?? EMPTY_KINGDOM_INVITES;
-  const inviteCandidates: KingdomInviteCandidate[] =
+  const rawInviteCandidates: KingdomInviteCandidate[] =
     kingdomHub?.inviteCandidates ?? EMPTY_KINGDOM_INVITE_CANDIDATES;
   const members = kingdomHub?.members ?? EMPTY_KINGDOM_MEMBERS;
+  const inviteCandidates: KingdomInviteCandidate[] = useMemo(
+    () =>
+      rawInviteCandidates.filter(
+        (candidate) => !members.some((member) => Number(member.playerId) === Number(candidate.playerId)),
+      ),
+    [members, rawInviteCandidates],
+  );
+  const selectedIncomingInvite =
+    incomingInvites.find((invite) => invite.id === selectedIncomingInviteId) ??
+    (selectedIncomingInviteId == null ? incomingInvites[0] ?? null : null);
   const auditLog = kingdomHub?.auditLog ?? EMPTY_KINGDOM_AUDIT_LOG;
   const currentKingdom = kingdomHub?.isMember ? kingdomHub.kingdom : null;
   const canManageInvites = kingdomHub?.canManageInvites ?? false;
   const totalKingdomPrestige = members.reduce((sum, member) => sum + member.prestige, 0);
   const totalKingdomVillages = members.reduce((sum, member) => sum + member.villages, 0);
+
+  useEffect(() => {
+    setSelectedIncomingInviteId((previous) => {
+      if (incomingInvites.length === 0) {
+        return null;
+      }
+
+      if (previous != null && incomingInvites.some((invite) => invite.id === previous)) {
+        return previous;
+      }
+
+      return incomingInvites[0].id;
+    });
+  }, [incomingInvites]);
 
   const handleCreateKingdomSubmit = () => {
     const normalizedKingdomName = createKingdomName.trim();
@@ -2697,36 +2805,47 @@ const KingdomPanel = ({
         <section>
           <h3>Příchozí pozvánky</h3>
           {incomingInvites.length > 0 ? (
-            <ul className="kingdom-invite-list">
-              {incomingInvites.map((invite) => (
-                <li key={`incoming-invite-${invite.id}`} className="kingdom-invite-item">
-                  <div>
-                    <strong>{invite.kingdom}</strong>
-                    <span>
-                      Poslal: {invite.inviterUsername} · {new Date(invite.createdAt).toLocaleString('cs-CZ')}
-                    </span>
-                  </div>
-                  <div className="kingdom-inline-actions">
+            <>
+              <ul className="kingdom-invite-list">
+                {incomingInvites.map((invite) => (
+                  <li key={`incoming-invite-${invite.id}`} className="kingdom-invite-item">
                     <button
                       type="button"
-                      className="upgrade-action kingdom-action-button"
-                      onClick={() => onAcceptInvite(invite.id)}
+                      className={`kingdom-invite-picker ${
+                        selectedIncomingInvite?.id === invite.id ? 'is-active' : ''
+                      }`}
+                      onClick={() => setSelectedIncomingInviteId(invite.id)}
                       disabled={actionPending}
                     >
-                      Přijmout
+                      <strong>{invite.kingdom}</strong>
+                      <span>
+                        Poslal: {invite.inviterUsername} · {new Date(invite.createdAt).toLocaleString('cs-CZ')}
+                      </span>
                     </button>
-                    <button
-                      type="button"
-                      className="secondary-action kingdom-action-button"
-                      onClick={() => onRejectInvite(invite.id)}
-                      disabled={actionPending}
-                    >
-                      Odmítnout
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
+                  </li>
+                ))}
+              </ul>
+              {selectedIncomingInvite ? (
+                <div className="kingdom-inline-actions">
+                  <button
+                    type="button"
+                    className="upgrade-action kingdom-action-button"
+                    onClick={() => onAcceptInvite(selectedIncomingInvite.id)}
+                    disabled={actionPending}
+                  >
+                    Přijmout
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-action kingdom-action-button"
+                    onClick={() => onRejectInvite(selectedIncomingInvite.id)}
+                    disabled={actionPending}
+                  >
+                    Odmítnout
+                  </button>
+                </div>
+              ) : null}
+            </>
           ) : (
             <p>Zatím nemáš žádnou aktivní pozvánku.</p>
           )}
@@ -6234,12 +6353,16 @@ export const GamePage = () => {
         return (
           <MessagesPanel
             reports={battleReports}
+            incomingInvites={kingdomHub?.incomingInvites ?? EMPTY_KINGDOM_INVITES}
             selectedReportId={selectedBattleReportId}
             loading={battleReportsLoading}
             error={battleReportsError}
+            actionPending={kingdomActionPending}
             onOpenReport={openBattleReportPanel}
             onSetPage={handleBattleReportsPageChange}
             onRefresh={handleBattleReportsRefresh}
+            onAcceptInvite={handleAcceptKingdomInvite}
+            onRejectInvite={handleRejectKingdomInvite}
           />
         );
       case 'battleReport': {
