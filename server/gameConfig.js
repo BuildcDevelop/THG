@@ -1,8 +1,8 @@
 export const DEFAULT_MAX_BUILDING_LEVEL = 10;
 export const RESOURCE_BUILDING_MAX_LEVEL = 30;
-export const WAREHOUSE_MAX_LEVEL = 1;
-export const TOWNHALL_MAX_LEVEL = 1;
-export const RESIDENTIAL_QUARTER_MAX_LEVEL = 1;
+export const WAREHOUSE_MAX_LEVEL = 25;
+export const TOWNHALL_MAX_LEVEL = 20;
+export const RESIDENTIAL_QUARTER_MAX_LEVEL = 20;
 export const UNIVERSITY_MAX_LEVEL = 3;
 export const BARRACKS_MAX_LEVEL = 25;
 export const STABLE_MAX_LEVEL = 20;
