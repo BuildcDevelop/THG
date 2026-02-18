@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BUILDING_ORDER, UNIT_ORDER } from './gameConfig.js';
+import { BUILDING_ORDER, UNIT_ORDER, getMaxBuildingLevel } from './gameConfig.js';
 
 const configuredDataDir = String(process.env.THG_DATA_DIR ?? '').trim();
 const isNetlifyRuntime = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME);
@@ -52,11 +52,18 @@ const STARTING_RESOURCES = {
   iron: 1000,
 };
 const STARTING_BUILDING_LEVELS = {
+  townhall: 1,
+  warehouse: 1,
+  'residential-quarter': 1,
+  university: 0,
   woodcutter: 1,
   quarry: 1,
   'iron-mine': 1,
-  warehouse: 1,
-  'residential-quarter': 1,
+  barracks: 0,
+  stable: 0,
+  workshop: 0,
+  fortification: 0,
+  gate: 0,
 };
 const VILLAGE_BUILDING_LEVEL_FLOORS = {
   woodcutter: 1,
@@ -76,13 +83,13 @@ const ABANDONED_STARTING_BUILDING_LEVELS = {
   woodcutter: 5,
   quarry: 5,
   'iron-mine': 5,
-  warehouse: 5,
+  warehouse: 1,
 };
 const SPECIAL_PLAYER_BOOSTED_BUILDING_LEVELS = {
   woodcutter: 5,
   quarry: 5,
   'iron-mine': 5,
-  warehouse: 5,
+  warehouse: 1,
 };
 const ABANDONED_MILITIA_COUNT = 100;
 
@@ -801,6 +808,19 @@ const ensureVillageBuildingLevelFloors = db.transaction(() => {
   }
 });
 
+const ensureVillageBuildingLevelCaps = db.transaction(() => {
+  const capBuildingLevelStmt = db.prepare(
+    `UPDATE buildings
+     SET level = ?
+     WHERE building_id = ? AND level > ?`,
+  );
+
+  for (const buildingId of BUILDING_ORDER) {
+    const maxLevel = Math.max(0, Number(getMaxBuildingLevel(buildingId) ?? 0));
+    capBuildingLevelStmt.run(maxLevel, buildingId, maxLevel);
+  }
+});
+
 const ensureReferentialIntegrity = db.transaction(() => {
   const cleanupStatements = [
     db.prepare(
@@ -957,5 +977,6 @@ ensureBotFlagConsistency();
 ensureAbandonedVillages();
 ensureSpecialPlayerAccounts();
 ensureVillageBuildingLevelFloors();
+ensureVillageBuildingLevelCaps();
 ensureHayatoOwnsAbandonedVillage13();
 ensureReferentialIntegrity();

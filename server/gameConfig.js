@@ -1,6 +1,14 @@
 export const DEFAULT_MAX_BUILDING_LEVEL = 10;
 export const RESOURCE_BUILDING_MAX_LEVEL = 30;
-export const WAREHOUSE_MAX_LEVEL = 20;
+export const WAREHOUSE_MAX_LEVEL = 1;
+export const TOWNHALL_MAX_LEVEL = 1;
+export const RESIDENTIAL_QUARTER_MAX_LEVEL = 1;
+export const UNIVERSITY_MAX_LEVEL = 3;
+export const BARRACKS_MAX_LEVEL = 25;
+export const STABLE_MAX_LEVEL = 20;
+export const WORKSHOP_MAX_LEVEL = 20;
+export const FORTIFICATION_MAX_LEVEL = 10;
+export const GATE_MAX_LEVEL = 1;
 export const MAX_BUILDING_LEVEL = RESOURCE_BUILDING_MAX_LEVEL;
 
 export const BUILDING_DEFS = {
@@ -51,7 +59,7 @@ export const BUILDING_DEFS = {
     id: 'barracks',
     name: 'Kasarna',
     category: 'Vojenske',
-    maxLevel: DEFAULT_MAX_BUILDING_LEVEL,
+    maxLevel: BARRACKS_MAX_LEVEL,
     workerPerLevel: 3,
     baseCost: { wood: 120, stone: 90, iron: 80 },
     costGrowth: 1.28,
@@ -61,7 +69,7 @@ export const BUILDING_DEFS = {
     id: 'stable',
     name: 'Staje',
     category: 'Vojenske',
-    maxLevel: DEFAULT_MAX_BUILDING_LEVEL,
+    maxLevel: STABLE_MAX_LEVEL,
     workerPerLevel: 3,
     baseCost: { wood: 130, stone: 100, iron: 100 },
     costGrowth: 1.28,
@@ -71,7 +79,7 @@ export const BUILDING_DEFS = {
     id: 'workshop',
     name: 'Dilna',
     category: 'Vojenske',
-    maxLevel: DEFAULT_MAX_BUILDING_LEVEL,
+    maxLevel: WORKSHOP_MAX_LEVEL,
     workerPerLevel: 3,
     baseCost: { wood: 130, stone: 120, iron: 90 },
     costGrowth: 1.28,
@@ -81,7 +89,7 @@ export const BUILDING_DEFS = {
     id: 'fortification',
     name: 'Opevneni',
     category: 'Obrana',
-    maxLevel: DEFAULT_MAX_BUILDING_LEVEL,
+    maxLevel: FORTIFICATION_MAX_LEVEL,
     workerPerLevel: 2,
     baseCost: { wood: 110, stone: 150, iron: 60 },
     costGrowth: 1.28,
@@ -91,7 +99,7 @@ export const BUILDING_DEFS = {
     id: 'gate',
     name: 'Brana',
     category: 'Obrana',
-    maxLevel: DEFAULT_MAX_BUILDING_LEVEL,
+    maxLevel: GATE_MAX_LEVEL,
     workerPerLevel: 1,
     baseCost: { wood: 120, stone: 100, iron: 100 },
     costGrowth: 1.28,
@@ -101,7 +109,7 @@ export const BUILDING_DEFS = {
     id: 'townhall',
     name: 'Radnice',
     category: 'Administrativa',
-    maxLevel: DEFAULT_MAX_BUILDING_LEVEL,
+    maxLevel: TOWNHALL_MAX_LEVEL,
     workerPerLevel: 4,
     baseCost: { wood: 140, stone: 140, iron: 110 },
     costGrowth: 1.28,
@@ -111,7 +119,7 @@ export const BUILDING_DEFS = {
     id: 'university',
     name: 'Univerzita',
     category: 'Administrativa',
-    maxLevel: DEFAULT_MAX_BUILDING_LEVEL,
+    maxLevel: UNIVERSITY_MAX_LEVEL,
     workerPerLevel: 2,
     baseCost: { wood: 160, stone: 140, iron: 150 },
     costGrowth: 1.28,
@@ -121,7 +129,7 @@ export const BUILDING_DEFS = {
     id: 'residential-quarter',
     name: 'Obytna ctvrt',
     category: 'Podpora',
-    maxLevel: DEFAULT_MAX_BUILDING_LEVEL,
+    maxLevel: RESIDENTIAL_QUARTER_MAX_LEVEL,
     workerPerLevel: 0,
     baseCost: { wood: 110, stone: 120, iron: 60 },
     costGrowth: 1.26,
@@ -253,8 +261,8 @@ export const calculateUpgradeDurationSec = (buildingId, currentLevel, townhallLe
     return 0;
   }
 
-  const levelFactor = Math.pow(1.18, currentLevel);
-  const townHallReduction = Math.min(0.4, townhallLevel * 0.03);
+  const levelFactor = Math.pow(1.14, currentLevel);
+  const townHallReduction = Math.min(0.15, Math.max(0, Number(townhallLevel ?? 0)) * 0.15);
   const duration = def.baseDurationSec * levelFactor * (1 - townHallReduction);
 
   return Math.max(25, Math.round(duration));
@@ -269,7 +277,10 @@ export const calculateRecruitDurationSec = (unitId, amount, requiredBuildingLeve
   const safeAmount = Math.max(1, Math.floor(amount));
   const buildingLevel = Math.max(0, Math.floor(requiredBuildingLevel));
   const base = Math.max(8, Number(def.baseRecruitDurationSec ?? 30));
-  const levelReduction = Math.min(0.45, buildingLevel * 0.03);
+  const levelReduction = Math.min(
+    0.55,
+    Math.max(0, buildingLevel * 0.012 + Math.log2(buildingLevel + 1) * 0.04),
+  );
   const duration = base * safeAmount * (1 - levelReduction);
 
   return Math.max(8, Math.round(duration));

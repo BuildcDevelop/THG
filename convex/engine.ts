@@ -15,11 +15,15 @@ type ConvexTableName =
   | "armyMovements"
   | "armyMovementUnits"
   | "battleReports"
+  | "kingdomInvites"
+  | "kingdomEvents"
   | "gameState";
 
 const TABLES: ConvexTableName[] = [
   "armyMovementUnits",
   "battleReports",
+  "kingdomInvites",
+  "kingdomEvents",
   "armyMovements",
   "buildingUpgrades",
   "unitRecruitments",
@@ -268,6 +272,42 @@ export const getSnapshot = query({
         payload_json: row.payloadJson,
       }));
 
+    const kingdomInvites = (await ctx.db.query("kingdomInvites").collect())
+      .sort((a, b) => {
+        const createdCmp = String(a.createdAt).localeCompare(String(b.createdAt), "cs");
+        if (createdCmp !== 0) {
+          return createdCmp;
+        }
+        return Number(a.legacyId) - Number(b.legacyId);
+      })
+      .map((row) => ({
+        id: Number(row.legacyId),
+        kingdom: row.kingdom,
+        inviter_player_id: Number(row.inviterPlayerLegacyId),
+        target_player_id: Number(row.targetPlayerLegacyId),
+        status: row.status,
+        created_at: row.createdAt,
+        responded_at: row.respondedAt ?? null,
+      }));
+
+    const kingdomEvents = (await ctx.db.query("kingdomEvents").collect())
+      .sort((a, b) => {
+        const createdCmp = String(a.createdAt).localeCompare(String(b.createdAt), "cs");
+        if (createdCmp !== 0) {
+          return createdCmp;
+        }
+        return Number(a.legacyId) - Number(b.legacyId);
+      })
+      .map((row) => ({
+        id: Number(row.legacyId),
+        kingdom: row.kingdom ?? null,
+        event_type: row.eventType,
+        actor_player_id: row.actorPlayerLegacyId ?? null,
+        target_player_id: row.targetPlayerLegacyId ?? null,
+        payload_json: row.payloadJson ?? null,
+        created_at: row.createdAt,
+      }));
+
     const gameState = await ctx.db
       .query("gameState")
       .withIndex("by_key", (index) => index.eq("key", "global"))
@@ -295,6 +335,8 @@ export const getSnapshot = query({
         armyMovements,
         armyMovementUnits,
         battleReports,
+        kingdomInvites,
+        kingdomEvents,
         gameState: gameStateRows,
       },
     };
@@ -331,6 +373,8 @@ export const replaceSnapshotIfRevision = mutation({
     const armyMovements = readRows(snapshot, "armyMovements");
     const armyMovementUnits = readRows(snapshot, "armyMovementUnits");
     const battleReports = readRows(snapshot, "battleReports");
+    const kingdomInvites = readRows(snapshot, "kingdomInvites");
+    const kingdomEvents = readRows(snapshot, "kingdomEvents");
     const gameStateRows = readRows(snapshot, "gameState");
 
     for (const tableName of TABLES) {
@@ -559,6 +603,65 @@ export const replaceSnapshotIfRevision = mutation({
       });
     }
 
+    for (const row of kingdomInvites) {
+      const context = "kingdomInvites[]";
+      const legacyId = readNumber(row, "id", context);
+      const inviterPlayerLegacyId = readNumber(row, "inviter_player_id", context);
+      const targetPlayerLegacyId = readNumber(row, "target_player_id", context);
+      const inviterPlayerId = playerIdByLegacyId.get(inviterPlayerLegacyId);
+      const targetPlayerId = playerIdByLegacyId.get(targetPlayerLegacyId);
+      if (!inviterPlayerId || !targetPlayerId) {
+        throw new Error(
+          `Kingdom invite ${legacyId} odkazuje na neexistujiciho hrace.`,
+        );
+      }
+      await ctx.db.insert("kingdomInvites", {
+        legacyId,
+        kingdom: readString(row, "kingdom", context),
+        inviterPlayerId,
+        inviterPlayerLegacyId,
+        targetPlayerId,
+        targetPlayerLegacyId,
+        status: readString(row, "status", context),
+        createdAt: readString(row, "created_at", context),
+        respondedAt: readOptionalString(row, "responded_at"),
+      });
+    }
+
+    for (const row of kingdomEvents) {
+      const context = "kingdomEvents[]";
+      const legacyId = readNumber(row, "id", context);
+      const actorPlayerLegacyId = readOptionalNumber(row, "actor_player_id");
+      const targetPlayerLegacyId = readOptionalNumber(row, "target_player_id");
+      const actorPlayerId =
+        actorPlayerLegacyId == null ? undefined : playerIdByLegacyId.get(actorPlayerLegacyId);
+      const targetPlayerId =
+        targetPlayerLegacyId == null ? undefined : playerIdByLegacyId.get(targetPlayerLegacyId);
+
+      if (actorPlayerLegacyId != null && !actorPlayerId) {
+        throw new Error(
+          `Kingdom event ${legacyId} odkazuje na neexistujiciho actor_player_id=${actorPlayerLegacyId}.`,
+        );
+      }
+      if (targetPlayerLegacyId != null && !targetPlayerId) {
+        throw new Error(
+          `Kingdom event ${legacyId} odkazuje na neexistujiciho target_player_id=${targetPlayerLegacyId}.`,
+        );
+      }
+
+      await ctx.db.insert("kingdomEvents", {
+        legacyId,
+        kingdom: readOptionalString(row, "kingdom"),
+        eventType: readString(row, "event_type", context),
+        actorPlayerId,
+        actorPlayerLegacyId,
+        targetPlayerId,
+        targetPlayerLegacyId,
+        payloadJson: readOptionalString(row, "payload_json"),
+        createdAt: readString(row, "created_at", context),
+      });
+    }
+
     const sourceGameState = gameStateRows[0];
     const lastTickAt =
       sourceGameState && typeof sourceGameState.last_tick_at === "string"
@@ -608,6 +711,8 @@ export const applySnapshotPatchIfRevision = mutation({
     const armyMovements = readRows(patch, "armyMovements");
     const armyMovementUnits = readRows(patch, "armyMovementUnits");
     const battleReports = readRows(patch, "battleReports");
+    const kingdomInvites = readRows(patch, "kingdomInvites");
+    const kingdomEvents = readRows(patch, "kingdomEvents");
     const gameStateRows = readRows(patch, "gameState");
 
     const hasAnyChanges =
@@ -621,6 +726,8 @@ export const applySnapshotPatchIfRevision = mutation({
       armyMovements.length > 0 ||
       armyMovementUnits.length > 0 ||
       battleReports.length > 0 ||
+      kingdomInvites.length > 0 ||
+      kingdomEvents.length > 0 ||
       gameStateRows.length > 0;
 
     if (!hasAnyChanges) {
@@ -1024,6 +1131,85 @@ export const applySnapshotPatchIfRevision = mutation({
         await ctx.db.patch(existing._id, payload);
       } else {
         await ctx.db.insert("battleReports", payload);
+      }
+    }
+
+    for (const row of kingdomInvites) {
+      const context = "kingdomInvites[]";
+      const legacyId = readNumber(row, "id", context);
+      const inviterPlayerLegacyId = readNumber(row, "inviter_player_id", context);
+      const targetPlayerLegacyId = readNumber(row, "target_player_id", context);
+      const inviterPlayerId = await resolvePlayerId(inviterPlayerLegacyId);
+      const targetPlayerId = await resolvePlayerId(targetPlayerLegacyId);
+
+      if (!inviterPlayerId || !targetPlayerId) {
+        throw new Error(`Kingdom invite ${legacyId} odkazuje na neexistujiciho hrace.`);
+      }
+
+      const payload = {
+        legacyId,
+        kingdom: readString(row, "kingdom", context),
+        inviterPlayerId,
+        inviterPlayerLegacyId,
+        targetPlayerId,
+        targetPlayerLegacyId,
+        status: readString(row, "status", context),
+        createdAt: readString(row, "created_at", context),
+        respondedAt: readOptionalString(row, "responded_at"),
+      };
+
+      const existing = await ctx.db
+        .query("kingdomInvites")
+        .withIndex("by_legacy_id", (index) => index.eq("legacyId", legacyId))
+        .unique();
+      if (existing) {
+        await ctx.db.patch(existing._id, payload);
+      } else {
+        await ctx.db.insert("kingdomInvites", payload);
+      }
+    }
+
+    for (const row of kingdomEvents) {
+      const context = "kingdomEvents[]";
+      const legacyId = readNumber(row, "id", context);
+      const actorPlayerLegacyId = readOptionalNumber(row, "actor_player_id");
+      const targetPlayerLegacyId = readOptionalNumber(row, "target_player_id");
+      const actorPlayerId =
+        actorPlayerLegacyId == null ? null : await resolvePlayerId(actorPlayerLegacyId);
+      const targetPlayerId =
+        targetPlayerLegacyId == null ? null : await resolvePlayerId(targetPlayerLegacyId);
+
+      if (actorPlayerLegacyId != null && !actorPlayerId) {
+        throw new Error(
+          `Kingdom event ${legacyId} odkazuje na neexistujiciho actor_player_id=${actorPlayerLegacyId}.`,
+        );
+      }
+      if (targetPlayerLegacyId != null && !targetPlayerId) {
+        throw new Error(
+          `Kingdom event ${legacyId} odkazuje na neexistujiciho target_player_id=${targetPlayerLegacyId}.`,
+        );
+      }
+
+      const payload = {
+        legacyId,
+        kingdom: readOptionalString(row, "kingdom"),
+        eventType: readString(row, "event_type", context),
+        actorPlayerId: actorPlayerId ?? undefined,
+        actorPlayerLegacyId: actorPlayerLegacyId ?? undefined,
+        targetPlayerId: targetPlayerId ?? undefined,
+        targetPlayerLegacyId: targetPlayerLegacyId ?? undefined,
+        payloadJson: readOptionalString(row, "payload_json"),
+        createdAt: readString(row, "created_at", context),
+      };
+
+      const existing = await ctx.db
+        .query("kingdomEvents")
+        .withIndex("by_legacy_id", (index) => index.eq("legacyId", legacyId))
+        .unique();
+      if (existing) {
+        await ctx.db.patch(existing._id, payload);
+      } else {
+        await ctx.db.insert("kingdomEvents", payload);
       }
     }
 

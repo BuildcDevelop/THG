@@ -17,6 +17,7 @@ import {
   leaveKingdom as leaveKingdomRequest,
   rejectKingdomInvite as rejectKingdomInviteRequest,
   recruitUnit,
+  restartVillageProgress as restartVillageProgressRequest,
   upgradeBuilding,
   type ArmyCommandType,
   type BattleReportItem,
@@ -3587,11 +3588,29 @@ const ProfilePanel = ({
   </div>
 );
 
-const SettingsPanel = ({ onLogout }: { onLogout: () => void }) => (
+const SettingsPanel = ({
+  onLogout,
+  onRestartVillageProgress,
+  restartPending,
+  notice,
+}: {
+  onLogout: () => void;
+  onRestartVillageProgress: () => void;
+  restartPending: boolean;
+  notice: string | null;
+}) => (
   <div className="panel-stack">
     <section>
       <h3>Nastavení účtu</h3>
-      <p>V prototypu je k dispozici pouze základní odhlášení ze session.</p>
+      <p>
+        Můžeš resetovat svůj postup. Všechna aktuální léna se změní na opuštěná a dostaneš nové startovní
+        léno.
+      </p>
+      <button className="danger-button" onClick={onRestartVillageProgress} disabled={restartPending}>
+        {restartPending ? 'Resetuji...' : 'Začít znovu'}
+      </button>
+      {notice ? <p className="panel-feedback">{notice}</p> : null}
+      <p>Odhlášení ze session zůstává dostupné níže.</p>
       <button className="danger-button" onClick={onLogout}>
         Odhlásit účet
       </button>
@@ -4586,14 +4605,20 @@ export const GamePage = () => {
   const [battleReportCacheById, setBattleReportCacheById] = useState<Record<number, BattleReportItem>>({});
   const [kingdomActionPending, setKingdomActionPending] = useState(false);
   const [kingdomNotice, setKingdomNotice] = useState<string | null>(null);
+  const [restartVillagePending, setRestartVillagePending] = useState(false);
+  const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
   const [isVillageMenuOpen, setVillageMenuOpen] = useState(false);
   const [villageMenuPosition, setVillageMenuPosition] = useState<VillageMenuPosition | null>(null);
 
   useEffect(() => {
     mutationPendingRef.current = Boolean(
-      recruitPendingUnitId || upgradePendingBuildingId || armyCommandPending || kingdomActionPending,
+      recruitPendingUnitId ||
+        upgradePendingBuildingId ||
+        armyCommandPending ||
+        kingdomActionPending ||
+        restartVillagePending,
     );
-  }, [armyCommandPending, kingdomActionPending, recruitPendingUnitId, upgradePendingBuildingId]);
+  }, [armyCommandPending, kingdomActionPending, recruitPendingUnitId, restartVillagePending, upgradePendingBuildingId]);
 
   const buildings = useMemo<Building[]>(() => {
     if (!gameState) {
@@ -6193,6 +6218,36 @@ export const GamePage = () => {
     [activeVillageId, gameState?.village.id, username],
   );
 
+  const handleRestartVillageProgress = useCallback(async () => {
+    const confirmed = window.confirm(
+      'Potvrď reset postupu. Tvoje stávající léna se změní na opuštěná a dostaneš nové startovní léno.',
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setRestartVillagePending(true);
+    setSettingsNotice(null);
+
+    try {
+      const response = await restartVillageProgressRequest(username, gameState?.village.id ?? activeVillageId);
+      const nextState = response.data;
+      setGameState(nextState);
+      if (activeVillageId == null || activeVillageId !== nextState.village.id) {
+        setActiveVillageId(nextState.village.id);
+      }
+      setStateError(null);
+      setSettingsNotice(
+        `Restart dokoncen. Vytvoreno nove leno (${nextState.village.name}), opustena lena: ${response.result.abandonedVillagesConverted}.`,
+      );
+      setKingdomNotice(null);
+    } catch (error) {
+      setSettingsNotice(getErrorMessage(error));
+    } finally {
+      setRestartVillagePending(false);
+    }
+  }, [activeVillageId, gameState?.village.id, username]);
+
   const handleLogout = useCallback(() => {
     logout();
     navigate('/', { replace: true });
@@ -6441,7 +6496,14 @@ export const GamePage = () => {
           />
         );
       case 'settings':
-        return <SettingsPanel onLogout={handleLogout} />;
+        return (
+          <SettingsPanel
+            onLogout={handleLogout}
+            onRestartVillageProgress={handleRestartVillageProgress}
+            restartPending={restartVillagePending}
+            notice={settingsNotice}
+          />
+        );
       case 'village': {
         const settlement = panel.settlementId ? settlementsById.get(panel.settlementId) : undefined;
 

@@ -19,6 +19,10 @@ const TABLE_SELECT_QUERIES = {
     'SELECT movement_id, unit_id, amount FROM army_movement_units ORDER BY movement_id ASC, unit_id ASC',
   battleReports:
     'SELECT id, player_id, origin_village_id, target_village_id, battle_at, created_at, title, summary, payload_json FROM battle_reports ORDER BY created_at ASC, id ASC',
+  kingdomInvites:
+    'SELECT id, kingdom, inviter_player_id, target_player_id, status, created_at, responded_at FROM kingdom_invites ORDER BY created_at ASC, id ASC',
+  kingdomEvents:
+    'SELECT id, kingdom, event_type, actor_player_id, target_player_id, payload_json, created_at FROM kingdom_events ORDER BY created_at ASC, id ASC',
   gameState:
     'SELECT id, last_tick_at FROM game_state ORDER BY id ASC',
 };
@@ -34,6 +38,8 @@ const SNAPSHOT_TABLE_KEYS = {
   armyMovements: ['id'],
   armyMovementUnits: ['movement_id', 'unit_id'],
   battleReports: ['id'],
+  kingdomInvites: ['id'],
+  kingdomEvents: ['id'],
   gameState: ['id'],
 };
 
@@ -123,6 +129,8 @@ export const extractSqliteSnapshot = (db) => {
     armyMovements: selectAll(TABLE_SELECT_QUERIES.armyMovements),
     armyMovementUnits: selectAll(TABLE_SELECT_QUERIES.armyMovementUnits),
     battleReports: selectAll(TABLE_SELECT_QUERIES.battleReports),
+    kingdomInvites: selectAll(TABLE_SELECT_QUERIES.kingdomInvites),
+    kingdomEvents: selectAll(TABLE_SELECT_QUERIES.kingdomEvents),
     gameState: selectAll(TABLE_SELECT_QUERIES.gameState),
   };
 };
@@ -135,6 +143,8 @@ DELETE FROM unit_recruitments;
 DELETE FROM army_movement_units;
 DELETE FROM army_movements;
 DELETE FROM battle_reports;
+DELETE FROM kingdom_invites;
+DELETE FROM kingdom_events;
 DELETE FROM units;
 DELETE FROM buildings;
 DELETE FROM resources;
@@ -153,6 +163,8 @@ DELETE FROM game_state;
     const armyMovements = Array.isArray(snapshot?.armyMovements) ? snapshot.armyMovements : [];
     const armyMovementUnits = Array.isArray(snapshot?.armyMovementUnits) ? snapshot.armyMovementUnits : [];
     const battleReports = Array.isArray(snapshot?.battleReports) ? snapshot.battleReports : [];
+    const kingdomInvites = Array.isArray(snapshot?.kingdomInvites) ? snapshot.kingdomInvites : [];
+    const kingdomEvents = Array.isArray(snapshot?.kingdomEvents) ? snapshot.kingdomEvents : [];
     const gameStateRows = Array.isArray(snapshot?.gameState) ? snapshot.gameState : [];
 
     const insertPlayer = db.prepare(
@@ -367,6 +379,52 @@ DELETE FROM game_state;
         String(row.title ?? ''),
         String(row.summary ?? ''),
         String(row.payload_json ?? '{}'),
+      );
+    }
+
+    const insertKingdomInvite = db.prepare(
+      `INSERT INTO kingdom_invites (
+        id,
+        kingdom,
+        inviter_player_id,
+        target_player_id,
+        status,
+        created_at,
+        responded_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const row of kingdomInvites) {
+      insertKingdomInvite.run(
+        Number(row.id),
+        String(row.kingdom ?? 'Neutral'),
+        Number(row.inviter_player_id),
+        Number(row.target_player_id),
+        String(row.status ?? 'pending'),
+        String(row.created_at ?? new Date().toISOString()),
+        row.responded_at == null ? null : String(row.responded_at),
+      );
+    }
+
+    const insertKingdomEvent = db.prepare(
+      `INSERT INTO kingdom_events (
+        id,
+        kingdom,
+        event_type,
+        actor_player_id,
+        target_player_id,
+        payload_json,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const row of kingdomEvents) {
+      insertKingdomEvent.run(
+        Number(row.id),
+        row.kingdom == null ? null : String(row.kingdom),
+        String(row.event_type ?? ''),
+        row.actor_player_id == null ? null : Number(row.actor_player_id),
+        row.target_player_id == null ? null : Number(row.target_player_id),
+        row.payload_json == null ? null : String(row.payload_json),
+        String(row.created_at ?? new Date().toISOString()),
       );
     }
 

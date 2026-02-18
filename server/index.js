@@ -6,6 +6,7 @@ import {
   createKingdom,
   GameRuleError,
   authenticatePlayer,
+  createAbandonedVillages,
   conquerVillage,
   getVillageSnapshot,
   invitePlayerToKingdom,
@@ -17,6 +18,7 @@ import {
   listPlayerLeaderboard,
   rejectKingdomInvite,
   recruitUnits,
+  restartVillageProgress,
   runGameTick,
   startBuildingUpgrade,
 } from './gameService.js';
@@ -276,6 +278,49 @@ app.post('/api/v1/villages/:villageId/conquer', async (req, res, next) => {
       ok: true,
       result: payload.result,
       data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/villages/restart', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithConvexPersistence(() => {
+      runGameTick();
+      const result = restartVillageProgress(username);
+      const state = getVillageSnapshot(username, normalizedVillageId);
+      return { result, state };
+    });
+
+    res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/admin/abandoned-villages/create', async (req, res, next) => {
+  try {
+    const count = Number(req.body?.count ?? 1);
+    const result = await executeWithConvexPersistence(() => {
+      runGameTick();
+      return createAbandonedVillages(count);
+    });
+
+    res.status(201).json({
+      ok: true,
+      result,
     });
   } catch (error) {
     next(toGameRuleError(error));

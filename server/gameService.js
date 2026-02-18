@@ -25,6 +25,41 @@ const WORLD_REGION = {
   size: 50,
 };
 
+const ABANDONED_BOT_USERNAME_PREFIX = '__abandoned_ai__';
+const PLAYER_VILLAGE_NAME_PREFIX = 'Leno';
+const ABANDONED_VILLAGE_NAME_PREFIX = 'Opustene leno';
+const STARTING_RESOURCES = {
+  wood: 1000,
+  stone: 1000,
+  iron: 1000,
+};
+const STARTING_PLAYER_BUILDING_LEVELS = {
+  townhall: 1,
+  warehouse: 1,
+  'residential-quarter': 1,
+  university: 0,
+  woodcutter: 1,
+  quarry: 1,
+  'iron-mine': 1,
+  barracks: 0,
+  stable: 0,
+  workshop: 0,
+  fortification: 0,
+  gate: 0,
+};
+const STARTING_ABANDONED_BUILDING_LEVELS = {
+  woodcutter: 5,
+  quarry: 5,
+  'iron-mine': 5,
+  warehouse: 1,
+};
+const STARTING_PLAYER_UNITS = {
+  militia: 5,
+};
+const STARTING_ABANDONED_UNITS = {
+  militia: 100,
+};
+
 class GameRuleError extends Error {
   constructor(message, statusCode = 400) {
     super(message);
@@ -56,6 +91,73 @@ const selectVillagesByPlayerStmt = db.prepare(
    FROM villages
    WHERE player_id = ?
    ORDER BY id ASC`,
+);
+const selectVillageCoordsStmt = db.prepare(
+  `SELECT
+      coord_x AS coordX,
+      coord_y AS coordY
+   FROM villages`,
+);
+const selectAbandonedBotUsernamesStmt = db.prepare(
+  `SELECT username
+   FROM players
+   WHERE username GLOB ?`,
+);
+const insertAbandonedBotPlayerStmt = db.prepare(
+  'INSERT INTO players (username, password, is_bot, created_at) VALUES (?, ?, 1, ?)',
+);
+const insertVillageForPlayerStmt = db.prepare(
+  `INSERT INTO villages (
+      player_id,
+      name,
+      kingdom,
+      coord_x,
+      coord_y,
+      region,
+      prestige,
+      loyalty,
+      created_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+);
+const upsertVillageResourcesStmt = db.prepare(
+  `INSERT INTO resources (village_id, wood, stone, iron)
+   VALUES (?, ?, ?, ?)
+   ON CONFLICT(village_id) DO UPDATE SET
+     wood = excluded.wood,
+     stone = excluded.stone,
+     iron = excluded.iron`,
+);
+const upsertVillageBuildingLevelStmt = db.prepare(
+  `INSERT INTO buildings (village_id, building_id, level)
+   VALUES (?, ?, ?)
+   ON CONFLICT(village_id, building_id) DO UPDATE SET
+     level = excluded.level`,
+);
+const upsertVillageUnitAmountStmt = db.prepare(
+  `INSERT INTO units (village_id, unit_id, amount)
+   VALUES (?, ?, ?)
+   ON CONFLICT(village_id, unit_id) DO UPDATE SET
+     amount = excluded.amount`,
+);
+const deleteInProgressUpgradesByVillageStmt = db.prepare(
+  "DELETE FROM building_upgrades WHERE village_id = ? AND status = 'in_progress'",
+);
+const deleteInProgressRecruitmentsByVillageStmt = db.prepare(
+  "DELETE FROM unit_recruitments WHERE village_id = ? AND status = 'in_progress'",
+);
+const deleteArmyMovementUnitsByPlayerStmt = db.prepare(
+  `DELETE FROM army_movement_units
+   WHERE movement_id IN (
+     SELECT id
+     FROM army_movements
+     WHERE player_id = ?
+   )`,
+);
+const deleteArmyMovementsByPlayerStmt = db.prepare(
+  'DELETE FROM army_movements WHERE player_id = ?',
+);
+const updateVillageToAbandonedOwnerStmt = db.prepare(
+  "UPDATE villages SET player_id = ?, name = ?, kingdom = 'Neutral', loyalty = 100 WHERE id = ?",
 );
 const selectResourcesByVillageStmt = db.prepare(
   'SELECT wood, stone, iron FROM resources WHERE village_id = ? LIMIT 1',
@@ -853,6 +955,333 @@ const buildKingdomHubState = (player, village) => {
   };
 };
 
+const sanitizeBuildingLevel = (buildingId, level) =>
+  Math.max(
+    0,
+    Math.min(
+      getMaxBuildingLevel(buildingId),
+      Number.isFinite(Number(level)) ? Math.floor(Number(level)) : 0,
+    ),
+  );
+
+const sanitizeUnitAmount = (value) => Math.max(0, Math.floor(Number(value ?? 0)));
+
+const toCoordinateKey = (coordX, coordY) => `${coordX}|${coordY}`;
+
+const buildSpawnContext = () => {
+  const occupiedCoords = selectVillageCoordsStmt
+    .all()
+    .map((row) => ({
+      coordX: Number(row.coordX),
+      coordY: Number(row.coordY),
+    }))
+    .filter(
+      (coord) =>
+        Number.isFinite(coord.coordX) &&
+        Number.isFinite(coord.coordY) &&
+        coord.coordX >= WORLD_REGION.originX &&
+        coord.coordX < WORLD_REGION.originX + WORLD_REGION.size &&
+        coord.coordY >= WORLD_REGION.originY &&
+        coord.coordY < WORLD_REGION.originY + WORLD_REGION.size,
+    );
+
+  return {
+    occupiedCoords,
+    occupiedKeys: new Set(occupiedCoords.map((coord) => toCoordinateKey(coord.coordX, coord.coordY))),
+  };
+};
+
+const calculateSpawnScore = (coordX, coordY, occupiedCoords) => {
+  if (occupiedCoords.length === 0) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const occupied of occupiedCoords) {
+    const distance = Math.max(Math.abs(coordX - occupied.coordX), Math.abs(coordY - occupied.coordY));
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+    }
+  }
+
+  const centerX = WORLD_REGION.originX + (WORLD_REGION.size - 1) / 2;
+  const centerY = WORLD_REGION.originY + (WORLD_REGION.size - 1) / 2;
+  const distanceFromCenter = Math.max(Math.abs(coordX - centerX), Math.abs(coordY - centerY));
+
+  return nearestDistance * 100 - distanceFromCenter;
+};
+
+const claimBestSpawnCell = (spawnContext) => {
+  let best = null;
+  for (let localY = 1; localY <= WORLD_REGION.size; localY += 1) {
+    for (let localX = 1; localX <= WORLD_REGION.size; localX += 1) {
+      const coordX = WORLD_REGION.originX + localX - 1;
+      const coordY = WORLD_REGION.originY + localY - 1;
+      const key = toCoordinateKey(coordX, coordY);
+      if (spawnContext.occupiedKeys.has(key)) {
+        continue;
+      }
+
+      const score = calculateSpawnScore(coordX, coordY, spawnContext.occupiedCoords);
+      if (!best || score > best.score) {
+        best = { localX, localY, coordX, coordY, key, score };
+      }
+    }
+  }
+
+  if (!best) {
+    return null;
+  }
+
+  spawnContext.occupiedKeys.add(best.key);
+  spawnContext.occupiedCoords.push({
+    coordX: best.coordX,
+    coordY: best.coordY,
+  });
+  return best;
+};
+
+const createAbandonedBotSerialAllocator = () => {
+  const usedSerials = new Set(
+    selectAbandonedBotUsernamesStmt
+      .all(`${ABANDONED_BOT_USERNAME_PREFIX}*`)
+      .map((row) => {
+        const match = String(row.username ?? '').match(/(\d+)$/);
+        return match ? Number(match[1]) : Number.NaN;
+      })
+      .filter((serial) => Number.isFinite(serial) && serial > 0),
+  );
+  let nextSerial = 1;
+  return () => {
+    while (usedSerials.has(nextSerial)) {
+      nextSerial += 1;
+    }
+    const allocatedSerial = nextSerial;
+    usedSerials.add(allocatedSerial);
+    nextSerial += 1;
+    return allocatedSerial;
+  };
+};
+
+const toBuildingTemplateMap = (source) => {
+  const template = {};
+  for (const buildingId of BUILDING_ORDER) {
+    template[buildingId] = sanitizeBuildingLevel(buildingId, source?.[buildingId] ?? 0);
+  }
+  return template;
+};
+
+const toUnitTemplateMap = (source) => {
+  const template = {};
+  for (const unitId of UNIT_ORDER) {
+    template[unitId] = sanitizeUnitAmount(source?.[unitId] ?? 0);
+  }
+  return template;
+};
+
+const PLAYER_VILLAGE_TEMPLATE = {
+  resources: STARTING_RESOURCES,
+  buildings: toBuildingTemplateMap(STARTING_PLAYER_BUILDING_LEVELS),
+  units: toUnitTemplateMap(STARTING_PLAYER_UNITS),
+};
+
+const ABANDONED_VILLAGE_TEMPLATE = {
+  resources: STARTING_RESOURCES,
+  buildings: toBuildingTemplateMap(STARTING_ABANDONED_BUILDING_LEVELS),
+  units: toUnitTemplateMap(STARTING_ABANDONED_UNITS),
+};
+
+const applyVillageTemplate = (villageId, template) => {
+  const resourceTemplate = template?.resources ?? STARTING_RESOURCES;
+  upsertVillageResourcesStmt.run(
+    Number(villageId),
+    roundResource(Number(resourceTemplate.wood ?? STARTING_RESOURCES.wood)),
+    roundResource(Number(resourceTemplate.stone ?? STARTING_RESOURCES.stone)),
+    roundResource(Number(resourceTemplate.iron ?? STARTING_RESOURCES.iron)),
+  );
+
+  const buildingTemplate = template?.buildings ?? {};
+  for (const buildingId of BUILDING_ORDER) {
+    upsertVillageBuildingLevelStmt.run(
+      Number(villageId),
+      buildingId,
+      sanitizeBuildingLevel(buildingId, buildingTemplate[buildingId] ?? 0),
+    );
+  }
+
+  const unitTemplate = template?.units ?? {};
+  for (const unitId of UNIT_ORDER) {
+    upsertVillageUnitAmountStmt.run(Number(villageId), unitId, sanitizeUnitAmount(unitTemplate[unitId] ?? 0));
+  }
+
+  updateVillagePrestigeFromCurrentState(Number(villageId));
+};
+
+const createVillage = ({ playerId, villageName, kingdom, template, spawnContext, createdAtIso, spawnCell = null }) => {
+  const activeSpawnContext = spawnContext ?? buildSpawnContext();
+  const spawn = spawnCell ?? claimBestSpawnCell(activeSpawnContext);
+  if (!spawn) {
+    throw new GameRuleError('Ve svete neni volne misto pro nove leno.', 409);
+  }
+
+  const insertion = insertVillageForPlayerStmt.run(
+    Number(playerId),
+    String(villageName),
+    String(kingdom ?? 'Neutral'),
+    Number(spawn.coordX),
+    Number(spawn.coordY),
+    WORLD_REGION.id,
+    0,
+    100,
+    String(createdAtIso ?? nowIso()),
+  );
+  const villageId = Number(insertion.lastInsertRowid);
+  applyVillageTemplate(villageId, template);
+  return selectVillageByIdStmt.get(villageId);
+};
+
+const createFreshVillageForPlayer = ({ playerId, username, spawnContext = null, createdAtIso = nowIso() }) =>
+  createVillage({
+    playerId,
+    villageName: `${PLAYER_VILLAGE_NAME_PREFIX} ${String(username)}`,
+    kingdom: 'Neutral',
+    template: PLAYER_VILLAGE_TEMPLATE,
+    spawnContext,
+    createdAtIso,
+  });
+
+const convertVillageToAbandoned = ({ villageId, serialAllocator, createdAtIso = nowIso() }) => {
+  const serial = Number(serialAllocator());
+  const serialText = String(serial).padStart(2, '0');
+  const botUsername = `${ABANDONED_BOT_USERNAME_PREFIX}${serialText}`;
+  const botVillageName = `${ABANDONED_VILLAGE_NAME_PREFIX} ${serialText}`;
+  const botInsertion = insertAbandonedBotPlayerStmt.run(botUsername, '', String(createdAtIso));
+  const botPlayerId = Number(botInsertion.lastInsertRowid);
+
+  updateVillageToAbandonedOwnerStmt.run(botPlayerId, botVillageName, Number(villageId));
+  deleteInProgressUpgradesByVillageStmt.run(Number(villageId));
+  deleteInProgressRecruitmentsByVillageStmt.run(Number(villageId));
+  applyVillageTemplate(Number(villageId), ABANDONED_VILLAGE_TEMPLATE);
+
+  return {
+    villageId: Number(villageId),
+    botPlayerId,
+    botUsername,
+    villageName: botVillageName,
+  };
+};
+
+const ensurePlayerHasVillageTransaction = db.transaction((playerId, username) => {
+  const villages = selectVillagesByPlayerStmt.all(Number(playerId));
+  if (villages.length > 0) {
+    return villages;
+  }
+
+  createFreshVillageForPlayer({
+    playerId: Number(playerId),
+    username: String(username),
+  });
+
+  return selectVillagesByPlayerStmt.all(Number(playerId));
+});
+
+const createAbandonedVillagesTransaction = db.transaction((countRaw = 1) => {
+  const parsedCount = Number(countRaw ?? 1);
+  const requestedCount = clampNumber(Number.isFinite(parsedCount) ? Math.floor(parsedCount) : 1, 1, 50);
+  const serialAllocator = createAbandonedBotSerialAllocator();
+  const spawnContext = buildSpawnContext();
+  const createdAtIso = nowIso();
+  const villages = [];
+
+  for (let index = 0; index < requestedCount; index += 1) {
+    const spawnCell = claimBestSpawnCell(spawnContext);
+    if (!spawnCell) {
+      break;
+    }
+    const serial = Number(serialAllocator());
+    const serialText = String(serial).padStart(2, '0');
+    const botUsername = `${ABANDONED_BOT_USERNAME_PREFIX}${serialText}`;
+    const botVillageName = `${ABANDONED_VILLAGE_NAME_PREFIX} ${serialText}`;
+    const botInsertion = insertAbandonedBotPlayerStmt.run(botUsername, '', createdAtIso);
+    const botPlayerId = Number(botInsertion.lastInsertRowid);
+    const village = createVillage({
+      playerId: botPlayerId,
+      villageName: botVillageName,
+      kingdom: 'Neutral',
+      template: ABANDONED_VILLAGE_TEMPLATE,
+      spawnContext,
+      createdAtIso,
+      spawnCell,
+    });
+    villages.push({
+      villageId: Number(village.id),
+      villageName: String(village.name),
+      coordX: Number(village.coordX),
+      coordY: Number(village.coordY),
+      owner: botUsername,
+    });
+  }
+
+  return {
+    requestedCount,
+    createdCount: villages.length,
+    villages,
+  };
+});
+
+const restartVillageProgressTransaction = db.transaction((username) => {
+  const normalizedUsername = normalizeUsername(username);
+  const player = selectPlayerByUsernameStmt.get(normalizedUsername);
+  if (!player) {
+    throw new GameRuleError(`Hrac '${normalizedUsername}' neexistuje.`, 404);
+  }
+
+  const playerId = Number(player.id);
+  const villages = selectVillagesByPlayerStmt.all(playerId);
+  const serialAllocator = createAbandonedBotSerialAllocator();
+  const restartedAt = nowIso();
+  const convertedVillages = [];
+
+  deleteArmyMovementUnitsByPlayerStmt.run(playerId);
+  deleteArmyMovementsByPlayerStmt.run(playerId);
+
+  for (const village of villages) {
+    convertedVillages.push(
+      convertVillageToAbandoned({
+        villageId: Number(village.id),
+        serialAllocator,
+        createdAtIso: restartedAt,
+      }),
+    );
+  }
+
+  cancelPendingKingdomInvitesByInviterStmt.run(restartedAt, playerId);
+  rejectAllPendingKingdomInvitesForTargetStmt.run(restartedAt, playerId);
+
+  const freshVillage = createFreshVillageForPlayer({
+    playerId,
+    username: normalizedUsername,
+    createdAtIso: restartedAt,
+  });
+
+  return {
+    username: normalizedUsername,
+    restartedAt,
+    abandonedVillagesConverted: convertedVillages.length,
+    convertedVillages,
+    newVillage: freshVillage
+      ? {
+          id: Number(freshVillage.id),
+          name: String(freshVillage.name),
+          coordX: Number(freshVillage.coordX),
+          coordY: Number(freshVillage.coordY),
+          region: Number(freshVillage.region),
+          kingdom: String(freshVillage.kingdom ?? 'Neutral'),
+        }
+      : null,
+  };
+});
+
 const toBuildingLevelMap = (rows) => {
   const levelMap = {};
   for (const buildingId of BUILDING_ORDER) {
@@ -919,6 +1348,9 @@ const calculateVillagePrestige = (buildingLevels, unitCounts) => {
   return Math.max(0, Math.round(buildingScore + unitScore));
 };
 
+const calculateRecruitmentSpeedReduction = (level) =>
+  Math.min(0.55, Math.max(0, Math.max(0, Number(level ?? 0)) * 0.012 + Math.log2(Number(level ?? 0) + 1) * 0.04));
+
 const calculateBuildingEffect = (buildingId, level) => {
   if (buildingId === 'woodcutter') {
     const value = calculateResourceNodeProductionPerHour('woodcutter', level);
@@ -937,6 +1369,43 @@ const calculateBuildingEffect = (buildingId, level) => {
   }
   if (buildingId === 'residential-quarter') {
     return `Kapacita populace: ${calculatePopulationCap(level).toLocaleString('cs-CZ')}`;
+  }
+  if (buildingId === 'townhall') {
+    const reductionPct = Math.round(Math.min(15, Math.max(0, Number(level ?? 0)) * 15));
+    return reductionPct > 0
+      ? `Vystavba budov: -${reductionPct} % casu`
+      : 'Vystavba budov bez casoveho bonusu';
+  }
+  if (buildingId === 'university') {
+    const researchBonusPct = Math.round(Math.max(0, Number(level ?? 0)) * 20);
+    return researchBonusPct > 0 ? `Vyzkum: +${researchBonusPct} % rychlost` : 'Vyzkum bez bonusu';
+  }
+  if (buildingId === 'barracks') {
+    const reductionPct = Math.round(calculateRecruitmentSpeedReduction(level) * 100);
+    return reductionPct > 0
+      ? `Nabor pesich jednotek: -${reductionPct} % casu`
+      : 'Nabor pesich jednotek bez bonusu';
+  }
+  if (buildingId === 'stable') {
+    const reductionPct = Math.round(calculateRecruitmentSpeedReduction(level) * 100);
+    return reductionPct > 0 ? `Nabor jezdectva: -${reductionPct} % casu` : 'Nabor jezdectva bez bonusu';
+  }
+  if (buildingId === 'workshop') {
+    const reductionPct = Math.round(calculateRecruitmentSpeedReduction(level) * 100);
+    return reductionPct > 0
+      ? `Nabor dilenskych jednotek: -${reductionPct} % casu`
+      : 'Nabor dilenskych jednotek bez bonusu';
+  }
+  if (buildingId === 'fortification') {
+    const defenseBonusPct = Math.round(Math.min(45, Math.max(0, Number(level ?? 0)) * 3));
+    return defenseBonusPct > 0
+      ? `Obrana osady: +${defenseBonusPct} % (dalsi bonus s lucistniky)`
+      : 'Obrana osady bez bonusu';
+  }
+  if (buildingId === 'gate') {
+    return Number(level ?? 0) > 0
+      ? 'Brana aktivni: utok bez beranidel je odrazen pred bojem'
+      : 'Bez brany muze utocnik vstoupit i bez beranidel';
   }
 
   return `Uroven ${level}`;
@@ -1252,28 +1721,88 @@ const simulateAttackBattle = ({
 }) => {
   const attackerUnits = toCompleteUnitSelection(attackerUnitsRaw);
   const defenderUnits = toCompleteUnitSelection(defenderUnitsRaw);
-  const hasGate = Number(defenderBuildingLevels.gate ?? 0) > 0;
-  const hasFortification = Number(defenderBuildingLevels.fortification ?? 0) > 0;
+  const gateLevel = Math.max(0, Math.floor(Number(defenderBuildingLevels.gate ?? 0)));
+  const fortificationLevel = Math.max(0, Math.floor(Number(defenderBuildingLevels.fortification ?? 0)));
+  const hasGate = gateLevel > 0;
+  const hasFortification = fortificationLevel > 0;
   const hasAttackingRam = Number(attackerUnits.ram ?? 0) > 0;
   const defenderArchers = Number(defenderUnits.archer ?? 0);
+  const blockedByGate = hasGate && !hasAttackingRam;
 
   let attackMultiplier = 1;
   let defenseMultiplier = 1;
   const bonuses = [];
-  if (hasGate) {
-    defenseMultiplier *= 1.1;
-    bonuses.push('Brana aktivni: obrana +10 %');
-  } else if (hasAttackingRam) {
-    attackMultiplier *= 1.1;
-    bonuses.push('Beranidla bez brany: utok +10 %');
-  }
-  if (hasFortification && defenderArchers > 0) {
-    defenseMultiplier *= 1.1;
-    bonuses.push('Opevneni + lucistnici: obrana +10 %');
-  }
 
   const baseAttackPower = sumCombatPower(attackerUnits, 'attack');
   const baseDefensePower = sumCombatPower(defenderUnits, 'defense');
+
+  if (blockedByGate) {
+    let gateDamageLossRatio = 0;
+    if (defenderArchers > 0) {
+      const archerPressure = Math.log2(defenderArchers + 1) * 0.025;
+      const fortificationPressure = hasFortification ? 0.025 + fortificationLevel * 0.012 : 0.015;
+      gateDamageLossRatio = clampNumber(archerPressure + fortificationPressure, 0.03, 0.42);
+      bonuses.push('Brana zastavila utok bez beranidel.');
+      bonuses.push('Lucistnici ostrelovali utocnika z hradeb.');
+    } else {
+      bonuses.push('Brana zastavila utok bez beranidel. Obrana neutrpela ztraty.');
+    }
+
+    const attackerAfterLoss = applyCasualties(attackerUnits, gateDamageLossRatio);
+    const defenderAfterLoss = applyCasualties(defenderUnits, 0);
+    const attackerSurvivorsTotal = sumSelectedUnits(attackerAfterLoss.survivors);
+    const defenderSurvivorsTotal = sumSelectedUnits(defenderAfterLoss.survivors);
+
+    return {
+      attackerWins: false,
+      blockedByGate: true,
+      gateDamageLossRatio: Number(gateDamageLossRatio.toFixed(4)),
+      baseAttackPower: Number(baseAttackPower.toFixed(2)),
+      baseDefensePower: Number(baseDefensePower.toFixed(2)),
+      finalAttackPower: Number(baseAttackPower.toFixed(2)),
+      finalDefensePower: Number(baseDefensePower.toFixed(2)),
+      attackMultiplier: Number(attackMultiplier.toFixed(3)),
+      defenseMultiplier: Number(defenseMultiplier.toFixed(3)),
+      bonuses,
+      attackerLossRatio: Number(gateDamageLossRatio.toFixed(4)),
+      defenderLossRatio: 0,
+      attacker: {
+        start: attackerUnits,
+        losses: attackerAfterLoss.losses,
+        survivors: attackerAfterLoss.survivors,
+        survivorsTotal: attackerSurvivorsTotal,
+      },
+      defender: {
+        start: defenderUnits,
+        losses: defenderAfterLoss.losses,
+        survivors: defenderAfterLoss.survivors,
+        survivorsTotal: defenderSurvivorsTotal,
+      },
+    };
+  }
+
+  if (hasGate) {
+    defenseMultiplier *= 1.14;
+    bonuses.push('Brana aktivni: obrana +14 %');
+    if (hasAttackingRam) {
+      attackMultiplier *= 1.1;
+      bonuses.push('Beranidla prorazi branu: utok +10 %');
+    }
+  } else if (hasAttackingRam) {
+    attackMultiplier *= 1.08;
+    bonuses.push('Beranidla bez brany: utok +8 %');
+  }
+  if (hasFortification) {
+    const fortificationDefenseBonus = Math.min(0.45, fortificationLevel * 0.03);
+    defenseMultiplier *= 1 + fortificationDefenseBonus;
+    bonuses.push(`Opevneni: obrana +${Math.round(fortificationDefenseBonus * 100)} %`);
+    if (defenderArchers > 0) {
+      const archerWallBonus = Math.min(0.2, fortificationLevel * 0.02);
+      defenseMultiplier *= 1 + archerWallBonus;
+      bonuses.push(`Lucistnici na hradbach: obrana +${Math.round(archerWallBonus * 100)} %`);
+    }
+  }
+
   const finalAttackPower = baseAttackPower * attackMultiplier;
   const finalDefensePower = baseDefensePower * defenseMultiplier;
   const attackerWins = finalAttackPower > finalDefensePower;
@@ -1296,6 +1825,8 @@ const simulateAttackBattle = ({
 
   return {
     attackerWins,
+    blockedByGate: false,
+    gateDamageLossRatio: 0,
     baseAttackPower: Number(baseAttackPower.toFixed(2)),
     baseDefensePower: Number(baseDefensePower.toFixed(2)),
     finalAttackPower: Number(finalAttackPower.toFixed(2)),
@@ -1364,7 +1895,7 @@ const requireVillageForUser = (username, requestedVillageId = null) => {
     throw new GameRuleError(`Hrac '${username}' neexistuje.`, 404);
   }
 
-  const villages = selectVillagesByPlayerStmt.all(player.id);
+  const villages = ensurePlayerHasVillageTransaction(Number(player.id), String(player.username));
   if (villages.length === 0) {
     throw new GameRuleError(`Hrac '${username}' nema zalozenou osadu.`, 404);
   }
@@ -1719,7 +2250,9 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       }
 
       let returnMovementPayload = null;
-      if (battle.attackerWins && Number(battle.attacker.survivorsTotal) > 0) {
+      const shouldSpawnReturnMovement =
+        Number(battle.attacker.survivorsTotal) > 0 && (battle.attackerWins || battle.blockedByGate === true);
+      if (shouldSpawnReturnMovement) {
         const returnUnits = battle.attacker.survivors;
         const distanceTiles = calculateTileDistance(targetVillage, homeVillage);
         const durationSec = calculateArmyTravelDurationSec(returnUnits, distanceTiles);
@@ -1766,14 +2299,28 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       const attackerName = String(attackerPlayer?.username ?? 'Neznamy utocnik');
       const defenderName = String(targetVillage.ownerUsername ?? 'Neznamy obrance');
       const defenderPlayer = selectPlayerByIdStmt.get(Number(targetVillage.playerId));
-      const outcomeLabelForAttacker = battle.attackerWins ? 'Vitezstvi' : 'Prohra';
-      const outcomeLabelForDefender = battle.attackerWins ? 'Prohra' : 'Vitezstvi';
-      const attackTitle = `Bitva: ${attackerName} -> ${targetVillage.name}`;
-      const attackSummary = `${outcomeLabelForAttacker}. Ztraty utocnika ${sumSelectedUnits(
-        battle.attacker.losses,
-      )}/${totalSentUnits}, obrance ${sumSelectedUnits(battle.defender.losses)}/${sumSelectedUnits(
-        battle.defender.start,
-      )}.`;
+      const blockedByGate = battle.blockedByGate === true;
+      const attackerLossesTotal = sumSelectedUnits(battle.attacker.losses);
+      const defenderLossesTotal = sumSelectedUnits(battle.defender.losses);
+      const defenderStartTotal = sumSelectedUnits(battle.defender.start);
+      const outcomeLabelForAttacker = blockedByGate
+        ? 'Brana odrazila utok'
+        : battle.attackerWins
+          ? 'Vitezstvi'
+          : 'Prohra';
+      const outcomeLabelForDefender = blockedByGate
+        ? 'Brana odrazila utok'
+        : battle.attackerWins
+          ? 'Prohra'
+          : 'Vitezstvi';
+      const attackTitle = blockedByGate
+        ? `Utok odrazen branou: ${attackerName} -> ${targetVillage.name}`
+        : `Bitva: ${attackerName} -> ${targetVillage.name}`;
+      const attackSummary = blockedByGate
+        ? attackerLossesTotal > 0
+          ? `Brana zastavila utok bez beranidel. Utocnik ztratil ${attackerLossesTotal}/${totalSentUnits} jednotek a ustoupil.`
+          : 'Brana zastavila utok bez beranidel. Utocnik ustoupil bez ztrat.'
+        : `${outcomeLabelForAttacker}. Ztraty utocnika ${attackerLossesTotal}/${totalSentUnits}, obrance ${defenderLossesTotal}/${defenderStartTotal}.`;
       if (attackerPlayer && Number(attackerPlayer.isBot ?? 0) !== 1) {
         let reportId = null;
         if (Number(battle.attacker.survivorsTotal) > 0) {
@@ -1788,6 +2335,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             attacker: attackerName,
             defender: defenderName,
             outcome: battle.attackerWins ? 'attacker_victory' : 'defender_victory',
+            gateBlocked: blockedByGate,
             lootPriority,
             lootTaken,
             returnMovement: returnMovementPayload ?? undefined,
@@ -1809,7 +2357,9 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             targetVillageId: Number(targetVillage.id),
             battleAt: tickTimeIso,
             title: `Bitva: utok na ${targetVillage.name} selhal`,
-            summary: 'Armada v utoku byla znicena obrancem.',
+            summary: blockedByGate
+              ? 'Utok byl odrazen branou. Utocna armada byla znicena pri ustupu z hradeb.'
+              : 'Armada v utoku byla znicena obrancem.',
             payload: {
               perspective: 'attacker',
               movementId,
@@ -1821,6 +2371,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
               attacker: attackerName,
               defender: defenderName,
               outcome: 'defender_victory',
+              gateBlocked: blockedByGate,
               armyDestroyed: true,
             },
           });
@@ -1833,14 +2384,16 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       if (defenderPlayer && Number(defenderPlayer.isBot ?? 0) !== 1) {
         const defenderOwnSurvivorsTotal = sumSelectedUnits(villageDefenseAfterLoss.survivors);
         const defenderForcesDestroyed = defenderOwnSurvivorsTotal <= 0;
-        const defenseTitle = `Obrana: ${targetVillage.name} celi utoku`;
-        const defenseSummary = defenderForcesDestroyed
-          ? 'Obrana byla znicena. Vsechny obranne jednotky padly. Pocet jednotek utocnika je neznamy.'
-          : `${outcomeLabelForDefender}. Ztraty obrance ${sumSelectedUnits(
-              battle.defender.losses,
-            )}/${sumSelectedUnits(battle.defender.start)}, utocnik ${sumSelectedUnits(
-              battle.attacker.losses,
-            )}/${totalSentUnits}.`;
+        const defenseTitle = blockedByGate
+          ? `Obrana: brana odrazila utok na ${targetVillage.name}`
+          : `Obrana: ${targetVillage.name} celi utoku`;
+        const defenseSummary = blockedByGate
+          ? attackerLossesTotal > 0
+            ? `Brana odrazila utok bez beranidel. Utocnik prisel o ${attackerLossesTotal}/${totalSentUnits} jednotek.`
+            : 'Brana odrazila utok bez beranidel. Obrana neutrpela ztraty.'
+          : defenderForcesDestroyed
+            ? 'Obrana byla znicena. Vsechny obranne jednotky padly. Pocet jednotek utocnika je neznamy.'
+            : `${outcomeLabelForDefender}. Ztraty obrance ${defenderLossesTotal}/${defenderStartTotal}, utocnik ${attackerLossesTotal}/${totalSentUnits}.`;
         const defenderPayload = {
           perspective: 'defender',
           movementId,
@@ -1852,6 +2405,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           attacker: attackerName,
           defender: defenderName,
           outcome: battle.attackerWins ? 'attacker_victory' : 'defender_victory',
+          gateBlocked: blockedByGate,
           lootPriority,
           lootTaken,
           attackerForcesUnknown: defenderForcesDestroyed,
@@ -2080,9 +2634,13 @@ export const authenticatePlayer = (username, password) => {
     throw new GameRuleError('Neplatne prihlasovaci udaje.', 401);
   }
 
-  const village = selectVillageByPlayerStmt.get(player.id);
+  let village = selectVillageByPlayerStmt.get(player.id);
   if (!village) {
-    throw new GameRuleError('Tento ucet nema zalozene leno.', 404);
+    const villages = ensurePlayerHasVillageTransaction(Number(player.id), String(player.username));
+    village = villages[0] ?? null;
+  }
+  if (!village) {
+    throw new GameRuleError('Tento ucet nema zalozene leno.', 500);
   }
 
   return {
@@ -2711,6 +3269,8 @@ const conquerVillageTransaction = db.transaction((username, villageIdRaw) => {
 });
 
 export const conquerVillage = (username, villageId) => conquerVillageTransaction(username, villageId);
+export const restartVillageProgress = (username) => restartVillageProgressTransaction(username);
+export const createAbandonedVillages = (count = 1) => createAbandonedVillagesTransaction(count);
 
 const requireKingdomLeadership = (player, kingdomName) => {
   if (isNeutralKingdom(kingdomName)) {

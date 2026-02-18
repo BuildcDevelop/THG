@@ -285,6 +285,38 @@ export type ConquerVillageResult = {
   renamed: false;
 };
 
+export type RestartVillageResult = {
+  username: string;
+  restartedAt: string;
+  abandonedVillagesConverted: number;
+  convertedVillages: {
+    villageId: number;
+    botPlayerId: number;
+    botUsername: string;
+    villageName: string;
+  }[];
+  newVillage: {
+    id: number;
+    name: string;
+    coordX: number;
+    coordY: number;
+    region: number;
+    kingdom: string;
+  } | null;
+};
+
+export type CreateAbandonedVillagesResult = {
+  requestedCount: number;
+  createdCount: number;
+  villages: {
+    villageId: number;
+    villageName: string;
+    coordX: number;
+    coordY: number;
+    owner: string;
+  }[];
+};
+
 export type BattleReportPayload = {
   perspective?: 'attacker' | 'defender';
   role?: 'support';
@@ -298,6 +330,7 @@ export type BattleReportPayload = {
   attacker?: string;
   defender?: string;
   outcome?: 'attacker_victory' | 'defender_victory';
+  gateBlocked?: boolean;
   armyDestroyed?: boolean;
   attackerForcesUnknown?: boolean;
   lootPriority?: LootPriority;
@@ -330,6 +363,8 @@ export type BattleReportPayload = {
     survivorsTotal?: number;
   };
   battle?: {
+    blockedByGate?: boolean;
+    gateDamageLossRatio?: number;
     baseAttackPower?: number;
     baseDefensePower?: number;
     finalAttackPower?: number;
@@ -558,6 +593,38 @@ export const conquerVillage = async (
     result: payload.result,
     data: payload.data,
   };
+};
+
+export const restartVillageProgress = async (
+  username: string,
+  villageId?: number | null,
+): Promise<{ result: RestartVillageResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: RestartVillageResult }>(
+    '/api/v1/villages/restart',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, villageId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const createAbandonedVillages = async (
+  count = 1,
+): Promise<CreateAbandonedVillagesResult> => {
+  const payload = await request<{ ok: true; result: CreateAbandonedVillagesResult }>(
+    '/api/v1/admin/abandoned-villages/create',
+    {
+      method: 'POST',
+      body: JSON.stringify({ count }),
+    },
+  );
+
+  return payload.result;
 };
 
 export const issueArmyCommand = async (

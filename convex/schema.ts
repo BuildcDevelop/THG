@@ -154,6 +154,39 @@ export default defineSchema({
     .index("by_player_id_created", ["playerId", "createdAt"])
     .index("by_player_legacy_id", ["playerLegacyId"]),
 
+  kingdomInvites: defineTable({
+    legacyId: v.number(),
+    kingdom: v.string(),
+    inviterPlayerId: v.id("players"),
+    inviterPlayerLegacyId: v.number(),
+    targetPlayerId: v.id("players"),
+    targetPlayerLegacyId: v.number(),
+    status: v.string(),
+    createdAt: v.string(),
+    respondedAt: v.optional(v.string()),
+  })
+    .index("by_legacy_id", ["legacyId"])
+    .index("by_target_player_id_status", ["targetPlayerId", "status"])
+    .index("by_inviter_player_id_status", ["inviterPlayerId", "status"])
+    .index("by_target_player_legacy_id", ["targetPlayerLegacyId"])
+    .index("by_inviter_player_legacy_id", ["inviterPlayerLegacyId"]),
+
+  kingdomEvents: defineTable({
+    legacyId: v.number(),
+    kingdom: v.optional(v.string()),
+    eventType: v.string(),
+    actorPlayerId: v.optional(v.id("players")),
+    actorPlayerLegacyId: v.optional(v.number()),
+    targetPlayerId: v.optional(v.id("players")),
+    targetPlayerLegacyId: v.optional(v.number()),
+    payloadJson: v.optional(v.string()),
+    createdAt: v.string(),
+  })
+    .index("by_legacy_id", ["legacyId"])
+    .index("by_kingdom_created", ["kingdom", "createdAt"])
+    .index("by_actor_player_legacy_id", ["actorPlayerLegacyId"])
+    .index("by_target_player_legacy_id", ["targetPlayerLegacyId"]),
+
   gameState: defineTable({
     key: v.string(),
     legacyId: v.optional(v.number()),
