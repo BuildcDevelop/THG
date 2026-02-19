@@ -20,6 +20,7 @@ import {
   kickKingdomMember as kickKingdomMemberRequest,
   leaveKingdom as leaveKingdomRequest,
   rejectKingdomInvite as rejectKingdomInviteRequest,
+  recallKnight as recallKnightRequest,
   recruitUnit,
   restartVillageProgress as restartVillageProgressRequest,
   upgradeBuilding,
@@ -85,6 +86,7 @@ type SettlementOrderMarkerCounts = {
   attack: number;
   support: number;
   move: number;
+  knightAttack: number;
 };
 
 type PanelMeta = {
@@ -438,15 +440,17 @@ const UNIT_META: Record<string, { fallbackName: string; fallbackRole: string }> 
   militia: { fallbackName: 'Ozbrojenci', fallbackRole: 'Základní pěchota' },
   archer: { fallbackName: 'Lučištníci', fallbackRole: 'Obrana hradeb' },
   cavalry: { fallbackName: 'Jezdci', fallbackRole: 'Rychlý útok' },
+  knight: { fallbackName: 'Rytíř', fallbackRole: 'Dobytel osad' },
   ram: { fallbackName: 'Beranidla', fallbackRole: 'Prolomení brány' },
   caravan: { fallbackName: 'Karavany', fallbackRole: 'Převoz kořisti' },
 };
-const COMMAND_UNIT_ORDER = ['militia', 'archer', 'cavalry', 'ram', 'caravan'] as const;
+const COMMAND_UNIT_ORDER = ['militia', 'archer', 'cavalry', 'knight', 'ram', 'caravan'] as const;
 type CommandUnitId = (typeof COMMAND_UNIT_ORDER)[number];
 const UNIT_ATTACK_POWER: Record<CommandUnitId, number> = {
   militia: 12,
   archer: 8,
   cavalry: 17,
+  knight: 340,
   ram: 7,
   caravan: 0,
 };
@@ -454,6 +458,7 @@ const UNIT_DEFENSE_POWER: Record<CommandUnitId, number> = {
   militia: 12,
   archer: 14,
   cavalry: 9,
+  knight: 280,
   ram: 7,
   caravan: 0,
 };
@@ -506,15 +511,17 @@ const CITY_OVERVIEW_GROUPS: {
   },
 ];
 
-const MAP_ORDER_ICON_LABELS: Record<keyof SettlementOrderMarkerCounts, string> = {
+type MapOrderCommandType = 'attack' | 'support' | 'move';
+
+const MAP_ORDER_ICON_LABELS: Record<MapOrderCommandType, string> = {
   attack: 'Útok',
   support: 'Podpora',
   move: 'Přesun',
 };
 
-const MAP_ORDER_COMMAND_TYPES: (keyof SettlementOrderMarkerCounts)[] = ['attack', 'support', 'move'];
+const MAP_ORDER_COMMAND_TYPES: MapOrderCommandType[] = ['attack', 'support', 'move'];
 
-const getArmyCommandSymbol = (commandType: ArmyCommandType | keyof SettlementOrderMarkerCounts): string => {
+const getArmyCommandSymbol = (commandType: ArmyCommandType | MapOrderCommandType): string => {
   if (commandType === 'attack') {
     return '⌖';
   }
@@ -4256,6 +4263,15 @@ const MapPanel = memo(({
                     </span>
                   );
                 })}
+                {Number(markerState.knightAttack ?? 0) > 0 ? (
+                  <span
+                    className="settlement-order-icon knight-attack"
+                    title={`Rytířský útok${Number(markerState.knightAttack) > 1 ? ` x${Number(markerState.knightAttack)}` : ''}`}
+                  >
+                    <span className="symbol">♞</span>
+                    {Number(markerState.knightAttack) > 1 ? <small>{Number(markerState.knightAttack)}</small> : null}
+                  </span>
+                ) : null}
               </div>
             ) : null}
           </button>
@@ -4450,7 +4466,7 @@ const MapPanel = memo(({
           </div>
           <div className="map-nav-hint">
             <p>Zoom mapy: kolečko myši po 10 %. Rozsah je od -50 % do +50 %.</p>
-            <p>Značky rozkazů: <strong className="order-legend attack">⌖ útok</strong>, <strong className="order-legend support">🛡 podpora</strong>, <strong className="order-legend move">➜ přesun</strong>.</p>
+            <p>Značky rozkazů: <strong className="order-legend attack">⌖ útok</strong>, <strong className="order-legend support">🛡 podpora</strong>, <strong className="order-legend move">➜ přesun</strong>, <strong className="order-legend knight">♞ rytířský útok</strong>.</p>
             <p>Klik na osadu kartu zakotví, klik do mapy ji odkotví.</p>
           </div>
         </section>
@@ -4781,12 +4797,18 @@ const BuildingPanel = memo(({
   building,
   onBackToCity,
   onUpgrade,
+  onRecallKnight,
+  knightCount,
+  isRecallKnightPending,
   isUpgradePending,
   notice,
 }: {
   building: Building;
   onBackToCity: () => void;
   onUpgrade: (building: Building) => void;
+  onRecallKnight: (() => void) | null;
+  knightCount: number;
+  isRecallKnightPending: boolean;
   isUpgradePending: boolean;
   notice: string | null;
 }) => (
@@ -4835,6 +4857,21 @@ const BuildingPanel = memo(({
         >
           {isUpgradePending ? 'Spouštím...' : 'Naplánovat upgrade'}
         </button>
+        {building.id === 'townhall' ? (
+          <>
+            <p className="building-knight-meta">
+              Rytíř v osadě: <strong>{Math.max(0, Math.floor(knightCount)).toLocaleString('cs-CZ')}</strong>
+            </p>
+            <button
+              type="button"
+              className="secondary-action"
+              onClick={() => onRecallKnight?.()}
+              disabled={isRecallKnightPending || knightCount <= 0 || onRecallKnight == null}
+            >
+              {isRecallKnightPending ? 'Odvolávám rytíře...' : 'Odvolat rytíře (+1000 dřevo/kámen/železo)'}
+            </button>
+          </>
+        ) : null}
         {notice ? <p className="panel-feedback">{notice}</p> : null}
         <button className="secondary-action" onClick={onBackToCity}>
           Zpět do města
@@ -4910,6 +4947,7 @@ export const GamePage = () => {
   const [armyCommandPending, setArmyCommandPending] = useState(false);
   const [upgradePendingBuildingId, setUpgradePendingBuildingId] = useState<string | null>(null);
   const [cancelUpgradePendingOrderId, setCancelUpgradePendingOrderId] = useState<number | null>(null);
+  const [recallKnightPending, setRecallKnightPending] = useState(false);
   const [buildingNotices, setBuildingNotices] = useState<Record<string, string>>({});
   const [battleReports, setBattleReports] = useState<BattleReportListResponse | null>(null);
   const [battleReportsLoading, setBattleReportsLoading] = useState(false);
@@ -4932,7 +4970,8 @@ export const GamePage = () => {
         cancelUpgradePendingOrderId != null ||
         armyCommandPending ||
         kingdomActionPending ||
-        restartVillagePending,
+        restartVillagePending ||
+        recallKnightPending,
     );
   }, [
     armyCommandPending,
@@ -4940,6 +4979,7 @@ export const GamePage = () => {
     cancelUpgradePendingOrderId,
     kingdomActionPending,
     recruitPendingUnitId,
+    recallKnightPending,
     restartVillagePending,
     upgradePendingBuildingId,
   ]);
@@ -5008,6 +5048,11 @@ export const GamePage = () => {
       };
     });
   }, [gameState]);
+
+  const currentVillageKnightCount = useMemo(
+    () => Math.max(0, Math.floor(Number(gameState?.units?.find((unit) => unit.id === 'knight')?.amount ?? 0))),
+    [gameState],
+  );
 
   const recruitQueueOrders = useMemo<RecruitQueueOrder[]>(() => {
     if (!gameState) {
@@ -5094,20 +5139,30 @@ export const GamePage = () => {
   }, [battleReportCacheById, battleReports]);
   const mapOrderMarkersByVillageId = useMemo<Map<number, SettlementOrderMarkerCounts>>(() => {
     const markerMap = new Map<number, SettlementOrderMarkerCounts>();
-    const addMarker = (villageIdRaw: number, commandType: keyof SettlementOrderMarkerCounts) => {
+    const addMarker = (
+      villageIdRaw: number,
+      commandType: Extract<keyof SettlementOrderMarkerCounts, 'attack' | 'support' | 'move'>,
+      options?: { hasKnightAttack?: boolean },
+    ) => {
       const villageId = Number(villageIdRaw);
       if (!Number.isFinite(villageId)) {
         return;
       }
 
-      const current = markerMap.get(villageId) ?? { attack: 0, support: 0, move: 0 };
+      const current = markerMap.get(villageId) ?? { attack: 0, support: 0, move: 0, knightAttack: 0 };
       current[commandType] += 1;
+      if (options?.hasKnightAttack) {
+        current.knightAttack += 1;
+      }
       markerMap.set(villageId, current);
     };
 
     for (const movement of armyActiveMovements) {
       if (movement.commandType === 'attack' || movement.commandType === 'support' || movement.commandType === 'move') {
-        addMarker(movement.targetVillageId, movement.commandType);
+        const hasKnightAttack =
+          movement.commandType === 'attack' &&
+          movement.units.some((unit) => unit.unitId === 'knight' && Number(unit.amount) > 0);
+        addMarker(movement.targetVillageId, movement.commandType, { hasKnightAttack });
       }
     }
     for (const movement of armyStationedSupports) {
@@ -6565,6 +6620,34 @@ export const GamePage = () => {
     [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
   );
 
+  const handleRecallKnight = useCallback(async () => {
+    setRecallKnightPending(true);
+    setBuildingNotices((previous) => ({
+      ...previous,
+      townhall: '',
+    }));
+
+    try {
+      const response = await recallKnightRequest(
+        username,
+        gameState?.village.id ?? activeVillageId,
+      );
+      applyIncomingGameState(response.data);
+      setBuildingNotices((previous) => ({
+        ...previous,
+        townhall: `Rytíř byl odvolán. Vráceno ${formatResourceBundleLabel(response.result.refunded)}.`,
+      }));
+      void loadGameState(true, true);
+    } catch (error) {
+      setBuildingNotices((previous) => ({
+        ...previous,
+        townhall: getErrorMessage(error),
+      }));
+    } finally {
+      setRecallKnightPending(false);
+    }
+  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username]);
+
   const handleCancelBuildingUpgrade = useCallback(
     async (upgradeOrderId: number, buildingId: string) => {
       if (!Number.isFinite(upgradeOrderId) || upgradeOrderId <= 0) {
@@ -7120,6 +7203,9 @@ export const GamePage = () => {
             building={building}
             onBackToCity={() => openPanel('city')}
             onUpgrade={handleBuildingUpgrade}
+            onRecallKnight={building.id === 'townhall' ? handleRecallKnight : null}
+            knightCount={currentVillageKnightCount}
+            isRecallKnightPending={recallKnightPending}
             isUpgradePending={upgradePendingBuildingId === building.id}
             notice={buildingNotices[building.id] ?? null}
           />

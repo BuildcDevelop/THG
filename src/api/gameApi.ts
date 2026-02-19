@@ -362,6 +362,16 @@ export type BattleReportPayload = {
     survivors?: Record<string, number>;
     survivorsTotal?: number;
   };
+  conquest?: {
+    conquered?: boolean;
+    blockedByVillageLimit?: boolean;
+    villageLimit?: number;
+    previousOwner?: string;
+    newOwner?: string;
+    targetVillageId?: number;
+    targetVillageName?: string;
+    knightConsumed?: boolean;
+  };
   battle?: {
     blockedByGate?: boolean;
     gateDamageLossRatio?: number;
@@ -417,7 +427,7 @@ export type IssueArmyCommandPayload = {
   targetVillageId?: number;
   supportMovementId?: number;
   lootPriority?: LootPriority;
-  units?: Partial<Record<'militia' | 'archer' | 'cavalry' | 'ram' | 'caravan', number>>;
+  units?: Partial<Record<'militia' | 'archer' | 'cavalry' | 'knight' | 'ram' | 'caravan', number>>;
 };
 
 export type IssueArmyCommandResult = {
@@ -444,6 +454,13 @@ export type CancelRecruitmentResult = {
   canceledRecruitmentId: number;
   unitId: string;
   amount: number;
+  refunded: ResourceCost;
+};
+
+export type RecallKnightResult = {
+  villageId: number;
+  unitId: string;
+  recalled: number;
   refunded: ResourceCost;
 };
 
@@ -617,6 +634,24 @@ export const cancelRecruitment = async (
 ): Promise<{ result: CancelRecruitmentResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: CancelRecruitmentResult }>(
     `/api/v1/units/recruitments/${encodeURIComponent(String(recruitmentId))}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, villageId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const recallKnight = async (
+  username: string,
+  villageId?: number | null,
+): Promise<{ result: RecallKnightResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: RecallKnightResult }>(
+    '/api/v1/townhall/knight/recall',
     {
       method: 'POST',
       body: JSON.stringify({ username, villageId }),

@@ -19,6 +19,7 @@ import {
   listBattleReports,
   listPlayerLeaderboard,
   rejectKingdomInvite,
+  recallKnight,
   recruitUnits,
   restartVillageProgress,
   runGameTick,
@@ -305,6 +306,32 @@ app.post('/api/v1/units/recruitments/:recruitmentId/cancel', async (req, res, ne
     const payload = await executeWithConvexPersistence(() => {
       runGameTick();
       const result = cancelRecruitment(username, recruitmentId, normalizedVillageId);
+      const state = getVillageSnapshot(username, normalizedVillageId);
+      return { result, state };
+    });
+
+    res.json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/townhall/knight/recall', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithConvexPersistence(() => {
+      runGameTick();
+      const result = recallKnight(username, normalizedVillageId);
       const state = getVillageSnapshot(username, normalizedVillageId);
       return { result, state };
     });

@@ -4,6 +4,7 @@ import {
   BUILDING_ORDER,
   getGlobalMaxBuildingLevel,
   getMaxBuildingLevel,
+  MAX_PLAYER_VILLAGES,
   UNIT_DEFS,
   UNIT_ORDER,
   calculatePopulationCap,
@@ -24,6 +25,8 @@ const WORLD_REGION = {
   originY: 430,
   size: 50,
 };
+const KNIGHT_UNIT_ID = 'knight';
+const KNIGHT_RECALL_REFUND = { wood: 1000, stone: 1000, iron: 1000 };
 
 const ABANDONED_BOT_USERNAME_PREFIX = '__abandoned_ai__';
 const PLAYER_VILLAGE_NAME_PREFIX = 'Leno';
@@ -355,7 +358,10 @@ const updateResourcesAfterSpendStmt = db.prepare(
   'UPDATE resources SET wood = ?, stone = ?, iron = ? WHERE village_id = ?',
 );
 const updateUnitAmountStmt = db.prepare(
-  'UPDATE units SET amount = ? WHERE village_id = ? AND unit_id = ?',
+  `INSERT INTO units (amount, village_id, unit_id)
+   VALUES (?, ?, ?)
+   ON CONFLICT(village_id, unit_id) DO UPDATE SET
+     amount = excluded.amount`,
 );
 const selectUnitAmountByVillageAndUnitStmt = db.prepare(
   'SELECT amount FROM units WHERE village_id = ? AND unit_id = ? LIMIT 1',
@@ -578,6 +584,29 @@ const selectPrimaryKingdomByPlayerStmt = db.prepare(
       ORDER BY vv.id ASC
       LIMIT 1
     ), 'Neutral') AS kingdom`,
+);
+const selectVillageCountByPlayerStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM villages
+   WHERE player_id = ?`,
+);
+const selectTotalPlayerUnitAmountStmt = db.prepare(
+  `SELECT COALESCE(SUM(u.amount), 0) AS total
+   FROM units u
+   INNER JOIN villages v ON v.id = u.village_id
+   WHERE v.player_id = ? AND u.unit_id = ?`,
+);
+const selectTotalPlayerQueuedRecruitmentAmountStmt = db.prepare(
+  `SELECT COALESCE(SUM(r.amount), 0) AS total
+   FROM unit_recruitments r
+   INNER JOIN villages v ON v.id = r.village_id
+   WHERE v.player_id = ? AND r.unit_id = ? AND r.status = 'in_progress'`,
+);
+const selectTotalPlayerMovementUnitAmountStmt = db.prepare(
+  `SELECT COALESCE(SUM(mu.amount), 0) AS total
+   FROM army_movement_units mu
+   INNER JOIN army_movements m ON m.id = mu.movement_id
+   WHERE m.player_id = ? AND mu.unit_id = ? AND m.status IN ('in_progress', 'stationed')`,
 );
 const selectDistinctVillageKingdomsByPlayerStmt = db.prepare(
   `SELECT DISTINCT kingdom
@@ -1339,8 +1368,26 @@ const toUnitCountMap = (rows) => {
   return countMap;
 };
 
+const getUnitPopulationCost = (unitId) =>
+  Math.max(1, Math.floor(Number(UNIT_DEFS[unitId]?.populationCost ?? 1)));
+
+const calculateSelectionPopulationCost = (selection) =>
+  UNIT_ORDER.reduce((sum, unitId) => {
+    const amount = Math.max(0, Math.floor(Number(selection?.[unitId] ?? 0)));
+    if (amount <= 0) {
+      return sum;
+    }
+    return sum + amount * getUnitPopulationCost(unitId);
+  }, 0);
+
 const calculateReservedPopulationForRecruitments = (recruitments) =>
-  recruitments.reduce((sum, recruitment) => sum + Math.max(0, Number(recruitment.amount)), 0);
+  recruitments.reduce((sum, recruitment) => {
+    const amount = Math.max(0, Math.floor(Number(recruitment.amount ?? 0)));
+    if (amount <= 0) {
+      return sum;
+    }
+    return sum + amount * getUnitPopulationCost(String(recruitment.unitId));
+  }, 0);
 
 const calculateAvailablePopulationForRecruitment = (populationCap, populationUsed, reservedPopulation = 0) =>
   Math.max(0, Number(populationCap) - Number(populationUsed) - Number(reservedPopulation));
@@ -1354,6 +1401,29 @@ const calculateMaxRecruitableByResources = (resources, cost) => {
   const maxByIron = Math.floor(Math.max(0, Number(resources.iron)) / safeIronCost);
 
   return Math.max(0, Math.min(maxByWood, maxByStone, maxByIron));
+};
+
+const getPlayerVillageCount = (playerId) =>
+  Math.max(0, Math.floor(Number(selectVillageCountByPlayerStmt.get(Number(playerId))?.total ?? 0)));
+
+const getPlayerKnightCapacity = (playerId) =>
+  Math.max(0, Math.min(MAX_PLAYER_VILLAGES, getPlayerVillageCount(Number(playerId))));
+
+const getPlayerKnightTotalInWorld = (playerId) => {
+  const owned = Math.max(
+    0,
+    Math.floor(Number(selectTotalPlayerUnitAmountStmt.get(Number(playerId), KNIGHT_UNIT_ID)?.total ?? 0)),
+  );
+  const queued = Math.max(
+    0,
+    Math.floor(Number(selectTotalPlayerQueuedRecruitmentAmountStmt.get(Number(playerId), KNIGHT_UNIT_ID)?.total ?? 0)),
+  );
+  const moving = Math.max(
+    0,
+    Math.floor(Number(selectTotalPlayerMovementUnitAmountStmt.get(Number(playerId), KNIGHT_UNIT_ID)?.total ?? 0)),
+  );
+
+  return owned + queued + moving;
 };
 
 const clampResourceToCap = (value, cap) => {
@@ -1377,6 +1447,7 @@ const calculateVillagePrestige = (buildingLevels, unitCounts) => {
   unitScore += (unitCounts.militia ?? 0) * 2;
   unitScore += (unitCounts.archer ?? 0) * 3;
   unitScore += (unitCounts.cavalry ?? 0) * 4;
+  unitScore += (unitCounts.knight ?? 0) * 140;
   unitScore += (unitCounts.ram ?? 0) * 5;
   unitScore += (unitCounts.caravan ?? 0) * 2;
 
@@ -1510,6 +1581,7 @@ const BATTLE_UNIT_POWER = {
   militia: { attack: 12, defense: 12 },
   archer: { attack: 8, defense: 14 },
   cavalry: { attack: 17, defense: 9 },
+  knight: { attack: 340, defense: 280 },
   ram: { attack: 7, defense: 7 },
   caravan: { attack: 0, defense: 0 },
 };
@@ -2293,6 +2365,52 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         });
       }
 
+      const defenderVillageSurvivorsTotal = sumSelectedUnits(villageDefenseAfterLoss.survivors);
+      const stationedSupportSurvivorsTotal = stationedSupportCasualties.reduce(
+        (sum, support) => sum + Math.max(0, Number(support.survivorsTotal ?? 0)),
+        0,
+      );
+      const attackerSentKnights = Math.max(0, Math.floor(Number(unitSelection[KNIGHT_UNIT_ID] ?? 0)));
+      const attackerSurvivingKnights = Math.max(
+        0,
+        Math.floor(Number(battle.attacker.survivors[KNIGHT_UNIT_ID] ?? 0)),
+      );
+      const canCaptureWithKnight =
+        battle.attackerWins &&
+        attackerSentKnights > 0 &&
+        attackerSurvivingKnights > 0 &&
+        defenderVillageSurvivorsTotal <= 0 &&
+        stationedSupportSurvivorsTotal <= 0 &&
+        Number(targetVillage.playerId) !== Number(movement.playerId);
+      const attackerVillageCount = getPlayerVillageCount(Number(movement.playerId));
+      const canConquerAnotherVillage = attackerVillageCount < MAX_PLAYER_VILLAGES;
+      let conquestPayload = null;
+      if (canCaptureWithKnight && canConquerAnotherVillage) {
+        const kingdomRow = selectPrimaryKingdomByPlayerStmt.get(Number(movement.playerId));
+        const conquerorKingdom = String(kingdomRow?.kingdom ?? 'Neutral');
+        updateVillageOwnerForConquestStmt.run(Number(movement.playerId), conquerorKingdom, Number(targetVillage.id));
+        villagesToRecalculatePrestige.add(Number(targetVillage.id));
+        conquestPayload = {
+          conquered: true,
+          blockedByVillageLimit: false,
+          villageLimit: MAX_PLAYER_VILLAGES,
+          previousOwner: String(targetVillage.ownerUsername ?? ''),
+          newOwner: String(attackerPlayer?.username ?? ''),
+          targetVillageId: Number(targetVillage.id),
+          targetVillageName: String(targetVillage.name ?? ''),
+        };
+      } else if (canCaptureWithKnight && !canConquerAnotherVillage) {
+        conquestPayload = {
+          conquered: false,
+          blockedByVillageLimit: true,
+          villageLimit: MAX_PLAYER_VILLAGES,
+          previousOwner: String(targetVillage.ownerUsername ?? ''),
+          newOwner: String(targetVillage.ownerUsername ?? ''),
+          targetVillageId: Number(targetVillage.id),
+          targetVillageName: String(targetVillage.name ?? ''),
+        };
+      }
+
       const lootPriority = normalizeLootPriority(movement.lootPriority);
       let lootTaken = { wood: 0, stone: 0, iron: 0 };
       if (battle.attackerWins && Number(battle.attacker.survivorsTotal) > 0) {
@@ -2315,10 +2433,15 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       }
 
       let returnMovementPayload = null;
+      const returnUnits = toCompleteUnitSelection(battle.attacker.survivors);
+      if (conquestPayload?.conquered && Number(returnUnits[KNIGHT_UNIT_ID] ?? 0) > 0) {
+        returnUnits[KNIGHT_UNIT_ID] = Math.max(0, Number(returnUnits[KNIGHT_UNIT_ID] ?? 0) - 1);
+        conquestPayload.knightConsumed = true;
+      }
+      const attackerSurvivorsAfterConquestTotal = sumSelectedUnits(returnUnits);
       const shouldSpawnReturnMovement =
-        Number(battle.attacker.survivorsTotal) > 0 && (battle.attackerWins || battle.blockedByGate === true);
+        attackerSurvivorsAfterConquestTotal > 0 && (battle.attackerWins || battle.blockedByGate === true);
       if (shouldSpawnReturnMovement) {
-        const returnUnits = battle.attacker.survivors;
         const distanceTiles = calculateTileDistance(targetVillage, homeVillage);
         const durationSec = calculateArmyTravelDurationSec(returnUnits, distanceTiles);
         const startedAtIso = tickTimeIso;
@@ -2378,14 +2501,23 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         : battle.attackerWins
           ? 'Prohra'
           : 'Vitezstvi';
-      const attackTitle = blockedByGate
+      let attackTitle = blockedByGate
         ? `Utok odrazen branou: ${attackerName} -> ${targetVillage.name}`
         : `Bitva: ${attackerName} -> ${targetVillage.name}`;
-      const attackSummary = blockedByGate
+      let attackSummary = blockedByGate
         ? attackerLossesTotal > 0
           ? `Brana zastavila utok bez beranidel. Utocnik ztratil ${attackerLossesTotal}/${totalSentUnits} jednotek a ustoupil.`
           : 'Brana zastavila utok bez beranidel. Utocnik ustoupil bez ztrat.'
         : `${outcomeLabelForAttacker}. Ztraty utocnika ${attackerLossesTotal}/${totalSentUnits}, obrance ${defenderLossesTotal}/${defenderStartTotal}.`;
+      if (conquestPayload?.conquered) {
+        attackTitle = `Dobytí léna: ${targetVillage.name}`;
+        attackSummary = `Dobytí léna uspesne. ${targetVillage.name} prechazi pod vladu ${attackerName}.`;
+        if (conquestPayload.knightConsumed) {
+          attackSummary += ' Rytir osadu obsadil a po dobyti zmizel.';
+        }
+      } else if (conquestPayload?.blockedByVillageLimit) {
+        attackSummary += ` Dobytí se neprovedlo: dosazen limit ${MAX_PLAYER_VILLAGES} osad.`;
+      }
       if (attackerPlayer && Number(attackerPlayer.isBot ?? 0) !== 1) {
         let reportId = null;
         if (Number(battle.attacker.survivorsTotal) > 0) {
@@ -2405,6 +2537,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             lootTaken,
             returnMovement: returnMovementPayload ?? undefined,
             battle,
+            conquest: conquestPayload ?? undefined,
           };
           reportId = createBattleReport({
             playerId: Number(attackerPlayer.id),
@@ -2449,16 +2582,22 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       if (defenderPlayer && Number(defenderPlayer.isBot ?? 0) !== 1) {
         const defenderOwnSurvivorsTotal = sumSelectedUnits(villageDefenseAfterLoss.survivors);
         const defenderForcesDestroyed = defenderOwnSurvivorsTotal <= 0;
-        const defenseTitle = blockedByGate
+        let defenseTitle = blockedByGate
           ? `Obrana: brana odrazila utok na ${targetVillage.name}`
           : `Obrana: ${targetVillage.name} celi utoku`;
-        const defenseSummary = blockedByGate
+        let defenseSummary = blockedByGate
           ? attackerLossesTotal > 0
             ? `Brana odrazila utok bez beranidel. Utocnik prisel o ${attackerLossesTotal}/${totalSentUnits} jednotek.`
             : 'Brana odrazila utok bez beranidel. Obrana neutrpela ztraty.'
           : defenderForcesDestroyed
             ? 'Obrana byla znicena. Vsechny obranne jednotky padly. Pocet jednotek utocnika je neznamy.'
             : `${outcomeLabelForDefender}. Ztraty obrance ${defenderLossesTotal}/${defenderStartTotal}, utocnik ${attackerLossesTotal}/${totalSentUnits}.`;
+        if (conquestPayload?.conquered) {
+          defenseTitle = `Dobytí léna: ${targetVillage.name}`;
+          defenseSummary = `Leno ${targetVillage.name} bylo dobyto hracem ${attackerName}.`;
+        } else if (conquestPayload?.blockedByVillageLimit) {
+          defenseSummary += ` Utocnik dosahl limitu ${MAX_PLAYER_VILLAGES} osad, dobytí se neprovedlo.`;
+        }
         const defenderPayload = {
           perspective: 'defender',
           movementId,
@@ -2475,6 +2614,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           lootTaken,
           attackerForcesUnknown: defenderForcesDestroyed,
           returnMovement: defenderForcesDestroyed ? undefined : returnMovementPayload ?? undefined,
+          conquest: conquestPayload ?? undefined,
           battle: defenderForcesDestroyed
             ? {
                 defenseMultiplier: battle.defenseMultiplier,
@@ -2536,6 +2676,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             outcome: battle.attackerWins ? 'attacker_victory' : 'defender_victory',
             attackerForcesUnknown: supportForcesDestroyed,
             returnMovement: supportForcesDestroyed ? undefined : returnMovementPayload ?? undefined,
+            conquest: conquestPayload ?? undefined,
             support: {
               start: supportResult.start,
               losses: supportResult.losses,
@@ -2582,7 +2723,11 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         if (amount <= 0) {
           continue;
         }
-        const acceptedAmount = Math.min(amount, Math.max(0, remainingPopulationCapacity));
+        const unitPopulationCost = getUnitPopulationCost(unitId);
+        const acceptedAmount = Math.min(
+          amount,
+          Math.max(0, Math.floor(remainingPopulationCapacity / unitPopulationCost)),
+        );
         const overflowAmount = Math.max(0, amount - acceptedAmount);
 
         if (acceptedAmount > 0) {
@@ -2590,7 +2735,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           const currentAmount = Number(currentAmountRow?.amount ?? 0);
           updateUnitAmountStmt.run(currentAmount + acceptedAmount, targetVillageId, unitId);
           acceptedUnitsTotal += acceptedAmount;
-          remainingPopulationCapacity -= acceptedAmount;
+          remainingPopulationCapacity -= acceptedAmount * unitPopulationCost;
         }
         if (overflowAmount > 0) {
           overflowSelection[unitId] = overflowAmount;
@@ -2778,6 +2923,9 @@ export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = nul
     populationUsed,
     reservedPopulationForRecruitment,
   );
+  const knightCapacity = getPlayerKnightCapacity(Number(player.id));
+  const playerKnightTotal = getPlayerKnightTotalInWorld(Number(player.id));
+  const remainingKnightCapacity = Math.max(0, knightCapacity - playerKnightTotal);
 
   const buildings = BUILDING_ORDER.map((buildingId) => {
     const def = BUILDING_DEFS[buildingId];
@@ -2830,16 +2978,24 @@ export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = nul
     const requiredBuildingLevel = buildingLevels[requiredBuildingId] ?? 0;
     const queuedCount = Number(activeRecruitmentCountByUnit[unitId] ?? 0);
     const maxByResources = calculateMaxRecruitableByResources(currentResources, def.cost);
-    const maxRecruitable = Math.max(0, Math.min(availablePopulationForRecruitment, maxByResources));
+    const unitPopulationCost = getUnitPopulationCost(unitId);
+    const maxByPopulation = Math.max(0, Math.floor(availablePopulationForRecruitment / unitPopulationCost));
+    const maxByKnightLimit = unitId === KNIGHT_UNIT_ID ? remainingKnightCapacity : Number.POSITIVE_INFINITY;
+    const maxBySingleOrder = unitId === KNIGHT_UNIT_ID ? 1 : Number.POSITIVE_INFINITY;
+    const maxRecruitable = Math.max(0, Math.min(maxByPopulation, maxByResources, maxByKnightLimit, maxBySingleOrder));
 
     let blockedReason = null;
     let canRecruit = false;
     if (requiredBuildingLevel < 1) {
       blockedReason = `Vybuduj ${BUILDING_DEFS[requiredBuildingId].name}`;
+    } else if (unitId === KNIGHT_UNIT_ID && remainingKnightCapacity <= 0) {
+      blockedReason = 'Limit rytiru podle poctu osad je vycerpan';
     } else if (availablePopulationForRecruitment <= 0) {
       blockedReason = 'Nedostatek volne populace';
     } else if (!canAfford(currentResources, def.cost)) {
       blockedReason = 'Nedostatek surovin';
+    } else if (maxByPopulation <= 0) {
+      blockedReason = 'Nedostatek volne populace';
     } else {
       canRecruit = true;
     }
@@ -3142,9 +3298,10 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
 
   if (commandType === 'move') {
     const targetPopulation = getVillagePopulationStatus(Number(targetVillage.id));
-    if (totalUnits > targetPopulation.availablePopulation) {
+    const selectedPopulationCost = calculateSelectionPopulationCost(selectedUnits);
+    if (selectedPopulationCost > targetPopulation.availablePopulation) {
       throw new GameRuleError(
-        `Cilove leno ma volnou populaci jen pro ${targetPopulation.availablePopulation} jednotek.`,
+        `Cilove leno ma volnou populaci jen pro ${targetPopulation.availablePopulation} populace.`,
       );
     }
   }
@@ -3373,6 +3530,11 @@ const conquerVillageTransaction = db.transaction((username, villageIdRaw) => {
       newOwner: player.username,
       renamed: false,
     };
+  }
+
+  const playerVillageCount = getPlayerVillageCount(Number(player.id));
+  if (playerVillageCount >= MAX_PLAYER_VILLAGES) {
+    throw new GameRuleError(`Byl dosazen limit ${MAX_PLAYER_VILLAGES} osad.`, 400);
   }
 
   const kingdomRow = selectPrimaryKingdomByPlayerStmt.get(Number(player.id));
@@ -3656,7 +3818,7 @@ export const kickKingdomMember = (username, targetUsername) =>
   kickKingdomMemberTransaction(username, targetUsername);
 
 const recruitTransaction = db.transaction((username, unitId, amount, requestedVillageId) => {
-  const { village } = requireVillageForUser(username, requestedVillageId);
+  const { player, village } = requireVillageForUser(username, requestedVillageId);
   const unitDef = UNIT_DEFS[unitId];
   if (!unitDef) {
     throw new GameRuleError('Neznama jednotka.');
@@ -3688,14 +3850,28 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
     populationUsed,
     reservedPopulationForRecruitment,
   );
+  const unitPopulationCost = getUnitPopulationCost(unitId);
+  const maxByPopulation = Math.max(0, Math.floor(availablePopulationForRecruitment / unitPopulationCost));
 
-  if (availablePopulationForRecruitment <= 0) {
+  if (unitId === KNIGHT_UNIT_ID && recruitAmount !== 1) {
+    throw new GameRuleError('Rytire lze svolat pouze po jednom.');
+  }
+
+  if (unitId === KNIGHT_UNIT_ID) {
+    const knightCapacity = getPlayerKnightCapacity(Number(player.id));
+    const playerKnightTotal = getPlayerKnightTotalInWorld(Number(player.id));
+    if (playerKnightTotal >= knightCapacity) {
+      throw new GameRuleError('Limit rytiru podle poctu osad je vycerpan.');
+    }
+  }
+
+  if (maxByPopulation <= 0) {
     throw new GameRuleError('Nedostatek volne populace pro nabor.');
   }
 
-  if (recruitAmount > availablePopulationForRecruitment) {
+  if (recruitAmount > maxByPopulation) {
     throw new GameRuleError(
-      `Lze naverbovat maximalne ${availablePopulationForRecruitment} jednotek podle volne populace.`,
+      `Lze naverbovat maximalne ${maxByPopulation} jednotek podle volne populace.`,
     );
   }
 
@@ -3782,11 +3958,44 @@ const cancelRecruitmentTransaction = db.transaction((username, recruitmentIdRaw,
   };
 });
 
+const recallKnightTransaction = db.transaction((username, requestedVillageId) => {
+  const { village } = requireVillageForUser(username, requestedVillageId);
+  const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(Number(village.id)));
+  if (Number(buildingLevels.townhall ?? 0) < 1) {
+    throw new GameRuleError('Pro odvolani rytire chybi Radnice.', 400);
+  }
+
+  const unitRow = selectUnitAmountByVillageAndUnitStmt.get(Number(village.id), KNIGHT_UNIT_ID);
+  const knightAmount = Math.max(0, Math.floor(Number(unitRow?.amount ?? 0)));
+  if (knightAmount <= 0) {
+    throw new GameRuleError('V teto osade neni zadny rytir k odvolani.', 400);
+  }
+
+  updateUnitAmountStmt.run(knightAmount - 1, Number(village.id), KNIGHT_UNIT_ID);
+  const refunded = {
+    wood: Number(KNIGHT_RECALL_REFUND.wood),
+    stone: Number(KNIGHT_RECALL_REFUND.stone),
+    iron: Number(KNIGHT_RECALL_REFUND.iron),
+  };
+  addResourcesWithoutCap(Number(village.id), refunded);
+  updateVillagePrestigeFromCurrentState(Number(village.id));
+
+  return {
+    villageId: Number(village.id),
+    unitId: KNIGHT_UNIT_ID,
+    recalled: 1,
+    refunded,
+  };
+});
+
 export const recruitUnits = (username, unitId, amount, requestedVillageId = null) =>
   recruitTransaction(username, unitId, amount, requestedVillageId);
 
 export const cancelRecruitment = (username, recruitmentId, requestedVillageId = null) =>
   cancelRecruitmentTransaction(username, recruitmentId, requestedVillageId);
+
+export const recallKnight = (username, requestedVillageId = null) =>
+  recallKnightTransaction(username, requestedVillageId);
 
 export const issueArmyCommand = (username, payload, requestedVillageId = null) =>
   issueArmyCommandTransaction(username, requestedVillageId, payload);
