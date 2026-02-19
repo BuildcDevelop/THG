@@ -1,5 +1,6 @@
 ﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
@@ -3801,6 +3802,9 @@ const MapPanel = memo(({
   orderMarkersByVillageId,
   onZoomChange,
   onOpenSettlement,
+  onPinSettlement,
+  onOpenPlayerProfile,
+  onOpenKingdomProfile,
 }: {
   settlements: RegionSettlement[];
   regionId: number;
@@ -3813,8 +3817,12 @@ const MapPanel = memo(({
   orderMarkersByVillageId: Map<number, SettlementOrderMarkerCounts>;
   onZoomChange: (zoomPercent: number) => void;
   onOpenSettlement: (settlement: RegionSettlement) => void;
+  onPinSettlement: (settlement: RegionSettlement, side: PinSide) => void;
+  onOpenPlayerProfile: (username: string) => void;
+  onOpenKingdomProfile: (kingdomName: string) => void;
 }) => {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [pinnedSettlementId, setPinnedSettlementId] = useState<string | null>(null);
   const gridWrapRef = useRef<HTMLDivElement | null>(null);
   const miniMapRef = useRef<HTMLDivElement | null>(null);
   const miniViewportRef = useRef<HTMLDivElement | null>(null);
@@ -3862,9 +3870,61 @@ const MapPanel = memo(({
     return map;
   }, [settlements]);
 
-  const hoveredSettlement = hoveredId ? settlementsById.get(hoveredId) ?? null : null;
+  const safeHoveredId = hoveredId && settlementsById.has(hoveredId) ? hoveredId : null;
+  const safePinnedSettlementId =
+    pinnedSettlementId && settlementsById.has(pinnedSettlementId) ? pinnedSettlementId : null;
+  const hoveredSettlement = safeHoveredId ? settlementsById.get(safeHoveredId) ?? null : null;
+  const pinnedSettlement = safePinnedSettlementId
+    ? settlementsById.get(safePinnedSettlementId) ?? null
+    : null;
+  const previewSettlement = pinnedSettlement ?? hoveredSettlement;
+  const isPreviewPinned = pinnedSettlement != null;
   const zoomScale = 1 + zoomPercent / 100;
   const cellSize = Math.max(8, REGION_CELL_SIZE * zoomScale);
+  const mapCellGapPx = 2;
+
+  const distanceOriginSettlement = useMemo(() => {
+    if (focusedSettlementId) {
+      return settlementsById.get(focusedSettlementId) ?? null;
+    }
+    return ownSettlement;
+  }, [focusedSettlementId, ownSettlement, settlementsById]);
+
+  const previewDistanceTiles = useMemo(() => {
+    if (!previewSettlement || !distanceOriginSettlement) {
+      return null;
+    }
+    return calculateCellDistance(
+      distanceOriginSettlement.globalX,
+      distanceOriginSettlement.globalY,
+      previewSettlement.globalX,
+      previewSettlement.globalY,
+    );
+  }, [distanceOriginSettlement, previewSettlement]);
+
+  const previewCardPlacement = useMemo(() => {
+    if (!previewSettlement) {
+      return 'placement-right-above';
+    }
+    const horizontal = previewSettlement.localX > regionSize - 4 ? 'left' : 'right';
+    const vertical = previewSettlement.localY <= 4 ? 'below' : 'above';
+    return `placement-${horizontal}-${vertical}`;
+  }, [previewSettlement, regionSize]);
+
+  const previewCardStyle = useMemo<CSSProperties | null>(() => {
+    if (!previewSettlement) {
+      return null;
+    }
+    const anchorX =
+      (previewSettlement.localX - 1) * (cellSize + mapCellGapPx) + cellSize / 2;
+    const anchorY =
+      (previewSettlement.localY - 1) * (cellSize + mapCellGapPx) + cellSize / 2;
+
+    return {
+      '--map-preview-anchor-x': `${anchorX}px`,
+      '--map-preview-anchor-y': `${anchorY}px`,
+    } as CSSProperties;
+  }, [cellSize, previewSettlement]);
 
   const updateMiniViewportImmediate = useCallback(() => {
     const wrap = gridWrapRef.current;
@@ -4060,8 +4120,16 @@ const MapPanel = memo(({
     }
 
     const target = event.target as HTMLElement;
+    if (target.closest('.map-settlement-info-card')) {
+      return;
+    }
     if (target.closest('button.settlement')) {
       return;
+    }
+
+    if (pinnedSettlementId != null) {
+      setPinnedSettlementId(null);
+      setHoveredId(null);
     }
 
     const wrap = gridWrapRef.current;
@@ -4148,7 +4216,12 @@ const MapPanel = memo(({
               setHoveredId((previous) => (previous === settlement.id ? previous : settlement.id))
             }
             onBlur={() => setHoveredId((previous) => (previous === settlement.id ? null : previous))}
-            onClick={() => onOpenSettlement(settlement)}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setPinnedSettlementId(settlement.id);
+              setHoveredId(settlement.id);
+            }}
             title={`${settlement.name} (${settlement.globalX}|${settlement.globalY})`}
           >
             {coverageCommandTypes.length > 0 ? (
@@ -4191,7 +4264,6 @@ const MapPanel = memo(({
     [
       activeVillageId,
       focusedSettlementId,
-      onOpenSettlement,
       orderMarkersByVillageId,
       regionSize,
       settlementsByCell,
@@ -4250,12 +4322,92 @@ const MapPanel = memo(({
           onWheel={handleRegionWheel}
         >
           <div
-              className="region-grid"
-              style={{
-                gridTemplateColumns: `repeat(${regionSize}, ${cellSize}px)`,
-              }}
-            >
+            className="region-grid"
+            style={{
+              gridTemplateColumns: `repeat(${regionSize}, ${cellSize}px)`,
+            }}
+          >
             {regionGridCells}
+            {previewSettlement && previewCardStyle ? (
+              <article
+                className={`map-settlement-info-card ${previewCardPlacement} ${isPreviewPinned ? 'is-pinned' : 'is-hover'}`}
+                style={previewCardStyle}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <header>
+                  <h4>
+                    {previewSettlement.name} ({previewSettlement.globalX}|{previewSettlement.globalY})
+                  </h4>
+                  <small>Region {previewSettlement.region}</small>
+                </header>
+                <div className="map-settlement-info-body">
+                  {isPreviewPinned ? (
+                    <button
+                      type="button"
+                      className="map-settlement-link"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenPlayerProfile(previewSettlement.owner);
+                      }}
+                    >
+                      {previewSettlement.owner}
+                    </button>
+                  ) : (
+                    <p className="map-settlement-owner">{previewSettlement.owner}</p>
+                  )}
+                  <p className="map-settlement-prestige">
+                    Prestiž <strong>{previewSettlement.prestige.toLocaleString('cs-CZ')}</strong>
+                  </p>
+                  {isPreviewPinned ? (
+                    <button
+                      type="button"
+                      className="map-settlement-link kingdom"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenKingdomProfile(previewSettlement.kingdom);
+                      }}
+                    >
+                      {previewSettlement.kingdom}
+                    </button>
+                  ) : (
+                    <p className="map-settlement-kingdom">{previewSettlement.kingdom}</p>
+                  )}
+                  <p className="map-settlement-distance">
+                    Vzdálenost <strong>{previewDistanceTiles == null ? '-' : `${previewDistanceTiles} polí`}</strong>
+                  </p>
+                </div>
+                {isPreviewPinned ? (
+                  <div className="map-settlement-pin-controls">
+                    <span>Zapinovat osadu</span>
+                    <button
+                      type="button"
+                      className="map-settlement-pin-arrow"
+                      title="Zapinovat osadu vlevo"
+                      aria-label="Zapinovat osadu vlevo"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onPinSettlement(previewSettlement, 'left');
+                      }}
+                    >
+                      ←
+                    </button>
+                    <button
+                      type="button"
+                      className="map-settlement-pin-arrow"
+                      title="Zapinovat osadu vpravo"
+                      aria-label="Zapinovat osadu vpravo"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onPinSettlement(previewSettlement, 'right');
+                      }}
+                    >
+                      →
+                    </button>
+                  </div>
+                ) : null}
+              </article>
+            ) : null}
           </div>
         </div>
 
@@ -4299,29 +4451,10 @@ const MapPanel = memo(({
           <div className="map-nav-hint">
             <p>Zoom mapy: kolečko myši po 10 %. Rozsah je od -50 % do +50 %.</p>
             <p>Značky rozkazů: <strong className="order-legend attack">⌖ útok</strong>, <strong className="order-legend support">🛡 podpora</strong>, <strong className="order-legend move">➜ přesun</strong>.</p>
+            <p>Klik na osadu kartu zakotví, klik do mapy ji odkotví.</p>
           </div>
         </section>
       </div>
-
-      <section className="map-hover-card">
-        {hoveredSettlement ? (
-          <>
-            <h4>
-              {hoveredSettlement.name} ({hoveredSettlement.globalX}|{hoveredSettlement.globalY})
-            </h4>
-            <p>{settlementKindLabel[getSettlementMapKind(hoveredSettlement, activeVillageId)]}</p>
-            <p>Vlastník: {hoveredSettlement.owner}</p>
-            <p>Království: {hoveredSettlement.kingdom}</p>
-            <p>Prestiž: {hoveredSettlement.prestige.toLocaleString('cs-CZ')}</p>
-          </>
-        ) : (
-          <>
-            <h4>Regionální přehled</h4>
-            <p>Najeď na osadu nebo ji klikni pro otevření panelu.</p>
-            <p>Celkem osad v regionu: {settlements.length}</p>
-          </>
-        )}
-      </section>
     </div>
   );
 });
@@ -5706,54 +5839,81 @@ export const GamePage = () => {
     }
   }, [currentVillageName, getCanvasViewportSize]);
 
-  const openSettlementPanel = useCallback((settlement: RegionSettlement) => {
-    if (isOwnSettlementForPlayer(settlement)) {
-      setSelectedOwnSettlementId(settlement.id);
-      saveLastOwnSettlementId(username, settlement.id);
-    }
-
-    const { viewportWidth, viewportHeight } = getCanvasViewportSize();
-    const id = `village-${settlement.id}`;
-    setActivePanelId(id);
-    const label = `${settlement.name} (${settlement.globalX}|${settlement.globalY})`;
-
-    setPanels((previous) => {
-      const existing = previous.find((panel) => panel.id === id);
-      const nextZ = ++topZ.current;
-
-      if (existing) {
-        return previous.map((panel) =>
-          panel.id === id
-            ? fitPanelToViewport(
-                {
-                  ...panel,
-                  z: nextZ,
-                  expanded: true,
-                  alert: false,
-                },
-                viewportWidth,
-                viewportHeight,
-              )
-            : panel,
-        );
+  const openSettlementPanel = useCallback(
+    (settlement: RegionSettlement, options?: { pinSide?: PinSide }) => {
+      if (isOwnSettlementForPlayer(settlement)) {
+        setSelectedOwnSettlementId(settlement.id);
+        saveLastOwnSettlementId(username, settlement.id);
       }
 
-      const created = fitPanelToViewport(
-        createPanelWindow('village', nextZ, previous.length, {
+      const pinSide = options?.pinSide ?? null;
+      const shouldPin = pinSide != null;
+      const { viewportWidth, viewportHeight } = getCanvasViewportSize();
+      const id = `village-${settlement.id}`;
+      const label = `${settlement.name} (${settlement.globalX}|${settlement.globalY})`;
+      const defaultSide: PinSide = settlement.kind === 'own' ? 'left' : 'right';
+      const nextSide = pinSide ?? defaultSide;
+
+      if (!shouldPin) {
+        setActivePanelId(id);
+      }
+
+      setPanels((previous) => {
+        const existing = previous.find((panel) => panel.id === id);
+        const nextZ = ++topZ.current;
+
+        if (existing) {
+          return previous.map((panel) =>
+            panel.id === id
+              ? fitPanelToViewport(
+                  {
+                    ...panel,
+                    z: nextZ,
+                    settlementId: settlement.id,
+                    label,
+                    side: nextSide,
+                    expanded: !shouldPin,
+                    alert: false,
+                  },
+                  viewportWidth,
+                  viewportHeight,
+                )
+              : panel,
+          );
+        }
+
+        const baseCreated = createPanelWindow('village', nextZ, previous.length, {
           id,
           settlementId: settlement.id,
           label,
-          side: settlement.kind === 'own' ? 'left' : 'right',
+          side: nextSide,
           width: 520,
           height: 460,
-        }),
-        viewportWidth,
-        viewportHeight,
-      );
+        });
 
-      return [...previous, created];
-    });
-  }, [getCanvasViewportSize, isOwnSettlementForPlayer, username]);
+        const created = fitPanelToViewport(
+          {
+            ...baseCreated,
+            side: nextSide,
+            expanded: !shouldPin,
+            alert: false,
+          },
+          viewportWidth,
+          viewportHeight,
+        );
+
+        return [...previous, created];
+      });
+    },
+    [getCanvasViewportSize, isOwnSettlementForPlayer, username],
+  );
+
+  const pinSettlementPanelToSide = useCallback(
+    (settlement: RegionSettlement, side: PinSide) => {
+      openSettlementPanel(settlement, { pinSide: side });
+    },
+    [openSettlementPanel],
+  );
 
   const openBuildingPanel = useCallback((building: Building) => {
     const { viewportWidth, viewportHeight } = getCanvasViewportSize();
@@ -6763,6 +6923,9 @@ export const GamePage = () => {
             orderMarkersByVillageId={mapOrderMarkersByVillageId}
             onZoomChange={setMapZoomPercent}
             onOpenSettlement={openSettlementPanel}
+            onPinSettlement={pinSettlementPanelToSide}
+            onOpenPlayerProfile={openPlayerProfilePanel}
+            onOpenKingdomProfile={openKingdomProfilePanel}
           />
         );
       case 'army':
