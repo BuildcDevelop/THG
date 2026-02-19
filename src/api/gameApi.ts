@@ -433,6 +433,20 @@ export type IssueArmyCommandResult = {
   lootPriority?: LootPriority | null;
 };
 
+export type CancelBuildingUpgradeResult = {
+  canceledUpgradeId: number;
+  buildingId: string;
+  canceledCount: number;
+  refunded: ResourceCost;
+};
+
+export type CancelRecruitmentResult = {
+  canceledRecruitmentId: number;
+  unitId: string;
+  amount: number;
+  refunded: ResourceCost;
+};
+
 export type KingdomInviteResult = {
   inviteId: number;
   kingdom: string;
@@ -575,6 +589,44 @@ export const recruitUnit = async (
   );
 
   return payload.data;
+};
+
+export const cancelBuildingUpgrade = async (
+  username: string,
+  upgradeId: number,
+  villageId?: number | null,
+): Promise<{ result: CancelBuildingUpgradeResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: CancelBuildingUpgradeResult }>(
+    `/api/v1/buildings/upgrades/${encodeURIComponent(String(upgradeId))}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, villageId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const cancelRecruitment = async (
+  username: string,
+  recruitmentId: number,
+  villageId?: number | null,
+): Promise<{ result: CancelRecruitmentResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: CancelRecruitmentResult }>(
+    `/api/v1/units/recruitments/${encodeURIComponent(String(recruitmentId))}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, villageId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
 };
 
 export const conquerVillage = async (

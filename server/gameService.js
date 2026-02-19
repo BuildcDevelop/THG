@@ -202,6 +202,21 @@ const selectActiveUpgradesByVillageAndBuildingStmt = db.prepare(
    WHERE village_id = ? AND building_id = ? AND status = 'in_progress'
    ORDER BY finish_at ASC, id ASC`,
 );
+const selectActiveUpgradeByIdForVillageStmt = db.prepare(
+  `SELECT
+      id,
+      building_id AS buildingId,
+      from_level AS fromLevel,
+      to_level AS toLevel,
+      wood_cost AS woodCost,
+      stone_cost AS stoneCost,
+      iron_cost AS ironCost,
+      started_at AS startedAt,
+      finish_at AS finishAt
+   FROM building_upgrades
+   WHERE id = ? AND village_id = ? AND status = 'in_progress'
+   LIMIT 1`,
+);
 const selectActiveRecruitmentsByVillageStmt = db.prepare(
   `SELECT
       id,
@@ -215,6 +230,20 @@ const selectActiveRecruitmentsByVillageStmt = db.prepare(
    FROM unit_recruitments
    WHERE village_id = ? AND status = 'in_progress'
    ORDER BY finish_at ASC, id ASC`,
+);
+const selectActiveRecruitmentByIdForVillageStmt = db.prepare(
+  `SELECT
+      id,
+      unit_id AS unitId,
+      amount,
+      wood_cost AS woodCost,
+      stone_cost AS stoneCost,
+      iron_cost AS ironCost,
+      started_at AS startedAt,
+      finish_at AS finishAt
+   FROM unit_recruitments
+   WHERE id = ? AND village_id = ? AND status = 'in_progress'
+   LIMIT 1`,
 );
 const selectAllVillageIdsStmt = db.prepare('SELECT id FROM villages');
 const selectAllVillagesForWorldStmt = db.prepare(
@@ -305,6 +334,9 @@ const updateBuildingLevelStmt = db.prepare(
 const completeUpgradeStmt = db.prepare(
   "UPDATE building_upgrades SET status = 'completed', completed_at = ? WHERE id = ?",
 );
+const deleteActiveUpgradeByIdStmt = db.prepare(
+  "DELETE FROM building_upgrades WHERE id = ? AND village_id = ? AND status = 'in_progress'",
+);
 const insertUpgradeStmt = db.prepare(
   `INSERT INTO building_upgrades (
       village_id,
@@ -336,6 +368,9 @@ const selectDueRecruitmentsStmt = db.prepare(
 );
 const completeRecruitmentStmt = db.prepare(
   "UPDATE unit_recruitments SET status = 'completed', completed_at = ? WHERE id = ?",
+);
+const deleteActiveRecruitmentByIdStmt = db.prepare(
+  "DELETE FROM unit_recruitments WHERE id = ? AND village_id = ? AND status = 'in_progress'",
 );
 const insertRecruitmentStmt = db.prepare(
   `INSERT INTO unit_recruitments (
@@ -1644,6 +1679,36 @@ const applyResourceDeltaWithCap = (villageId, delta) => {
 
   return {
     applied,
+    next,
+  };
+};
+
+const addResourcesWithoutCap = (villageId, delta) => {
+  const resourceRow = selectResourcesByVillageStmt.get(Number(villageId));
+  if (!resourceRow) {
+    return { added: { wood: 0, stone: 0, iron: 0 }, next: null };
+  }
+
+  const current = {
+    wood: Number(resourceRow.wood),
+    stone: Number(resourceRow.stone),
+    iron: Number(resourceRow.iron),
+  };
+  const added = {
+    wood: Math.max(0, Math.floor(Number(delta.wood ?? 0))),
+    stone: Math.max(0, Math.floor(Number(delta.stone ?? 0))),
+    iron: Math.max(0, Math.floor(Number(delta.iron ?? 0))),
+  };
+  const next = {
+    wood: current.wood + added.wood,
+    stone: current.stone + added.stone,
+    iron: current.iron + added.iron,
+  };
+
+  updateResourcesStmt.run(roundResource(next.wood), roundResource(next.stone), roundResource(next.iron), Number(villageId));
+
+  return {
+    added,
     next,
   };
 };
@@ -3236,6 +3301,62 @@ export const startBuildingUpgrade = (username, buildingId, requestedVillageId = 
   return startUpgradeTransaction(username, buildingId, startedAtIso, requestedVillageId);
 };
 
+const cancelBuildingUpgradeTransaction = db.transaction((username, upgradeIdRaw, requestedVillageId) => {
+  const { village } = requireVillageForUser(username, requestedVillageId);
+  const upgradeId = requirePositiveInteger(upgradeIdRaw, 'upgradeId');
+
+  const targetUpgrade = selectActiveUpgradeByIdForVillageStmt.get(upgradeId, Number(village.id));
+  if (!targetUpgrade) {
+    throw new GameRuleError('Upgrade nebyl nalezen nebo uz neni aktivni.', 404);
+  }
+
+  const sameBuildingQueue = selectActiveUpgradesByVillageAndBuildingStmt.all(
+    Number(village.id),
+    String(targetUpgrade.buildingId),
+  );
+  const targetFinishMs = Date.parse(String(targetUpgrade.finishAt));
+  const fallbackTargetId = Number(targetUpgrade.id);
+  const upgradesToCancel = sameBuildingQueue.filter((upgrade) => {
+    const finishMs = Date.parse(String(upgrade.finishAt));
+    if (!Number.isFinite(targetFinishMs) || !Number.isFinite(finishMs)) {
+      return Number(upgrade.id) >= fallbackTargetId;
+    }
+    if (finishMs > targetFinishMs) {
+      return true;
+    }
+    if (finishMs < targetFinishMs) {
+      return false;
+    }
+    return Number(upgrade.id) >= fallbackTargetId;
+  });
+
+  const queueSlice = upgradesToCancel.length > 0 ? upgradesToCancel : [targetUpgrade];
+  const refunded = queueSlice.reduce(
+    (sum, upgrade) => ({
+      wood: sum.wood + Math.max(0, Math.floor(Number(upgrade.woodCost ?? 0))),
+      stone: sum.stone + Math.max(0, Math.floor(Number(upgrade.stoneCost ?? 0))),
+      iron: sum.iron + Math.max(0, Math.floor(Number(upgrade.ironCost ?? 0))),
+    }),
+    { wood: 0, stone: 0, iron: 0 },
+  );
+
+  for (const upgrade of queueSlice) {
+    deleteActiveUpgradeByIdStmt.run(Number(upgrade.id), Number(village.id));
+  }
+
+  addResourcesWithoutCap(Number(village.id), refunded);
+
+  return {
+    canceledUpgradeId: Number(targetUpgrade.id),
+    buildingId: String(targetUpgrade.buildingId),
+    canceledCount: queueSlice.length,
+    refunded,
+  };
+});
+
+export const cancelBuildingUpgrade = (username, upgradeId, requestedVillageId = null) =>
+  cancelBuildingUpgradeTransaction(username, upgradeId, requestedVillageId);
+
 const conquerVillageTransaction = db.transaction((username, villageIdRaw) => {
   const { player } = requireVillageForUser(username);
   const villageId = requirePositiveInteger(villageIdRaw, 'villageId');
@@ -3634,8 +3755,38 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
   };
 });
 
+const cancelRecruitmentTransaction = db.transaction((username, recruitmentIdRaw, requestedVillageId) => {
+  const { village } = requireVillageForUser(username, requestedVillageId);
+  const recruitmentId = requirePositiveInteger(recruitmentIdRaw, 'recruitmentId');
+  const recruitment = selectActiveRecruitmentByIdForVillageStmt.get(
+    recruitmentId,
+    Number(village.id),
+  );
+  if (!recruitment) {
+    throw new GameRuleError('Nabor nebyl nalezen nebo uz neni aktivni.', 404);
+  }
+
+  deleteActiveRecruitmentByIdStmt.run(Number(recruitment.id), Number(village.id));
+  const refunded = {
+    wood: Math.max(0, Math.floor(Number(recruitment.woodCost ?? 0))),
+    stone: Math.max(0, Math.floor(Number(recruitment.stoneCost ?? 0))),
+    iron: Math.max(0, Math.floor(Number(recruitment.ironCost ?? 0))),
+  };
+  addResourcesWithoutCap(Number(village.id), refunded);
+
+  return {
+    canceledRecruitmentId: Number(recruitment.id),
+    unitId: String(recruitment.unitId),
+    amount: Math.max(0, Math.floor(Number(recruitment.amount ?? 0))),
+    refunded,
+  };
+});
+
 export const recruitUnits = (username, unitId, amount, requestedVillageId = null) =>
   recruitTransaction(username, unitId, amount, requestedVillageId);
+
+export const cancelRecruitment = (username, recruitmentId, requestedVillageId = null) =>
+  cancelRecruitmentTransaction(username, recruitmentId, requestedVillageId);
 
 export const issueArmyCommand = (username, payload, requestedVillageId = null) =>
   issueArmyCommandTransaction(username, requestedVillageId, payload);

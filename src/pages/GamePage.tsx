@@ -1,5 +1,6 @@
 ﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   WheelEvent as ReactWheelEvent,
@@ -8,6 +9,8 @@ import { useNavigate } from 'react-router-dom';
 import { getSession, logout } from '../auth';
 import {
   acceptKingdomInvite as acceptKingdomInviteRequest,
+  cancelBuildingUpgrade as cancelBuildingUpgradeRequest,
+  cancelRecruitment as cancelRecruitmentRequest,
   createKingdom as createKingdomRequest,
   fetchBattleReports,
   fetchGameState,
@@ -154,6 +157,15 @@ type RecruitQueueOrder = {
   unitId: string;
   unitName: string;
   amount: number;
+  remainingSec: number;
+  finishAt: string;
+};
+
+type BuildingUpgradeQueueOrder = {
+  id: number;
+  buildingId: string;
+  fromLevel: number;
+  toLevel: number;
   remainingSec: number;
   finishAt: string;
 };
@@ -1326,6 +1338,9 @@ const formatCostLabel = (cost: ResourceCost | null): string => {
   return `${cost.wood} dřevo, ${cost.stone} kámen, ${cost.iron} železo`;
 };
 
+const formatResourceBundleLabel = (cost: ResourceCost): string =>
+  `${Math.floor(cost.wood).toLocaleString('cs-CZ')} dřevo, ${Math.floor(cost.stone).toLocaleString('cs-CZ')} kámen, ${Math.floor(cost.iron).toLocaleString('cs-CZ')} železo`;
+
 const formatDurationLabel = (seconds: number | null): string => {
   if (seconds == null) {
     return '-';
@@ -1363,6 +1378,17 @@ const isTypingElement = (target: EventTarget | null): boolean => {
   return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable;
 };
 
+const handleActionOnEnter = <TElement extends HTMLElement>(
+  event: ReactKeyboardEvent<TElement>,
+  action: () => void,
+): void => {
+  if (event.key !== 'Enter') {
+    return;
+  }
+  event.preventDefault();
+  action();
+};
+
 const CityPanel = ({
   villageLabel,
   regionLabel,
@@ -1375,7 +1401,10 @@ const CityPanel = ({
   orders,
   onOpenBuilding,
   onUpgradeBuilding,
+  onCancelBuildingUpgrade,
+  buildingUpgradeQueueByBuilding,
   upgradePendingBuildingId,
+  cancelUpgradePendingOrderId,
   buildingNotices,
 }: {
   villageLabel: string;
@@ -1389,7 +1418,10 @@ const CityPanel = ({
   orders: string[];
   onOpenBuilding: (building: Building) => void;
   onUpgradeBuilding: (building: Building) => void;
+  onCancelBuildingUpgrade: (upgradeOrderId: number, buildingId: string) => void;
+  buildingUpgradeQueueByBuilding: Map<string, BuildingUpgradeQueueOrder[]>;
   upgradePendingBuildingId: string | null;
+  cancelUpgradePendingOrderId: number | null;
   buildingNotices: Record<string, string>;
 }) => {
   const buildingsById = useMemo(
@@ -1491,6 +1523,16 @@ const CityPanel = ({
                         : building.canUpgrade
                           ? 'ready'
                           : 'blocked';
+                      const upgradeQueue = buildingUpgradeQueueByBuilding.get(building.id) ?? [];
+                      const canCancelUpgrade = upgradeQueue.length > 0;
+                      const cancelOrderId = canCancelUpgrade ? upgradeQueue[0].id : null;
+                      const isCancelPending =
+                        cancelOrderId != null && cancelUpgradePendingOrderId === cancelOrderId;
+                      const queuedUpgradeCount = upgradeQueue.length;
+                      const queueInfoLabel =
+                        queuedUpgradeCount > 1
+                          ? `Ve frontě: ${queuedUpgradeCount.toLocaleString('cs-CZ')} upgrady`
+                          : null;
 
                       return (
                         <article key={building.id} className="city-building-card">
@@ -1502,7 +1544,22 @@ const CityPanel = ({
                               <em>Úroveň {building.level}</em>
                             </div>
                           </div>
-                          <p className={`city-building-status ${statusToneClass}`}>{statusText}</p>
+                          <div className="city-building-status-row">
+                            <p className={`city-building-status ${statusToneClass}`}>{statusText}</p>
+                            {canCancelUpgrade && cancelOrderId != null ? (
+                              <button
+                                type="button"
+                                className="inline-cancel-button"
+                                onClick={() => onCancelBuildingUpgrade(cancelOrderId, building.id)}
+                                disabled={isCancelPending}
+                                title="Zrušit tento upgrade a navazující položky ve frontě"
+                                aria-label="Zrušit upgrade budovy"
+                              >
+                                {isCancelPending ? '…' : '✕'}
+                              </button>
+                            ) : null}
+                          </div>
+                          {queueInfoLabel ? <small className="row-help">{queueInfoLabel}</small> : null}
                           <div className="city-building-costs">
                             {building.nextCostRaw ? (
                               RESOURCE_COST_TYPES.map((resourceType) => {
@@ -1608,9 +1665,11 @@ const ArmyPanel = ({
   currentVillageId,
   currentUsername,
   onRecruit,
+  onCancelRecruitment,
   onIssueArmyCommand,
   onReturnSupport,
   recruitPendingUnitId,
+  cancelRecruitmentPendingId,
   isArmyCommandPending,
   notice,
   commandNotice,
@@ -1623,6 +1682,7 @@ const ArmyPanel = ({
   currentVillageId: number | null;
   currentUsername: string;
   onRecruit: (unit: Unit, amount: number) => void;
+  onCancelRecruitment: (order: RecruitQueueOrder) => void;
   onIssueArmyCommand: (payload: {
     commandType: ArmyCommandType;
     targetVillageId: number;
@@ -1631,6 +1691,7 @@ const ArmyPanel = ({
   }) => void;
   onReturnSupport: (supportMovementId: number) => void;
   recruitPendingUnitId: string | null;
+  cancelRecruitmentPendingId: number | null;
   isArmyCommandPending: boolean;
   notice: string | null;
   commandNotice: string | null;
@@ -1801,6 +1862,18 @@ const ArmyPanel = ({
                         step={1}
                         value={recruitDraftAmounts[unit.id] ?? ''}
                         onChange={(event) => handleRecruitAmountChange(unit.id, event.target.value)}
+                        onKeyDown={(event) =>
+                          handleActionOnEnter(event, () => {
+                            if (
+                              !unit.canRecruit ||
+                              recruitPendingUnitId === unit.id ||
+                              requestedRecruitAmount <= 0
+                            ) {
+                              return;
+                            }
+                            onRecruit(unit, requestedRecruitAmount);
+                          })
+                        }
                         disabled={!unit.canRecruit || recruitPendingUnitId === unit.id}
                         placeholder="1"
                       />
@@ -1833,20 +1906,33 @@ const ArmyPanel = ({
               <th>Jednotka</th>
               <th>Počet</th>
               <th>ETA</th>
+              <th>Akce</th>
             </tr>
           </thead>
           <tbody>
             {recruitQueueOrders.map((order, index) => (
-              <tr key={`rq-${order.id}`}>
+              <tr key={`rq-${order.id}`} className="queue-row">
                 <td>{index + 1}</td>
                 <td>{order.unitName}</td>
                 <td>+{order.amount}</td>
                 <td>{formatDurationLabel(order.remainingSec)}</td>
+                <td>
+                  <button
+                    type="button"
+                    className="inline-cancel-button"
+                    onClick={() => onCancelRecruitment(order)}
+                    disabled={cancelRecruitmentPendingId === order.id}
+                    title="Zrušit tuto položku náboru"
+                    aria-label="Zrušit náborovou položku"
+                  >
+                    {cancelRecruitmentPendingId === order.id ? '…' : '✕'}
+                  </button>
+                </td>
               </tr>
             ))}
             {recruitQueueOrders.length === 0 ? (
               <tr>
-                <td colSpan={4}>Náborová fronta je prázdná.</td>
+                <td colSpan={5}>Náborová fronta je prázdná.</td>
               </tr>
             ) : null}
           </tbody>
@@ -1913,6 +1999,11 @@ const ArmyPanel = ({
                 step={1}
                 value={draftUnitAmounts[unit.id] ?? ''}
                 onChange={(event) => handleDraftAmountChange(unit.id, event.target.value)}
+                onKeyDown={(event) => {
+                  handleActionOnEnter(event, () => {
+                    handleSendCommand();
+                  });
+                }}
                 disabled={isArmyCommandPending || (commandType === 'support' && unit.id === 'caravan')}
               />
               {commandType === 'support' && unit.id === 'caravan' ? (
@@ -2465,9 +2556,7 @@ const MessagesPanel = ({
   const totalPages = reports?.totalPages ?? 1;
   const total = reports?.total ?? 0;
   const items = reports?.items ?? [];
-  const selectedInvite =
-    incomingInvites.find((invite) => invite.id === selectedInviteId) ??
-    (selectedInviteId == null ? incomingInvites[0] ?? null : null);
+  const selectedInvite = incomingInvites.find((invite) => invite.id === selectedInviteId) ?? incomingInvites[0] ?? null;
   const selectedReport =
     items.find((item) => item.id === selectedReportId) ??
     (selectedReportId == null ? items[0] ?? null : null);
@@ -2475,20 +2564,6 @@ const MessagesPanel = ({
   const communicationUnreadCount = incomingInvites.length;
   const canGoPrev = page > 1;
   const canGoNext = page < totalPages;
-
-  useEffect(() => {
-    setSelectedInviteId((previous) => {
-      if (incomingInvites.length === 0) {
-        return null;
-      }
-
-      if (previous != null && incomingInvites.some((invite) => invite.id === previous)) {
-        return previous;
-      }
-
-      return incomingInvites[0].id;
-    });
-  }, [incomingInvites]);
 
   return (
     <div className="panel-stack messages">
@@ -2699,28 +2774,13 @@ const KingdomPanel = ({
   const incomingInvites: KingdomIncomingInvite[] = kingdomHub?.incomingInvites ?? EMPTY_KINGDOM_INVITES;
   const members = kingdomHub?.members ?? EMPTY_KINGDOM_MEMBERS;
   const selectedIncomingInvite =
-    incomingInvites.find((invite) => invite.id === selectedIncomingInviteId) ??
-    (selectedIncomingInviteId == null ? incomingInvites[0] ?? null : null);
+    incomingInvites.find((invite) => invite.id === selectedIncomingInviteId) ?? incomingInvites[0] ?? null;
   const auditLog = kingdomHub?.auditLog ?? EMPTY_KINGDOM_AUDIT_LOG;
   const currentKingdom = kingdomHub?.isMember ? kingdomHub.kingdom : null;
   const canManageInvites = kingdomHub?.canManageInvites ?? false;
   const isKingdomLeader = kingdomHub?.leaderUsername === currentUsername;
   const totalKingdomPrestige = members.reduce((sum, member) => sum + member.prestige, 0);
   const totalKingdomVillages = members.reduce((sum, member) => sum + member.villages, 0);
-
-  useEffect(() => {
-    setSelectedIncomingInviteId((previous) => {
-      if (incomingInvites.length === 0) {
-        return null;
-      }
-
-      if (previous != null && incomingInvites.some((invite) => invite.id === previous)) {
-        return previous;
-      }
-
-      return incomingInvites[0].id;
-    });
-  }, [incomingInvites]);
 
   const handleCreateKingdomSubmit = () => {
     const normalizedKingdomName = createKingdomName.trim();
@@ -2791,6 +2851,14 @@ const KingdomPanel = ({
               type="text"
               value={createKingdomName}
               onChange={(event) => setCreateKingdomName(event.target.value)}
+              onKeyDown={(event) =>
+                handleActionOnEnter(event, () => {
+                  if (actionPending || createKingdomName.trim().length < 3) {
+                    return;
+                  }
+                  handleCreateKingdomSubmit();
+                })
+              }
               maxLength={28}
               placeholder="Název království"
               disabled={actionPending}
@@ -2991,6 +3059,14 @@ const KingdomPanel = ({
               type="text"
               value={inviteTargetUsername}
               onChange={(event) => setInviteTargetUsername(event.target.value)}
+              onKeyDown={(event) =>
+                handleActionOnEnter(event, () => {
+                  if (actionPending || inviteTargetUsername.trim().length === 0) {
+                    return;
+                  }
+                  handleInviteSubmit();
+                })
+              }
               maxLength={32}
               placeholder="Nick hráče"
               disabled={actionPending}
@@ -4359,6 +4435,14 @@ const VillagePanel = memo(({
                     step={1}
                     value={draftUnitAmounts[unit.id] ?? ''}
                     onChange={(event) => handleDraftAmountChange(unit.id, event.target.value)}
+                    onKeyDown={(event) => {
+                      handleActionOnEnter(event, () => {
+                        if (availableCommandTypes.length !== 1) {
+                          return;
+                        }
+                        handleIssueVillageCommand(availableCommandTypes[0]);
+                      });
+                    }}
                     disabled={isArmyCommandPending}
                   />
                 </label>
@@ -4610,8 +4694,10 @@ export const GamePage = () => {
   const [armyNotice, setArmyNotice] = useState<string | null>(null);
   const [armyCommandNotice, setArmyCommandNotice] = useState<string | null>(null);
   const [recruitPendingUnitId, setRecruitPendingUnitId] = useState<string | null>(null);
+  const [cancelRecruitmentPendingId, setCancelRecruitmentPendingId] = useState<number | null>(null);
   const [armyCommandPending, setArmyCommandPending] = useState(false);
   const [upgradePendingBuildingId, setUpgradePendingBuildingId] = useState<string | null>(null);
+  const [cancelUpgradePendingOrderId, setCancelUpgradePendingOrderId] = useState<number | null>(null);
   const [buildingNotices, setBuildingNotices] = useState<Record<string, string>>({});
   const [battleReports, setBattleReports] = useState<BattleReportListResponse | null>(null);
   const [battleReportsLoading, setBattleReportsLoading] = useState(false);
@@ -4629,12 +4715,37 @@ export const GamePage = () => {
   useEffect(() => {
     mutationPendingRef.current = Boolean(
       recruitPendingUnitId ||
+        cancelRecruitmentPendingId != null ||
         upgradePendingBuildingId ||
+        cancelUpgradePendingOrderId != null ||
         armyCommandPending ||
         kingdomActionPending ||
         restartVillagePending,
     );
-  }, [armyCommandPending, kingdomActionPending, recruitPendingUnitId, restartVillagePending, upgradePendingBuildingId]);
+  }, [
+    armyCommandPending,
+    cancelRecruitmentPendingId,
+    cancelUpgradePendingOrderId,
+    kingdomActionPending,
+    recruitPendingUnitId,
+    restartVillagePending,
+    upgradePendingBuildingId,
+  ]);
+
+  const latestAppliedStateServerTimeMsRef = useRef(0);
+  const applyIncomingGameState = useCallback((nextState: GameStateResponse): boolean => {
+    const parsedServerTimeMs = Date.parse(nextState.serverTime);
+    const nextServerTimeMs = Number.isFinite(parsedServerTimeMs) ? parsedServerTimeMs : Date.now();
+    if (nextServerTimeMs < latestAppliedStateServerTimeMsRef.current) {
+      return false;
+    }
+
+    latestAppliedStateServerTimeMsRef.current = nextServerTimeMs;
+    setGameState(nextState);
+    setActiveVillageId((previous) => (previous === nextState.village.id ? previous : nextState.village.id));
+    setStateError(null);
+    return true;
+  }, []);
 
   const buildings = useMemo<Building[]>(() => {
     if (!gameState) {
@@ -4707,6 +4818,45 @@ export const GamePage = () => {
         remainingSec: order.remainingSec,
         finishAt: order.finishAt,
       }));
+  }, [gameState]);
+
+  const buildingUpgradeQueueByBuilding = useMemo<Map<string, BuildingUpgradeQueueOrder[]>>(() => {
+    const grouped = new Map<string, BuildingUpgradeQueueOrder[]>();
+    if (!gameState) {
+      return grouped;
+    }
+
+    for (const upgrade of gameState.activeUpgrades ?? []) {
+      const next: BuildingUpgradeQueueOrder = {
+        id: upgrade.id,
+        buildingId: upgrade.buildingId,
+        fromLevel: upgrade.fromLevel,
+        toLevel: upgrade.toLevel,
+        remainingSec: upgrade.remainingSec,
+        finishAt: upgrade.finishAt,
+      };
+      const current = grouped.get(upgrade.buildingId);
+      if (current) {
+        current.push(next);
+      } else {
+        grouped.set(upgrade.buildingId, [next]);
+      }
+    }
+
+    for (const [buildingId, queue] of grouped.entries()) {
+      grouped.set(
+        buildingId,
+        [...queue].sort((a, b) => {
+          const byEta = a.remainingSec - b.remainingSec;
+          if (byEta !== 0) {
+            return byEta;
+          }
+          return a.id - b.id;
+        }),
+      );
+    }
+
+    return grouped;
   }, [gameState]);
   const armyActiveMovements = useMemo<ArmyMovementState[]>(
     () => gameState?.army?.activeMovements ?? [],
@@ -4851,13 +5001,20 @@ export const GamePage = () => {
   const buildingsById = useMemo(() => new Map(buildings.map((building) => [building.id, building])), [buildings]);
 
   const loadGameState = useCallback(
-    async (silent = false) => {
+    async (silent = false, forceFresh = false) => {
       if (!session) {
         return;
       }
 
       if (stateRequestPromiseRef.current) {
-        return stateRequestPromiseRef.current;
+        if (!forceFresh) {
+          return stateRequestPromiseRef.current;
+        }
+        try {
+          await stateRequestPromiseRef.current;
+        } catch {
+          // Ignore; we'll continue with a fresh state request below.
+        }
       }
 
       const requestPromise = (async () => {
@@ -4867,11 +5024,7 @@ export const GamePage = () => {
 
         try {
           const nextState = await fetchGameState(username, activeVillageId);
-          setGameState(nextState);
-          if (activeVillageId == null || activeVillageId !== nextState.village.id) {
-            setActiveVillageId(nextState.village.id);
-          }
-          setStateError(null);
+          applyIncomingGameState(nextState);
         } catch (error) {
           setStateError(getErrorMessage(error));
         } finally {
@@ -4891,7 +5044,7 @@ export const GamePage = () => {
         }
       }
     },
-    [activeVillageId, session, username],
+    [activeVillageId, applyIncomingGameState, session, username],
   );
 
   const loadBattleReports = useCallback(
@@ -6041,19 +6194,45 @@ export const GamePage = () => {
           normalizedAmount,
           gameState?.village.id ?? activeVillageId,
         );
-        setGameState(nextState);
-        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
-          setActiveVillageId(nextState.village.id);
-        }
-        setStateError(null);
+        applyIncomingGameState(nextState);
         setArmyNotice(`${unit.name}: +${normalizedAmount.toLocaleString('cs-CZ')} jednotek`);
+        void loadGameState(true, true);
       } catch (error) {
         setArmyNotice(getErrorMessage(error));
       } finally {
         setRecruitPendingUnitId(null);
       }
     },
-    [activeVillageId, gameState?.village.id, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+  );
+
+  const handleCancelRecruitment = useCallback(
+    async (order: RecruitQueueOrder) => {
+      if (!Number.isFinite(order.id) || order.id <= 0) {
+        return;
+      }
+
+      setCancelRecruitmentPendingId(order.id);
+      setArmyNotice(null);
+
+      try {
+        const response = await cancelRecruitmentRequest(
+          username,
+          order.id,
+          gameState?.village.id ?? activeVillageId,
+        );
+        applyIncomingGameState(response.data);
+        setArmyNotice(
+          `${order.unitName}: nábor zrušen, vráceno ${formatResourceBundleLabel(response.result.refunded)}.`,
+        );
+        void loadGameState(true, true);
+      } catch (error) {
+        setArmyNotice(getErrorMessage(error));
+      } finally {
+        setCancelRecruitmentPendingId(null);
+      }
+    },
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
   );
 
   const handleIssueArmyCommand = useCallback(
@@ -6075,23 +6254,20 @@ export const GamePage = () => {
           units: payload.units,
         });
         const nextState = response.data;
-        setGameState(nextState);
-        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
-          setActiveVillageId(nextState.village.id);
-        }
-        setStateError(null);
+        applyIncomingGameState(nextState);
         const etaLabel = formatDurationLabel(response.result.durationSec);
         const testingHint = payload.commandType === 'attack' ? ' Test režim: útok max 5s.' : '';
         setArmyCommandNotice(
           `Rozkaz ${ARMY_COMMAND_LABELS[payload.commandType]} byl odeslán. ETA ${etaLabel}.${testingHint}`,
         );
+        void loadGameState(true, true);
       } catch (error) {
         setArmyCommandNotice(getErrorMessage(error));
       } finally {
         setArmyCommandPending(false);
       }
     },
-    [activeVillageId, gameState?.village.id, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
   );
 
   const handleReturnSupport = useCallback(
@@ -6106,19 +6282,16 @@ export const GamePage = () => {
           supportMovementId,
         });
         const nextState = response.data;
-        setGameState(nextState);
-        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
-          setActiveVillageId(nextState.village.id);
-        }
-        setStateError(null);
+        applyIncomingGameState(nextState);
         setArmyCommandNotice('Návrat podpory byl spuštěn.');
+        void loadGameState(true, true);
       } catch (error) {
         setArmyCommandNotice(getErrorMessage(error));
       } finally {
         setArmyCommandPending(false);
       }
     },
-    [activeVillageId, gameState?.village.id, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
   );
 
   const handleBuildingUpgrade = useCallback(
@@ -6135,15 +6308,12 @@ export const GamePage = () => {
           building.id,
           gameState?.village.id ?? activeVillageId,
         );
-        setGameState(nextState);
-        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
-          setActiveVillageId(nextState.village.id);
-        }
-        setStateError(null);
+        applyIncomingGameState(nextState);
         setBuildingNotices((previous) => ({
           ...previous,
           [building.id]: 'Upgrade byl úspěšně spuštěn.',
         }));
+        void loadGameState(true, true);
       } catch (error) {
         setBuildingNotices((previous) => ({
           ...previous,
@@ -6153,7 +6323,48 @@ export const GamePage = () => {
         setUpgradePendingBuildingId(null);
       }
     },
-    [activeVillageId, gameState?.village.id, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+  );
+
+  const handleCancelBuildingUpgrade = useCallback(
+    async (upgradeOrderId: number, buildingId: string) => {
+      if (!Number.isFinite(upgradeOrderId) || upgradeOrderId <= 0) {
+        return;
+      }
+
+      setCancelUpgradePendingOrderId(upgradeOrderId);
+      setBuildingNotices((previous) => ({
+        ...previous,
+        [buildingId]: '',
+      }));
+
+      try {
+        const response = await cancelBuildingUpgradeRequest(
+          username,
+          upgradeOrderId,
+          gameState?.village.id ?? activeVillageId,
+        );
+        applyIncomingGameState(response.data);
+        const canceledCount = Number(response.result.canceledCount ?? 1);
+        const cancelSuffix =
+          canceledCount > 1
+            ? ` Z fronty bylo odstraněno ${canceledCount.toLocaleString('cs-CZ')} navazujících upgradu.`
+            : '';
+        setBuildingNotices((previous) => ({
+          ...previous,
+          [buildingId]: `Upgrade zrušen, vráceno ${formatResourceBundleLabel(response.result.refunded)}.${cancelSuffix}`,
+        }));
+        void loadGameState(true, true);
+      } catch (error) {
+        setBuildingNotices((previous) => ({
+          ...previous,
+          [buildingId]: getErrorMessage(error),
+        }));
+      } finally {
+        setCancelUpgradePendingOrderId(null);
+      }
+    },
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
   );
 
   const handleCreateKingdom = useCallback(
@@ -6173,19 +6384,16 @@ export const GamePage = () => {
           gameState?.village.id ?? activeVillageId,
         );
         const nextState = response.data;
-        setGameState(nextState);
-        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
-          setActiveVillageId(nextState.village.id);
-        }
-        setStateError(null);
+        applyIncomingGameState(nextState);
         setKingdomNotice(`Království ${response.result.kingdom} bylo založeno.`);
+        void loadGameState(true, true);
       } catch (error) {
         setKingdomNotice(getErrorMessage(error));
       } finally {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, gameState?.village.id, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
   );
 
   const handleInvitePlayerToKingdom = useCallback(
@@ -6205,19 +6413,16 @@ export const GamePage = () => {
           gameState?.village.id ?? activeVillageId,
         );
         const nextState = response.data;
-        setGameState(nextState);
-        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
-          setActiveVillageId(nextState.village.id);
-        }
-        setStateError(null);
+        applyIncomingGameState(nextState);
         setKingdomNotice(`Pozvánka pro hráče ${response.result.targetUsername} byla odeslána.`);
+        void loadGameState(true, true);
       } catch (error) {
         setKingdomNotice(getErrorMessage(error));
       } finally {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, gameState?.village.id, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
   );
 
   const handleAcceptKingdomInvite = useCallback(
@@ -6236,19 +6441,16 @@ export const GamePage = () => {
           gameState?.village.id ?? activeVillageId,
         );
         const nextState = response.data;
-        setGameState(nextState);
-        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
-          setActiveVillageId(nextState.village.id);
-        }
-        setStateError(null);
+        applyIncomingGameState(nextState);
         setKingdomNotice(`Pozvánka přijata. Nyní jsi členem království ${response.result.kingdom}.`);
+        void loadGameState(true, true);
       } catch (error) {
         setKingdomNotice(getErrorMessage(error));
       } finally {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, gameState?.village.id, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
   );
 
   const handleRejectKingdomInvite = useCallback(
@@ -6267,19 +6469,16 @@ export const GamePage = () => {
           gameState?.village.id ?? activeVillageId,
         );
         const nextState = response.data;
-        setGameState(nextState);
-        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
-          setActiveVillageId(nextState.village.id);
-        }
-        setStateError(null);
+        applyIncomingGameState(nextState);
         setKingdomNotice(`Pozvánka do království ${response.result.kingdom} byla odmítnuta.`);
+        void loadGameState(true, true);
       } catch (error) {
         setKingdomNotice(getErrorMessage(error));
       } finally {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, gameState?.village.id, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
   );
 
   const handleLeaveKingdom = useCallback(async () => {
@@ -6289,18 +6488,15 @@ export const GamePage = () => {
     try {
       const response = await leaveKingdomRequest(username, gameState?.village.id ?? activeVillageId);
       const nextState = response.data;
-      setGameState(nextState);
-      if (activeVillageId == null || activeVillageId !== nextState.village.id) {
-        setActiveVillageId(nextState.village.id);
-      }
-      setStateError(null);
+      applyIncomingGameState(nextState);
       setKingdomNotice(`Opustil jsi království ${response.result.previousKingdom}.`);
+      void loadGameState(true, true);
     } catch (error) {
       setKingdomNotice(getErrorMessage(error));
     } finally {
       setKingdomActionPending(false);
     }
-  }, [activeVillageId, gameState?.village.id, username]);
+  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username]);
 
   const handleKickKingdomMember = useCallback(
     async (targetUsername: string) => {
@@ -6319,19 +6515,16 @@ export const GamePage = () => {
           gameState?.village.id ?? activeVillageId,
         );
         const nextState = response.data;
-        setGameState(nextState);
-        if (activeVillageId == null || activeVillageId !== nextState.village.id) {
-          setActiveVillageId(nextState.village.id);
-        }
-        setStateError(null);
+        applyIncomingGameState(nextState);
         setKingdomNotice(`Hráč ${response.result.kickedUsername} byl vyhozen z království.`);
+        void loadGameState(true, true);
       } catch (error) {
         setKingdomNotice(getErrorMessage(error));
       } finally {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, gameState?.village.id, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
   );
 
   const handleRestartVillageProgress = useCallback(async () => {
@@ -6348,21 +6541,18 @@ export const GamePage = () => {
     try {
       const response = await restartVillageProgressRequest(username, gameState?.village.id ?? activeVillageId);
       const nextState = response.data;
-      setGameState(nextState);
-      if (activeVillageId == null || activeVillageId !== nextState.village.id) {
-        setActiveVillageId(nextState.village.id);
-      }
-      setStateError(null);
+      applyIncomingGameState(nextState);
       setSettingsNotice(
         `Restart dokoncen. Vytvoreno nove leno (${nextState.village.name}), opustena lena: ${response.result.abandonedVillagesConverted}.`,
       );
       setKingdomNotice(null);
+      void loadGameState(true, true);
     } catch (error) {
       setSettingsNotice(getErrorMessage(error));
     } finally {
       setRestartVillagePending(false);
     }
-  }, [activeVillageId, gameState?.village.id, username]);
+  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username]);
 
   const handleLogout = useCallback(() => {
     logout();
@@ -6470,7 +6660,10 @@ export const GamePage = () => {
             orders={activeOrders}
             onOpenBuilding={openBuildingPanel}
             onUpgradeBuilding={handleBuildingUpgrade}
+            onCancelBuildingUpgrade={handleCancelBuildingUpgrade}
+            buildingUpgradeQueueByBuilding={buildingUpgradeQueueByBuilding}
             upgradePendingBuildingId={upgradePendingBuildingId}
+            cancelUpgradePendingOrderId={cancelUpgradePendingOrderId}
             buildingNotices={buildingNotices}
           />
         );
@@ -6501,9 +6694,11 @@ export const GamePage = () => {
             currentVillageId={gameState?.village.id ?? activeVillageId}
             currentUsername={username}
             onRecruit={handleRecruit}
+            onCancelRecruitment={handleCancelRecruitment}
             onIssueArmyCommand={handleIssueArmyCommand}
             onReturnSupport={handleReturnSupport}
             recruitPendingUnitId={recruitPendingUnitId}
+            cancelRecruitmentPendingId={cancelRecruitmentPendingId}
             isArmyCommandPending={armyCommandPending}
             notice={armyNotice}
             commandNotice={armyCommandNotice}

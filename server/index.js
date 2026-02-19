@@ -3,6 +3,8 @@ import express from 'express';
 import cron from 'node-cron';
 import {
   acceptKingdomInvite,
+  cancelBuildingUpgrade,
+  cancelRecruitment,
   createKingdom,
   GameRuleError,
   authenticatePlayer,
@@ -235,6 +237,33 @@ app.post('/api/v1/buildings/:buildingId/upgrade', async (req, res, next) => {
   }
 });
 
+app.post('/api/v1/buildings/upgrades/:upgradeId/cancel', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const upgradeId = Number(String(req.params.upgradeId ?? '').trim());
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithConvexPersistence(() => {
+      runGameTick();
+      const result = cancelBuildingUpgrade(username, upgradeId, normalizedVillageId);
+      const state = getVillageSnapshot(username, normalizedVillageId);
+      return { result, state };
+    });
+
+    res.json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
 app.post('/api/v1/units/:unitId/recruit', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
@@ -254,6 +283,33 @@ app.post('/api/v1/units/:unitId/recruit', async (req, res, next) => {
     });
 
     res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/units/recruitments/:recruitmentId/cancel', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const recruitmentId = Number(String(req.params.recruitmentId ?? '').trim());
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithConvexPersistence(() => {
+      runGameTick();
+      const result = cancelRecruitment(username, recruitmentId, normalizedVillageId);
+      const state = getVillageSnapshot(username, normalizedVillageId);
+      return { result, state };
+    });
+
+    res.json({
       ok: true,
       result: payload.result,
       data: payload.state,

@@ -65,6 +65,24 @@ button {
   transition: transform 0.18s ease, border-color 0.18s ease, color 0.18s ease, background 0.18s ease;
 }
 
+:where(button, input, select, textarea) {
+  min-width: 0;
+}
+
+:where(#root, #root *) {
+  min-width: 0;
+}
+
+:where(h1, h2, h3, h4, h5, h6, p, span, strong, small, em, b, i, li, td, th, button, a, label, dt, dd) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+:where(img, video) {
+  max-width: 100%;
+  height: auto;
+}
+
 button:focus-visible,
 input:focus-visible {
   outline: 2px solid rgba(156, 208, 246, 0.85);

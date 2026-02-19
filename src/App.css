@@ -305,8 +305,8 @@
   display: flex;
   flex-wrap: wrap;
   align-items: stretch;
-  gap: 0.58rem;
-  padding: 0.56rem 1.1rem 0.62rem;
+  gap: 0.44rem;
+  padding: 0.42rem 0.95rem 0.48rem;
 }
 
 .ux-help-strip {
@@ -331,18 +331,18 @@
   position: relative;
   border: 1px solid rgba(149, 191, 225, 0.2);
   border-radius: 10px;
-  padding: 0.38rem 0.52rem;
+  padding: 0.3rem 0.44rem;
   background: linear-gradient(150deg, rgba(11, 23, 36, 0.9), rgba(7, 15, 24, 0.9));
   display: grid;
-  gap: 0.08rem;
+  gap: 0.05rem;
   overflow: hidden;
   text-align: left;
   cursor: pointer;
   font: inherit;
   color: inherit;
-  line-height: 1.2;
+  line-height: 1.14;
   min-height: 0;
-  flex: 0 1 198px;
+  flex: 0 1 176px;
 }
 
 .resource-card::before {
@@ -357,37 +357,39 @@
 .resource-strip p {
   margin: 0;
   color: #b8d1e4;
-  font-size: 0.86rem;
+  font-size: 0.76rem;
 }
 
 .resource-strip strong {
-  font-size: 1.2rem;
+  font-size: 1.06rem;
+  line-height: 1.08;
 }
 
 .resource-strip span {
   color: #d2ab61;
-  font-size: 0.87rem;
+  font-size: 0.76rem;
 }
 
 .resource-strip small {
   color: var(--muted);
+  font-size: 0.69rem;
 }
 
 .village-resource-card {
-  flex: 1 1 340px;
-  min-width: 300px;
-  max-width: 460px;
-  gap: 0.24rem;
+  flex: 1 1 300px;
+  min-width: 260px;
+  max-width: 420px;
+  gap: 0.16rem;
 }
 
 .village-menu-trigger {
-  margin-top: 0.16rem;
+  margin-top: 0.08rem;
   border: 0;
   border-radius: 9px;
-  padding: 0.4rem 0.54rem;
+  padding: 0.3rem 0.44rem;
   background: linear-gradient(135deg, rgba(104, 145, 188, 0.95), rgba(66, 103, 142, 0.94));
   color: #edf6ff;
-  font-size: 0.82rem;
+  font-size: 0.75rem;
   font-weight: 700;
   text-align: left;
 }
@@ -402,9 +404,9 @@
 }
 
 .research-spotlight-card {
-  flex: 1 1 240px;
-  min-width: 220px;
-  max-width: 320px;
+  flex: 1 1 205px;
+  min-width: 180px;
+  max-width: 270px;
   margin-left: auto;
 }
 
@@ -649,6 +651,8 @@
   height: calc(100% - 42px);
   overflow: auto;
   padding: 0.9rem;
+  container-type: inline-size;
+  container-name: panel-body;
 }
 
 .map-window .window-body {
@@ -721,6 +725,7 @@
   grid-template-columns: minmax(0, 2.35fr) minmax(280px, 1fr);
   gap: 0.72rem;
   align-items: start;
+  min-width: 0;
 }
 
 .city-core-view,
@@ -751,6 +756,8 @@
   display: grid;
   align-content: start;
   gap: 0.65rem;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .city-core-headline {
@@ -764,9 +771,10 @@
 
 .city-upgrade-board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
   gap: 0.5rem;
   align-items: start;
+  min-width: 0;
 }
 
 .city-upgrade-column {
@@ -779,6 +787,7 @@
   min-width: 0;
   display: grid;
   gap: 0.42rem;
+  overflow: hidden;
 }
 
 .city-upgrade-column header {
@@ -815,18 +824,22 @@
   gap: 0.34rem;
   text-align: left;
   min-width: 0;
+  overflow: hidden;
 }
 
 .city-building-main {
   display: grid;
-  grid-template-columns: 48px 1fr;
+  grid-template-columns: minmax(36px, 48px) minmax(0, 1fr);
   gap: 0.44rem;
   align-items: center;
+  min-width: 0;
 }
 
 .city-building-main img {
-  width: 48px;
-  height: 48px;
+  width: 100%;
+  max-width: 48px;
+  aspect-ratio: 1;
+  height: auto;
   object-fit: contain;
   image-rendering: pixelated;
   filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.34));
@@ -835,6 +848,7 @@
 .city-building-main div {
   display: grid;
   gap: 0.08rem;
+  min-width: 0;
 }
 
 .city-building-main span {
@@ -842,17 +856,23 @@
   font-size: 0.68rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .city-building-main strong {
   font-size: 0.92rem;
   line-height: 1.08;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .city-building-main em {
   color: #e3b56f;
   font-style: normal;
   font-size: 0.76rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .city-building-status {
@@ -877,6 +897,18 @@
 .city-building-status.blocked {
   border-color: rgba(204, 122, 122, 0.36);
   color: #efb3b0;
+}
+
+.city-building-status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.32rem;
+  min-width: 0;
+}
+
+.city-building-status-row .city-building-status {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .city-building-costs {
@@ -923,16 +955,27 @@
 
 .city-building-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   gap: 0.34rem;
+  align-items: stretch;
+  min-width: 0;
 }
 
 .city-building-action {
   margin-top: 0;
   min-width: 0;
+  min-height: 2.2rem;
   padding: 0.39rem 0.45rem;
   font-size: 0.78rem;
   line-height: 1.15;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow: hidden;
 }
 
 .city-building-action.upgrade-action {
@@ -970,6 +1013,12 @@
 .city-side-info {
   display: grid;
   gap: 0.7rem;
+  min-width: 0;
+}
+
+.city-side-info section {
+  min-width: 0;
+  overflow: hidden;
 }
 
 .city-side-info ul,
@@ -1505,6 +1554,50 @@
   display: flex;
   align-items: center;
   gap: 0.36rem;
+}
+
+.queue-row td:last-child {
+  width: 2.4rem;
+  text-align: right;
+}
+
+.inline-cancel-button {
+  border: 1px solid rgba(209, 131, 131, 0.62);
+  border-radius: 7px;
+  min-width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  line-height: 1;
+  font-size: 0.95rem;
+  background: linear-gradient(180deg, rgba(64, 25, 25, 0.95), rgba(43, 17, 17, 0.95));
+  color: #ffd6d1;
+  display: inline-grid;
+  place-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.city-building-card:hover .inline-cancel-button,
+.city-building-card:focus-within .inline-cancel-button,
+.queue-row:hover .inline-cancel-button,
+.queue-row:focus-within .inline-cancel-button,
+.inline-cancel-button:disabled {
+  opacity: 0.92;
+  pointer-events: auto;
+}
+
+.inline-cancel-button:hover {
+  border-color: rgba(241, 163, 163, 0.9);
+  color: #fff1ef;
+}
+
+@media (hover: none) {
+  .city-building-card .inline-cancel-button,
+  .queue-row .inline-cancel-button {
+    opacity: 0.92;
+    pointer-events: auto;
+  }
 }
 
 .recruit-amount-input {
@@ -3337,11 +3430,11 @@
   }
 
   .resource-strip {
-    gap: 0.48rem;
+    gap: 0.4rem;
   }
 
   .resource-card {
-    flex: 1 1 180px;
+    flex: 1 1 164px;
   }
 
   .village-resource-card {
@@ -3351,7 +3444,7 @@
   }
 
   .research-spotlight-card {
-    flex: 1 1 220px;
+    flex: 1 1 190px;
     max-width: none;
     margin-left: 0;
   }
@@ -3421,7 +3514,8 @@
   }
 
   .resource-strip {
-    padding: 0.5rem 0.65rem 0.56rem;
+    gap: 0.34rem;
+    padding: 0.38rem 0.55rem 0.42rem;
   }
 
   .resource-card {
@@ -3454,4 +3548,45 @@
   .map-navigation {
     grid-template-columns: 1fr;
   }
+}
+
+@container panel-body (max-width: 1240px) {
+  .city-overview-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .city-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@container panel-body (max-width: 680px) {
+  .city-upgrade-board {
+    grid-template-columns: 1fr;
+  }
+
+  .building-meta-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.city-building-main strong,
+.city-building-status,
+.city-cost-chip i,
+.city-building-action,
+.building-actions .upgrade-action,
+.building-actions .secondary-action,
+.resource-card p,
+.resource-card strong,
+.resource-card span,
+.resource-card small,
+.panel-stack td,
+.panel-stack li {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.city-building-action,
+.building-actions button {
+  white-space: normal;
 }
