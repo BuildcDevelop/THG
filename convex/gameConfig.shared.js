@@ -10,6 +10,7 @@ export const WORKSHOP_MAX_LEVEL = 20;
 export const FORTIFICATION_MAX_LEVEL = 10;
 export const GATE_MAX_LEVEL = 1;
 export const MAX_BUILDING_LEVEL = RESOURCE_BUILDING_MAX_LEVEL;
+export const MAX_PLAYER_VILLAGES = 3;
 
 export const BUILDING_DEFS = {
   woodcutter: {
@@ -161,6 +162,7 @@ export const UNIT_DEFS = {
     requiredBuilding: 'barracks',
     baseRecruitDurationSec: 26,
     speedTilesPerHour: 18,
+    populationCost: 1,
   },
   archer: {
     id: 'archer',
@@ -170,6 +172,7 @@ export const UNIT_DEFS = {
     requiredBuilding: 'workshop',
     baseRecruitDurationSec: 34,
     speedTilesPerHour: 16,
+    populationCost: 1,
   },
   cavalry: {
     id: 'cavalry',
@@ -179,6 +182,17 @@ export const UNIT_DEFS = {
     requiredBuilding: 'stable',
     baseRecruitDurationSec: 42,
     speedTilesPerHour: 28,
+    populationCost: 1,
+  },
+  knight: {
+    id: 'knight',
+    name: 'Rytir',
+    role: 'Dobytel osad',
+    cost: { wood: 10000, stone: 10000, iron: 10000 },
+    requiredBuilding: 'townhall',
+    baseRecruitDurationSec: 60,
+    speedTilesPerHour: 42,
+    populationCost: 10,
   },
   ram: {
     id: 'ram',
@@ -188,6 +202,7 @@ export const UNIT_DEFS = {
     requiredBuilding: 'workshop',
     baseRecruitDurationSec: 55,
     speedTilesPerHour: 10,
+    populationCost: 1,
   },
   caravan: {
     id: 'caravan',
@@ -197,10 +212,11 @@ export const UNIT_DEFS = {
     requiredBuilding: 'workshop',
     baseRecruitDurationSec: 32,
     speedTilesPerHour: 14,
+    populationCost: 1,
   },
 };
 
-export const UNIT_ORDER = ['militia', 'archer', 'cavalry', 'ram', 'caravan'];
+export const UNIT_ORDER = ['militia', 'archer', 'cavalry', 'knight', 'ram', 'caravan'];
 
 const roundNumber = (value) => Math.max(0, Math.round(value));
 const RESOURCE_PRODUCTION_CURVE_FACTOR = 0.045;
@@ -293,12 +309,16 @@ export const calculateArmyTravelDurationSec = (unitAmounts, distanceTiles) => {
   }
 
   let hasUnits = false;
+  let hasKnight = false;
   for (const unitId of UNIT_ORDER) {
     const amount = Math.max(0, Math.floor(Number(unitAmounts[unitId] ?? 0)));
     if (amount <= 0) {
       continue;
     }
     hasUnits = true;
+    if (unitId === 'knight') {
+      hasKnight = true;
+    }
     break;
   }
 
@@ -306,7 +326,7 @@ export const calculateArmyTravelDurationSec = (unitAmounts, distanceTiles) => {
     return 0;
   }
 
-  return 5;
+  return hasKnight ? 3 : 5;
 };
 
 export const calculateResourceCap = (warehouseLevel) => {
@@ -341,7 +361,9 @@ export const calculatePopulationUsed = (buildingLevels, unitCounts) => {
 
   let units = 0;
   for (const unitId of UNIT_ORDER) {
-    units += unitCounts[unitId] ?? 0;
+    const amount = Math.max(0, Math.floor(Number(unitCounts[unitId] ?? 0)));
+    const populationCost = Math.max(1, Math.floor(Number(UNIT_DEFS[unitId]?.populationCost ?? 1)));
+    units += amount * populationCost;
   }
 
   return workers + units;
