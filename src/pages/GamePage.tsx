@@ -953,6 +953,17 @@ const clampPanelToViewport = (
   };
 };
 
+const fitPanelToViewport = (
+  panel: PanelWindow,
+  viewportWidth: number,
+  viewportHeight: number,
+  options: ClampPanelToViewportOptions = {},
+): PanelWindow =>
+  clampPanelToViewport(panel, viewportWidth, viewportHeight, {
+    allowBelowMinSize: true,
+    ...options,
+  });
+
 const readStoredMapWindowSize = (): WindowSize | null => {
   if (typeof window === 'undefined') {
     return null;
@@ -1289,7 +1300,7 @@ const createPanelWindow = (
   const leftStart = 96 + rowOffset * 30;
   const rightStart = Math.max(240, viewportWidth - usableWidth - 140 - rowOffset * 30);
 
-  return {
+  const created: PanelWindow = {
     ...meta,
     ...overrides,
     id: overrides.id ?? meta.type,
@@ -1303,6 +1314,8 @@ const createPanelWindow = (
     expanded: true,
     alert: false,
   };
+
+  return fitPanelToViewport(created, viewportWidth, viewportHeight);
 };
 
 const formatCostLabel = (cost: ResourceCost | null): string => {
@@ -4592,8 +4605,8 @@ export const GamePage = () => {
   });
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
   const [gameState, setGameState] = useState<GameStateResponse | null>(null);
-  const [loadingState, setLoadingState] = useState(true);
-  const [stateError, setStateError] = useState<string | null>(null);
+  const [, setLoadingState] = useState(true);
+  const [, setStateError] = useState<string | null>(null);
   const [armyNotice, setArmyNotice] = useState<string | null>(null);
   const [armyCommandNotice, setArmyCommandNotice] = useState<string | null>(null);
   const [recruitPendingUnitId, setRecruitPendingUnitId] = useState<string | null>(null);
@@ -5090,9 +5103,7 @@ export const GamePage = () => {
       setPanels((previous) => {
         let changed = false;
         const nextPanels = previous.map((panel) => {
-          const adjusted = clampPanelToViewport(panel, viewportWidth, viewportHeight, {
-            allowBelowMinSize: true,
-          });
+          const adjusted = fitPanelToViewport(panel, viewportWidth, viewportHeight);
 
           if (adjusted !== panel) {
             changed = true;
@@ -5205,23 +5216,35 @@ export const GamePage = () => {
           activeResize.rafId = null;
         }
 
-        const { id, latestWidth, latestHeight, panelType } = activeResize;
+        const { id, latestWidth, latestHeight } = activeResize;
         const node = panelElementRefs.current[id];
         if (node) {
           node.classList.remove('resizing');
         }
 
         resizeState.current = null;
-        if (panelType === 'map') {
-          mapWindowSizeRef.current = { width: latestWidth, height: latestHeight };
-          saveMapWindowSize({ width: latestWidth, height: latestHeight });
-        }
-
+        const { viewportWidth, viewportHeight } = getCanvasViewportSize();
+        let nextMapSize: WindowSize | null = null;
         setPanels((previous) =>
-          previous.map((panel) =>
-            panel.id === id ? { ...panel, width: latestWidth, height: latestHeight } : panel,
-          ),
+          previous.map((panel) => {
+            if (panel.id !== id) {
+              return panel;
+            }
+            const adjusted = fitPanelToViewport(
+              { ...panel, width: latestWidth, height: latestHeight },
+              viewportWidth,
+              viewportHeight,
+            );
+            if (adjusted.type === 'map') {
+              nextMapSize = { width: adjusted.width, height: adjusted.height };
+            }
+            return adjusted;
+          }),
         );
+        if (nextMapSize) {
+          mapWindowSizeRef.current = nextMapSize;
+          saveMapWindowSize(nextMapSize);
+        }
         return;
       }
 
@@ -5243,8 +5266,13 @@ export const GamePage = () => {
       }
 
       dragState.current = null;
+      const { viewportWidth, viewportHeight } = getCanvasViewportSize();
       setPanels((previous) =>
-        previous.map((panel) => (panel.id === id ? { ...panel, x: latestX, y: latestY } : panel)),
+        previous.map((panel) =>
+          panel.id === id
+            ? fitPanelToViewport({ ...panel, x: latestX, y: latestY }, viewportWidth, viewportHeight)
+            : panel,
+        ),
       );
     };
 
@@ -5261,7 +5289,7 @@ export const GamePage = () => {
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
     };
-  }, []);
+  }, [getCanvasViewportSize]);
 
   const applyActiveVillageSelection = useCallback(
     (nextVillageIdRaw: number) => {
@@ -5377,8 +5405,10 @@ export const GamePage = () => {
 
   const openPanel = useCallback((type: StaticPanelType) => {
     setActivePanelId(type);
+    const { viewportWidth, viewportHeight } = getCanvasViewportSize();
     const panelVillageName =
       type === 'city' || type === 'map' || type === 'army' ? currentVillageName : undefined;
+    let nextMapSize: WindowSize | null = null;
 
     setPanels((previous) => {
       const existing = previous.find((panel) => panel.type === type);
@@ -5390,13 +5420,21 @@ export const GamePage = () => {
             return panel;
           }
 
-          return {
-            ...panel,
-            z: nextZ,
-            expanded: true,
-            alert: false,
-            villageName: panelVillageName ?? panel.villageName,
-          };
+          const adjusted = fitPanelToViewport(
+            {
+              ...panel,
+              z: nextZ,
+              expanded: true,
+              alert: false,
+              villageName: panelVillageName ?? panel.villageName,
+            },
+            viewportWidth,
+            viewportHeight,
+          );
+          if (adjusted.type === 'map') {
+            nextMapSize = { width: adjusted.width, height: adjusted.height };
+          }
+          return adjusted;
         });
       }
 
@@ -5406,23 +5444,35 @@ export const GamePage = () => {
               width: clamp(
                 mapWindowSizeRef.current.width,
                 MAP_WINDOW_MIN_WIDTH,
-                Math.max(MAP_WINDOW_MIN_WIDTH, window.innerWidth - 180),
+                Math.max(MAP_WINDOW_MIN_WIDTH, viewportWidth - PANEL_VIEWPORT_MARGIN_X),
               ),
               height: clamp(
                 mapWindowSizeRef.current.height,
                 MAP_WINDOW_MIN_HEIGHT,
-                Math.max(MAP_WINDOW_MIN_HEIGHT, window.innerHeight - 160),
+                Math.max(MAP_WINDOW_MIN_HEIGHT, viewportHeight - PANEL_VIEWPORT_MARGIN_Y),
               ),
             }
           : undefined;
 
-      const created = createPanelWindow(type, nextZ, previous.length, {
-        ...(mapSizeOverride ?? {}),
-        villageName: panelVillageName,
-      });
+      const created = fitPanelToViewport(
+        createPanelWindow(type, nextZ, previous.length, {
+          ...(mapSizeOverride ?? {}),
+          villageName: panelVillageName,
+        }),
+        viewportWidth,
+        viewportHeight,
+      );
+      if (created.type === 'map') {
+        nextMapSize = { width: created.width, height: created.height };
+      }
       return [...previous, created];
     });
-  }, [currentVillageName]);
+
+    if (nextMapSize) {
+      mapWindowSizeRef.current = nextMapSize;
+      saveMapWindowSize(nextMapSize);
+    }
+  }, [currentVillageName, getCanvasViewportSize]);
 
   const openSettlementPanel = useCallback((settlement: RegionSettlement) => {
     if (isOwnSettlementForPlayer(settlement)) {
@@ -5430,6 +5480,7 @@ export const GamePage = () => {
       saveLastOwnSettlementId(username, settlement.id);
     }
 
+    const { viewportWidth, viewportHeight } = getCanvasViewportSize();
     const id = `village-${settlement.id}`;
     setActivePanelId(id);
     const label = `${settlement.name} (${settlement.globalX}|${settlement.globalY})`;
@@ -5441,30 +5492,39 @@ export const GamePage = () => {
       if (existing) {
         return previous.map((panel) =>
           panel.id === id
-            ? {
-                ...panel,
-                z: nextZ,
-                expanded: true,
-                alert: false,
-              }
+            ? fitPanelToViewport(
+                {
+                  ...panel,
+                  z: nextZ,
+                  expanded: true,
+                  alert: false,
+                },
+                viewportWidth,
+                viewportHeight,
+              )
             : panel,
         );
       }
 
-      const created = createPanelWindow('village', nextZ, previous.length, {
-        id,
-        settlementId: settlement.id,
-        label,
-        side: settlement.kind === 'own' ? 'left' : 'right',
-        width: 520,
-        height: 460,
-      });
+      const created = fitPanelToViewport(
+        createPanelWindow('village', nextZ, previous.length, {
+          id,
+          settlementId: settlement.id,
+          label,
+          side: settlement.kind === 'own' ? 'left' : 'right',
+          width: 520,
+          height: 460,
+        }),
+        viewportWidth,
+        viewportHeight,
+      );
 
       return [...previous, created];
     });
-  }, [isOwnSettlementForPlayer, username]);
+  }, [getCanvasViewportSize, isOwnSettlementForPlayer, username]);
 
   const openBuildingPanel = useCallback((building: Building) => {
+    const { viewportWidth, viewportHeight } = getCanvasViewportSize();
     const id = `building-${building.id}`;
     setActivePanelId(id);
     const label = `${building.name} (Úroveň ${building.level})`;
@@ -5477,37 +5537,46 @@ export const GamePage = () => {
       if (existing) {
         return previous.map((panel) =>
           panel.id === id
-            ? {
-                ...panel,
-                z: nextZ,
-                expanded: true,
-                alert: false,
-                label,
-                villageName,
-              }
+            ? fitPanelToViewport(
+                {
+                  ...panel,
+                  z: nextZ,
+                  expanded: true,
+                  alert: false,
+                  label,
+                  villageName,
+                },
+                viewportWidth,
+                viewportHeight,
+              )
             : panel,
         );
       }
 
-      const created = createPanelWindow('building', nextZ, previous.length, {
-        id,
-        buildingId: building.id,
-        label,
-        side: 'left',
-        width: 540,
-        height: 560,
-        villageName,
-      });
+      const created = fitPanelToViewport(
+        createPanelWindow('building', nextZ, previous.length, {
+          id,
+          buildingId: building.id,
+          label,
+          side: 'left',
+          width: 540,
+          height: 560,
+          villageName,
+        }),
+        viewportWidth,
+        viewportHeight,
+      );
 
       return [...previous, created];
     });
-  }, [currentVillageName]);
+  }, [currentVillageName, getCanvasViewportSize]);
 
   const openKingdomProfilePanel = useCallback((kingdomName: string) => {
     if (!kingdomName || isNeutralKingdom(kingdomName)) {
       return;
     }
 
+    const { viewportWidth, viewportHeight } = getCanvasViewportSize();
     const id = `kingdom-profile-${encodeURIComponent(kingdomName)}`;
     const label = `Profil království: ${kingdomName}`;
     setActivePanelId(id);
@@ -5519,36 +5588,45 @@ export const GamePage = () => {
       if (existing) {
         return previous.map((panel) =>
           panel.id === id
-            ? {
-                ...panel,
-                z: nextZ,
-                expanded: true,
-                alert: false,
-                label,
-                kingdomName,
-              }
+            ? fitPanelToViewport(
+                {
+                  ...panel,
+                  z: nextZ,
+                  expanded: true,
+                  alert: false,
+                  label,
+                  kingdomName,
+                },
+                viewportWidth,
+                viewportHeight,
+              )
             : panel,
         );
       }
 
-      const created = createPanelWindow('kingdomProfile', nextZ, previous.length, {
-        id,
-        label,
-        side: 'right',
-        width: 680,
-        height: 560,
-        kingdomName,
-      });
+      const created = fitPanelToViewport(
+        createPanelWindow('kingdomProfile', nextZ, previous.length, {
+          id,
+          label,
+          side: 'right',
+          width: 680,
+          height: 560,
+          kingdomName,
+        }),
+        viewportWidth,
+        viewportHeight,
+      );
 
       return [...previous, created];
     });
-  }, []);
+  }, [getCanvasViewportSize]);
 
   const openPlayerProfilePanel = useCallback((targetUsername: string) => {
     if (!targetUsername) {
       return;
     }
 
+    const { viewportWidth, viewportHeight } = getCanvasViewportSize();
     const id = `player-profile-${encodeURIComponent(targetUsername)}`;
     const label = `Profil hráče: ${targetUsername}`;
     setActivePanelId(id);
@@ -5560,30 +5638,38 @@ export const GamePage = () => {
       if (existing) {
         return previous.map((panel) =>
           panel.id === id
-            ? {
-                ...panel,
-                z: nextZ,
-                expanded: true,
-                alert: false,
-                label,
-                playerUsername: targetUsername,
-              }
+            ? fitPanelToViewport(
+                {
+                  ...panel,
+                  z: nextZ,
+                  expanded: true,
+                  alert: false,
+                  label,
+                  playerUsername: targetUsername,
+                },
+                viewportWidth,
+                viewportHeight,
+              )
             : panel,
         );
       }
 
-      const created = createPanelWindow('playerProfile', nextZ, previous.length, {
-        id,
-        label,
-        side: 'left',
-        width: 660,
-        height: 560,
-        playerUsername: targetUsername,
-      });
+      const created = fitPanelToViewport(
+        createPanelWindow('playerProfile', nextZ, previous.length, {
+          id,
+          label,
+          side: 'left',
+          width: 660,
+          height: 560,
+          playerUsername: targetUsername,
+        }),
+        viewportWidth,
+        viewportHeight,
+      );
 
       return [...previous, created];
     });
-  }, []);
+  }, [getCanvasViewportSize]);
 
   const handleResourceCardClick = useCallback(
     (resource: ResourceStock) => {
@@ -5624,6 +5710,9 @@ export const GamePage = () => {
   };
 
   const togglePanelVisibility = (id: string) => {
+    const { viewportWidth, viewportHeight } = getCanvasViewportSize();
+    let nextMapSize: WindowSize | null = null;
+
     setPanels((previous) => {
       const target = previous.find((panel) => panel.id === id);
       if (!target) {
@@ -5637,14 +5726,29 @@ export const GamePage = () => {
           return panel;
         }
 
-        return {
+        const toggled: PanelWindow = {
           ...panel,
           expanded: !panel.expanded,
           z: nextZ,
           alert: false,
         };
+
+        if (!toggled.expanded) {
+          return toggled;
+        }
+
+        const adjusted = fitPanelToViewport(toggled, viewportWidth, viewportHeight);
+        if (adjusted.type === 'map') {
+          nextMapSize = { width: adjusted.width, height: adjusted.height };
+        }
+        return adjusted;
       });
     });
+
+    if (nextMapSize) {
+      mapWindowSizeRef.current = nextMapSize;
+      saveMapWindowSize(nextMapSize);
+    }
   };
 
   const closePanel = (id: string) => {
@@ -5864,7 +5968,16 @@ export const GamePage = () => {
     if (node) {
       node.classList.add('resizing');
     }
+    const { viewportWidth, viewportHeight } = getCanvasViewportSize();
     const minSize = getPanelMinSize(panel.type);
+    const minWidth = Math.min(
+      minSize.width,
+      Math.max(PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH, viewportWidth - PANEL_VIEWPORT_MARGIN_X),
+    );
+    const minHeight = Math.min(
+      minSize.height,
+      Math.max(PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT, viewportHeight - PANEL_VIEWPORT_MARGIN_Y),
+    );
 
     resizeState.current = {
       id: panel.id,
@@ -5875,8 +5988,8 @@ export const GamePage = () => {
       originHeight: panel.height,
       latestWidth: panel.width,
       latestHeight: panel.height,
-      minWidth: minSize.width,
-      minHeight: minSize.height,
+      minWidth,
+      minHeight,
       panelX: panel.x,
       panelY: panel.y,
       rafId: null,
@@ -6262,6 +6375,7 @@ export const GamePage = () => {
         return;
       }
 
+      const { viewportWidth, viewportHeight } = getCanvasViewportSize();
       const numericReportId = Math.floor(reportId);
       const report = battleReportsById.get(numericReportId);
       const fallbackLabel = `Bitevní hlášení #${numericReportId}`;
@@ -6279,31 +6393,39 @@ export const GamePage = () => {
         if (existing) {
           return previous.map((panel) =>
             panel.id === id
-              ? {
-                  ...panel,
-                  z: nextZ,
-                  expanded: true,
-                  alert: false,
-                  label,
-                  battleReportId: numericReportId,
-                }
+              ? fitPanelToViewport(
+                  {
+                    ...panel,
+                    z: nextZ,
+                    expanded: true,
+                    alert: false,
+                    label,
+                    battleReportId: numericReportId,
+                  },
+                  viewportWidth,
+                  viewportHeight,
+                )
               : panel,
           );
         }
 
-        const created = createPanelWindow('battleReport', nextZ, previous.length, {
-          id,
-          label,
-          side: 'right',
-          width: 780,
-          height: 640,
-          battleReportId: numericReportId,
-        });
+        const created = fitPanelToViewport(
+          createPanelWindow('battleReport', nextZ, previous.length, {
+            id,
+            label,
+            side: 'right',
+            width: 780,
+            height: 640,
+            battleReportId: numericReportId,
+          }),
+          viewportWidth,
+          viewportHeight,
+        );
 
         return [...previous, created];
       });
     },
-    [battleReportsById],
+    [battleReportsById, getCanvasViewportSize],
   );
 
   const handleBattleReportsPageChange = useCallback((page: number) => {
@@ -6689,20 +6811,6 @@ export const GamePage = () => {
           </ul>
         </div>
       ) : null}
-
-      <section className="ux-help-strip" aria-label="Rychlá nápověda">
-        <p>
-          Přetahuj okna za horní lištu, klikej na piny vlevo/vpravo pro rychlé sbalení a mapu zvětši
-          tažením pravého dolního rohu.
-        </p>
-        <p>
-          {loadingState
-            ? 'Načítám data z backendu...'
-            : stateError
-              ? `Backend chyba: ${stateError}`
-              : 'Backend běží: suroviny, upgrady a jednotky se synchronizují každých 5s.'}
-        </p>
-      </section>
 
       <div className="game-canvas" ref={canvasRef}>
         <aside className="pin-column left">
