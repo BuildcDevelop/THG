@@ -147,7 +147,10 @@ app.get('/api/v1/state', async (req, res, next) => {
         : Number(String(villageIdRaw).trim());
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const resolvedState = useConvexFull
-      ? await executeWithConvexRead(() => getVillageSnapshot(username, normalizedVillageId))
+      ? await executeWithConvexPersistence(() => {
+          runGameTick();
+          return getVillageSnapshot(username, normalizedVillageId);
+        })
       : useConvexState
         ? await getVillageSnapshotConvex(username, normalizedVillageId)
         : (() => {
