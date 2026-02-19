@@ -1582,6 +1582,8 @@
 .city-building-card:focus-within .inline-cancel-button,
 .queue-row:hover .inline-cancel-button,
 .queue-row:focus-within .inline-cancel-button,
+.order-line.order-line-action:hover .inline-cancel-button,
+.order-line.order-line-action:focus-within .inline-cancel-button,
 .inline-cancel-button:disabled {
   opacity: 0.92;
   pointer-events: auto;
@@ -1594,7 +1596,8 @@
 
 @media (hover: none) {
   .city-building-card .inline-cancel-button,
-  .queue-row .inline-cancel-button {
+  .queue-row .inline-cancel-button,
+  .order-line.order-line-action .inline-cancel-button {
     opacity: 0.92;
     pointer-events: auto;
   }
@@ -2731,6 +2734,21 @@
   display: flex;
   align-items: center;
   gap: 0.45rem;
+}
+
+.order-line {
+  min-width: 0;
+}
+
+.order-line.order-line-action {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.order-line.order-line-action .order-line-text {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .map-hover-card {

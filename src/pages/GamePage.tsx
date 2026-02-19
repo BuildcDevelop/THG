@@ -362,9 +362,10 @@ const NAV_BUTTONS: { type: StaticPanelType; text: string }[] = [
   { type: 'settings', text: 'Nastavení' },
 ];
 
-const STRETCHABLE_PANEL_TYPES = new Set<PanelType>(['city', 'map', 'army']);
-
-const isStretchablePanelType = (panelType: PanelType): boolean => STRETCHABLE_PANEL_TYPES.has(panelType);
+const isStretchablePanelType = (panelType: PanelType): boolean => {
+  void panelType;
+  return true;
+};
 const BUILDING_ICON_BASE_PATH = '/assets/buildings';
 const getBuildingIconPath = (fileName: string): string => `${BUILDING_ICON_BASE_PATH}/${fileName}`;
 const DEFAULT_BUILDING_ICON = getBuildingIconPath('warehouse.png');
@@ -1399,12 +1400,15 @@ const CityPanel = ({
   buildings,
   units,
   orders,
+  recruitQueueOrders,
   onOpenBuilding,
   onUpgradeBuilding,
   onCancelBuildingUpgrade,
+  onCancelRecruitment,
   buildingUpgradeQueueByBuilding,
   upgradePendingBuildingId,
   cancelUpgradePendingOrderId,
+  cancelRecruitmentPendingId,
   buildingNotices,
 }: {
   villageLabel: string;
@@ -1416,12 +1420,15 @@ const CityPanel = ({
   buildings: Building[];
   units: Unit[];
   orders: string[];
+  recruitQueueOrders: RecruitQueueOrder[];
   onOpenBuilding: (building: Building) => void;
   onUpgradeBuilding: (building: Building) => void;
   onCancelBuildingUpgrade: (upgradeOrderId: number, buildingId: string) => void;
+  onCancelRecruitment: (order: RecruitQueueOrder) => void;
   buildingUpgradeQueueByBuilding: Map<string, BuildingUpgradeQueueOrder[]>;
   upgradePendingBuildingId: string | null;
   cancelUpgradePendingOrderId: number | null;
+  cancelRecruitmentPendingId: number | null;
   buildingNotices: Record<string, string>;
 }) => {
   const buildingsById = useMemo(
@@ -1461,6 +1468,24 @@ const CityPanel = ({
 
     return grouped;
   }, [buildings, buildingsById]);
+
+  const activeUpgradeOrders = useMemo(() => {
+    const merged = Array.from(buildingUpgradeQueueByBuilding.values()).flat();
+    return [...merged].sort((a, b) => {
+      const byEta = a.remainingSec - b.remainingSec;
+      if (byEta !== 0) {
+        return byEta;
+      }
+      return a.id - b.id;
+    });
+  }, [buildingUpgradeQueueByBuilding]);
+
+  const remainingOrders = useMemo(() => {
+    return orders.filter((order) => {
+      const normalized = order.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+      return !normalized.startsWith('vystavba:') && !normalized.startsWith('nabor:');
+    });
+  }, [orders]);
 
   return (
     <div className="city-panel">
@@ -1630,7 +1655,61 @@ const CityPanel = ({
             <section>
               <h3>Aktivní rozkazy</h3>
               <ul>
-                {orders.map((order, index) => {
+                {activeUpgradeOrders.length > 0 ? (
+                  activeUpgradeOrders.map((order) => {
+                    const buildingName = buildingsById.get(order.buildingId)?.name ?? order.buildingId;
+                    const isCancelPending = cancelUpgradePendingOrderId === order.id;
+                    return (
+                      <li key={`active-upgrade-${order.id}`} className="order-line order-line-action">
+                        <span className="order-line-text">
+                          Vystavba: {buildingName} {order.fromLevel} -&gt; {order.toLevel} (zbyva{' '}
+                          {formatDurationLabel(order.remainingSec)})
+                        </span>
+                        <button
+                          type="button"
+                          className="inline-cancel-button"
+                          onClick={() => onCancelBuildingUpgrade(order.id, order.buildingId)}
+                          disabled={isCancelPending}
+                          title="Zrušit tento upgrade a navazující položky ve frontě"
+                          aria-label="Zrušit upgrade ve frontě"
+                        >
+                          {isCancelPending ? '…' : '✕'}
+                        </button>
+                      </li>
+                    );
+                  })
+                ) : (
+                  <li className="order-line">
+                    <span>Vystavba: zadna aktivni fronta</span>
+                  </li>
+                )}
+                {recruitQueueOrders.length > 0 ? (
+                  recruitQueueOrders.map((order) => {
+                    const isCancelPending = cancelRecruitmentPendingId === order.id;
+                    return (
+                      <li key={`active-recruit-${order.id}`} className="order-line order-line-action">
+                        <span className="order-line-text">
+                          Nabor: {order.unitName} +{order.amount} (zbyva {formatDurationLabel(order.remainingSec)})
+                        </span>
+                        <button
+                          type="button"
+                          className="inline-cancel-button"
+                          onClick={() => onCancelRecruitment(order)}
+                          disabled={isCancelPending}
+                          title="Zrušit tuto položku náboru"
+                          aria-label="Zrušit nábor ve frontě"
+                        >
+                          {isCancelPending ? '…' : '✕'}
+                        </button>
+                      </li>
+                    );
+                  })
+                ) : (
+                  <li className="order-line">
+                    <span>Nabor: zadna aktivni fronta</span>
+                  </li>
+                )}
+                {remainingOrders.map((order, index) => {
                   const commandType = parseArmyOrderCommandType(order);
                   return (
                     <li key={`${index}-${order}`} className={commandType ? 'order-line with-icon' : 'order-line'}>
@@ -6658,12 +6737,15 @@ export const GamePage = () => {
             buildings={buildings}
             units={units}
             orders={activeOrders}
+            recruitQueueOrders={recruitQueueOrders}
             onOpenBuilding={openBuildingPanel}
             onUpgradeBuilding={handleBuildingUpgrade}
             onCancelBuildingUpgrade={handleCancelBuildingUpgrade}
+            onCancelRecruitment={handleCancelRecruitment}
             buildingUpgradeQueueByBuilding={buildingUpgradeQueueByBuilding}
             upgradePendingBuildingId={upgradePendingBuildingId}
             cancelUpgradePendingOrderId={cancelUpgradePendingOrderId}
+            cancelRecruitmentPendingId={cancelRecruitmentPendingId}
             buildingNotices={buildingNotices}
           />
         );
