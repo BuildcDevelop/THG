@@ -148,6 +148,7 @@ type Unit = {
   name: string;
   amount: number;
   queuedCount: number;
+  stationedSupportCount: number;
   role: string;
   cost: string;
   canRecruit: boolean;
@@ -1652,7 +1653,17 @@ const CityPanel = ({
               <ul>
                 {units.map((unit) => (
                   <li key={unit.id}>
-                    <strong>{unit.amount}</strong>
+                    <strong>
+                      {unit.amount.toLocaleString('cs-CZ')}
+                      {unit.stationedSupportCount > 0
+                        ? ` (+${unit.stationedSupportCount.toLocaleString('cs-CZ')})`
+                        : ''}
+                    </strong>
+                    {unit.stationedSupportCount > 0 ? (
+                      <small className="row-help">
+                        v závorce stacionovaná podpora v lénu
+                      </small>
+                    ) : null}
                     <span>{unit.name}</span>
                     <em>{unit.role}</em>
                   </li>
@@ -1929,6 +1940,11 @@ const ArmyPanel = ({
                   <td>{unit.name}</td>
                   <td>
                     {unit.amount.toLocaleString('cs-CZ')}
+                    {unit.stationedSupportCount > 0 ? (
+                      <small className="row-help">
+                        podpora v lénu: +{unit.stationedSupportCount.toLocaleString('cs-CZ')}
+                      </small>
+                    ) : null}
                     <small className="row-help">
                       maximálně {unit.maxRecruitable.toLocaleString('cs-CZ')} počet k rekrutu
                     </small>
@@ -5040,6 +5056,7 @@ export const GamePage = () => {
         name: unitMeta?.fallbackName ?? unit.name,
         amount: unit.amount,
         queuedCount: unit.queuedCount ?? 0,
+        stationedSupportCount: Math.max(0, Math.floor(Number(unit.stationedSupportCount ?? 0))),
         role: unitMeta?.fallbackRole ?? unit.role,
         cost: formatCostLabel(unit.cost),
         canRecruit: unit.canRecruit,

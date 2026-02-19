@@ -55,6 +55,7 @@ export type GameUnitState = {
   amount: number;
   maxAmount: number;
   queuedCount: number;
+  stationedSupportCount?: number;
   cost: ResourceCost;
   requiredBuildingId: string;
   requiredBuildingLevel: number;

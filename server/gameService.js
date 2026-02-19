@@ -2909,6 +2909,19 @@ export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = nul
     activeRecruitmentCountByUnit[unitId] =
       Number(activeRecruitmentCountByUnit[unitId] ?? 0) + Number(recruitment.amount);
   }
+  const stationedSupportCountByUnit = toUnitTemplateMap({});
+  const stationedSupportRows = selectStationedSupportsByTargetVillageStmt.all(Number(village.id));
+  for (const supportRow of stationedSupportRows) {
+    const supportUnits = selectMovementUnitsStmt.all(Number(supportRow.id));
+    for (const unitRow of supportUnits) {
+      const unitId = String(unitRow.unitId);
+      const amount = Math.max(0, Math.floor(Number(unitRow.amount ?? 0)));
+      if (!UNIT_ORDER.includes(unitId)) {
+        continue;
+      }
+      stationedSupportCountByUnit[unitId] = Number(stationedSupportCountByUnit[unitId] ?? 0) + amount;
+    }
+  }
 
   const currentResources = {
     wood: Number(resourcesRow.wood),
@@ -3011,6 +3024,7 @@ export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = nul
       requiredBuildingLevel,
       maxRecruitable,
       queuedCount,
+      stationedSupportCount: Number(stationedSupportCountByUnit[unitId] ?? 0),
       canRecruit,
       blockedReason,
     };
