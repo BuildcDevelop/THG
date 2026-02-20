@@ -70,7 +70,7 @@ export const AdminPage = () => {
               onChange={(event) => setFilter(event.target.value)}
               placeholder="Filtruj podle jmena, kralovstvi nebo lena"
             />
-            <button className="secondary-action" onClick={() => navigate('/')}>
+            <button className="secondary-action" onClick={() => navigate('/login')}>
               Zpet na login
             </button>
           </div>

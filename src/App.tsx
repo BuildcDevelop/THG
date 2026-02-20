@@ -8,7 +8,7 @@ import './App.css';
 
 const ProtectedRoute = ({ children }: { children: ReactElement }) => {
   if (!isAuthenticated()) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/login" replace />;
   }
 
   return children;
@@ -17,7 +17,8 @@ const ProtectedRoute = ({ children }: { children: ReactElement }) => {
 function App() {
   return (
     <Routes>
-      <Route path="/" element={<LoginPage />} />
+      <Route path="/" element={<Navigate to={isAuthenticated() ? '/game' : '/login'} replace />} />
+      <Route path="/login" element={<LoginPage />} />
       <Route path="/admin" element={<AdminPage />} />
       <Route
         path="/game"
@@ -27,7 +28,7 @@ function App() {
           </ProtectedRoute>
         }
       />
-      <Route path="*" element={<Navigate to={isAuthenticated() ? '/game' : '/'} replace />} />
+      <Route path="*" element={<Navigate to={isAuthenticated() ? '/game' : '/login'} replace />} />
     </Routes>
   );
 }

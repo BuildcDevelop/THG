@@ -6035,7 +6035,7 @@ export const GamePage = () => {
 
   useEffect(() => {
     if (!session) {
-      navigate('/', { replace: true });
+      navigate('/login', { replace: true });
       return;
     }
 
@@ -7770,7 +7770,7 @@ export const GamePage = () => {
 
   const handleLogout = useCallback(() => {
     logout();
-    navigate('/', { replace: true });
+    navigate('/login', { replace: true });
   }, [navigate]);
 
   const openBattleReportPanel = useCallback(
