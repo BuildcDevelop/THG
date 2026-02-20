@@ -151,6 +151,8 @@ type Unit = {
   stationedSupportCount: number;
   role: string;
   cost: string;
+  requiredBuildingId: string;
+  requiredBuildingLevel: number;
   canRecruit: boolean;
   blockedReason: string | null;
   maxRecruitable: number;
@@ -256,7 +258,7 @@ type PersistedPanelWindow = Pick<
 const PANEL_META: Record<PanelType, PanelMeta> = {
   city: {
     type: 'city',
-    label: 'Přehled města',
+    label: 'Přehled léna',
     side: 'left',
     width: 1280,
     height: 660,
@@ -355,7 +357,7 @@ const PANEL_META: Record<PanelType, PanelMeta> = {
 };
 
 const NAV_BUTTONS: { type: StaticPanelType; text: string }[] = [
-  { type: 'city', text: 'Přehled města' },
+  { type: 'city', text: 'Přehled léna' },
   { type: 'map', text: 'Mapa regionu' },
   { type: 'army', text: 'Armáda/Nábor' },
   { type: 'research', text: 'Výzkum' },
@@ -366,6 +368,17 @@ const NAV_BUTTONS: { type: StaticPanelType; text: string }[] = [
   { type: 'settings', text: 'Nastavení' },
 ];
 
+const DEFAULT_STRETCHED_PANEL_TYPES = new Set<StaticPanelType>([
+  'city',
+  'map',
+  'army',
+  'research',
+  'messages',
+  'kingdom',
+  'profile',
+  'settings',
+]);
+
 const isStretchablePanelType = (panelType: PanelType): boolean => {
   void panelType;
   return true;
@@ -373,6 +386,9 @@ const isStretchablePanelType = (panelType: PanelType): boolean => {
 const BUILDING_ICON_BASE_PATH = '/assets/buildings';
 const getBuildingIconPath = (fileName: string): string => `${BUILDING_ICON_BASE_PATH}/${fileName}`;
 const DEFAULT_BUILDING_ICON = getBuildingIconPath('warehouse.png');
+const UNIT_ICON_BASE_PATH = '/assets/units';
+const getUnitIconPath = (fileName: string): string => `${UNIT_ICON_BASE_PATH}/${fileName}`;
+const DEFAULT_UNIT_ICON = getUnitIconPath('militia.svg');
 
 const BUILDING_ART: Record<string, { icon: string; fallbackName: string; fallbackCategory: string }> = {
   woodcutter: {
@@ -437,13 +453,48 @@ const BUILDING_ART: Record<string, { icon: string; fallbackName: string; fallbac
   },
 };
 
-const UNIT_META: Record<string, { fallbackName: string; fallbackRole: string }> = {
-  militia: { fallbackName: 'Ozbrojenci', fallbackRole: 'Základní pěchota' },
-  archer: { fallbackName: 'Lučištníci', fallbackRole: 'Obrana hradeb' },
-  cavalry: { fallbackName: 'Jezdci', fallbackRole: 'Rychlý útok' },
-  knight: { fallbackName: 'Rytíř', fallbackRole: 'Dobytel osad' },
-  ram: { fallbackName: 'Beranidla', fallbackRole: 'Prolomení brány' },
-  caravan: { fallbackName: 'Karavany', fallbackRole: 'Převoz kořisti' },
+const UNIT_META: Record<string, { fallbackName: string; fallbackRole: string; icon: string }> = {
+  militia: {
+    fallbackName: 'Ozbrojenci',
+    fallbackRole: 'Základní pěchota',
+    icon: getUnitIconPath('militia.svg'),
+  },
+  archer: {
+    fallbackName: 'Lučištníci',
+    fallbackRole: 'Obrana hradeb',
+    icon: getUnitIconPath('archer.svg'),
+  },
+  cavalry: {
+    fallbackName: 'Jezdci',
+    fallbackRole: 'Rychlý útok',
+    icon: getUnitIconPath('cavalry.svg'),
+  },
+  knight: {
+    fallbackName: 'Rytíř',
+    fallbackRole: 'Dobytel osad',
+    icon: getUnitIconPath('knight.svg'),
+  },
+  ram: {
+    fallbackName: 'Beranidla',
+    fallbackRole: 'Prolomení brány',
+    icon: getUnitIconPath('ram.svg'),
+  },
+  caravan: {
+    fallbackName: 'Karavany',
+    fallbackRole: 'Převoz kořisti',
+    icon: getUnitIconPath('caravan.svg'),
+  },
+};
+const getUnitMetaById = (unitId: string): { fallbackName: string; fallbackRole: string; icon: string } => {
+  const meta = UNIT_META[unitId];
+  if (meta) {
+    return meta;
+  }
+  return {
+    fallbackName: unitId,
+    fallbackRole: 'Jednotka',
+    icon: DEFAULT_UNIT_ICON,
+  };
 };
 const COMMAND_UNIT_ORDER = ['militia', 'archer', 'cavalry', 'knight', 'ram', 'caravan'] as const;
 type CommandUnitId = (typeof COMMAND_UNIT_ORDER)[number];
@@ -513,6 +564,13 @@ const CITY_OVERVIEW_GROUPS: {
 ];
 
 type MapOrderCommandType = 'attack' | 'support' | 'move';
+type ArmyCommandSelectableType = Extract<ArmyCommandType, MapOrderCommandType>;
+type ArmyTargetHistoryByVillageId = Record<string, Partial<Record<MapOrderCommandType, number>>>;
+type ArmyQuickSelection = {
+  requestId: number;
+  commandType: ArmyCommandSelectableType;
+  targetVillageId: number;
+};
 
 const MAP_ORDER_ICON_LABELS: Record<MapOrderCommandType, string> = {
   attack: 'Útok',
@@ -553,6 +611,18 @@ const parseArmyOrderCommandType = (order: string): ArmyCommandType | null => {
     return 'return';
   }
   return null;
+};
+
+const normalizeRecruitBlockedReason = (blockedReason: string | null): string =>
+  (blockedReason ?? '').normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim();
+
+const isBlockedByRecruitRule = (unit: Pick<Unit, 'canRecruit' | 'blockedReason'>): boolean => {
+  if (unit.canRecruit || !unit.blockedReason) {
+    return false;
+  }
+
+  const normalizedReason = normalizeRecruitBlockedReason(unit.blockedReason);
+  return normalizedReason.startsWith('vybuduj ') || normalizedReason.includes('limit rytiru');
 };
 
 const buildSelectedUnitsFromDraft = (
@@ -621,6 +691,7 @@ const PANEL_LAYOUT_STORAGE_KEY_PREFIX = 'thg_panel_layout';
 const LAST_OWN_SETTLEMENT_STORAGE_KEY_PREFIX = 'thg_last_own_settlement';
 const MAP_ZOOM_STORAGE_KEY_PREFIX = 'thg_map_zoom';
 const ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'thg_active_village';
+const ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX = 'thg_army_target_history';
 const MAP_WINDOW_MIN_WIDTH = 620;
 const MAP_WINDOW_MIN_HEIGHT = 460;
 const STATE_POLL_INTERVAL_MS = 7000;
@@ -629,6 +700,8 @@ const PANEL_DEFAULT_MIN_WIDTH = 360;
 const PANEL_DEFAULT_MIN_HEIGHT = 280;
 const PANEL_CITY_MIN_WIDTH = 1080;
 const PANEL_CITY_MIN_HEIGHT = 600;
+const PANEL_ARMY_MIN_WIDTH = 760;
+const PANEL_ARMY_MIN_HEIGHT = 520;
 const PANEL_VIEWPORT_MARGIN_X = 32;
 const PANEL_VIEWPORT_MARGIN_Y = 56;
 const PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH = 280;
@@ -886,6 +959,45 @@ const getSettlementMapKind = (
   return 'player';
 };
 
+const canTargetSettlementForArmyCommand = ({
+  settlement,
+  commandType,
+  currentVillageId,
+  currentUsername,
+}: {
+  settlement: Pick<RegionSettlement, 'villageId' | 'owner' | 'relation'>;
+  commandType: ArmyCommandSelectableType;
+  currentVillageId: number | null;
+  currentUsername: string;
+}): boolean => {
+  const targetVillageId =
+    settlement.villageId != null && Number.isFinite(settlement.villageId)
+      ? Number(settlement.villageId)
+      : null;
+  if (targetVillageId == null) {
+    return false;
+  }
+
+  if (currentVillageId != null && targetVillageId === currentVillageId) {
+    return false;
+  }
+
+  const normalizedCurrentUsername = currentUsername.trim().toLowerCase();
+  const normalizedOwner = settlement.owner.trim().toLowerCase();
+  const isOwnSettlement = settlement.relation === 'self' || normalizedOwner === normalizedCurrentUsername;
+  const isAlliedSettlement = settlement.relation === 'ally';
+
+  if (commandType === 'move') {
+    return isOwnSettlement;
+  }
+
+  if (commandType === 'support') {
+    return isOwnSettlement || isAlliedSettlement;
+  }
+
+  return !isOwnSettlement && !isAlliedSettlement;
+};
+
 const isNeutralKingdom = (kingdom: string): boolean => {
   const normalized = kingdom.trim().toLowerCase();
   return (
@@ -909,6 +1021,9 @@ const getPanelMinSize = (type: PanelType): WindowSize => {
   }
   if (type === 'city') {
     return { width: PANEL_CITY_MIN_WIDTH, height: PANEL_CITY_MIN_HEIGHT };
+  }
+  if (type === 'army') {
+    return { width: PANEL_ARMY_MIN_WIDTH, height: PANEL_ARMY_MIN_HEIGHT };
   }
   if (type === 'rankings') {
     return { width: 760, height: 420 };
@@ -985,6 +1100,18 @@ const fitPanelToViewport = (
     allowBelowMinSize: true,
     ...options,
   });
+
+const getResponsiveArmyPanelSize = (viewportWidth: number, viewportHeight: number): WindowSize => {
+  const availableWidth = Math.max(PANEL_ARMY_MIN_WIDTH, viewportWidth - PANEL_VIEWPORT_MARGIN_X);
+  const availableHeight = Math.max(PANEL_ARMY_MIN_HEIGHT, viewportHeight - PANEL_VIEWPORT_MARGIN_Y);
+  const preferredWidth = Math.round(availableWidth * 0.74);
+  const preferredHeight = Math.round(availableHeight * 0.78);
+
+  return {
+    width: clamp(preferredWidth, PANEL_ARMY_MIN_WIDTH, availableWidth),
+    height: clamp(preferredHeight, PANEL_ARMY_MIN_HEIGHT, availableHeight),
+  };
+};
 
 const readStoredMapWindowSize = (): WindowSize | null => {
   if (typeof window === 'undefined') {
@@ -1102,6 +1229,91 @@ const saveActiveVillageId = (username: string, villageId: number | null): void =
   }
 };
 
+const getArmyTargetHistoryStorageKey = (username: string): string =>
+  `${ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+
+const readStoredArmyTargetHistory = (username: string): ArmyTargetHistoryByVillageId => {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(getArmyTargetHistoryStorageKey(username));
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') {
+      return {};
+    }
+
+    const history: ArmyTargetHistoryByVillageId = {};
+    for (const [originVillageIdRaw, value] of Object.entries(parsed)) {
+      const originVillageId = Number(originVillageIdRaw);
+      if (!Number.isFinite(originVillageId) || originVillageId <= 0 || !value || typeof value !== 'object') {
+        continue;
+      }
+
+      const maybeByCommand = value as Partial<Record<MapOrderCommandType, unknown>>;
+      const byCommand: Partial<Record<MapOrderCommandType, number>> = {};
+      for (const commandType of MAP_ORDER_COMMAND_TYPES) {
+        const targetVillageId = Number(maybeByCommand[commandType]);
+        if (!Number.isFinite(targetVillageId) || targetVillageId <= 0) {
+          continue;
+        }
+        byCommand[commandType] = Math.floor(targetVillageId);
+      }
+
+      if (Object.keys(byCommand).length > 0) {
+        history[String(Math.floor(originVillageId))] = byCommand;
+      }
+    }
+
+    return history;
+  } catch {
+    return {};
+  }
+};
+
+const saveStoredArmyTargetHistory = (username: string, history: ArmyTargetHistoryByVillageId): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const sanitizedHistory: ArmyTargetHistoryByVillageId = {};
+  for (const [originVillageIdRaw, byCommand] of Object.entries(history)) {
+    const originVillageId = Number(originVillageIdRaw);
+    if (!Number.isFinite(originVillageId) || originVillageId <= 0) {
+      continue;
+    }
+
+    const sanitizedByCommand: Partial<Record<MapOrderCommandType, number>> = {};
+    for (const commandType of MAP_ORDER_COMMAND_TYPES) {
+      const targetVillageId = Number(byCommand?.[commandType] ?? 0);
+      if (!Number.isFinite(targetVillageId) || targetVillageId <= 0) {
+        continue;
+      }
+      sanitizedByCommand[commandType] = Math.floor(targetVillageId);
+    }
+
+    if (Object.keys(sanitizedByCommand).length > 0) {
+      sanitizedHistory[String(Math.floor(originVillageId))] = sanitizedByCommand;
+    }
+  }
+
+  try {
+    const key = getArmyTargetHistoryStorageKey(username);
+    if (Object.keys(sanitizedHistory).length === 0) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, JSON.stringify(sanitizedHistory));
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
 const getMapZoomStorageKey = (username: string): string =>
   `${MAP_ZOOM_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
 
@@ -1175,8 +1387,24 @@ const sanitizeStoredPanel = (value: unknown, index: number): PanelWindow | null 
   );
   const maxWidth = Math.max(minWidth, viewportWidth - PANEL_VIEWPORT_MARGIN_X);
   const maxHeight = Math.max(minHeight, viewportHeight - PANEL_VIEWPORT_MARGIN_Y);
-  const width = clamp(Number(candidate.width ?? meta.width), minWidth, maxWidth);
-  const height = clamp(Number(candidate.height ?? meta.height), minHeight, maxHeight);
+  let width = clamp(Number(candidate.width ?? meta.width), minWidth, maxWidth);
+  let height = clamp(Number(candidate.height ?? meta.height), minHeight, maxHeight);
+
+  if (candidate.type === 'army') {
+    const storedWidth = Number(candidate.width);
+    const storedHeight = Number(candidate.height);
+    const looksLikeLegacyArmySize =
+      Number.isFinite(storedWidth) &&
+      Number.isFinite(storedHeight) &&
+      storedWidth <= PANEL_META.army.width + 24 &&
+      storedHeight <= PANEL_META.army.height + 24;
+
+    if (looksLikeLegacyArmySize) {
+      const responsiveArmySize = getResponsiveArmyPanelSize(viewportWidth, viewportHeight);
+      width = clamp(responsiveArmySize.width, minWidth, maxWidth);
+      height = clamp(responsiveArmySize.height, minHeight, maxHeight);
+    }
+  }
   const maxX = Math.max(8, viewportWidth - width - PANEL_VIEWPORT_MARGIN_X);
   const maxY = Math.max(12, viewportHeight - height - PANEL_VIEWPORT_MARGIN_Y);
   const x = clamp(Number(candidate.x ?? 96), 8, maxX);
@@ -1192,7 +1420,7 @@ const sanitizeStoredPanel = (value: unknown, index: number): PanelWindow | null 
     ...meta,
     id,
     type: meta.type,
-    label,
+    label: candidate.type === 'city' ? PANEL_META.city.label : label,
     side,
     width,
     height,
@@ -1313,8 +1541,14 @@ const createPanelWindow = (
   );
   const maxWidth = Math.max(minWidth, viewportWidth - PANEL_VIEWPORT_MARGIN_X);
   const maxHeight = Math.max(minHeight, viewportHeight - PANEL_VIEWPORT_MARGIN_Y);
-  const width = clamp(overrides.width ?? meta.width, minWidth, maxWidth);
-  const height = clamp(overrides.height ?? meta.height, minHeight, maxHeight);
+  const responsiveArmySize =
+    type === 'army' && (overrides.width == null || overrides.height == null)
+      ? getResponsiveArmyPanelSize(viewportWidth, viewportHeight)
+      : null;
+  const defaultWidth = responsiveArmySize?.width ?? meta.width;
+  const defaultHeight = responsiveArmySize?.height ?? meta.height;
+  const width = clamp(overrides.width ?? defaultWidth, minWidth, maxWidth);
+  const height = clamp(overrides.height ?? defaultHeight, minHeight, maxHeight);
   const side = overrides.side ?? meta.side;
   const usableWidth = width;
   const rowOffset = index % 3;
@@ -1411,6 +1645,7 @@ const CityPanel = ({
   orders,
   recruitQueueOrders,
   onOpenBuilding,
+  onOpenArmyRecruitment,
   onUpgradeBuilding,
   onCancelBuildingUpgrade,
   onCancelRecruitment,
@@ -1431,6 +1666,7 @@ const CityPanel = ({
   orders: string[];
   recruitQueueOrders: RecruitQueueOrder[];
   onOpenBuilding: (building: Building) => void;
+  onOpenArmyRecruitment: () => void;
   onUpgradeBuilding: (building: Building) => void;
   onCancelBuildingUpgrade: (upgradeOrderId: number, buildingId: string) => void;
   onCancelRecruitment: (order: RecruitQueueOrder) => void;
@@ -1525,7 +1761,7 @@ const CityPanel = ({
         <div className="city-layout">
           <section className="city-core-view">
             <div className="city-core-headline">
-              <h3>Strom rozvoje osady</h3>
+              <h3>Přehled léna</h3>
               <p>
                 Každá karta zobrazuje cenu a čas další úrovně. Upgrady můžeš spustit rovnou tady bez přepnutí do
                 detailu.
@@ -1563,19 +1799,53 @@ const CityPanel = ({
                       const isCancelPending =
                         cancelOrderId != null && cancelUpgradePendingOrderId === cancelOrderId;
                       const queuedUpgradeCount = upgradeQueue.length;
+                      const canTriggerUpgrade = building.canUpgrade && !isUpgradePending;
+                      const isUnbuilt = building.level <= 0;
                       const queueInfoLabel =
                         queuedUpgradeCount > 1
                           ? `Ve frontě: ${queuedUpgradeCount.toLocaleString('cs-CZ')} upgrady`
                           : null;
 
                       return (
-                        <article key={building.id} className="city-building-card">
+                        <article
+                          key={building.id}
+                          className={`city-building-card ${building.isInProgress ? 'is-progress' : ''} ${isUnbuilt ? 'is-unbuilt' : ''}`}
+                          role="button"
+                          tabIndex={0}
+                          title={
+                            canTriggerUpgrade
+                              ? 'Levé kliknutí: postav/rozšiř budovu. Pravé kliknutí: detail budovy.'
+                              : 'Pravé kliknutí: detail budovy.'
+                          }
+                          aria-label={`${building.name}, úroveň ${building.level}`}
+                          onClick={() => {
+                            if (!canTriggerUpgrade) {
+                              return;
+                            }
+                            onUpgradeBuilding(building);
+                          }}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            onOpenBuilding(building);
+                          }}
+                          onKeyDown={(event) =>
+                            handleActionOnEnter(event, () => {
+                              if (!canTriggerUpgrade) {
+                                return;
+                              }
+                              onUpgradeBuilding(building);
+                            })
+                          }
+                        >
                           <div className="city-building-main">
                             <img src={building.icon} alt={building.name} loading="lazy" />
                             <div>
                               <span>{building.category}</span>
                               <strong>{building.name}</strong>
                               <em>Úroveň {building.level}</em>
+                              {isUnbuilt ? (
+                                <small className="city-building-unbuilt-label">Neaktivní budova</small>
+                              ) : null}
                             </div>
                           </div>
                           <div className="city-building-status-row">
@@ -1584,7 +1854,13 @@ const CityPanel = ({
                               <button
                                 type="button"
                                 className="inline-cancel-button"
-                                onClick={() => onCancelBuildingUpgrade(cancelOrderId, building.id)}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  onCancelBuildingUpgrade(cancelOrderId, building.id);
+                                }}
+                                onContextMenu={(event) => {
+                                  event.stopPropagation();
+                                }}
                                 disabled={isCancelPending}
                                 title="Zrušit tento upgrade a navazující položky ve frontě"
                                 aria-label="Zrušit upgrade budovy"
@@ -1594,6 +1870,9 @@ const CityPanel = ({
                             ) : null}
                           </div>
                           {queueInfoLabel ? <small className="row-help">{queueInfoLabel}</small> : null}
+                          <small className="city-building-hover-hint">
+                            Levým klikem postav/rozšiř budovu · pravým klikem zobraz detail budovy
+                          </small>
                           <div className="city-building-costs">
                             {building.nextCostRaw ? (
                               RESOURCE_COST_TYPES.map((resourceType) => {
@@ -1615,24 +1894,6 @@ const CityPanel = ({
                               <span className="city-cost-chip maxed">Max úroveň</span>
                             )}
                           </div>
-                          <div className="city-building-actions">
-                            <button
-                              type="button"
-                              className="secondary-action city-building-action detail"
-                              onClick={() => onOpenBuilding(building)}
-                            >
-                              Detail
-                            </button>
-                            <button
-                              type="button"
-                              className="upgrade-action city-building-action"
-                              onClick={() => onUpgradeBuilding(building)}
-                              disabled={!building.canUpgrade || isUpgradePending}
-                              title={building.blockedReason ?? undefined}
-                            >
-                              {isUpgradePending ? 'Spouštím...' : 'Upgradovat'}
-                            </button>
-                          </div>
                           {notice ? (
                             <p className={`city-building-notice ${isPositiveNotice ? 'success' : 'error'}`}>
                               {notice}
@@ -1652,19 +1913,43 @@ const CityPanel = ({
               <h3>Jednotky ve městě</h3>
               <ul>
                 {units.map((unit) => (
-                  <li key={unit.id}>
-                    <strong>
-                      {unit.amount.toLocaleString('cs-CZ')}
-                      {unit.stationedSupportCount > 0
-                        ? ` (+${unit.stationedSupportCount.toLocaleString('cs-CZ')})`
-                        : ''}
-                    </strong>
+                  <li
+                    key={unit.id}
+                    className="city-unit-line"
+                    role="button"
+                    tabIndex={0}
+                    title="Levé kliknutí: otevřít okno Armáda a nábor"
+                    onClick={() => onOpenArmyRecruitment()}
+                    onKeyDown={(event) =>
+                      handleActionOnEnter(event, () => {
+                        onOpenArmyRecruitment();
+                      })
+                    }
+                  >
+                    <div className="city-unit-header">
+                      <span className="unit-name-with-icon">
+                        <span className="unit-icon-shell" aria-hidden="true">
+                          <img
+                            src={getUnitMetaById(unit.id).icon}
+                            alt=""
+                            className="unit-icon-image"
+                            loading="lazy"
+                          />
+                        </span>
+                        <span>{unit.name}</span>
+                      </span>
+                      <strong>
+                        {unit.amount.toLocaleString('cs-CZ')}
+                        {unit.stationedSupportCount > 0
+                          ? ` (+${unit.stationedSupportCount.toLocaleString('cs-CZ')})`
+                          : ''}
+                      </strong>
+                    </div>
                     {unit.stationedSupportCount > 0 ? (
                       <small className="row-help">
                         v závorce stacionovaná podpora v lénu
                       </small>
                     ) : null}
-                    <span>{unit.name}</span>
                     <em>{unit.role}</em>
                   </li>
                 ))}
@@ -1676,13 +1961,25 @@ const CityPanel = ({
               <ul>
                 {activeUpgradeOrders.length > 0 ? (
                   activeUpgradeOrders.map((order) => {
-                    const buildingName = buildingsById.get(order.buildingId)?.name ?? order.buildingId;
+                    const queuedBuilding = buildingsById.get(order.buildingId);
+                    const buildingName = queuedBuilding?.name ?? order.buildingId;
+                    const buildingIcon = queuedBuilding?.icon ?? BUILDING_ART[order.buildingId]?.icon ?? DEFAULT_BUILDING_ICON;
                     const isCancelPending = cancelUpgradePendingOrderId === order.id;
                     return (
                       <li key={`active-upgrade-${order.id}`} className="order-line order-line-action">
-                        <span className="order-line-text">
-                          Vystavba: {buildingName} {order.fromLevel} -&gt; {order.toLevel} (zbyva{' '}
-                          {formatDurationLabel(order.remainingSec)})
+                        <span className="order-line-text queue-order-text">
+                          <span className="queue-order-icon-shell" aria-hidden="true">
+                            <img
+                              src={buildingIcon}
+                              alt=""
+                              className="queue-order-icon-image building"
+                              loading="lazy"
+                            />
+                          </span>
+                          <span>
+                            Vystavba: {buildingName} {order.fromLevel} -&gt; {order.toLevel} (zbyva{' '}
+                            {formatDurationLabel(order.remainingSec)})
+                          </span>
                         </span>
                         <button
                           type="button"
@@ -1707,8 +2004,18 @@ const CityPanel = ({
                     const isCancelPending = cancelRecruitmentPendingId === order.id;
                     return (
                       <li key={`active-recruit-${order.id}`} className="order-line order-line-action">
-                        <span className="order-line-text">
-                          Nabor: {order.unitName} +{order.amount} (zbyva {formatDurationLabel(order.remainingSec)})
+                        <span className="order-line-text queue-order-text">
+                          <span className="queue-order-icon-shell unit" aria-hidden="true">
+                            <img
+                              src={getUnitMetaById(order.unitId).icon}
+                              alt=""
+                              className="queue-order-icon-image unit"
+                              loading="lazy"
+                            />
+                          </span>
+                          <span>
+                            Nabor: {order.unitName} +{order.amount} (zbyva {formatDurationLabel(order.remainingSec)})
+                          </span>
                         </span>
                         <button
                           type="button"
@@ -1762,14 +2069,18 @@ const ArmyPanel = ({
   settlements,
   currentVillageId,
   currentUsername,
+  commandHistory,
+  quickSelection,
   onRecruit,
   onCancelRecruitment,
   onIssueArmyCommand,
   onReturnSupport,
+  onOpenSettlementByVillageId,
   recruitPendingUnitId,
   cancelRecruitmentPendingId,
   isArmyCommandPending,
   notice,
+  noticeUnitId,
   commandNotice,
 }: {
   units: Unit[];
@@ -1779,7 +2090,9 @@ const ArmyPanel = ({
   settlements: RegionSettlement[];
   currentVillageId: number | null;
   currentUsername: string;
-  onRecruit: (unit: Unit, amount: number) => void;
+  commandHistory: Partial<Record<MapOrderCommandType, number>>;
+  quickSelection: ArmyQuickSelection | null;
+  onRecruit: (unit: Unit, amount: number) => Promise<boolean>;
   onCancelRecruitment: (order: RecruitQueueOrder) => void;
   onIssueArmyCommand: (payload: {
     commandType: ArmyCommandType;
@@ -1788,10 +2101,12 @@ const ArmyPanel = ({
     units: Record<string, number>;
   }) => void;
   onReturnSupport: (supportMovementId: number) => void;
+  onOpenSettlementByVillageId: (villageId: number) => void;
   recruitPendingUnitId: string | null;
   cancelRecruitmentPendingId: number | null;
   isArmyCommandPending: boolean;
   notice: string | null;
+  noticeUnitId: string | null;
   commandNotice: string | null;
 }) => {
   const [commandType, setCommandType] = useState<ArmyCommandType>('move');
@@ -1799,27 +2114,42 @@ const ArmyPanel = ({
   const [targetVillageId, setTargetVillageId] = useState<number | null>(null);
   const [draftUnitAmounts, setDraftUnitAmounts] = useState<Record<string, string>>({});
   const [recruitDraftAmounts, setRecruitDraftAmounts] = useState<Record<string, string>>({});
+  const isRecruitMutationPending = recruitPendingUnitId != null;
+  const lastAppliedQuickSelectionRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!quickSelection) {
+      return;
+    }
+
+    if (lastAppliedQuickSelectionRef.current === quickSelection.requestId) {
+      return;
+    }
+
+    lastAppliedQuickSelectionRef.current = quickSelection.requestId;
+    const frameId = window.requestAnimationFrame(() => {
+      setCommandType(quickSelection.commandType);
+      setTargetVillageId(quickSelection.targetVillageId);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [quickSelection]);
 
   const availableTargets = useMemo(() => {
-    return settlements.filter((settlement) => {
-      if (settlement.villageId == null || settlement.villageId === currentVillageId) {
-        return false;
-      }
+    if (commandType === 'return') {
+      return [];
+    }
 
-      if (commandType === 'move') {
-        return settlement.owner === currentUsername || settlement.relation === 'self';
-      }
-
-      if (commandType === 'support') {
-        return settlement.owner === currentUsername || settlement.relation === 'self' || settlement.relation === 'ally';
-      }
-
-      if (commandType === 'attack') {
-        return settlement.owner !== currentUsername && settlement.relation !== 'ally' && settlement.relation !== 'self';
-      }
-
-      return false;
-    });
+    return settlements.filter((settlement) =>
+      canTargetSettlementForArmyCommand({
+        settlement,
+        commandType,
+        currentVillageId,
+        currentUsername,
+      }),
+    );
   }, [commandType, currentUsername, currentVillageId, settlements]);
 
   const resolvedTargetVillageId = useMemo(() => {
@@ -1832,6 +2162,40 @@ const ArmyPanel = ({
     return availableTargets[0]?.villageId ?? null;
   }, [availableTargets, targetVillageId]);
 
+  const historyItems = useMemo(
+    () =>
+      MAP_ORDER_COMMAND_TYPES.map((commandType) => {
+        const targetVillageId = Number(commandHistory[commandType] ?? 0);
+        if (!Number.isFinite(targetVillageId) || targetVillageId <= 0) {
+          return null;
+        }
+
+        const settlement =
+          settlements.find((candidate) => Number(candidate.villageId) === targetVillageId) ?? null;
+        const isSelectable = settlement
+          ? canTargetSettlementForArmyCommand({
+              settlement,
+              commandType,
+              currentVillageId,
+              currentUsername,
+            })
+          : false;
+
+        return {
+          commandType,
+          targetVillageId,
+          settlement,
+          isSelectable,
+        };
+      }).filter((item): item is {
+        commandType: MapOrderCommandType;
+        targetVillageId: number;
+        settlement: RegionSettlement | null;
+        isSelectable: boolean;
+      } => item != null),
+    [commandHistory, currentUsername, currentVillageId, settlements],
+  );
+
   const activeMovementsForVillage = useMemo(
     () => activeMovements.filter((movement) => movement.isRelatedToCurrentVillage),
     [activeMovements],
@@ -1839,6 +2203,14 @@ const ArmyPanel = ({
   const stationedSupportsForVillage = useMemo(
     () => stationedSupports.filter((movement) => movement.isRelatedToCurrentVillage),
     [stationedSupports],
+  );
+  const lockedRecruitUnits = useMemo(
+    () => units.filter((unit) => isBlockedByRecruitRule(unit)),
+    [units],
+  );
+  const recruitTableUnits = useMemo(
+    () => units.filter((unit) => !isBlockedByRecruitRule(unit)),
+    [units],
   );
 
   const handleDraftAmountChange = (unitId: string, value: string) => {
@@ -1862,6 +2234,62 @@ const ArmyPanel = ({
     }
     return Math.min(unit.maxRecruitable, raw);
   };
+  const renderUnitAmountBadges = (armyUnits: { unitId: string; amount: number }[], keyPrefix: string) => (
+    <div className="unit-badge-list">
+      {armyUnits.map((armyUnit, index) => {
+        const meta = getUnitMetaById(armyUnit.unitId);
+        return (
+          <span key={`${keyPrefix}-${armyUnit.unitId}-${index}`} className="unit-badge-pill">
+            <span className="unit-icon-shell tiny" aria-hidden="true">
+              <img src={meta.icon} alt="" className="unit-icon-image" loading="lazy" />
+            </span>
+            <span>
+              {meta.fallbackName} {armyUnit.amount.toLocaleString('cs-CZ')}
+            </span>
+          </span>
+        );
+      })}
+    </div>
+  );
+  const handleApplyHistoryTarget = (historyItem: {
+    commandType: MapOrderCommandType;
+    targetVillageId: number;
+    settlement: RegionSettlement | null;
+    isSelectable: boolean;
+  }) => {
+    if (isArmyCommandPending) {
+      return;
+    }
+    setCommandType(historyItem.commandType);
+    setTargetVillageId(historyItem.targetVillageId);
+  };
+  const handleRecruitUnit = useCallback(
+    async (unit: Unit, amount: number) => {
+      if (!unit.canRecruit || isRecruitMutationPending) {
+        return;
+      }
+
+      const requestedAmount = Math.max(0, Math.floor(amount));
+      if (requestedAmount <= 0) {
+        return;
+      }
+
+      const wasRecruited = await onRecruit(unit, requestedAmount);
+      if (!wasRecruited) {
+        return;
+      }
+
+      setRecruitDraftAmounts((previous) => {
+        if (!(unit.id in previous)) {
+          return previous;
+        }
+        const next = { ...previous };
+        delete next[unit.id];
+        return next;
+      });
+    },
+    [isRecruitMutationPending, onRecruit],
+  );
 
   const selectedCommandUnits = useMemo(
     () =>
@@ -1919,9 +2347,18 @@ const ArmyPanel = ({
   return (
     <div className="panel-stack">
       <section>
-        <h3>Nábor jednotek (live backend)</h3>
+        <h3>Nábor jednotek</h3>
         <p>Nábor běží ve frontě pro aktuální léno. Limitem je dostupná populace a suroviny.</p>
-        {notice ? <p className="panel-feedback">{notice}</p> : null}
+        {notice ? (
+          <p className={`panel-feedback ${noticeUnitId ? 'panel-feedback-with-unit' : ''}`}>
+            {noticeUnitId ? (
+              <span className="unit-icon-shell tiny" aria-hidden="true">
+                <img src={getUnitMetaById(noticeUnitId).icon} alt="" className="unit-icon-image" loading="lazy" />
+              </span>
+            ) : null}
+            <span>{notice}</span>
+          </p>
+        ) : null}
         <table>
           <thead>
             <tr>
@@ -1933,11 +2370,19 @@ const ArmyPanel = ({
             </tr>
           </thead>
           <tbody>
-            {units.map((unit) => {
+            {recruitTableUnits.map((unit) => {
               const requestedRecruitAmount = getRequestedRecruitAmount(unit);
+              const unitMeta = getUnitMetaById(unit.id);
               return (
                 <tr key={unit.id}>
-                  <td>{unit.name}</td>
+                  <td>
+                    <span className="unit-name-with-icon">
+                      <span className="unit-icon-shell" aria-hidden="true">
+                        <img src={unitMeta.icon} alt="" className="unit-icon-image" loading="lazy" />
+                      </span>
+                      <span>{unit.name}</span>
+                    </span>
+                  </td>
                   <td>
                     {unit.amount.toLocaleString('cs-CZ')}
                     {unit.stationedSupportCount > 0 ? (
@@ -1967,37 +2412,79 @@ const ArmyPanel = ({
                         onChange={(event) => handleRecruitAmountChange(unit.id, event.target.value)}
                         onKeyDown={(event) =>
                           handleActionOnEnter(event, () => {
-                            if (
-                              !unit.canRecruit ||
-                              recruitPendingUnitId === unit.id ||
-                              requestedRecruitAmount <= 0
-                            ) {
-                              return;
-                            }
-                            onRecruit(unit, requestedRecruitAmount);
+                            void handleRecruitUnit(unit, requestedRecruitAmount);
                           })
                         }
-                        disabled={!unit.canRecruit || recruitPendingUnitId === unit.id}
+                        disabled={!unit.canRecruit || isRecruitMutationPending}
                         placeholder="1"
                       />
                       <button
                         className="secondary-action recruit-action"
-                        onClick={() => onRecruit(unit, requestedRecruitAmount)}
+                        onClick={() => {
+                          void handleRecruitUnit(unit, requestedRecruitAmount);
+                        }}
                         disabled={
                           !unit.canRecruit ||
-                          recruitPendingUnitId === unit.id ||
+                          isRecruitMutationPending ||
                           requestedRecruitAmount <= 0
                         }
                       >
                         {recruitPendingUnitId === unit.id ? 'Nábor...' : 'Naverbovat'}
+                      </button>
+                      <button
+                        className="secondary-action recruit-max-action"
+                        onClick={() => {
+                          void handleRecruitUnit(unit, unit.maxRecruitable);
+                        }}
+                        disabled={!unit.canRecruit || isRecruitMutationPending || unit.maxRecruitable <= 0}
+                      >
+                        {recruitPendingUnitId === unit.id
+                          ? 'Nábor...'
+                          : `Rekrutovat vše (${unit.maxRecruitable.toLocaleString('cs-CZ')})`}
                       </button>
                     </div>
                   </td>
                 </tr>
               );
             })}
+            {recruitTableUnits.length === 0 ? (
+              <tr>
+                <td colSpan={5}>Náborové jednotky nejsou dostupné.</td>
+              </tr>
+            ) : null}
           </tbody>
         </table>
+        {lockedRecruitUnits.length > 0 ? (
+          <div className="recruit-rule-cards">
+            <h4>Zamčené jednotky - nejdřív splň pravidlo</h4>
+            <div className="recruit-rule-card-grid">
+              {lockedRecruitUnits.map((unit) => {
+                const normalizedReason = normalizeRecruitBlockedReason(unit.blockedReason);
+                const requiredBuildingName =
+                  BUILDING_ART[unit.requiredBuildingId]?.fallbackName ?? unit.requiredBuildingId;
+                const requirementHint = normalizedReason.startsWith('vybuduj ')
+                  ? `Požadovaná budova: ${requiredBuildingName}.`
+                  : normalizedReason.includes('limit rytiru')
+                    ? 'Požadavek: uvolni kapacitu rytířů podle počtu osad.'
+                    : 'Požadavek: splň pravidlo dostupnosti jednotky.';
+
+                return (
+                  <article key={`recruit-rule-${unit.id}`} className="recruit-rule-card">
+                    <strong className="unit-name-with-icon">
+                      <span className="unit-icon-shell" aria-hidden="true">
+                        <img src={getUnitMetaById(unit.id).icon} alt="" className="unit-icon-image" loading="lazy" />
+                      </span>
+                      <span>{unit.name}</span>
+                    </strong>
+                    <span>{unit.role}</span>
+                    <p>{unit.blockedReason ?? 'Jednotka je zamčená pravidlem.'}</p>
+                    <small>{requirementHint}</small>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
       </section>
       <section>
         <h3>Fronta kasáren</h3>
@@ -2016,7 +2503,19 @@ const ArmyPanel = ({
             {recruitQueueOrders.map((order, index) => (
               <tr key={`rq-${order.id}`} className="queue-row">
                 <td>{index + 1}</td>
-                <td>{order.unitName}</td>
+                <td>
+                  <span className="unit-name-with-icon">
+                    <span className="unit-icon-shell" aria-hidden="true">
+                      <img
+                        src={getUnitMetaById(order.unitId).icon}
+                        alt=""
+                        className="unit-icon-image"
+                        loading="lazy"
+                      />
+                    </span>
+                    <span>{order.unitName}</span>
+                  </span>
+                </td>
                 <td>+{order.amount}</td>
                 <td>{formatDurationLabel(order.remainingSec)}</td>
                 <td>
@@ -2089,11 +2588,56 @@ const ArmyPanel = ({
             </label>
           ) : null}
         </div>
+        {historyItems.length > 0 ? (
+          <div className="army-command-history">
+            <h4>Rychlá historie cílů</h4>
+            <p className="row-help">Levé kliknutí nastaví cíl. Pravé kliknutí otevře profil léna.</p>
+            <div className="army-command-history-list">
+              {historyItems.map((historyItem) => {
+                const targetLabel = historyItem.settlement
+                  ? `${historyItem.settlement.name} (${historyItem.settlement.globalX}|${historyItem.settlement.globalY})`
+                  : `Léno #${historyItem.targetVillageId}`;
+
+                return (
+                  <button
+                    key={`history-${historyItem.commandType}-${historyItem.targetVillageId}`}
+                    type="button"
+                    className={`secondary-action army-command-history-item ${historyItem.commandType} ${historyItem.isSelectable ? '' : 'is-disabled'}`}
+                    onClick={() => handleApplyHistoryTarget(historyItem)}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      if (!historyItem.settlement) {
+                        return;
+                      }
+                      onOpenSettlementByVillageId(historyItem.targetVillageId);
+                    }}
+                    title={
+                      historyItem.isSelectable
+                        ? `${ARMY_COMMAND_LABELS[historyItem.commandType]} - ${targetLabel}`
+                        : `${targetLabel} nyní není dostupný cíl`
+                    }
+                  >
+                    <span className={`command-badge ${historyItem.commandType} compact`}>
+                      <span className="symbol">{getArmyCommandSymbol(historyItem.commandType)}</span>
+                    </span>
+                    <span>{targetLabel}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
         <div className="army-draft-grid">
           {units.map((unit) => (
             <label key={`draft-${unit.id}`}>
-              <span>
-                {unit.name} <small className="row-help inline">k dispozici: {unit.amount.toLocaleString('cs-CZ')}</small>
+              <span className="unit-draft-label">
+                <span className="unit-name-with-icon">
+                  <span className="unit-icon-shell tiny" aria-hidden="true">
+                    <img src={getUnitMetaById(unit.id).icon} alt="" className="unit-icon-image" loading="lazy" />
+                  </span>
+                  <span>{unit.name}</span>
+                </span>{' '}
+                <small className="row-help inline">k dispozici: {unit.amount.toLocaleString('cs-CZ')}</small>
               </span>
               <input
                 type="number"
@@ -2170,7 +2714,7 @@ const ArmyPanel = ({
                 <td>
                   {movement.originName} → {movement.targetName}
                 </td>
-                <td>{movement.units.map((unit) => `${UNIT_META[unit.unitId]?.fallbackName ?? unit.unitId} ${unit.amount}`).join(', ')}</td>
+                <td>{renderUnitAmountBadges(movement.units, `movement-${movement.id}`)}</td>
                 <td>{formatDurationLabel(movement.remainingSec)}</td>
               </tr>
             ))}
@@ -2203,7 +2747,7 @@ const ArmyPanel = ({
                   </span>{' '}
                   {support.targetName}
                 </td>
-                <td>{support.units.map((unit) => `${UNIT_META[unit.unitId]?.fallbackName ?? unit.unitId} ${unit.amount}`).join(', ')}</td>
+                <td>{renderUnitAmountBadges(support.units, `support-${support.id}`)}</td>
                 <td>
                   <button
                     className="secondary-action recruit-action"
@@ -3821,11 +4365,13 @@ const MapPanel = memo(({
   regionOriginY,
   focusedSettlementId,
   activeVillageId,
+  currentUsername,
   zoomPercent,
   orderMarkersByVillageId,
   onZoomChange,
   onOpenSettlement,
   onPinSettlement,
+  onQuickArmyCommand,
   onOpenPlayerProfile,
   onOpenKingdomProfile,
 }: {
@@ -3836,11 +4382,13 @@ const MapPanel = memo(({
   regionOriginY: number;
   focusedSettlementId: string | null;
   activeVillageId: number | null;
+  currentUsername: string;
   zoomPercent: number;
   orderMarkersByVillageId: Map<number, SettlementOrderMarkerCounts>;
   onZoomChange: (zoomPercent: number) => void;
   onOpenSettlement: (settlement: RegionSettlement) => void;
   onPinSettlement: (settlement: RegionSettlement, side: PinSide) => void;
+  onQuickArmyCommand: (commandType: ArmyCommandSelectableType, settlement: RegionSettlement) => void;
   onOpenPlayerProfile: (username: string) => void;
   onOpenKingdomProfile: (kingdomName: string) => void;
 }) => {
@@ -3902,6 +4450,36 @@ const MapPanel = memo(({
     : null;
   const previewSettlement = pinnedSettlement ?? hoveredSettlement;
   const isPreviewPinned = pinnedSettlement != null;
+  const previewSettlementKind = previewSettlement
+    ? getSettlementMapKind(previewSettlement, activeVillageId)
+    : null;
+  const isPreviewAbandoned = previewSettlementKind === 'abandoned';
+  const previewCommandAvailability = useMemo<Record<ArmyCommandSelectableType, boolean>>(() => {
+    if (!previewSettlement) {
+      return { attack: false, support: false, move: false };
+    }
+
+    return {
+      attack: canTargetSettlementForArmyCommand({
+        settlement: previewSettlement,
+        commandType: 'attack',
+        currentVillageId: activeVillageId,
+        currentUsername,
+      }),
+      support: canTargetSettlementForArmyCommand({
+        settlement: previewSettlement,
+        commandType: 'support',
+        currentVillageId: activeVillageId,
+        currentUsername,
+      }),
+      move: canTargetSettlementForArmyCommand({
+        settlement: previewSettlement,
+        commandType: 'move',
+        currentVillageId: activeVillageId,
+        currentUsername,
+      }),
+    };
+  }, [activeVillageId, currentUsername, previewSettlement]);
   const zoomScale = 1 + zoomPercent / 100;
   const cellSize = Math.max(8, REGION_CELL_SIZE * zoomScale);
   const mapCellGapPx = 2;
@@ -4375,16 +4953,29 @@ const MapPanel = memo(({
                 </header>
                 <div className="map-settlement-info-body">
                   {isPreviewPinned ? (
-                    <button
-                      type="button"
-                      className="map-settlement-link"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onOpenPlayerProfile(previewSettlement.owner);
-                      }}
-                    >
-                      {previewSettlement.owner}
-                    </button>
+                    isPreviewAbandoned ? (
+                      <button
+                        type="button"
+                        className="map-settlement-link abandoned"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpenSettlement(previewSettlement);
+                        }}
+                      >
+                        Opuštěná osada - otevřít profil
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="map-settlement-link"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpenPlayerProfile(previewSettlement.owner);
+                        }}
+                      >
+                        {previewSettlement.owner}
+                      </button>
+                    )
                   ) : (
                     <p className="map-settlement-owner">{previewSettlement.owner}</p>
                   )}
@@ -4410,33 +5001,64 @@ const MapPanel = memo(({
                   </p>
                 </div>
                 {isPreviewPinned ? (
-                  <div className="map-settlement-pin-controls">
-                    <span>Zapinovat osadu</span>
-                    <button
-                      type="button"
-                      className="map-settlement-pin-arrow"
-                      title="Zapinovat osadu vlevo"
-                      aria-label="Zapinovat osadu vlevo"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onPinSettlement(previewSettlement, 'left');
-                      }}
-                    >
-                      ←
-                    </button>
-                    <button
-                      type="button"
-                      className="map-settlement-pin-arrow"
-                      title="Zapinovat osadu vpravo"
-                      aria-label="Zapinovat osadu vpravo"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onPinSettlement(previewSettlement, 'right');
-                      }}
-                    >
-                      →
-                    </button>
-                  </div>
+                  <>
+                    <div className="map-settlement-action-grid">
+                      {MAP_ORDER_COMMAND_TYPES.map((commandType) => (
+                        <button
+                          key={`${previewSettlement.id}-${commandType}-quick`}
+                          type="button"
+                          className={`secondary-action map-settlement-action ${commandType}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (!previewCommandAvailability[commandType]) {
+                              return;
+                            }
+                            onQuickArmyCommand(commandType, previewSettlement);
+                          }}
+                          disabled={!previewCommandAvailability[commandType]}
+                          title={
+                            previewCommandAvailability[commandType]
+                              ? `${ARMY_COMMAND_LABELS[commandType]} z aktivního léna`
+                              : 'Tato akce není pro zvolenou osadu dostupná'
+                          }
+                        >
+                          <span className="symbol">{getArmyCommandSymbol(commandType)}</span>{' '}
+                          {commandType === 'attack'
+                            ? 'Zaútočit'
+                            : commandType === 'support'
+                              ? 'Podpořit'
+                              : 'Přesunout jednotky'}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="map-settlement-pin-controls">
+                      <span>Zapinovat osadu</span>
+                      <button
+                        type="button"
+                        className="map-settlement-pin-arrow"
+                        title="Zapinovat osadu vlevo"
+                        aria-label="Zapinovat osadu vlevo"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onPinSettlement(previewSettlement, 'left');
+                        }}
+                      >
+                        ←
+                      </button>
+                      <button
+                        type="button"
+                        className="map-settlement-pin-arrow"
+                        title="Zapinovat osadu vpravo"
+                        aria-label="Zapinovat osadu vpravo"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onPinSettlement(previewSettlement, 'right');
+                        }}
+                      >
+                        →
+                      </button>
+                    </div>
+                  </>
                 ) : null}
               </article>
             ) : null}
@@ -4911,6 +5533,9 @@ export const GamePage = () => {
   const stateRequestPromiseRef = useRef<Promise<void> | null>(null);
   const reportsRequestPromiseRef = useRef<Promise<void> | null>(null);
   const mutationPendingRef = useRef(false);
+  const hasStoredPanelLayoutRef = useRef(false);
+  const initialAutoStretchAppliedRef = useRef(false);
+  const armyQuickSelectionRequestIdRef = useRef(0);
   const username = session?.username ?? 'Hayato';
   const getCanvasViewportSize = useCallback(() => {
     const bounds = canvasRef.current?.getBoundingClientRect();
@@ -4936,6 +5561,7 @@ export const GamePage = () => {
   const [panels, setPanels] = useState<PanelWindow[]>(() => {
     const restored = readStoredPanelLayout(username);
     if (restored && restored.length > 0) {
+      hasStoredPanelLayoutRef.current = true;
       const highestZ = restored.reduce((maxZ, panel) => Math.max(maxZ, panel.z), 40);
       topZ.current = Math.max(40, highestZ);
 
@@ -4950,6 +5576,8 @@ export const GamePage = () => {
       return restored;
     }
 
+    hasStoredPanelLayoutRef.current = false;
+
     return [createPanelWindow('city', 40, 0)];
   });
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
@@ -4957,6 +5585,7 @@ export const GamePage = () => {
   const [, setLoadingState] = useState(true);
   const [, setStateError] = useState<string | null>(null);
   const [armyNotice, setArmyNotice] = useState<string | null>(null);
+  const [armyNoticeUnitId, setArmyNoticeUnitId] = useState<string | null>(null);
   const [armyCommandNotice, setArmyCommandNotice] = useState<string | null>(null);
   const [recruitPendingUnitId, setRecruitPendingUnitId] = useState<string | null>(null);
   const [cancelRecruitmentPendingId, setCancelRecruitmentPendingId] = useState<number | null>(null);
@@ -4977,6 +5606,10 @@ export const GamePage = () => {
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
   const [isVillageMenuOpen, setVillageMenuOpen] = useState(false);
   const [villageMenuPosition, setVillageMenuPosition] = useState<VillageMenuPosition | null>(null);
+  const [armyTargetHistoryByVillageId, setArmyTargetHistoryByVillageId] = useState<ArmyTargetHistoryByVillageId>(
+    () => readStoredArmyTargetHistory(username),
+  );
+  const [armyQuickSelection, setArmyQuickSelection] = useState<ArmyQuickSelection | null>(null);
 
   useEffect(() => {
     mutationPendingRef.current = Boolean(
@@ -4999,6 +5632,10 @@ export const GamePage = () => {
     restartVillagePending,
     upgradePendingBuildingId,
   ]);
+
+  useEffect(() => {
+    setArmyTargetHistoryByVillageId(readStoredArmyTargetHistory(username));
+  }, [username]);
 
   const latestAppliedStateServerTimeMsRef = useRef(0);
   const applyIncomingGameState = useCallback((nextState: GameStateResponse): boolean => {
@@ -5050,7 +5687,7 @@ export const GamePage = () => {
     }
 
     return gameState.units.map((unit: GameUnitState) => {
-      const unitMeta = UNIT_META[unit.id];
+      const unitMeta = getUnitMetaById(unit.id);
       return {
         id: unit.id,
         name: unitMeta?.fallbackName ?? unit.name,
@@ -5059,6 +5696,8 @@ export const GamePage = () => {
         stationedSupportCount: Math.max(0, Math.floor(Number(unit.stationedSupportCount ?? 0))),
         role: unitMeta?.fallbackRole ?? unit.role,
         cost: formatCostLabel(unit.cost),
+        requiredBuildingId: unit.requiredBuildingId,
+        requiredBuildingLevel: unit.requiredBuildingLevel,
         canRecruit: unit.canRecruit,
         blockedReason: unit.blockedReason,
         maxRecruitable: unit.maxRecruitable,
@@ -5087,7 +5726,7 @@ export const GamePage = () => {
       .map((order) => ({
         id: order.id,
         unitId: order.unitId,
-        unitName: UNIT_META[order.unitId]?.fallbackName ?? order.unitId,
+        unitName: getUnitMetaById(order.unitId).fallbackName,
         amount: order.amount,
         remainingSec: order.remainingSec,
         finishAt: order.finishAt,
@@ -5239,6 +5878,14 @@ export const GamePage = () => {
     ? `${gameState.village.name} (${gameState.village.coordX}|${gameState.village.coordY})`
     : 'Načítám město...';
   const activeVillageResolvedId = gameState?.village.id ?? activeVillageId ?? null;
+  const currentVillageHistoryKey =
+    activeVillageResolvedId != null && Number.isFinite(activeVillageResolvedId)
+      ? String(Math.floor(activeVillageResolvedId))
+      : null;
+  const currentVillageCommandHistory = useMemo<Partial<Record<MapOrderCommandType, number>>>(
+    () => (currentVillageHistoryKey ? armyTargetHistoryByVillageId[currentVillageHistoryKey] ?? {} : {}),
+    [armyTargetHistoryByVillageId, currentVillageHistoryKey],
+  );
   const playerVillages = gameState?.villages ?? [];
   const currentVillageName = gameState?.village.name ?? 'Neznámé léno';
   const villageRegionLabel = gameState
@@ -5433,6 +6080,24 @@ export const GamePage = () => {
     }, 35000);
 
     return () => window.clearInterval(notifyTimer);
+  }, []);
+
+  useEffect(() => {
+    setPanels((previous) => {
+      let changed = false;
+      const nextPanels = previous.map((panel) => {
+        if (panel.type !== 'city' || panel.label === PANEL_META.city.label) {
+          return panel;
+        }
+        changed = true;
+        return {
+          ...panel,
+          label: PANEL_META.city.label,
+        };
+      });
+
+      return changed ? nextPanels : previous;
+    });
   }, []);
 
   useEffect(() => {
@@ -5741,6 +6406,7 @@ export const GamePage = () => {
 
       setActiveVillageId(nextVillageId);
       setArmyNotice(null);
+      setArmyNoticeUnitId(null);
       setArmyCommandNotice(null);
       setBuildingNotices({});
       setStateError(null);
@@ -5840,11 +6506,59 @@ export const GamePage = () => {
     closeVillageMenu();
   }, [activeVillageResolvedId, closeVillageMenu, isVillageMenuOpen]);
 
+  const getStretchedPanelFrame = useCallback((viewportWidth: number, viewportHeight: number) => {
+    const canvasNode = canvasRef.current;
+    const leftPinNode = canvasNode?.querySelector('.pin-column.left') as HTMLElement | null;
+    const rightPinNode = canvasNode?.querySelector('.pin-column.right') as HTMLElement | null;
+    const pinClearance = 12;
+
+    const leftPinEnd = leftPinNode
+      ? Math.floor(leftPinNode.offsetLeft + leftPinNode.offsetWidth + pinClearance)
+      : 8;
+    const rightPinStart = rightPinNode
+      ? Math.floor(rightPinNode.offsetLeft - pinClearance)
+      : viewportWidth - PANEL_VIEWPORT_MARGIN_X;
+    const availableLeft = clamp(
+      leftPinEnd,
+      8,
+      Math.max(8, viewportWidth - PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH),
+    );
+    const maxRight = Math.max(
+      availableLeft + PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
+      viewportWidth - PANEL_VIEWPORT_MARGIN_X,
+    );
+    const availableRight = clamp(
+      rightPinStart,
+      availableLeft + PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
+      maxRight,
+    );
+
+    return {
+      x: Math.round(availableLeft),
+      y: 12,
+      width: Math.round(
+        clamp(
+          availableRight - availableLeft,
+          PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
+          viewportWidth - PANEL_VIEWPORT_MARGIN_X,
+        ),
+      ),
+      height: Math.round(
+        clamp(
+          viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
+          PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT,
+          viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
+        ),
+      ),
+    };
+  }, []);
+
   const openPanel = useCallback((type: StaticPanelType) => {
     setActivePanelId(type);
     const { viewportWidth, viewportHeight } = getCanvasViewportSize();
     const panelVillageName =
       type === 'city' || type === 'map' || type === 'army' ? currentVillageName : undefined;
+    const shouldDefaultStretch = DEFAULT_STRETCHED_PANEL_TYPES.has(type);
     let nextMapSize: WindowSize | null = null;
 
     setPanels((previous) => {
@@ -5863,6 +6577,7 @@ export const GamePage = () => {
               z: nextZ,
               expanded: true,
               alert: false,
+              label: PANEL_META[type].label,
               villageName: panelVillageName ?? panel.villageName,
             },
             viewportWidth,
@@ -5899,17 +6614,65 @@ export const GamePage = () => {
         viewportWidth,
         viewportHeight,
       );
-      if (created.type === 'map') {
-        nextMapSize = { width: created.width, height: created.height };
+      const nextCreated = shouldDefaultStretch
+        ? fitPanelToViewport(
+            {
+              ...created,
+              ...getStretchedPanelFrame(viewportWidth, viewportHeight),
+            },
+            viewportWidth,
+            viewportHeight,
+          )
+        : created;
+      if (nextCreated.type === 'map') {
+        nextMapSize = { width: nextCreated.width, height: nextCreated.height };
       }
-      return [...previous, created];
+      return [...previous, nextCreated];
     });
 
     if (nextMapSize) {
       mapWindowSizeRef.current = nextMapSize;
       saveMapWindowSize(nextMapSize);
     }
-  }, [currentVillageName, getCanvasViewportSize]);
+  }, [currentVillageName, getCanvasViewportSize, getStretchedPanelFrame]);
+
+  useEffect(() => {
+    if (initialAutoStretchAppliedRef.current) {
+      return;
+    }
+
+    initialAutoStretchAppliedRef.current = true;
+    if (hasStoredPanelLayoutRef.current) {
+      return;
+    }
+
+    const { viewportWidth, viewportHeight } = getCanvasViewportSize();
+    const stretchedFrame = getStretchedPanelFrame(viewportWidth, viewportHeight);
+    setPanels((previous) => {
+      let changed = false;
+      const nextPanels = previous.map((panel) => {
+        if (!DEFAULT_STRETCHED_PANEL_TYPES.has(panel.type as StaticPanelType)) {
+          return panel;
+        }
+
+        const stretched = fitPanelToViewport(
+          {
+            ...panel,
+            ...stretchedFrame,
+          },
+          viewportWidth,
+          viewportHeight,
+        );
+        if (stretched === panel) {
+          return panel;
+        }
+        changed = true;
+        return stretched;
+      });
+
+      return changed ? nextPanels : previous;
+    });
+  }, [getCanvasViewportSize, getStretchedPanelFrame]);
 
   const openSettlementPanel = useCallback(
     (settlement: RegionSettlement, options?: { pinSide?: PinSide }) => {
@@ -5985,6 +6748,57 @@ export const GamePage = () => {
       openSettlementPanel(settlement, { pinSide: side });
     },
     [openSettlementPanel],
+  );
+
+  const openSettlementByVillageId = useCallback(
+    (villageId: number) => {
+      const normalizedVillageId = Number(villageId);
+      if (!Number.isFinite(normalizedVillageId) || normalizedVillageId <= 0) {
+        return;
+      }
+
+      const settlement =
+        mapSettlements.find((candidate) => Number(candidate.villageId) === Math.floor(normalizedVillageId)) ?? null;
+      if (!settlement) {
+        return;
+      }
+
+      openSettlementPanel(settlement);
+    },
+    [mapSettlements, openSettlementPanel],
+  );
+
+  const queueArmyQuickSelection = useCallback(
+    (commandType: ArmyCommandSelectableType, targetVillageIdRaw: number) => {
+      const targetVillageId = Number(targetVillageIdRaw);
+      if (!Number.isFinite(targetVillageId) || targetVillageId <= 0) {
+        return;
+      }
+
+      armyQuickSelectionRequestIdRef.current += 1;
+      setArmyQuickSelection({
+        requestId: armyQuickSelectionRequestIdRef.current,
+        commandType,
+        targetVillageId: Math.floor(targetVillageId),
+      });
+    },
+    [],
+  );
+
+  const handleMapQuickArmyCommand = useCallback(
+    (commandType: ArmyCommandSelectableType, settlement: RegionSettlement) => {
+      const targetVillageId =
+        settlement.villageId != null && Number.isFinite(settlement.villageId)
+          ? Number(settlement.villageId)
+          : null;
+      if (targetVillageId == null) {
+        return;
+      }
+
+      queueArmyQuickSelection(commandType, targetVillageId);
+      openPanel('army');
+    },
+    [openPanel, queueArmyQuickSelection],
   );
 
   const openBuildingPanel = useCallback((building: Building) => {
@@ -6489,14 +7303,15 @@ export const GamePage = () => {
   }, [buildingsById]);
 
   const handleRecruit = useCallback(
-    async (unit: Unit, amount: number) => {
+    async (unit: Unit, amount: number): Promise<boolean> => {
       const normalizedAmount = Math.max(0, Math.floor(amount));
       if (normalizedAmount <= 0) {
-        return;
+        return false;
       }
 
       setRecruitPendingUnitId(unit.id);
       setArmyNotice(null);
+      setArmyNoticeUnitId(null);
 
       try {
         const nextState = await recruitUnit(
@@ -6507,9 +7322,13 @@ export const GamePage = () => {
         );
         applyIncomingGameState(nextState);
         setArmyNotice(`${unit.name}: +${normalizedAmount.toLocaleString('cs-CZ')} jednotek`);
+        setArmyNoticeUnitId(unit.id);
         void loadGameState(true, true);
+        return true;
       } catch (error) {
         setArmyNotice(getErrorMessage(error));
+        setArmyNoticeUnitId(null);
+        return false;
       } finally {
         setRecruitPendingUnitId(null);
       }
@@ -6525,6 +7344,7 @@ export const GamePage = () => {
 
       setCancelRecruitmentPendingId(order.id);
       setArmyNotice(null);
+      setArmyNoticeUnitId(null);
 
       try {
         const response = await cancelRecruitmentRequest(
@@ -6536,14 +7356,54 @@ export const GamePage = () => {
         setArmyNotice(
           `${order.unitName}: nábor zrušen, vráceno ${formatResourceBundleLabel(response.result.refunded)}.`,
         );
+        setArmyNoticeUnitId(order.unitId);
         void loadGameState(true, true);
       } catch (error) {
         setArmyNotice(getErrorMessage(error));
+        setArmyNoticeUnitId(null);
       } finally {
         setCancelRecruitmentPendingId(null);
       }
     },
     [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+  );
+
+  const rememberArmyCommandTarget = useCallback(
+    (
+      originVillageIdRaw: number | null,
+      commandType: ArmyCommandSelectableType,
+      targetVillageIdRaw: number,
+    ) => {
+      const originVillageId = Number(originVillageIdRaw);
+      const targetVillageId = Number(targetVillageIdRaw);
+      if (
+        !Number.isFinite(originVillageId) ||
+        originVillageId <= 0 ||
+        !Number.isFinite(targetVillageId) ||
+        targetVillageId <= 0
+      ) {
+        return;
+      }
+
+      setArmyTargetHistoryByVillageId((previous) => {
+        const originKey = String(Math.floor(originVillageId));
+        const currentHistoryForVillage = previous[originKey] ?? {};
+        if (currentHistoryForVillage[commandType] === Math.floor(targetVillageId)) {
+          return previous;
+        }
+
+        const nextHistory: ArmyTargetHistoryByVillageId = {
+          ...previous,
+          [originKey]: {
+            ...currentHistoryForVillage,
+            [commandType]: Math.floor(targetVillageId),
+          },
+        };
+        saveStoredArmyTargetHistory(username, nextHistory);
+        return nextHistory;
+      });
+    },
+    [username],
   );
 
   const handleIssueArmyCommand = useCallback(
@@ -6553,19 +7413,27 @@ export const GamePage = () => {
       lootPriority?: LootPriority;
       units: Record<string, number>;
     }) => {
+      const originVillageId = gameState?.village.id ?? activeVillageId;
       setArmyCommandPending(true);
       setArmyCommandNotice(null);
 
       try {
         const response = await issueArmyCommand(username, {
           commandType: payload.commandType,
-          villageId: gameState?.village.id ?? activeVillageId,
+          villageId: originVillageId,
           targetVillageId: payload.targetVillageId,
           lootPriority: payload.lootPriority,
           units: payload.units,
         });
         const nextState = response.data;
         applyIncomingGameState(nextState);
+        if (
+          payload.commandType === 'attack' ||
+          payload.commandType === 'support' ||
+          payload.commandType === 'move'
+        ) {
+          rememberArmyCommandTarget(originVillageId, payload.commandType, payload.targetVillageId);
+        }
         const etaLabel = formatDurationLabel(response.result.durationSec);
         const testingHint = payload.commandType === 'attack' ? ' Test režim: útok max 5s.' : '';
         setArmyCommandNotice(
@@ -6578,7 +7446,14 @@ export const GamePage = () => {
         setArmyCommandPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [
+      activeVillageId,
+      applyIncomingGameState,
+      gameState?.village.id,
+      loadGameState,
+      rememberArmyCommandTarget,
+      username,
+    ],
   );
 
   const handleReturnSupport = useCallback(
@@ -6999,6 +7874,7 @@ export const GamePage = () => {
             orders={activeOrders}
             recruitQueueOrders={recruitQueueOrders}
             onOpenBuilding={openBuildingPanel}
+            onOpenArmyRecruitment={() => openPanel('army')}
             onUpgradeBuilding={handleBuildingUpgrade}
             onCancelBuildingUpgrade={handleCancelBuildingUpgrade}
             onCancelRecruitment={handleCancelRecruitment}
@@ -7019,11 +7895,13 @@ export const GamePage = () => {
             regionOriginY={mapRegionOriginY}
             focusedSettlementId={focusedOwnSettlementId}
             activeVillageId={gameState?.village.id ?? activeVillageId}
+            currentUsername={username}
             zoomPercent={mapZoomPercent}
             orderMarkersByVillageId={mapOrderMarkersByVillageId}
             onZoomChange={setMapZoomPercent}
             onOpenSettlement={openSettlementPanel}
             onPinSettlement={pinSettlementPanelToSide}
+            onQuickArmyCommand={handleMapQuickArmyCommand}
             onOpenPlayerProfile={openPlayerProfilePanel}
             onOpenKingdomProfile={openKingdomProfilePanel}
           />
@@ -7038,14 +7916,18 @@ export const GamePage = () => {
             settlements={mapSettlements}
             currentVillageId={gameState?.village.id ?? activeVillageId}
             currentUsername={username}
+            commandHistory={currentVillageCommandHistory}
+            quickSelection={armyQuickSelection}
             onRecruit={handleRecruit}
             onCancelRecruitment={handleCancelRecruitment}
             onIssueArmyCommand={handleIssueArmyCommand}
             onReturnSupport={handleReturnSupport}
+            onOpenSettlementByVillageId={openSettlementByVillageId}
             recruitPendingUnitId={recruitPendingUnitId}
             cancelRecruitmentPendingId={cancelRecruitmentPendingId}
             isArmyCommandPending={armyCommandPending}
             notice={armyNotice}
+            noticeUnitId={armyNoticeUnitId}
             commandNotice={armyCommandNotice}
           />
         );
