@@ -664,3 +664,4 @@ if (!isServerlessRuntime) {
 }
 
 export { app };
+export default app;
