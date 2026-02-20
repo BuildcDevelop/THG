@@ -151,6 +151,8 @@ type Unit = {
   stationedSupportCount: number;
   role: string;
   cost: string;
+  requiredBuildingId: string;
+  requiredBuildingLevel: number;
   canRecruit: boolean;
   blockedReason: string | null;
   maxRecruitable: number;
@@ -373,6 +375,9 @@ const isStretchablePanelType = (panelType: PanelType): boolean => {
 const BUILDING_ICON_BASE_PATH = '/assets/buildings';
 const getBuildingIconPath = (fileName: string): string => `${BUILDING_ICON_BASE_PATH}/${fileName}`;
 const DEFAULT_BUILDING_ICON = getBuildingIconPath('warehouse.png');
+const UNIT_ICON_BASE_PATH = '/assets/units';
+const getUnitIconPath = (fileName: string): string => `${UNIT_ICON_BASE_PATH}/${fileName}`;
+const DEFAULT_UNIT_ICON = getUnitIconPath('militia.svg');
 
 const BUILDING_ART: Record<string, { icon: string; fallbackName: string; fallbackCategory: string }> = {
   woodcutter: {
@@ -437,13 +442,48 @@ const BUILDING_ART: Record<string, { icon: string; fallbackName: string; fallbac
   },
 };
 
-const UNIT_META: Record<string, { fallbackName: string; fallbackRole: string }> = {
-  militia: { fallbackName: 'Ozbrojenci', fallbackRole: 'Základní pěchota' },
-  archer: { fallbackName: 'Lučištníci', fallbackRole: 'Obrana hradeb' },
-  cavalry: { fallbackName: 'Jezdci', fallbackRole: 'Rychlý útok' },
-  knight: { fallbackName: 'Rytíř', fallbackRole: 'Dobytel osad' },
-  ram: { fallbackName: 'Beranidla', fallbackRole: 'Prolomení brány' },
-  caravan: { fallbackName: 'Karavany', fallbackRole: 'Převoz kořisti' },
+const UNIT_META: Record<string, { fallbackName: string; fallbackRole: string; icon: string }> = {
+  militia: {
+    fallbackName: 'Ozbrojenci',
+    fallbackRole: 'Základní pěchota',
+    icon: getUnitIconPath('militia.svg'),
+  },
+  archer: {
+    fallbackName: 'Lučištníci',
+    fallbackRole: 'Obrana hradeb',
+    icon: getUnitIconPath('archer.svg'),
+  },
+  cavalry: {
+    fallbackName: 'Jezdci',
+    fallbackRole: 'Rychlý útok',
+    icon: getUnitIconPath('cavalry.svg'),
+  },
+  knight: {
+    fallbackName: 'Rytíř',
+    fallbackRole: 'Dobytel osad',
+    icon: getUnitIconPath('knight.svg'),
+  },
+  ram: {
+    fallbackName: 'Beranidla',
+    fallbackRole: 'Prolomení brány',
+    icon: getUnitIconPath('ram.svg'),
+  },
+  caravan: {
+    fallbackName: 'Karavany',
+    fallbackRole: 'Převoz kořisti',
+    icon: getUnitIconPath('caravan.svg'),
+  },
+};
+const getUnitMetaById = (unitId: string): { fallbackName: string; fallbackRole: string; icon: string } => {
+  const meta = UNIT_META[unitId];
+  if (meta) {
+    return meta;
+  }
+  return {
+    fallbackName: unitId,
+    fallbackRole: 'Jednotka',
+    icon: DEFAULT_UNIT_ICON,
+  };
 };
 const COMMAND_UNIT_ORDER = ['militia', 'archer', 'cavalry', 'knight', 'ram', 'caravan'] as const;
 type CommandUnitId = (typeof COMMAND_UNIT_ORDER)[number];
@@ -553,6 +593,18 @@ const parseArmyOrderCommandType = (order: string): ArmyCommandType | null => {
     return 'return';
   }
   return null;
+};
+
+const normalizeRecruitBlockedReason = (blockedReason: string | null): string =>
+  (blockedReason ?? '').normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim();
+
+const isBlockedByRecruitRule = (unit: Pick<Unit, 'canRecruit' | 'blockedReason'>): boolean => {
+  if (unit.canRecruit || !unit.blockedReason) {
+    return false;
+  }
+
+  const normalizedReason = normalizeRecruitBlockedReason(unit.blockedReason);
+  return normalizedReason.startsWith('vybuduj ') || normalizedReason.includes('limit rytiru');
 };
 
 const buildSelectedUnitsFromDraft = (
@@ -1770,6 +1822,7 @@ const ArmyPanel = ({
   cancelRecruitmentPendingId,
   isArmyCommandPending,
   notice,
+  noticeUnitId,
   commandNotice,
 }: {
   units: Unit[];
@@ -1779,7 +1832,7 @@ const ArmyPanel = ({
   settlements: RegionSettlement[];
   currentVillageId: number | null;
   currentUsername: string;
-  onRecruit: (unit: Unit, amount: number) => void;
+  onRecruit: (unit: Unit, amount: number) => Promise<boolean>;
   onCancelRecruitment: (order: RecruitQueueOrder) => void;
   onIssueArmyCommand: (payload: {
     commandType: ArmyCommandType;
@@ -1792,6 +1845,7 @@ const ArmyPanel = ({
   cancelRecruitmentPendingId: number | null;
   isArmyCommandPending: boolean;
   notice: string | null;
+  noticeUnitId: string | null;
   commandNotice: string | null;
 }) => {
   const [commandType, setCommandType] = useState<ArmyCommandType>('move');
@@ -1799,6 +1853,7 @@ const ArmyPanel = ({
   const [targetVillageId, setTargetVillageId] = useState<number | null>(null);
   const [draftUnitAmounts, setDraftUnitAmounts] = useState<Record<string, string>>({});
   const [recruitDraftAmounts, setRecruitDraftAmounts] = useState<Record<string, string>>({});
+  const isRecruitMutationPending = recruitPendingUnitId != null;
 
   const availableTargets = useMemo(() => {
     return settlements.filter((settlement) => {
@@ -1840,6 +1895,14 @@ const ArmyPanel = ({
     () => stationedSupports.filter((movement) => movement.isRelatedToCurrentVillage),
     [stationedSupports],
   );
+  const lockedRecruitUnits = useMemo(
+    () => units.filter((unit) => isBlockedByRecruitRule(unit)),
+    [units],
+  );
+  const recruitTableUnits = useMemo(
+    () => units.filter((unit) => !isBlockedByRecruitRule(unit)),
+    [units],
+  );
 
   const handleDraftAmountChange = (unitId: string, value: string) => {
     setDraftUnitAmounts((previous) => ({
@@ -1862,6 +1925,50 @@ const ArmyPanel = ({
     }
     return Math.min(unit.maxRecruitable, raw);
   };
+  const renderUnitAmountBadges = (armyUnits: { unitId: string; amount: number }[], keyPrefix: string) => (
+    <div className="unit-badge-list">
+      {armyUnits.map((armyUnit, index) => {
+        const meta = getUnitMetaById(armyUnit.unitId);
+        return (
+          <span key={`${keyPrefix}-${armyUnit.unitId}-${index}`} className="unit-badge-pill">
+            <span className="unit-icon-shell tiny" aria-hidden="true">
+              <img src={meta.icon} alt="" className="unit-icon-image" loading="lazy" />
+            </span>
+            <span>
+              {meta.fallbackName} {armyUnit.amount.toLocaleString('cs-CZ')}
+            </span>
+          </span>
+        );
+      })}
+    </div>
+  );
+  const handleRecruitUnit = useCallback(
+    async (unit: Unit, amount: number) => {
+      if (!unit.canRecruit || isRecruitMutationPending) {
+        return;
+      }
+
+      const requestedAmount = Math.max(0, Math.floor(amount));
+      if (requestedAmount <= 0) {
+        return;
+      }
+
+      const wasRecruited = await onRecruit(unit, requestedAmount);
+      if (!wasRecruited) {
+        return;
+      }
+
+      setRecruitDraftAmounts((previous) => {
+        if (!(unit.id in previous)) {
+          return previous;
+        }
+        const next = { ...previous };
+        delete next[unit.id];
+        return next;
+      });
+    },
+    [isRecruitMutationPending, onRecruit],
+  );
 
   const selectedCommandUnits = useMemo(
     () =>
@@ -1919,9 +2026,18 @@ const ArmyPanel = ({
   return (
     <div className="panel-stack">
       <section>
-        <h3>Nábor jednotek (live backend)</h3>
+        <h3>Nábor jednotek</h3>
         <p>Nábor běží ve frontě pro aktuální léno. Limitem je dostupná populace a suroviny.</p>
-        {notice ? <p className="panel-feedback">{notice}</p> : null}
+        {notice ? (
+          <p className={`panel-feedback ${noticeUnitId ? 'panel-feedback-with-unit' : ''}`}>
+            {noticeUnitId ? (
+              <span className="unit-icon-shell tiny" aria-hidden="true">
+                <img src={getUnitMetaById(noticeUnitId).icon} alt="" className="unit-icon-image" loading="lazy" />
+              </span>
+            ) : null}
+            <span>{notice}</span>
+          </p>
+        ) : null}
         <table>
           <thead>
             <tr>
@@ -1933,11 +2049,19 @@ const ArmyPanel = ({
             </tr>
           </thead>
           <tbody>
-            {units.map((unit) => {
+            {recruitTableUnits.map((unit) => {
               const requestedRecruitAmount = getRequestedRecruitAmount(unit);
+              const unitMeta = getUnitMetaById(unit.id);
               return (
                 <tr key={unit.id}>
-                  <td>{unit.name}</td>
+                  <td>
+                    <span className="unit-name-with-icon">
+                      <span className="unit-icon-shell" aria-hidden="true">
+                        <img src={unitMeta.icon} alt="" className="unit-icon-image" loading="lazy" />
+                      </span>
+                      <span>{unit.name}</span>
+                    </span>
+                  </td>
                   <td>
                     {unit.amount.toLocaleString('cs-CZ')}
                     {unit.stationedSupportCount > 0 ? (
@@ -1967,37 +2091,79 @@ const ArmyPanel = ({
                         onChange={(event) => handleRecruitAmountChange(unit.id, event.target.value)}
                         onKeyDown={(event) =>
                           handleActionOnEnter(event, () => {
-                            if (
-                              !unit.canRecruit ||
-                              recruitPendingUnitId === unit.id ||
-                              requestedRecruitAmount <= 0
-                            ) {
-                              return;
-                            }
-                            onRecruit(unit, requestedRecruitAmount);
+                            void handleRecruitUnit(unit, requestedRecruitAmount);
                           })
                         }
-                        disabled={!unit.canRecruit || recruitPendingUnitId === unit.id}
+                        disabled={!unit.canRecruit || isRecruitMutationPending}
                         placeholder="1"
                       />
                       <button
                         className="secondary-action recruit-action"
-                        onClick={() => onRecruit(unit, requestedRecruitAmount)}
+                        onClick={() => {
+                          void handleRecruitUnit(unit, requestedRecruitAmount);
+                        }}
                         disabled={
                           !unit.canRecruit ||
-                          recruitPendingUnitId === unit.id ||
+                          isRecruitMutationPending ||
                           requestedRecruitAmount <= 0
                         }
                       >
                         {recruitPendingUnitId === unit.id ? 'Nábor...' : 'Naverbovat'}
+                      </button>
+                      <button
+                        className="secondary-action recruit-max-action"
+                        onClick={() => {
+                          void handleRecruitUnit(unit, unit.maxRecruitable);
+                        }}
+                        disabled={!unit.canRecruit || isRecruitMutationPending || unit.maxRecruitable <= 0}
+                      >
+                        {recruitPendingUnitId === unit.id
+                          ? 'Nábor...'
+                          : `Rekrutovat vše (${unit.maxRecruitable.toLocaleString('cs-CZ')})`}
                       </button>
                     </div>
                   </td>
                 </tr>
               );
             })}
+            {recruitTableUnits.length === 0 ? (
+              <tr>
+                <td colSpan={5}>Náborové jednotky nejsou dostupné.</td>
+              </tr>
+            ) : null}
           </tbody>
         </table>
+        {lockedRecruitUnits.length > 0 ? (
+          <div className="recruit-rule-cards">
+            <h4>Zamčené jednotky - nejdřív splň pravidlo</h4>
+            <div className="recruit-rule-card-grid">
+              {lockedRecruitUnits.map((unit) => {
+                const normalizedReason = normalizeRecruitBlockedReason(unit.blockedReason);
+                const requiredBuildingName =
+                  BUILDING_ART[unit.requiredBuildingId]?.fallbackName ?? unit.requiredBuildingId;
+                const requirementHint = normalizedReason.startsWith('vybuduj ')
+                  ? `Požadovaná budova: ${requiredBuildingName}.`
+                  : normalizedReason.includes('limit rytiru')
+                    ? 'Požadavek: uvolni kapacitu rytířů podle počtu osad.'
+                    : 'Požadavek: splň pravidlo dostupnosti jednotky.';
+
+                return (
+                  <article key={`recruit-rule-${unit.id}`} className="recruit-rule-card">
+                    <strong className="unit-name-with-icon">
+                      <span className="unit-icon-shell" aria-hidden="true">
+                        <img src={getUnitMetaById(unit.id).icon} alt="" className="unit-icon-image" loading="lazy" />
+                      </span>
+                      <span>{unit.name}</span>
+                    </strong>
+                    <span>{unit.role}</span>
+                    <p>{unit.blockedReason ?? 'Jednotka je zamčená pravidlem.'}</p>
+                    <small>{requirementHint}</small>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
       </section>
       <section>
         <h3>Fronta kasáren</h3>
@@ -2016,7 +2182,19 @@ const ArmyPanel = ({
             {recruitQueueOrders.map((order, index) => (
               <tr key={`rq-${order.id}`} className="queue-row">
                 <td>{index + 1}</td>
-                <td>{order.unitName}</td>
+                <td>
+                  <span className="unit-name-with-icon">
+                    <span className="unit-icon-shell" aria-hidden="true">
+                      <img
+                        src={getUnitMetaById(order.unitId).icon}
+                        alt=""
+                        className="unit-icon-image"
+                        loading="lazy"
+                      />
+                    </span>
+                    <span>{order.unitName}</span>
+                  </span>
+                </td>
                 <td>+{order.amount}</td>
                 <td>{formatDurationLabel(order.remainingSec)}</td>
                 <td>
@@ -2092,8 +2270,14 @@ const ArmyPanel = ({
         <div className="army-draft-grid">
           {units.map((unit) => (
             <label key={`draft-${unit.id}`}>
-              <span>
-                {unit.name} <small className="row-help inline">k dispozici: {unit.amount.toLocaleString('cs-CZ')}</small>
+              <span className="unit-draft-label">
+                <span className="unit-name-with-icon">
+                  <span className="unit-icon-shell tiny" aria-hidden="true">
+                    <img src={getUnitMetaById(unit.id).icon} alt="" className="unit-icon-image" loading="lazy" />
+                  </span>
+                  <span>{unit.name}</span>
+                </span>{' '}
+                <small className="row-help inline">k dispozici: {unit.amount.toLocaleString('cs-CZ')}</small>
               </span>
               <input
                 type="number"
@@ -2170,7 +2354,7 @@ const ArmyPanel = ({
                 <td>
                   {movement.originName} → {movement.targetName}
                 </td>
-                <td>{movement.units.map((unit) => `${UNIT_META[unit.unitId]?.fallbackName ?? unit.unitId} ${unit.amount}`).join(', ')}</td>
+                <td>{renderUnitAmountBadges(movement.units, `movement-${movement.id}`)}</td>
                 <td>{formatDurationLabel(movement.remainingSec)}</td>
               </tr>
             ))}
@@ -2203,7 +2387,7 @@ const ArmyPanel = ({
                   </span>{' '}
                   {support.targetName}
                 </td>
-                <td>{support.units.map((unit) => `${UNIT_META[unit.unitId]?.fallbackName ?? unit.unitId} ${unit.amount}`).join(', ')}</td>
+                <td>{renderUnitAmountBadges(support.units, `support-${support.id}`)}</td>
                 <td>
                   <button
                     className="secondary-action recruit-action"
@@ -4957,6 +5141,7 @@ export const GamePage = () => {
   const [, setLoadingState] = useState(true);
   const [, setStateError] = useState<string | null>(null);
   const [armyNotice, setArmyNotice] = useState<string | null>(null);
+  const [armyNoticeUnitId, setArmyNoticeUnitId] = useState<string | null>(null);
   const [armyCommandNotice, setArmyCommandNotice] = useState<string | null>(null);
   const [recruitPendingUnitId, setRecruitPendingUnitId] = useState<string | null>(null);
   const [cancelRecruitmentPendingId, setCancelRecruitmentPendingId] = useState<number | null>(null);
@@ -5050,7 +5235,7 @@ export const GamePage = () => {
     }
 
     return gameState.units.map((unit: GameUnitState) => {
-      const unitMeta = UNIT_META[unit.id];
+      const unitMeta = getUnitMetaById(unit.id);
       return {
         id: unit.id,
         name: unitMeta?.fallbackName ?? unit.name,
@@ -5059,6 +5244,8 @@ export const GamePage = () => {
         stationedSupportCount: Math.max(0, Math.floor(Number(unit.stationedSupportCount ?? 0))),
         role: unitMeta?.fallbackRole ?? unit.role,
         cost: formatCostLabel(unit.cost),
+        requiredBuildingId: unit.requiredBuildingId,
+        requiredBuildingLevel: unit.requiredBuildingLevel,
         canRecruit: unit.canRecruit,
         blockedReason: unit.blockedReason,
         maxRecruitable: unit.maxRecruitable,
@@ -5087,7 +5274,7 @@ export const GamePage = () => {
       .map((order) => ({
         id: order.id,
         unitId: order.unitId,
-        unitName: UNIT_META[order.unitId]?.fallbackName ?? order.unitId,
+        unitName: getUnitMetaById(order.unitId).fallbackName,
         amount: order.amount,
         remainingSec: order.remainingSec,
         finishAt: order.finishAt,
@@ -5741,6 +5928,7 @@ export const GamePage = () => {
 
       setActiveVillageId(nextVillageId);
       setArmyNotice(null);
+      setArmyNoticeUnitId(null);
       setArmyCommandNotice(null);
       setBuildingNotices({});
       setStateError(null);
@@ -6489,14 +6677,15 @@ export const GamePage = () => {
   }, [buildingsById]);
 
   const handleRecruit = useCallback(
-    async (unit: Unit, amount: number) => {
+    async (unit: Unit, amount: number): Promise<boolean> => {
       const normalizedAmount = Math.max(0, Math.floor(amount));
       if (normalizedAmount <= 0) {
-        return;
+        return false;
       }
 
       setRecruitPendingUnitId(unit.id);
       setArmyNotice(null);
+      setArmyNoticeUnitId(null);
 
       try {
         const nextState = await recruitUnit(
@@ -6507,9 +6696,13 @@ export const GamePage = () => {
         );
         applyIncomingGameState(nextState);
         setArmyNotice(`${unit.name}: +${normalizedAmount.toLocaleString('cs-CZ')} jednotek`);
+        setArmyNoticeUnitId(unit.id);
         void loadGameState(true, true);
+        return true;
       } catch (error) {
         setArmyNotice(getErrorMessage(error));
+        setArmyNoticeUnitId(null);
+        return false;
       } finally {
         setRecruitPendingUnitId(null);
       }
@@ -6525,6 +6718,7 @@ export const GamePage = () => {
 
       setCancelRecruitmentPendingId(order.id);
       setArmyNotice(null);
+      setArmyNoticeUnitId(null);
 
       try {
         const response = await cancelRecruitmentRequest(
@@ -6536,9 +6730,11 @@ export const GamePage = () => {
         setArmyNotice(
           `${order.unitName}: nábor zrušen, vráceno ${formatResourceBundleLabel(response.result.refunded)}.`,
         );
+        setArmyNoticeUnitId(order.unitId);
         void loadGameState(true, true);
       } catch (error) {
         setArmyNotice(getErrorMessage(error));
+        setArmyNoticeUnitId(null);
       } finally {
         setCancelRecruitmentPendingId(null);
       }
@@ -7046,6 +7242,7 @@ export const GamePage = () => {
             cancelRecruitmentPendingId={cancelRecruitmentPendingId}
             isArmyCommandPending={armyCommandPending}
             notice={armyNotice}
+            noticeUnitId={armyNoticeUnitId}
             commandNotice={armyCommandNotice}
           />
         );

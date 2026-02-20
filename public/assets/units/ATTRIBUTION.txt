@@ -1,0 +1,13 @@
+﻿Unit icons source:
+- Pack: Lucide Icons
+- License: ISC
+- Repository: https://github.com/lucide-icons/lucide
+- Files downloaded from: https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/*.svg
+
+Mapped files:
+- militia.svg <- axe.svg
+- archer.svg <- bow-arrow.svg
+- cavalry.svg <- chess-knight.svg
+- knight.svg <- chess-king.svg
+- ram.svg <- brick-wall-fire.svg
+- caravan.svg <- caravan.svg
