@@ -8,6 +8,7 @@ Mapped files:
 - militia.svg <- axe.svg
 - archer.svg <- bow-arrow.svg
 - cavalry.svg <- chess-knight.svg
+- scout.svg <- eye.svg (adjusted)
 - knight.svg <- chess-king.svg
 - ram.svg <- brick-wall-fire.svg
 - caravan.svg <- caravan.svg

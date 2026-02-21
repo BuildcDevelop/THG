@@ -5,6 +5,7 @@ type ResourceCost = {
 };
 
 export type LootPriority = 'wood' | 'stone' | 'iron';
+export type SpawnDirection = 'center' | 'north' | 'east' | 'south' | 'west';
 
 export type WorldSettlement = {
   id: string;
@@ -368,7 +369,7 @@ export type CreateAbandonedVillagesResult = {
 
 export type BattleReportPayload = {
   perspective?: 'attacker' | 'defender';
-  role?: 'support';
+  role?: 'support' | 'spy';
   movementId?: number;
   supportMovementId?: number;
   at?: string;
@@ -410,6 +411,22 @@ export type BattleReportPayload = {
     losses?: Record<string, number>;
     survivors?: Record<string, number>;
     survivorsTotal?: number;
+  };
+  spy?: {
+    success?: boolean;
+    quality?: 'exact' | 'approximate' | 'none';
+    approximate?: boolean;
+    defenderScouts?: number;
+    uncertainty?: number;
+    attackerScouts?: {
+      start?: number;
+      losses?: number;
+      survivors?: number;
+    };
+    intel?: {
+      units?: Record<string, number>;
+      buildings?: Record<string, number>;
+    };
   };
   conquest?: {
     conquered?: boolean;
@@ -476,7 +493,7 @@ export type IssueArmyCommandPayload = {
   targetVillageId?: number;
   supportMovementId?: number;
   lootPriority?: LootPriority;
-  units?: Partial<Record<'militia' | 'archer' | 'cavalry' | 'knight' | 'ram' | 'caravan', number>>;
+  units?: Partial<Record<'militia' | 'archer' | 'cavalry' | 'scout' | 'knight' | 'ram' | 'caravan', number>>;
 };
 
 export type IssueArmyCommandResult = {
@@ -631,6 +648,7 @@ export const fetchGameState = async (
   username: string,
   villageId?: number | null,
   worldId?: string | null,
+  spawnDirection?: SpawnDirection | string | null,
 ): Promise<GameStateResponse> => {
   const params = new URLSearchParams({ username });
   if (villageId != null && Number.isFinite(villageId)) {
@@ -638,6 +656,9 @@ export const fetchGameState = async (
   }
   if (worldId != null && String(worldId).trim() !== '') {
     params.set('worldId', String(worldId).trim());
+  }
+  if (spawnDirection != null && String(spawnDirection).trim() !== '') {
+    params.set('spawnDirection', String(spawnDirection).trim());
   }
   const payload = await request<ApiOk<GameStateResponse>>(`/api/v1/state?${params.toString()}`);
   return payload.data;

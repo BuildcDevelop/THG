@@ -16,6 +16,7 @@ export type Session = {
   username: string;
   loggedAt: string;
   selectedWorldId: string | null;
+  selectedSpawnDirection: string | null;
 };
 
 type LoginResult =
@@ -31,12 +32,14 @@ export const setSession = (
   username: string,
   options?: {
     selectedWorldId?: string | null;
+    selectedSpawnDirection?: string | null;
   },
 ): void => {
   const session: Session = {
     username,
     loggedAt: new Date().toISOString(),
     selectedWorldId: options?.selectedWorldId ?? null,
+    selectedSpawnDirection: options?.selectedSpawnDirection ?? null,
   };
 
   localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
@@ -70,7 +73,7 @@ export const register = async (username: string, password: string): Promise<Logi
   }
 };
 
-export const setSelectedWorld = (worldId: string): void => {
+export const setSelectedWorld = (worldId: string, spawnDirection?: string | null): void => {
   const existing = getSession();
   if (!existing) {
     return;
@@ -78,6 +81,7 @@ export const setSelectedWorld = (worldId: string): void => {
 
   setSession(existing.username, {
     selectedWorldId: String(worldId || '').trim() || null,
+    selectedSpawnDirection: String(spawnDirection ?? existing.selectedSpawnDirection ?? '').trim() || null,
   });
 };
 
@@ -103,6 +107,7 @@ export const getSession = (): Session | null => {
       username: parsed.username,
       loggedAt: parsed.loggedAt ?? new Date(0).toISOString(),
       selectedWorldId: parsed.selectedWorldId ?? null,
+      selectedSpawnDirection: parsed.selectedSpawnDirection ?? null,
     };
   } catch {
     return null;

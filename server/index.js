@@ -65,6 +65,15 @@ const parseOptionalWorldId = (value) => {
   const normalized = String(value ?? '').trim();
   return normalized.length > 0 ? normalized : null;
 };
+const parseOptionalSpawnDirection = (value) => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  if (!normalized) {
+    return 'center';
+  }
+  return ['center', 'north', 'east', 'south', 'west'].includes(normalized) ? normalized : 'center';
+};
 
 const toGameRuleError = (error) => {
   if (error instanceof GameRuleError) {
@@ -186,6 +195,7 @@ app.get('/api/v1/state', async (req, res, next) => {
   try {
     const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
     const worldId = parseOptionalWorldId(req.query.worldId);
+    const spawnDirection = parseOptionalSpawnDirection(req.query.spawnDirection);
     const villageIdRaw = req.query.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -195,13 +205,13 @@ app.get('/api/v1/state', async (req, res, next) => {
     const resolvedState = useConvexFull
       ? await executeWithConvexPersistence(() => {
           runGameTick();
-          return getVillageSnapshot(username, normalizedVillageId, worldId);
+          return getVillageSnapshot(username, normalizedVillageId, worldId, spawnDirection);
         })
       : useConvexState
         ? await getVillageSnapshotConvex(username, normalizedVillageId, worldId)
         : (() => {
             runGameTick();
-            return getVillageSnapshot(username, normalizedVillageId, worldId);
+            return getVillageSnapshot(username, normalizedVillageId, worldId, spawnDirection);
           })();
 
     res.json({

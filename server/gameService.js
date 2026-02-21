@@ -37,6 +37,10 @@ const WORLD_STATUS_ONLINE = 'online';
 const DOMINION_FIRE_WORLD_ID = 'dominion-1-fire';
 const DOMINION_FIRE_PLAYER_PROTECTION_DAYS = 5;
 const DOMINION_FIRE_NEARBY_ABANDONED_COUNT = 5;
+const DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MIN = 1;
+const DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MAX = 3;
+const DEFAULT_NEARBY_SPAWN_MIN_DISTANCE = 1;
+const DEFAULT_NEARBY_SPAWN_MAX_DISTANCE = 3;
 const WORLD_CATALOG = Object.freeze([
   {
     id: 'dominion-1',
@@ -54,6 +58,10 @@ const WORLD_CATALOG = Object.freeze([
       abandonedTemplateType: 'default-abandoned',
       nearbyAbandonedCount: 0,
       playerProtectionDays: 0,
+      playerSpawnMinDistanceMin: DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MIN,
+      playerSpawnMinDistanceMax: DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MAX,
+      nearbySpawnMinDistance: DEFAULT_NEARBY_SPAWN_MIN_DISTANCE,
+      nearbySpawnMaxDistance: DEFAULT_NEARBY_SPAWN_MAX_DISTANCE,
     },
   },
   {
@@ -72,12 +80,17 @@ const WORLD_CATALOG = Object.freeze([
       abandonedTemplateType: 'fire-world',
       nearbyAbandonedCount: DOMINION_FIRE_NEARBY_ABANDONED_COUNT,
       playerProtectionDays: DOMINION_FIRE_PLAYER_PROTECTION_DAYS,
+      playerSpawnMinDistanceMin: DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MIN,
+      playerSpawnMinDistanceMax: DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MAX,
+      nearbySpawnMinDistance: DEFAULT_NEARBY_SPAWN_MIN_DISTANCE,
+      nearbySpawnMaxDistance: DEFAULT_NEARBY_SPAWN_MAX_DISTANCE,
     },
   },
 ]);
 const DEFAULT_WORLD_ID = WORLD_CATALOG[0]?.id ?? 'dominion-1';
 const WORLD_REGION_BY_ID = new Map(Object.values(WORLD_REGIONS).map((region) => [Number(region.id), region]));
 const KNIGHT_UNIT_ID = 'knight';
+const SCOUT_UNIT_ID = 'scout';
 const KNIGHT_RECALL_REFUND = { wood: 1000, stone: 1000, iron: 1000 };
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
@@ -400,7 +413,7 @@ const selectAllVillagesForWorldStmt = db.prepare(
       v.loyalty,
       v.peace_until AS peaceUntil,
       CASE
-        WHEN p.is_bot = 1 THEN 'OpuÄąË‡tĂ„â€şnÄ‚Ë‡ osada'
+        WHEN p.is_bot = 1 THEN 'Opuštěná osada'
         ELSE p.username
       END AS owner,
       p.is_bot AS isBot
@@ -1113,11 +1126,65 @@ const resolveRegionDefinition = (regionRaw) => {
 
 const resolveWorldRegionDefinition = (world) => resolveRegionDefinition(world?.region);
 
+const randomIntInclusive = (minRaw, maxRaw) => {
+  const min = Math.floor(Number(minRaw));
+  const max = Math.floor(Number(maxRaw));
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return 0;
+  }
+  if (max <= min) {
+    return min;
+  }
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+};
+
+const normalizeSpawnDistanceRange = (
+  minRaw,
+  maxRaw,
+  fallbackMin = DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MIN,
+  fallbackMax = DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MAX,
+) => {
+  const parsedMin = Math.max(0, Math.floor(Number(minRaw)));
+  const parsedMax = Math.max(0, Math.floor(Number(maxRaw)));
+  const safeFallbackMin = Math.max(0, Math.floor(Number(fallbackMin)));
+  const safeFallbackMax = Math.max(safeFallbackMin, Math.floor(Number(fallbackMax)));
+
+  let minDistance = Number.isFinite(parsedMin) ? parsedMin : safeFallbackMin;
+  let maxDistance = Number.isFinite(parsedMax) ? parsedMax : safeFallbackMax;
+  if (maxDistance < minDistance) {
+    [minDistance, maxDistance] = [maxDistance, minDistance];
+  }
+  return {
+    minDistance: Math.max(0, minDistance),
+    maxDistance: Math.max(0, maxDistance),
+  };
+};
+
 const resolveWorldSpawnConfig = (world) => ({
   playerTemplateType: String(world?.spawn?.playerTemplateType ?? 'default-player'),
   abandonedTemplateType: String(world?.spawn?.abandonedTemplateType ?? 'default-abandoned'),
   nearbyAbandonedCount: Math.max(0, Math.floor(Number(world?.spawn?.nearbyAbandonedCount ?? 0))),
   playerProtectionDays: Math.max(0, Number(world?.spawn?.playerProtectionDays ?? 0)),
+  ...(() => {
+    const playerRange = normalizeSpawnDistanceRange(
+      world?.spawn?.playerSpawnMinDistanceMin,
+      world?.spawn?.playerSpawnMinDistanceMax,
+      DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MIN,
+      DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MAX,
+    );
+    const nearbyRange = normalizeSpawnDistanceRange(
+      world?.spawn?.nearbySpawnMinDistance,
+      world?.spawn?.nearbySpawnMaxDistance,
+      DEFAULT_NEARBY_SPAWN_MIN_DISTANCE,
+      DEFAULT_NEARBY_SPAWN_MAX_DISTANCE,
+    );
+    return {
+      playerSpawnMinDistanceMin: playerRange.minDistance,
+      playerSpawnMinDistanceMax: playerRange.maxDistance,
+      nearbySpawnMinDistance: nearbyRange.minDistance,
+      nearbySpawnMaxDistance: nearbyRange.maxDistance,
+    };
+  })(),
 });
 
 const listWorldCatalog = () =>
@@ -1349,6 +1416,14 @@ const sanitizeBuildingLevel = (buildingId, level) =>
 const sanitizeUnitAmount = (value) => Math.max(0, Math.floor(Number(value ?? 0)));
 
 const toCoordinateKey = (coordX, coordY) => `${coordX}|${coordY}`;
+const SPAWN_DIRECTIONS = new Set(['center', 'north', 'east', 'south', 'west']);
+
+const normalizeSpawnDirection = (valueRaw) => {
+  const normalized = String(valueRaw ?? '')
+    .trim()
+    .toLowerCase();
+  return SPAWN_DIRECTIONS.has(normalized) ? normalized : 'center';
+};
 
 const buildSpawnContext = (world) => {
   const region = resolveWorldRegionDefinition(world);
@@ -1368,9 +1443,9 @@ const buildSpawnContext = (world) => {
   };
 };
 
-const calculateSpawnScore = (coordX, coordY, occupiedCoords, region) => {
-  if (occupiedCoords.length === 0) {
-    return Number.MAX_SAFE_INTEGER;
+const calculateNearestChebyshevDistance = (coordX, coordY, occupiedCoords) => {
+  if (!Array.isArray(occupiedCoords) || occupiedCoords.length <= 0) {
+    return Number.POSITIVE_INFINITY;
   }
 
   let nearestDistance = Number.POSITIVE_INFINITY;
@@ -1380,17 +1455,65 @@ const calculateSpawnScore = (coordX, coordY, occupiedCoords, region) => {
       nearestDistance = distance;
     }
   }
-
-  const centerX = Number(region.originX) + (Number(region.size) - 1) / 2;
-  const centerY = Number(region.originY) + (Number(region.size) - 1) / 2;
-  const distanceFromCenter = Math.max(Math.abs(coordX - centerX), Math.abs(coordY - centerY));
-
-  return nearestDistance * 100 - distanceFromCenter;
+  return nearestDistance;
 };
 
-const claimBestSpawnCell = (spawnContext) => {
+const calculateSpawnScore = (
+  coordX,
+  coordY,
+  occupiedCoords,
+  region,
+  preferredDirectionRaw = 'center',
+  scoreDistanceCoords = null,
+) => {
+  const centerX = Number(region.originX) + (Number(region.size) - 1) / 2;
+  const centerY = Number(region.originY) + (Number(region.size) - 1) / 2;
+  const chebyshevFromCenter = Math.max(Math.abs(coordX - centerX), Math.abs(coordY - centerY));
+  const manhattanFromCenter = Math.abs(coordX - centerX) + Math.abs(coordY - centerY);
+  const preferredDirection = normalizeSpawnDirection(preferredDirectionRaw);
+  const scoreDistanceSource = Array.isArray(scoreDistanceCoords) ? scoreDistanceCoords : occupiedCoords;
+
+  let directionalBias = 0;
+  if (preferredDirection === 'north') {
+    directionalBias = centerY - coordY;
+  } else if (preferredDirection === 'south') {
+    directionalBias = coordY - centerY;
+  } else if (preferredDirection === 'west') {
+    directionalBias = centerX - coordX;
+  } else if (preferredDirection === 'east') {
+    directionalBias = coordX - centerX;
+  }
+
+  let nearestDistance = Number(region.size);
+  if (scoreDistanceSource.length > 0) {
+    nearestDistance = Number.POSITIVE_INFINITY;
+    for (const occupied of scoreDistanceSource) {
+      const distance = Math.max(Math.abs(coordX - occupied.coordX), Math.abs(coordY - occupied.coordY));
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+      }
+    }
+    if (!Number.isFinite(nearestDistance)) {
+      nearestDistance = Number(region.size);
+    }
+  }
+
+  // Nejprve plníme střed mapy směrem ven do prstenců. V rámci stejného prstence
+  // použijeme preferovanou světovou stranu a drobný rozptyl podle nejbližší obsazené buňky.
+  return -chebyshevFromCenter * 1_000_000 + directionalBias * 10_000 + nearestDistance * 100 - manhattanFromCenter;
+};
+
+const claimBestSpawnCell = (spawnContext, preferredDirectionRaw = 'center', options = null) => {
   const region = spawnContext.region;
   let best = null;
+  const preferredDirection = normalizeSpawnDirection(preferredDirectionRaw);
+  const minDistance = Math.max(0, Math.floor(Number(options?.minDistance ?? 0)));
+  const minDistanceCoords = Array.isArray(options?.minDistanceCoords)
+    ? options.minDistanceCoords
+    : spawnContext.occupiedCoords;
+  const scoreDistanceCoords = Array.isArray(options?.scoreDistanceCoords)
+    ? options.scoreDistanceCoords
+    : spawnContext.occupiedCoords;
   for (let localY = 1; localY <= Number(region.size); localY += 1) {
     for (let localX = 1; localX <= Number(region.size); localX += 1) {
       const coordX = Number(region.originX) + localX - 1;
@@ -1399,8 +1522,21 @@ const claimBestSpawnCell = (spawnContext) => {
       if (spawnContext.occupiedKeys.has(key)) {
         continue;
       }
+      if (minDistance > 0) {
+        const nearestDistance = calculateNearestChebyshevDistance(coordX, coordY, minDistanceCoords);
+        if (nearestDistance < minDistance) {
+          continue;
+        }
+      }
 
-      const score = calculateSpawnScore(coordX, coordY, spawnContext.occupiedCoords, region);
+      const score = calculateSpawnScore(
+        coordX,
+        coordY,
+        spawnContext.occupiedCoords,
+        region,
+        preferredDirection,
+        scoreDistanceCoords,
+      );
       if (!best || score > best.score) {
         best = { localX, localY, coordX, coordY, key, score };
       }
@@ -1419,11 +1555,19 @@ const claimBestSpawnCell = (spawnContext) => {
   return best;
 };
 
-const claimNearbySpawnCells = (spawnContext, originCoordXRaw, originCoordYRaw, countRaw) => {
+const claimNearbySpawnCells = (spawnContext, originCoordXRaw, originCoordYRaw, countRaw, options = null) => {
   const region = spawnContext.region;
   const originCoordX = Number(originCoordXRaw);
   const originCoordY = Number(originCoordYRaw);
   const count = Math.max(0, Math.floor(Number(countRaw ?? 0)));
+  const spawnRange = normalizeSpawnDistanceRange(
+    options?.minDistance,
+    options?.maxDistance,
+    DEFAULT_NEARBY_SPAWN_MIN_DISTANCE,
+    DEFAULT_NEARBY_SPAWN_MAX_DISTANCE,
+  );
+  const minDistance = spawnRange.minDistance;
+  const maxDistance = spawnRange.maxDistance;
   if (!Number.isFinite(originCoordX) || !Number.isFinite(originCoordY) || count <= 0) {
     return [];
   }
@@ -1451,25 +1595,54 @@ const claimNearbySpawnCells = (spawnContext, originCoordXRaw, originCoordYRaw, c
     }
   }
 
-  candidates.sort((left, right) => {
-    const byChebyshev = left.chebyshevDistance - right.chebyshevDistance;
-    if (byChebyshev !== 0) {
-      return byChebyshev;
-    }
-    const byManhattan = left.manhattanDistance - right.manhattanDistance;
-    if (byManhattan !== 0) {
-      return byManhattan;
-    }
-    if (left.coordY !== right.coordY) {
-      return left.coordY - right.coordY;
-    }
-    return left.coordX - right.coordX;
-  });
-
+  const remainingCandidates = [...candidates];
   const selected = [];
-  for (const candidate of candidates) {
-    if (selected.length >= count) {
-      break;
+  while (selected.length < count && remainingCandidates.length > 0) {
+    const preferredDistance = randomIntInclusive(minDistance, maxDistance);
+    const preferredIndexes = [];
+    for (let index = 0; index < remainingCandidates.length; index += 1) {
+      if (remainingCandidates[index].chebyshevDistance === preferredDistance) {
+        preferredIndexes.push(index);
+      }
+    }
+
+    let chosenIndex = null;
+    if (preferredIndexes.length > 0) {
+      chosenIndex = preferredIndexes[randomIntInclusive(0, preferredIndexes.length - 1)];
+    } else {
+      const inRangeIndexes = [];
+      for (let index = 0; index < remainingCandidates.length; index += 1) {
+        const distance = remainingCandidates[index].chebyshevDistance;
+        if (distance >= minDistance && distance <= maxDistance) {
+          inRangeIndexes.push(index);
+        }
+      }
+      if (inRangeIndexes.length > 0) {
+        chosenIndex = inRangeIndexes[randomIntInclusive(0, inRangeIndexes.length - 1)];
+      }
+    }
+
+    if (chosenIndex == null) {
+      let nearestDistance = Number.POSITIVE_INFINITY;
+      for (const candidate of remainingCandidates) {
+        nearestDistance = Math.min(nearestDistance, Number(candidate.chebyshevDistance));
+      }
+      const nearestIndexes = [];
+      for (let index = 0; index < remainingCandidates.length; index += 1) {
+        if (remainingCandidates[index].chebyshevDistance === nearestDistance) {
+          nearestIndexes.push(index);
+        }
+      }
+      if (nearestIndexes.length > 0) {
+        chosenIndex = nearestIndexes[randomIntInclusive(0, nearestIndexes.length - 1)];
+      } else {
+        chosenIndex = 0;
+      }
+    }
+
+    const [candidate] = remainingCandidates.splice(chosenIndex, 1);
+    if (!candidate) {
+      continue;
     }
     spawnContext.occupiedKeys.add(candidate.key);
     spawnContext.occupiedCoords.push({
@@ -1592,10 +1765,23 @@ const createVillage = ({
   createdAtIso,
   spawnCell = null,
   peaceUntil = null,
+  playerSpawnMinDistance = 0,
+  playerSpawnMinDistanceCoords = null,
+  playerSpawnScoreCoords = null,
 }) => {
   const resolvedWorld = world ? resolveWorldById(world.id) : resolveWorldById(DEFAULT_WORLD_ID);
   const activeSpawnContext = spawnContext ?? buildSpawnContext(resolvedWorld);
-  const spawn = spawnCell ?? claimBestSpawnCell(activeSpawnContext);
+  const spawn = spawnCell
+    ? spawnCell
+    : claimBestSpawnCell(activeSpawnContext, 'center', {
+        minDistance: playerSpawnMinDistance,
+        minDistanceCoords: Array.isArray(playerSpawnMinDistanceCoords)
+          ? playerSpawnMinDistanceCoords
+          : activeSpawnContext.occupiedCoords,
+        scoreDistanceCoords: Array.isArray(playerSpawnScoreCoords)
+          ? playerSpawnScoreCoords
+          : activeSpawnContext.occupiedCoords,
+      });
   if (!spawn) {
     throw new GameRuleError('Ve svete neni volne misto pro nove leno.', 409);
   }
@@ -1626,8 +1812,16 @@ const createFreshVillageForPlayer = ({
   spawnContext = null,
   createdAtIso = nowIso(),
   spawnCell = null,
-}) =>
-  createVillage({
+  playerSpawnMinDistance = null,
+  playerSpawnMinDistanceCoords = null,
+  playerSpawnScoreCoords = null,
+}) => {
+  const resolvedPlayerSpawnMinDistance =
+    playerSpawnMinDistance == null
+      ? randomIntInclusive(DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MIN, DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MAX)
+      : Math.max(0, Math.floor(Number(playerSpawnMinDistance)));
+
+  return createVillage({
     playerId,
     villageName: `${PLAYER_VILLAGE_NAME_PREFIX} ${String(username)}`,
     kingdom: 'Neutral',
@@ -1637,7 +1831,11 @@ const createFreshVillageForPlayer = ({
     createdAtIso,
     spawnCell,
     peaceUntil: buildVillageProtectionUntil(createdAtIso, protectionDays),
+    playerSpawnMinDistance: resolvedPlayerSpawnMinDistance,
+    playerSpawnMinDistanceCoords,
+    playerSpawnScoreCoords,
   });
+};
 
 const convertVillageToAbandoned = ({ villageId, serialAllocator, createdAtIso = nowIso() }) => {
   const serial = Number(serialAllocator());
@@ -1667,6 +1865,8 @@ const createNearbyAbandonedVillagesAroundSpawn = ({
   centerCoordY,
   count,
   templateType = 'default-abandoned',
+  minDistance = DEFAULT_NEARBY_SPAWN_MIN_DISTANCE,
+  maxDistance = DEFAULT_NEARBY_SPAWN_MAX_DISTANCE,
   createdAtIso = nowIso(),
 }) => {
   const normalizedCount = Math.max(0, Math.floor(Number(count ?? 0)));
@@ -1680,6 +1880,7 @@ const createNearbyAbandonedVillagesAroundSpawn = ({
     Number(centerCoordX),
     Number(centerCoordY),
     normalizedCount,
+    { minDistance, maxDistance },
   );
   const createdVillages = [];
 
@@ -1706,7 +1907,8 @@ const createNearbyAbandonedVillagesAroundSpawn = ({
   return createdVillages;
 };
 
-const ensurePlayerHasVillageInWorldTransaction = db.transaction((playerId, username, worldIdRaw) => {
+const ensurePlayerHasVillageInWorldTransaction = db.transaction(
+  (playerId, username, worldIdRaw, spawnDirectionRaw = 'center') => {
   const world = resolveWorldById(worldIdRaw);
   const villages = selectVillagesByPlayerAndRegionStmt.all(Number(playerId), Number(world.region));
   if (villages.length > 0) {
@@ -1715,7 +1917,15 @@ const ensurePlayerHasVillageInWorldTransaction = db.transaction((playerId, usern
 
   const spawnConfig = resolveWorldSpawnConfig(world);
   const spawnContext = buildSpawnContext(world);
-  const playerSpawnCell = claimBestSpawnCell(spawnContext);
+  const playerSpawnMinDistance = randomIntInclusive(
+    spawnConfig.playerSpawnMinDistanceMin,
+    spawnConfig.playerSpawnMinDistanceMax,
+  );
+  const playerSpawnCell = claimBestSpawnCell(spawnContext, spawnDirectionRaw, {
+    minDistance: playerSpawnMinDistance,
+    minDistanceCoords: spawnContext.occupiedCoords,
+    scoreDistanceCoords: spawnContext.occupiedCoords,
+  });
   if (!playerSpawnCell) {
     throw new GameRuleError('Ve svete neni volne misto pro nove leno.', 409);
   }
@@ -1728,6 +1938,9 @@ const ensurePlayerHasVillageInWorldTransaction = db.transaction((playerId, usern
     protectionDays: spawnConfig.playerProtectionDays,
     spawnContext,
     spawnCell: playerSpawnCell,
+    playerSpawnMinDistance,
+    playerSpawnMinDistanceCoords: spawnContext.occupiedCoords,
+    playerSpawnScoreCoords: spawnContext.occupiedCoords,
   });
 
   createNearbyAbandonedVillagesAroundSpawn({
@@ -1737,10 +1950,13 @@ const ensurePlayerHasVillageInWorldTransaction = db.transaction((playerId, usern
     centerCoordY: Number(playerSpawnCell.coordY),
     count: spawnConfig.nearbyAbandonedCount,
     templateType: spawnConfig.abandonedTemplateType,
+    minDistance: spawnConfig.nearbySpawnMinDistance,
+    maxDistance: spawnConfig.nearbySpawnMaxDistance,
   });
 
   return selectVillagesByPlayerAndRegionStmt.all(Number(playerId), Number(world.region));
-});
+  },
+);
 
 const ensurePlayerHasVillageTransaction = db.transaction((playerId, username) => {
   const villages = selectVillagesByPlayerStmt.all(Number(playerId));
@@ -2166,6 +2382,7 @@ const BATTLE_UNIT_POWER = {
   militia: { attack: 12, defense: 12 },
   archer: { attack: 8, defense: 14 },
   cavalry: { attack: 17, defense: 9 },
+  scout: { attack: 3, defense: 2 },
   knight: { attack: 340, defense: 280 },
   ram: { attack: 7, defense: 7 },
   caravan: { attack: 0, defense: 0 },
@@ -2263,6 +2480,138 @@ const applyCasualties = (selection, casualtyRatio) => {
   }
 
   return { losses, survivors };
+};
+
+const getUnitAmountFromSelection = (selection, unitId) =>
+  Math.max(0, Math.floor(Number(selection?.[unitId] ?? 0)));
+
+const isScoutOnlyAttackSelection = (selection) => {
+  const totalUnits = sumSelectedUnits(selection);
+  if (totalUnits <= 0) {
+    return false;
+  }
+  const scoutCount = getUnitAmountFromSelection(selection, SCOUT_UNIT_ID);
+  return scoutCount > 0 && scoutCount === totalUnits;
+};
+
+const toPositiveUnitIntelMap = (selection) => {
+  const intel = {};
+  for (const unitId of UNIT_ORDER) {
+    const amount = getUnitAmountFromSelection(selection, unitId);
+    if (amount <= 0) {
+      continue;
+    }
+    intel[unitId] = amount;
+  }
+  return intel;
+};
+
+const toPositiveBuildingIntelMap = (buildingLevels) => {
+  const intel = {};
+  for (const buildingId of BUILDING_ORDER) {
+    const level = Math.max(0, Math.floor(Number(buildingLevels?.[buildingId] ?? 0)));
+    if (level <= 0) {
+      continue;
+    }
+    intel[buildingId] = level;
+  }
+  return intel;
+};
+
+const buildApproximateIntelMap = (sourceMap, uncertaintyRatio, minimumVisible = 0) => {
+  const approx = {};
+  const normalizedUncertainty = clampNumber(Number(uncertaintyRatio), 0, 0.75);
+  for (const [entryId, rawValue] of Object.entries(sourceMap ?? {})) {
+    const value = Math.max(0, Math.floor(Number(rawValue ?? 0)));
+    if (value <= 0) {
+      continue;
+    }
+
+    const maxDeviation = Math.max(1, Math.round(value * normalizedUncertainty));
+    const randomDeviation = Math.floor(Math.random() * (maxDeviation * 2 + 1)) - maxDeviation;
+    const approxValue = Math.max(0, value + randomDeviation);
+    if (approxValue <= 0 && value > 0 && minimumVisible > 0) {
+      approx[entryId] = minimumVisible;
+      continue;
+    }
+    approx[entryId] = approxValue;
+  }
+  return approx;
+};
+
+const resolveScoutCasualties = (attackerScoutCountRaw, defenderScoutCountRaw) => {
+  const attackerScoutCount = Math.max(0, Math.floor(Number(attackerScoutCountRaw ?? 0)));
+  const defenderScoutCount = Math.max(0, Math.floor(Number(defenderScoutCountRaw ?? 0)));
+  if (attackerScoutCount <= 0) {
+    return {
+      losses: 0,
+      survivors: 0,
+      fullyDefended: true,
+      defenderScoutsNeededForKill: 0,
+    };
+  }
+
+  const defenderScoutsNeededForKill = Math.ceil(attackerScoutCount / 2);
+  const fullyDefended = defenderScoutCount >= defenderScoutsNeededForKill;
+  const losses = fullyDefended
+    ? attackerScoutCount
+    : Math.min(attackerScoutCount, defenderScoutCount * 2);
+  const survivors = Math.max(0, attackerScoutCount - losses);
+
+  return {
+    losses,
+    survivors,
+    fullyDefended,
+    defenderScoutsNeededForKill,
+  };
+};
+
+const buildScoutIntelPayload = ({
+  attackerScoutCount,
+  scoutLosses,
+  scoutSurvivors,
+  defenderScoutCount,
+  defenderUnitsSelection,
+  defenderBuildingLevels,
+}) => {
+  const safeStart = Math.max(0, Math.floor(Number(attackerScoutCount ?? 0)));
+  const safeLosses = Math.max(0, Math.floor(Number(scoutLosses ?? 0)));
+  const safeSurvivors = Math.max(0, Math.floor(Number(scoutSurvivors ?? 0)));
+  const hasLosses = safeLosses > 0;
+  const hasSurvivors = safeSurvivors > 0;
+  const quality = hasSurvivors ? (hasLosses ? 'approximate' : 'exact') : 'none';
+  const lossRatio = safeStart > 0 ? safeLosses / safeStart : 1;
+
+  const exactUnits = toPositiveUnitIntelMap(defenderUnitsSelection);
+  const exactBuildings = toPositiveBuildingIntelMap(defenderBuildingLevels);
+  const uncertainty = clampNumber(0.12 + lossRatio * 0.48, 0.18, 0.62);
+
+  return {
+    success: hasSurvivors,
+    quality,
+    approximate: quality === 'approximate',
+    attackerScouts: {
+      start: safeStart,
+      losses: safeLosses,
+      survivors: safeSurvivors,
+    },
+    defenderScouts: Math.max(0, Math.floor(Number(defenderScoutCount ?? 0))),
+    uncertainty: quality === 'approximate' ? Number(uncertainty.toFixed(3)) : 0,
+    intel: {
+      units:
+        quality === 'exact'
+          ? exactUnits
+          : quality === 'approximate'
+            ? buildApproximateIntelMap(exactUnits, uncertainty, 1)
+            : {},
+      buildings:
+        quality === 'exact'
+          ? exactBuildings
+          : quality === 'approximate'
+            ? buildApproximateIntelMap(exactBuildings, uncertainty * 0.8, 1)
+            : {},
+    },
+  };
 };
 
 const normalizeLootPriority = (rawValue) => {
@@ -2623,7 +2972,12 @@ const isVillageUnderSpawnProtection = (village, referenceMs = Date.now()) => {
   return peaceUntilMs > referenceMs;
 };
 
-const requireVillageForUser = (username, requestedVillageId = null, worldId = null) => {
+const requireVillageForUser = (
+  username,
+  requestedVillageId = null,
+  worldId = null,
+  spawnDirectionRaw = 'center',
+) => {
   const player = selectPlayerByUsernameStmt.get(username);
   if (!player) {
     throw new GameRuleError(`Hrac '${username}' neexistuje.`, 404);
@@ -2646,6 +3000,7 @@ const requireVillageForUser = (username, requestedVillageId = null, worldId = nu
     Number(player.id),
     String(player.username),
     selectedWorld.id,
+    spawnDirectionRaw,
   );
   if (villages.length === 0) {
     throw new GameRuleError(`Hrac '${username}' nema zalozenou osadu.`, 404);
@@ -3062,6 +3417,136 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         addUnitSelection(defenderUnitsBefore, supportGroup.units);
       }
       const defenderBuildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(Number(targetVillage.id)));
+      if (isScoutOnlyAttackSelection(unitSelection)) {
+        const attackerName = String(attackerPlayer?.username ?? 'Neznamy utocnik');
+        const defenderName = String(targetVillage.ownerUsername ?? 'Neznamy obrance');
+        const defenderPlayer = selectPlayerByIdStmt.get(Number(targetVillage.playerId));
+        const attackerScoutCount = getUnitAmountFromSelection(unitSelection, SCOUT_UNIT_ID);
+        const defenderScoutCount = getUnitAmountFromSelection(defenderUnitsBefore, SCOUT_UNIT_ID);
+        const scoutCasualties = resolveScoutCasualties(attackerScoutCount, defenderScoutCount);
+        const scoutPayload = buildScoutIntelPayload({
+          attackerScoutCount,
+          scoutLosses: scoutCasualties.losses,
+          scoutSurvivors: scoutCasualties.survivors,
+          defenderScoutCount,
+          defenderUnitsSelection: defenderUnitsBefore,
+          defenderBuildingLevels,
+        });
+
+        let returnMovementPayload = null;
+        if (scoutCasualties.survivors > 0) {
+          const returnUnits = toCompleteUnitSelection({
+            [SCOUT_UNIT_ID]: scoutCasualties.survivors,
+          });
+          const distanceTiles = calculateTileDistance(targetVillage, homeVillage);
+          const durationSec = calculateArmyTravelDurationSec(returnUnits, distanceTiles);
+          const startedAtIso = tickTimeIso;
+          const arriveAtIso = new Date(Date.parse(startedAtIso) + durationSec * 1000).toISOString();
+          const inserted = insertArmyMovementStmt.run(
+            Number(movement.playerId),
+            'return',
+            Number(targetVillage.id),
+            Number(homeVillage.id),
+            Number(homeVillage.id),
+            null,
+            0,
+            0,
+            0,
+            startedAtIso,
+            arriveAtIso,
+            'in_progress',
+          );
+          const returnMovementId = Number(inserted.lastInsertRowid);
+          insertArmyMovementUnitStmt.run(returnMovementId, SCOUT_UNIT_ID, scoutCasualties.survivors);
+          returnMovementPayload = {
+            movementId: returnMovementId,
+            startedAt: startedAtIso,
+            arriveAt: arriveAtIso,
+            durationSec,
+            distanceTiles,
+            fromVillageId: Number(targetVillage.id),
+            fromVillageName: String(targetVillage.name ?? ''),
+            toVillageId: Number(homeVillage.id),
+            toVillageName: String(homeVillage.name ?? ''),
+            units: returnUnits,
+            lootTaken: { wood: 0, stone: 0, iron: 0 },
+          };
+          spawnedReturnMovements += 1;
+        }
+
+        const attackerSummary = scoutPayload.success
+          ? scoutPayload.approximate
+            ? `Prunik se zdaril, ale zvedove utrpeli ztraty ${scoutCasualties.losses}/${attackerScoutCount}. Hlaseni obsahuje pouze priblizna data.`
+            : 'Spionaz uspesna. Zvedove prinesli presny prehled jednotek a budov v osade.'
+          : 'Zved prisel o zivot a neprinesl zadnou zpravu.';
+        const defenderSummary = scoutPayload.success
+          ? scoutPayload.approximate
+            ? `Nepratelsky zved pronikl osadou. Zpusobili jste mu ztraty ${scoutCasualties.losses}/${attackerScoutCount}, ale cast informaci odnesl.`
+            : 'Nepratelsky zved pronikl bez ztrat a odnesl presne informace o osade.'
+          : 'Pokus o spionaz byl odrazen. Obrana zachytila vsechny nepratelske zvedy.';
+
+        if (attackerPlayer && Number(attackerPlayer.isBot ?? 0) !== 1) {
+          const reportId = createBattleReport({
+            playerId: Number(attackerPlayer.id),
+            originVillageId: Number(movement.originVillageId),
+            targetVillageId: Number(targetVillage.id),
+            battleAt: tickTimeIso,
+            title: `Spionaz: ${attackerName} -> ${targetVillage.name}`,
+            summary: attackerSummary,
+            payload: {
+              perspective: 'attacker',
+              role: 'spy',
+              movementId,
+              at: tickTimeIso,
+              originVillageId: Number(movement.originVillageId),
+              targetVillageId: Number(targetVillage.id),
+              originVillageName: String(homeVillage.name ?? ''),
+              targetVillageName: String(targetVillage.name ?? ''),
+              attacker: attackerName,
+              defender: defenderName,
+              outcome: scoutPayload.success ? 'attacker_victory' : 'defender_victory',
+              returnMovement: returnMovementPayload ?? undefined,
+              spy: scoutPayload,
+            },
+          });
+          if (reportId != null) {
+            generatedBattleReports += 1;
+          }
+        }
+
+        if (defenderPlayer && Number(defenderPlayer.isBot ?? 0) !== 1) {
+          const reportId = createBattleReport({
+            playerId: Number(defenderPlayer.id),
+            originVillageId: Number(movement.originVillageId),
+            targetVillageId: Number(targetVillage.id),
+            battleAt: tickTimeIso,
+            title: `Obrana proti spionazi: ${targetVillage.name}`,
+            summary: defenderSummary,
+            payload: {
+              perspective: 'defender',
+              role: 'spy',
+              movementId,
+              at: tickTimeIso,
+              originVillageId: Number(movement.originVillageId),
+              targetVillageId: Number(targetVillage.id),
+              originVillageName: String(homeVillage.name ?? ''),
+              targetVillageName: String(targetVillage.name ?? ''),
+              attacker: attackerName,
+              defender: defenderName,
+              outcome: scoutPayload.success ? 'attacker_victory' : 'defender_victory',
+              spy: scoutPayload,
+            },
+          });
+          if (reportId != null) {
+            generatedBattleReports += 1;
+          }
+        }
+
+        updateArmyMovementStatusStmt.run('completed', tickTimeIso, movementId);
+        completedArmyMovements += 1;
+        continue;
+      }
+
       const battle = simulateAttackBattle({
         attackerUnitsRaw: unitSelection,
         defenderUnitsRaw: defenderUnitsBefore,
@@ -3319,7 +3804,6 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
 
       if (defenderPlayer && Number(defenderPlayer.isBot ?? 0) !== 1) {
         const defenderOwnSurvivorsTotal = sumSelectedUnits(villageDefenseAfterLoss.survivors);
-        const defenderForcesDestroyed = defenderOwnSurvivorsTotal <= 0;
         let defenseTitle = blockedByGate
           ? `Obrana: brana odrazila utok na ${targetVillage.name}`
           : `Obrana: ${targetVillage.name} celi utoku`;
@@ -3327,8 +3811,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           ? attackerLossesTotal > 0
             ? `Brana odrazila utok bez beranidel. Utocnik prisel o ${attackerLossesTotal}/${totalSentUnits} jednotek.`
             : 'Brana odrazila utok bez beranidel. Obrana neutrpela ztraty.'
-          : defenderForcesDestroyed
-            ? 'Obrana byla znicena. Vsechny obranne jednotky padly. Pocet jednotek utocnika je neznamy.'
+          : defenderOwnSurvivorsTotal <= 0
+            ? `Obrana byla znicena. Vsechny obranne jednotky padly. Ztraty utocnika ${attackerLossesTotal}/${totalSentUnits}.`
             : `${outcomeLabelForDefender}. Ztraty obrance ${defenderLossesTotal}/${defenderStartTotal}, utocnik ${attackerLossesTotal}/${totalSentUnits}.`;
         if (conquestPayload?.conquered) {
           defenseTitle = `DobytÄ‚Â­ lÄ‚Â©na: ${targetVillage.name}`;
@@ -3350,21 +3834,9 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           gateBlocked: blockedByGate,
           lootPriority,
           lootTaken,
-          attackerForcesUnknown: defenderForcesDestroyed,
-          returnMovement: defenderForcesDestroyed ? undefined : returnMovementPayload ?? undefined,
+          returnMovement: returnMovementPayload ?? undefined,
           conquest: conquestPayload ?? undefined,
-          battle: defenderForcesDestroyed
-            ? {
-                defenseMultiplier: battle.defenseMultiplier,
-                bonuses: battle.bonuses,
-                defender: {
-                  start: battle.defender.start,
-                  losses: battle.defender.losses,
-                  survivors: battle.defender.survivors,
-                  survivorsTotal: battle.defender.survivorsTotal,
-                },
-              }
-            : battle,
+          battle,
         };
         const reportId = createBattleReport({
           playerId: Number(defenderPlayer.id),
@@ -3388,7 +3860,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
 
         const supportForcesDestroyed = Number(supportResult.survivorsTotal) <= 0;
         const supportSummary = supportForcesDestroyed
-          ? `Podpora v osade ${targetVillage.name} byla zcela znicena. Pocet jednotek utocnika je neznamy.`
+          ? `Podpora v osade ${targetVillage.name} byla zcela znicena.`
           : `Podpora v osade ${targetVillage.name}: ztraty ${sumSelectedUnits(
               supportResult.losses,
             )}/${sumSelectedUnits(supportResult.start)}.`;
@@ -3412,8 +3884,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             attacker: attackerName,
             defender: defenderName,
             outcome: battle.attackerWins ? 'attacker_victory' : 'defender_victory',
-            attackerForcesUnknown: supportForcesDestroyed,
-            returnMovement: supportForcesDestroyed ? undefined : returnMovementPayload ?? undefined,
+            returnMovement: returnMovementPayload ?? undefined,
             conquest: conquestPayload ?? undefined,
             support: {
               start: supportResult.start,
@@ -3678,8 +4149,18 @@ export const listAdminPlayers = () => {
   }));
 };
 
-export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = null, worldId = null) => {
-  const { player, village, villages, world } = requireVillageForUser(username, requestedVillageId, worldId);
+export const getVillageSnapshot = (
+  username = 'Hayato',
+  requestedVillageId = null,
+  worldId = null,
+  spawnDirectionRaw = 'center',
+) => {
+  const { player, village, villages, world } = requireVillageForUser(
+    username,
+    requestedVillageId,
+    worldId,
+    spawnDirectionRaw,
+  );
   const worldRegion = resolveWorldRegionDefinition(world);
   const resourcesRow = selectResourcesByVillageStmt.get(village.id);
   if (!resourcesRow) {
@@ -3787,7 +4268,8 @@ export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = nul
     const def = UNIT_DEFS[unitId];
     const amount = unitCounts[unitId] ?? 0;
     const requiredBuildingId = def.requiredBuilding;
-    const requiredBuildingLevel = buildingLevels[requiredBuildingId] ?? 0;
+    const requiredBuildingCurrentLevel = buildingLevels[requiredBuildingId] ?? 0;
+    const requiredBuildingLevel = Math.max(1, Math.floor(Number(def.requiredBuildingLevel ?? 1)));
     const queuedCount = Number(activeRecruitmentCountByUnit[unitId] ?? 0);
     const maxByResources = calculateMaxRecruitableByResources(currentResources, def.cost);
     const unitPopulationCost = getUnitPopulationCost(unitId);
@@ -3798,8 +4280,11 @@ export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = nul
 
     let blockedReason = null;
     let canRecruit = false;
-    if (requiredBuildingLevel < 1) {
-      blockedReason = `Vybuduj ${BUILDING_DEFS[requiredBuildingId].name}`;
+    if (requiredBuildingCurrentLevel < requiredBuildingLevel) {
+      blockedReason =
+        requiredBuildingLevel <= 1
+          ? `Vybuduj ${BUILDING_DEFS[requiredBuildingId].name}`
+          : `Vybuduj ${BUILDING_DEFS[requiredBuildingId].name} na uroveň ${requiredBuildingLevel}`;
     } else if (unitId === KNIGHT_UNIT_ID && remainingKnightCapacity <= 0) {
       blockedReason = 'Limit rytiru podle poctu osad je vycerpan';
     } else if (availablePopulationForRecruitment <= 0) {
@@ -4131,6 +4616,10 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
   const totalUnits = sumSelectedUnits(selectedUnits);
   if (totalUnits <= 0) {
     throw new GameRuleError('Vyber alespon jednu jednotku pro armadni rozkaz.');
+  }
+  const selectedScouts = getUnitAmountFromSelection(selectedUnits, SCOUT_UNIT_ID);
+  if (commandType === 'attack' && selectedScouts > 0 && selectedScouts < totalUnits) {
+    throw new GameRuleError('Zvedy lze v utoku vyslat pouze samostatne bez dalsich jednotek.');
   }
 
   if (commandType === 'move') {
@@ -4672,9 +5161,15 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
     throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
   }
 
-  const requiredLevel = buildingLevels[unitDef.requiredBuilding] ?? 0;
-  if (requiredLevel < 1) {
-    throw new GameRuleError(`Pro nabor chybi budova ${BUILDING_DEFS[unitDef.requiredBuilding].name}.`);
+  const requiredBuildingLevel = Math.max(1, Math.floor(Number(unitDef.requiredBuildingLevel ?? 1)));
+  const currentBuildingLevel = buildingLevels[unitDef.requiredBuilding] ?? 0;
+  if (currentBuildingLevel < requiredBuildingLevel) {
+    if (requiredBuildingLevel <= 1) {
+      throw new GameRuleError(`Pro nabor chybi budova ${BUILDING_DEFS[unitDef.requiredBuilding].name}.`);
+    }
+    throw new GameRuleError(
+      `Pro nabor je potreba ${BUILDING_DEFS[unitDef.requiredBuilding].name} na urovni ${requiredBuildingLevel}.`,
+    );
   }
 
   const currentAmount = unitCounts[unitId] ?? 0;
@@ -4745,7 +5240,7 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
     village.id,
   );
   const startedAtIso = nowIso();
-  const durationSec = calculateRecruitDurationSec(unitId, recruitAmount, requiredLevel);
+  const durationSec = calculateRecruitDurationSec(unitId, recruitAmount, currentBuildingLevel);
   const finishAtIso = new Date(Date.parse(startedAtIso) + durationSec * 1000).toISOString();
 
   const insertion = insertRecruitmentStmt.run(
