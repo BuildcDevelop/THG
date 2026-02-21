@@ -52,8 +52,7 @@ export const WorldsPage = () => {
   );
 
   const hasFounderBadge = useMemo(() => {
-    const dominionWorld = portalData?.worlds.find((world) => world.id === 'dominion-1');
-    return Boolean(dominionWorld?.player.hasPresence);
+    return Boolean(portalData?.worlds.some((world) => world.player.hasPresence));
   }, [portalData]);
 
   const handleEnterWorld = async () => {
@@ -113,8 +112,8 @@ export const WorldsPage = () => {
                 </div>
                 <div className="achievement-body">
                   <span className="achievement-emblem">Zakladatel</span>
-                  <strong>Dominion I: První úsvit</strong>
-                  <small>Limitovaná odměna za zakladatele světa</small>
+                  <strong>The Last Dominion</strong>
+                  <small>Limitovaná odměna za zakladatelskou účast ve světě</small>
                 </div>
                 <p className="achievement-tooltip" role="tooltip">
                   Byl jsi u zrodu hry!
