@@ -188,6 +188,8 @@ export type GameStateResponse = {
     loyalty: number;
   };
   world: {
+    id?: string;
+    name?: string;
     region: number;
     originX: number;
     originY: number;
@@ -628,10 +630,14 @@ export const fetchAdminPlayers = async (): Promise<AdminPlayerRow[]> => {
 export const fetchGameState = async (
   username: string,
   villageId?: number | null,
+  worldId?: string | null,
 ): Promise<GameStateResponse> => {
   const params = new URLSearchParams({ username });
   if (villageId != null && Number.isFinite(villageId)) {
     params.set('villageId', String(villageId));
+  }
+  if (worldId != null && String(worldId).trim() !== '') {
+    params.set('worldId', String(worldId).trim());
   }
   const payload = await request<ApiOk<GameStateResponse>>(`/api/v1/state?${params.toString()}`);
   return payload.data;
@@ -808,12 +814,16 @@ export const fetchBattleReports = async (
   username: string,
   page = 1,
   pageSize = 20,
+  worldId?: string | null,
 ): Promise<BattleReportListResponse> => {
   const params = new URLSearchParams({
     username,
     page: String(page),
     pageSize: String(pageSize),
   });
+  if (worldId != null && String(worldId).trim() !== '') {
+    params.set('worldId', String(worldId).trim());
+  }
   const payload = await request<ApiOk<BattleReportListResponse>>(`/api/v1/reports?${params.toString()}`);
   return payload.data;
 };

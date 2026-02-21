@@ -61,6 +61,11 @@ const executeWithConvexPersistence = async (operation) => {
   return runWithConvexSnapshotPersistence(operation);
 };
 
+const parseOptionalWorldId = (value) => {
+  const normalized = String(value ?? '').trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
 const toGameRuleError = (error) => {
   if (error instanceof GameRuleError) {
     return error;
@@ -180,6 +185,7 @@ app.get('/api/v1/admin/players', async (_req, res, next) => {
 app.get('/api/v1/state', async (req, res, next) => {
   try {
     const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.query.worldId);
     const villageIdRaw = req.query.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -189,13 +195,13 @@ app.get('/api/v1/state', async (req, res, next) => {
     const resolvedState = useConvexFull
       ? await executeWithConvexPersistence(() => {
           runGameTick();
-          return getVillageSnapshot(username, normalizedVillageId);
+          return getVillageSnapshot(username, normalizedVillageId, worldId);
         })
       : useConvexState
-        ? await getVillageSnapshotConvex(username, normalizedVillageId)
+        ? await getVillageSnapshotConvex(username, normalizedVillageId, worldId)
         : (() => {
             runGameTick();
-            return getVillageSnapshot(username, normalizedVillageId);
+            return getVillageSnapshot(username, normalizedVillageId, worldId);
           })();
 
     res.json({
@@ -207,13 +213,14 @@ app.get('/api/v1/state', async (req, res, next) => {
   }
 });
 
-app.get('/api/v1/ranking', async (_req, res, next) => {
+app.get('/api/v1/ranking', async (req, res, next) => {
   try {
+    const worldId = parseOptionalWorldId(req.query.worldId);
     const data = useConvexFull
-      ? await executeWithConvexRead(() => listPlayerLeaderboard())
+      ? await executeWithConvexRead(() => listPlayerLeaderboard(worldId))
       : await executeWithConvexPersistence(() => {
           runGameTick();
-          return listPlayerLeaderboard();
+          return listPlayerLeaderboard(worldId);
         });
 
     res.json({
@@ -228,6 +235,7 @@ app.get('/api/v1/ranking', async (_req, res, next) => {
 app.get('/api/v1/reports', async (req, res, next) => {
   try {
     const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.query.worldId);
     const page = Number(req.query.page ?? 1);
     const pageSize = Number(req.query.pageSize ?? 20);
     const data = useConvexFull
@@ -235,14 +243,14 @@ app.get('/api/v1/reports', async (req, res, next) => {
           listBattleReports(username, {
             page: Number.isFinite(page) ? page : 1,
             pageSize: Number.isFinite(pageSize) ? pageSize : 20,
-          }),
+          }, worldId),
         )
       : await executeWithConvexPersistence(() => {
           runGameTick();
           return listBattleReports(username, {
             page: Number.isFinite(page) ? page : 1,
             pageSize: Number.isFinite(pageSize) ? pageSize : 20,
-          });
+          }, worldId);
         });
 
     res.json({
@@ -456,6 +464,7 @@ app.post('/api/v1/admin/abandoned-villages/create', async (req, res, next) => {
 app.post('/api/v1/army/command', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.body?.worldId);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -464,8 +473,8 @@ app.post('/api/v1/army/command', async (req, res, next) => {
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithConvexPersistence(() => {
       runGameTick();
-      const result = issueArmyCommand(username, req.body ?? {}, normalizedVillageId);
-      const state = getVillageSnapshot(username, normalizedVillageId);
+      const result = issueArmyCommand(username, req.body ?? {}, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
 
@@ -483,6 +492,7 @@ app.post('/api/v1/kingdom/create', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
     const kingdomName = String(req.body?.kingdomName ?? '').trim();
+    const worldId = parseOptionalWorldId(req.body?.worldId);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -491,8 +501,8 @@ app.post('/api/v1/kingdom/create', async (req, res, next) => {
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithConvexPersistence(() => {
       runGameTick();
-      const result = createKingdom(username, kingdomName);
-      const state = getVillageSnapshot(username, normalizedVillageId);
+      const result = createKingdom(username, kingdomName, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
 
@@ -510,6 +520,7 @@ app.post('/api/v1/kingdom/invite', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
     const targetUsername = String(req.body?.targetUsername ?? '').trim();
+    const worldId = parseOptionalWorldId(req.body?.worldId);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -518,8 +529,8 @@ app.post('/api/v1/kingdom/invite', async (req, res, next) => {
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithConvexPersistence(() => {
       runGameTick();
-      const result = invitePlayerToKingdom(username, targetUsername);
-      const state = getVillageSnapshot(username, normalizedVillageId);
+      const result = invitePlayerToKingdom(username, targetUsername, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
 
@@ -537,6 +548,7 @@ app.post('/api/v1/kingdom/invite/:inviteId/accept', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
     const inviteId = Number(String(req.params.inviteId ?? '').trim());
+    const worldId = parseOptionalWorldId(req.body?.worldId);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -545,8 +557,8 @@ app.post('/api/v1/kingdom/invite/:inviteId/accept', async (req, res, next) => {
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithConvexPersistence(() => {
       runGameTick();
-      const result = acceptKingdomInvite(username, inviteId);
-      const state = getVillageSnapshot(username, normalizedVillageId);
+      const result = acceptKingdomInvite(username, inviteId, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
 
@@ -564,6 +576,7 @@ app.post('/api/v1/kingdom/invite/:inviteId/reject', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
     const inviteId = Number(String(req.params.inviteId ?? '').trim());
+    const worldId = parseOptionalWorldId(req.body?.worldId);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -572,8 +585,8 @@ app.post('/api/v1/kingdom/invite/:inviteId/reject', async (req, res, next) => {
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithConvexPersistence(() => {
       runGameTick();
-      const result = rejectKingdomInvite(username, inviteId);
-      const state = getVillageSnapshot(username, normalizedVillageId);
+      const result = rejectKingdomInvite(username, inviteId, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
 
@@ -590,6 +603,7 @@ app.post('/api/v1/kingdom/invite/:inviteId/reject', async (req, res, next) => {
 app.post('/api/v1/kingdom/leave', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.body?.worldId);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -598,8 +612,8 @@ app.post('/api/v1/kingdom/leave', async (req, res, next) => {
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithConvexPersistence(() => {
       runGameTick();
-      const result = leaveKingdom(username);
-      const state = getVillageSnapshot(username, normalizedVillageId);
+      const result = leaveKingdom(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
 
@@ -617,6 +631,7 @@ app.post('/api/v1/kingdom/kick', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
     const targetUsername = String(req.body?.targetUsername ?? '').trim();
+    const worldId = parseOptionalWorldId(req.body?.worldId);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -625,8 +640,8 @@ app.post('/api/v1/kingdom/kick', async (req, res, next) => {
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithConvexPersistence(() => {
       runGameTick();
-      const result = kickKingdomMember(username, targetUsername);
-      const state = getVillageSnapshot(username, normalizedVillageId);
+      const result = kickKingdomMember(username, targetUsername, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
 

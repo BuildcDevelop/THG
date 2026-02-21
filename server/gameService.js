@@ -1,4 +1,4 @@
-import { db } from './db.js';
+﻿import { db } from './db.js';
 import {
   BUILDING_DEFS,
   BUILDING_ORDER,
@@ -19,30 +19,67 @@ import {
   canAfford,
 } from './gameConfig.js';
 
-const WORLD_REGION = {
-  id: 1,
-  originX: 200,
-  originY: 430,
-  size: 50,
-};
+const WORLD_REGIONS = Object.freeze({
+  dominion1: {
+    id: 1,
+    originX: 200,
+    originY: 430,
+    size: 50,
+  },
+  dominionFire: {
+    id: 2,
+    originX: 300,
+    originY: 560,
+    size: 50,
+  },
+});
 const WORLD_STATUS_ONLINE = 'online';
+const DOMINION_FIRE_WORLD_ID = 'dominion-1-fire';
+const DOMINION_FIRE_PLAYER_PROTECTION_DAYS = 5;
+const DOMINION_FIRE_NEARBY_ABANDONED_COUNT = 5;
 const WORLD_CATALOG = Object.freeze([
   {
     id: 'dominion-1',
     name: 'Dominion I: První úsvit',
-    subtitle: 'Prvni verejny svet',
+    subtitle: 'První veřejný svět',
     status: WORLD_STATUS_ONLINE,
-    region: WORLD_REGION.id,
-    regionSize: WORLD_REGION.size,
-    seasonLabel: 'Sezona 0 - Zakladatelska',
-    timelineLabel: 'Spusteno',
+    region: WORLD_REGIONS.dominion1.id,
+    regionSize: WORLD_REGIONS.dominion1.size,
+    seasonLabel: 'Sezóna 0 - Zakladatelská',
+    timelineLabel: 'Spuštěno',
     description:
-      'Temna hranice se otevrela. Postav prvni linii, ovladni region a zanech stopu v kronikach.',
+      'Temná hranice se otevřela. Postav první linii, ovládni region a zanech stopu v kronikách.',
+    spawn: {
+      playerTemplateType: 'default-player',
+      abandonedTemplateType: 'default-abandoned',
+      nearbyAbandonedCount: 0,
+      playerProtectionDays: 0,
+    },
+  },
+  {
+    id: DOMINION_FIRE_WORLD_ID,
+    name: 'Dominion I: Síla ohně',
+    subtitle: 'Nový resetovaný svět',
+    status: WORLD_STATUS_ONLINE,
+    region: WORLD_REGIONS.dominionFire.id,
+    regionSize: WORLD_REGIONS.dominionFire.size,
+    seasonLabel: 'Sezóna 1 - Síla ohně',
+    timelineLabel: 'Spuštěno',
+    description:
+      'Nový svět bez historických osad. Každý nový velitel započne se stejnými podmínkami.',
+    spawn: {
+      playerTemplateType: 'fire-world',
+      abandonedTemplateType: 'fire-world',
+      nearbyAbandonedCount: DOMINION_FIRE_NEARBY_ABANDONED_COUNT,
+      playerProtectionDays: DOMINION_FIRE_PLAYER_PROTECTION_DAYS,
+    },
   },
 ]);
 const DEFAULT_WORLD_ID = WORLD_CATALOG[0]?.id ?? 'dominion-1';
+const WORLD_REGION_BY_ID = new Map(Object.values(WORLD_REGIONS).map((region) => [Number(region.id), region]));
 const KNIGHT_UNIT_ID = 'knight';
 const KNIGHT_RECALL_REFUND = { wood: 1000, stone: 1000, iron: 1000 };
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
 const ABANDONED_BOT_USERNAME_PREFIX = '__abandoned_ai__';
 const PLAYER_VILLAGE_NAME_PREFIX = 'Leno';
@@ -72,11 +109,23 @@ const STARTING_ABANDONED_BUILDING_LEVELS = {
   'iron-mine': 5,
   warehouse: 1,
 };
+const FIRE_WORLD_STARTING_BUILDING_LEVELS = {
+  townhall: 1,
+  woodcutter: 1,
+  quarry: 1,
+  'iron-mine': 1,
+  warehouse: 1,
+  'residential-quarter': 1,
+  barracks: 1,
+};
 const STARTING_PLAYER_UNITS = {
   militia: 5,
 };
 const STARTING_ABANDONED_UNITS = {
   militia: 100,
+};
+const FIRE_WORLD_STARTING_UNITS = {
+  militia: 5,
 };
 
 class GameRuleError extends Error {
@@ -113,16 +162,65 @@ const selectPlayerByIdStmt = db.prepare(
   'SELECT id, username, is_bot AS isBot FROM players WHERE id = ? LIMIT 1',
 );
 const selectVillageByPlayerStmt = db.prepare(
-  `SELECT id, name, coord_x AS coordX, coord_y AS coordY, region, kingdom, prestige, loyalty
+  `SELECT
+      id,
+      name,
+      coord_x AS coordX,
+      coord_y AS coordY,
+      region,
+      kingdom,
+      prestige,
+      loyalty,
+      peace_until AS peaceUntil
    FROM villages
    WHERE player_id = ?
    ORDER BY id ASC
    LIMIT 1`,
 );
+const selectVillageByPlayerAndRegionStmt = db.prepare(
+  `SELECT
+      id,
+      name,
+      coord_x AS coordX,
+      coord_y AS coordY,
+      region,
+      kingdom,
+      prestige,
+      loyalty,
+      peace_until AS peaceUntil
+   FROM villages
+   WHERE player_id = ? AND region = ?
+   ORDER BY id ASC
+   LIMIT 1`,
+);
 const selectVillagesByPlayerStmt = db.prepare(
-  `SELECT id, name, coord_x AS coordX, coord_y AS coordY, region, kingdom, prestige, loyalty
+  `SELECT
+      id,
+      name,
+      coord_x AS coordX,
+      coord_y AS coordY,
+      region,
+      kingdom,
+      prestige,
+      loyalty,
+      peace_until AS peaceUntil
    FROM villages
    WHERE player_id = ?
+   ORDER BY id ASC`,
+);
+const selectVillagesByPlayerAndRegionStmt = db.prepare(
+  `SELECT
+      id,
+      name,
+      coord_x AS coordX,
+      coord_y AS coordY,
+      region,
+      kingdom,
+      prestige,
+      loyalty,
+      peace_until AS peaceUntil
+   FROM villages
+   WHERE player_id = ? AND region = ?
    ORDER BY id ASC`,
 );
 const selectVillageCoordsStmt = db.prepare(
@@ -130,6 +228,13 @@ const selectVillageCoordsStmt = db.prepare(
       coord_x AS coordX,
       coord_y AS coordY
    FROM villages`,
+);
+const selectVillageCoordsByRegionStmt = db.prepare(
+  `SELECT
+      coord_x AS coordX,
+      coord_y AS coordY
+   FROM villages
+   WHERE region = ?`,
 );
 const selectAbandonedBotUsernamesStmt = db.prepare(
   `SELECT username
@@ -150,10 +255,11 @@ const insertVillageForPlayerStmt = db.prepare(
       coord_x,
       coord_y,
       region,
+      peace_until,
       prestige,
       loyalty,
       created_at
-   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 const upsertVillageResourcesStmt = db.prepare(
   `INSERT INTO resources (village_id, wood, stone, iron)
@@ -193,7 +299,7 @@ const deleteArmyMovementsByPlayerStmt = db.prepare(
   'DELETE FROM army_movements WHERE player_id = ?',
 );
 const updateVillageToAbandonedOwnerStmt = db.prepare(
-  "UPDATE villages SET player_id = ?, name = ?, kingdom = 'Neutral', loyalty = 100 WHERE id = ?",
+  "UPDATE villages SET player_id = ?, name = ?, kingdom = 'Neutral', loyalty = 100, peace_until = NULL WHERE id = ?",
 );
 const selectResourcesByVillageStmt = db.prepare(
   'SELECT wood, stone, iron FROM resources WHERE village_id = ? LIMIT 1',
@@ -292,13 +398,15 @@ const selectAllVillagesForWorldStmt = db.prepare(
       v.kingdom,
       v.prestige,
       v.loyalty,
+      v.peace_until AS peaceUntil,
       CASE
-        WHEN p.is_bot = 1 THEN 'Opuštěná osada'
+        WHEN p.is_bot = 1 THEN 'OpuÄąË‡tĂ„â€şnÄ‚Ë‡ osada'
         ELSE p.username
       END AS owner,
       p.is_bot AS isBot
    FROM villages v
    INNER JOIN players p ON p.id = v.player_id
+   WHERE v.region = ?
    ORDER BY v.id ASC`,
 );
 const selectAdminPlayersStmt = db.prepare(
@@ -350,6 +458,21 @@ const selectLeaderboardStmt = db.prepare(
      ) stats ON stats.player_id = p.id
    WHERE p.is_bot = 0
      AND p.username NOT GLOB '__abandoned_ai__*'
+   ORDER BY prestige DESC, villageCount DESC, p.username COLLATE NOCASE ASC`,
+);
+const selectLeaderboardByRegionStmt = db.prepare(
+  `SELECT
+      p.id AS playerId,
+      p.username,
+      COUNT(v.id) AS villageCount,
+      COALESCE(SUM(v.prestige), 0) AS prestige,
+      COALESCE(MIN(v.kingdom), 'Neutral') AS kingdom
+   FROM players p
+   INNER JOIN villages v ON v.player_id = p.id
+   WHERE p.is_bot = 0
+     AND p.username NOT GLOB '__abandoned_ai__*'
+     AND v.region = ?
+   GROUP BY p.id, p.username
    ORDER BY prestige DESC, villageCount DESC, p.username COLLATE NOCASE ASC`,
 );
 const selectGameStateStmt = db.prepare('SELECT last_tick_at AS lastTickAt FROM game_state WHERE id = 1');
@@ -432,7 +555,8 @@ const selectVillageByIdStmt = db.prepare(
       kingdom,
       coord_x AS coordX,
       coord_y AS coordY,
-      region
+      region,
+      peace_until AS peaceUntil
    FROM villages
    WHERE id = ?
    LIMIT 1`,
@@ -446,6 +570,7 @@ const selectVillageWithOwnerByIdStmt = db.prepare(
       v.coord_x AS coordX,
       v.coord_y AS coordY,
       v.region,
+      v.peace_until AS peaceUntil,
       p.username AS ownerUsername,
       p.is_bot AS ownerIsBot
    FROM villages v
@@ -623,11 +748,22 @@ const selectVillageCountByPlayerStmt = db.prepare(
    FROM villages
    WHERE player_id = ?`,
 );
+const selectVillageCountByPlayerAndRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM villages
+   WHERE player_id = ? AND region = ?`,
+);
 const selectTotalPlayerUnitAmountStmt = db.prepare(
   `SELECT COALESCE(SUM(u.amount), 0) AS total
    FROM units u
    INNER JOIN villages v ON v.id = u.village_id
    WHERE v.player_id = ? AND u.unit_id = ?`,
+);
+const selectTotalPlayerUnitAmountByRegionStmt = db.prepare(
+  `SELECT COALESCE(SUM(u.amount), 0) AS total
+   FROM units u
+   INNER JOIN villages v ON v.id = u.village_id
+   WHERE v.player_id = ? AND u.unit_id = ? AND v.region = ?`,
 );
 const selectTotalPlayerQueuedRecruitmentAmountStmt = db.prepare(
   `SELECT COALESCE(SUM(r.amount), 0) AS total
@@ -635,11 +771,27 @@ const selectTotalPlayerQueuedRecruitmentAmountStmt = db.prepare(
    INNER JOIN villages v ON v.id = r.village_id
    WHERE v.player_id = ? AND r.unit_id = ? AND r.status = 'in_progress'`,
 );
+const selectTotalPlayerQueuedRecruitmentAmountByRegionStmt = db.prepare(
+  `SELECT COALESCE(SUM(r.amount), 0) AS total
+   FROM unit_recruitments r
+   INNER JOIN villages v ON v.id = r.village_id
+   WHERE v.player_id = ? AND r.unit_id = ? AND r.status = 'in_progress' AND v.region = ?`,
+);
 const selectTotalPlayerMovementUnitAmountStmt = db.prepare(
   `SELECT COALESCE(SUM(mu.amount), 0) AS total
    FROM army_movement_units mu
    INNER JOIN army_movements m ON m.id = mu.movement_id
    WHERE m.player_id = ? AND mu.unit_id = ? AND m.status IN ('in_progress', 'stationed')`,
+);
+const selectTotalPlayerMovementUnitAmountByRegionStmt = db.prepare(
+  `SELECT COALESCE(SUM(mu.amount), 0) AS total
+   FROM army_movement_units mu
+   INNER JOIN army_movements m ON m.id = mu.movement_id
+   INNER JOIN villages hv ON hv.id = m.home_village_id
+   WHERE m.player_id = ?
+     AND mu.unit_id = ?
+     AND m.status IN ('in_progress', 'stationed')
+     AND hv.region = ?`,
 );
 const selectDistinctVillageKingdomsByPlayerStmt = db.prepare(
   `SELECT DISTINCT kingdom
@@ -667,6 +819,14 @@ const insertBattleReportStmt = db.prepare(
 const selectBattleReportCountByPlayerStmt = db.prepare(
   'SELECT COUNT(*) AS total FROM battle_reports WHERE player_id = ?',
 );
+const selectBattleReportCountByPlayerAndRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM battle_reports br
+   LEFT JOIN villages ov ON ov.id = br.origin_village_id
+   LEFT JOIN villages tv ON tv.id = br.target_village_id
+   WHERE br.player_id = ?
+     AND (ov.region = ? OR tv.region = ?)`,
+);
 const selectBattleReportsByPlayerStmt = db.prepare(
   `SELECT
       id,
@@ -683,12 +843,49 @@ const selectBattleReportsByPlayerStmt = db.prepare(
    ORDER BY created_at DESC, id DESC
    LIMIT ? OFFSET ?`,
 );
+const selectBattleReportsByPlayerAndRegionStmt = db.prepare(
+  `SELECT
+      br.id,
+      br.player_id AS playerId,
+      br.origin_village_id AS originVillageId,
+      br.target_village_id AS targetVillageId,
+      br.battle_at AS battleAt,
+      br.created_at AS createdAt,
+      br.title,
+      br.summary,
+      br.payload_json AS payloadJson
+   FROM battle_reports br
+   LEFT JOIN villages ov ON ov.id = br.origin_village_id
+   LEFT JOIN villages tv ON tv.id = br.target_village_id
+   WHERE br.player_id = ?
+     AND (ov.region = ? OR tv.region = ?)
+   ORDER BY br.created_at DESC, br.id DESC
+   LIMIT ? OFFSET ?`,
+);
 const selectBattleReportsForLeaderboardStmt = db.prepare(
   `SELECT
       player_id AS playerId,
       payload_json AS payloadJson
    FROM battle_reports
    ORDER BY id ASC`,
+);
+const selectBattleReportsForLeaderboardByRegionStmt = db.prepare(
+  `SELECT
+      br.player_id AS playerId,
+      br.payload_json AS payloadJson
+   FROM battle_reports br
+   LEFT JOIN villages ov ON ov.id = br.origin_village_id
+   LEFT JOIN villages tv ON tv.id = br.target_village_id
+   WHERE ov.region = ? OR tv.region = ?
+   ORDER BY br.id ASC`,
+);
+const selectPlayerCountByRegionStmt = db.prepare(
+  `SELECT COUNT(DISTINCT v.player_id) AS total
+   FROM villages v
+   INNER JOIN players p ON p.id = v.player_id
+   WHERE v.region = ?
+     AND p.is_bot = 0
+     AND p.username NOT GLOB '__abandoned_ai__*'`,
 );
 const selectKingdomLeaderByKingdomStmt = db.prepare(
   `SELECT
@@ -897,6 +1094,32 @@ const resolveWorldById = (worldIdRaw) => {
   return selectedWorld;
 };
 
+const resolveWorldByRegion = (regionRaw) => {
+  const region = Number(regionRaw);
+  if (!Number.isFinite(region)) {
+    return null;
+  }
+  return WORLD_CATALOG.find((world) => Number(world.region) === region) ?? null;
+};
+
+const resolveRegionDefinition = (regionRaw) => {
+  const region = Number(regionRaw);
+  const definition = WORLD_REGION_BY_ID.get(region);
+  if (!definition) {
+    throw new GameRuleError(`Region '${region}' neni nakonfigurovan.`, 500);
+  }
+  return definition;
+};
+
+const resolveWorldRegionDefinition = (world) => resolveRegionDefinition(world?.region);
+
+const resolveWorldSpawnConfig = (world) => ({
+  playerTemplateType: String(world?.spawn?.playerTemplateType ?? 'default-player'),
+  abandonedTemplateType: String(world?.spawn?.abandonedTemplateType ?? 'default-abandoned'),
+  nearbyAbandonedCount: Math.max(0, Math.floor(Number(world?.spawn?.nearbyAbandonedCount ?? 0))),
+  playerProtectionDays: Math.max(0, Number(world?.spawn?.playerProtectionDays ?? 0)),
+});
+
 const listWorldCatalog = () =>
   WORLD_CATALOG.map((world) => ({
     id: String(world.id),
@@ -969,23 +1192,23 @@ const buildKingdomAuditLog = (playerId, kingdomName) => {
 
   return rows.map((row) => {
     const payload = parseJsonSafe(row.payloadJson, {});
-    const actorUsername = row.actorUsername ? String(row.actorUsername) : 'Neznámý hráč';
-    const targetUsername = row.targetUsername ? String(row.targetUsername) : 'Neznámý hráč';
+    const actorUsername = row.actorUsername ? String(row.actorUsername) : 'NeznÄ‚Ë‡mÄ‚Ëť hrÄ‚Ë‡Ă„Ĺ¤';
+    const targetUsername = row.targetUsername ? String(row.targetUsername) : 'NeznÄ‚Ë‡mÄ‚Ëť hrÄ‚Ë‡Ă„Ĺ¤';
     const eventKingdom = row.kingdom ? String(row.kingdom) : null;
-    let message = 'Neznámá královská událost.';
+    let message = 'NeznÄ‚Ë‡mÄ‚Ë‡ krÄ‚Ë‡lovskÄ‚Ë‡ udÄ‚Ë‡lost.';
 
     if (row.eventType === 'kingdom_created') {
-      message = `${actorUsername} založil království ${eventKingdom ?? 'bez názvu'}.`;
+      message = `${actorUsername} zaloÄąÄľil krÄ‚Ë‡lovstvÄ‚Â­ ${eventKingdom ?? 'bez nÄ‚Ë‡zvu'}.`;
     } else if (row.eventType === 'invite_sent') {
-      message = `${actorUsername} poslal pozvánku hráči ${targetUsername}.`;
+      message = `${actorUsername} poslal pozvÄ‚Ë‡nku hrÄ‚Ë‡Ă„Ĺ¤i ${targetUsername}.`;
     } else if (row.eventType === 'invite_accepted') {
-      message = `${actorUsername} přijal pozvánku do království ${eventKingdom ?? 'bez názvu'}.`;
+      message = `${actorUsername} pÄąâ„˘ijal pozvÄ‚Ë‡nku do krÄ‚Ë‡lovstvÄ‚Â­ ${eventKingdom ?? 'bez nÄ‚Ë‡zvu'}.`;
     } else if (row.eventType === 'invite_rejected') {
-      message = `${actorUsername} odmítl pozvánku do království ${eventKingdom ?? 'bez názvu'}.`;
+      message = `${actorUsername} odmÄ‚Â­tl pozvÄ‚Ë‡nku do krÄ‚Ë‡lovstvÄ‚Â­ ${eventKingdom ?? 'bez nÄ‚Ë‡zvu'}.`;
     } else if (row.eventType === 'member_left') {
-      message = `${actorUsername} opustil království ${eventKingdom ?? 'bez názvu'}.`;
+      message = `${actorUsername} opustil krÄ‚Ë‡lovstvÄ‚Â­ ${eventKingdom ?? 'bez nÄ‚Ë‡zvu'}.`;
     } else if (row.eventType === 'member_kicked') {
-      message = `${actorUsername} vyhodil hráče ${targetUsername} z království.`;
+      message = `${actorUsername} vyhodil hrÄ‚Ë‡Ă„Ĺ¤e ${targetUsername} z krÄ‚Ë‡lovstvÄ‚Â­.`;
     } else if (typeof payload.message === 'string' && payload.message.trim()) {
       message = payload.message.trim();
     }
@@ -1127,30 +1350,25 @@ const sanitizeUnitAmount = (value) => Math.max(0, Math.floor(Number(value ?? 0))
 
 const toCoordinateKey = (coordX, coordY) => `${coordX}|${coordY}`;
 
-const buildSpawnContext = () => {
-  const occupiedCoords = selectVillageCoordsStmt
-    .all()
+const buildSpawnContext = (world) => {
+  const region = resolveWorldRegionDefinition(world);
+  const occupiedCoords = selectVillageCoordsByRegionStmt
+    .all(Number(region.id))
     .map((row) => ({
       coordX: Number(row.coordX),
       coordY: Number(row.coordY),
     }))
-    .filter(
-      (coord) =>
-        Number.isFinite(coord.coordX) &&
-        Number.isFinite(coord.coordY) &&
-        coord.coordX >= WORLD_REGION.originX &&
-        coord.coordX < WORLD_REGION.originX + WORLD_REGION.size &&
-        coord.coordY >= WORLD_REGION.originY &&
-        coord.coordY < WORLD_REGION.originY + WORLD_REGION.size,
-    );
+    .filter((coord) => Number.isFinite(coord.coordX) && Number.isFinite(coord.coordY));
 
   return {
+    world,
+    region,
     occupiedCoords,
     occupiedKeys: new Set(occupiedCoords.map((coord) => toCoordinateKey(coord.coordX, coord.coordY))),
   };
 };
 
-const calculateSpawnScore = (coordX, coordY, occupiedCoords) => {
+const calculateSpawnScore = (coordX, coordY, occupiedCoords, region) => {
   if (occupiedCoords.length === 0) {
     return Number.MAX_SAFE_INTEGER;
   }
@@ -1163,25 +1381,26 @@ const calculateSpawnScore = (coordX, coordY, occupiedCoords) => {
     }
   }
 
-  const centerX = WORLD_REGION.originX + (WORLD_REGION.size - 1) / 2;
-  const centerY = WORLD_REGION.originY + (WORLD_REGION.size - 1) / 2;
+  const centerX = Number(region.originX) + (Number(region.size) - 1) / 2;
+  const centerY = Number(region.originY) + (Number(region.size) - 1) / 2;
   const distanceFromCenter = Math.max(Math.abs(coordX - centerX), Math.abs(coordY - centerY));
 
   return nearestDistance * 100 - distanceFromCenter;
 };
 
 const claimBestSpawnCell = (spawnContext) => {
+  const region = spawnContext.region;
   let best = null;
-  for (let localY = 1; localY <= WORLD_REGION.size; localY += 1) {
-    for (let localX = 1; localX <= WORLD_REGION.size; localX += 1) {
-      const coordX = WORLD_REGION.originX + localX - 1;
-      const coordY = WORLD_REGION.originY + localY - 1;
+  for (let localY = 1; localY <= Number(region.size); localY += 1) {
+    for (let localX = 1; localX <= Number(region.size); localX += 1) {
+      const coordX = Number(region.originX) + localX - 1;
+      const coordY = Number(region.originY) + localY - 1;
       const key = toCoordinateKey(coordX, coordY);
       if (spawnContext.occupiedKeys.has(key)) {
         continue;
       }
 
-      const score = calculateSpawnScore(coordX, coordY, spawnContext.occupiedCoords);
+      const score = calculateSpawnScore(coordX, coordY, spawnContext.occupiedCoords, region);
       if (!best || score > best.score) {
         best = { localX, localY, coordX, coordY, key, score };
       }
@@ -1198,6 +1417,68 @@ const claimBestSpawnCell = (spawnContext) => {
     coordY: best.coordY,
   });
   return best;
+};
+
+const claimNearbySpawnCells = (spawnContext, originCoordXRaw, originCoordYRaw, countRaw) => {
+  const region = spawnContext.region;
+  const originCoordX = Number(originCoordXRaw);
+  const originCoordY = Number(originCoordYRaw);
+  const count = Math.max(0, Math.floor(Number(countRaw ?? 0)));
+  if (!Number.isFinite(originCoordX) || !Number.isFinite(originCoordY) || count <= 0) {
+    return [];
+  }
+
+  const candidates = [];
+  for (let localY = 1; localY <= Number(region.size); localY += 1) {
+    for (let localX = 1; localX <= Number(region.size); localX += 1) {
+      const coordX = Number(region.originX) + localX - 1;
+      const coordY = Number(region.originY) + localY - 1;
+      const key = toCoordinateKey(coordX, coordY);
+      if (spawnContext.occupiedKeys.has(key)) {
+        continue;
+      }
+      const chebyshevDistance = Math.max(Math.abs(coordX - originCoordX), Math.abs(coordY - originCoordY));
+      const manhattanDistance = Math.abs(coordX - originCoordX) + Math.abs(coordY - originCoordY);
+      candidates.push({
+        localX,
+        localY,
+        coordX,
+        coordY,
+        key,
+        chebyshevDistance,
+        manhattanDistance,
+      });
+    }
+  }
+
+  candidates.sort((left, right) => {
+    const byChebyshev = left.chebyshevDistance - right.chebyshevDistance;
+    if (byChebyshev !== 0) {
+      return byChebyshev;
+    }
+    const byManhattan = left.manhattanDistance - right.manhattanDistance;
+    if (byManhattan !== 0) {
+      return byManhattan;
+    }
+    if (left.coordY !== right.coordY) {
+      return left.coordY - right.coordY;
+    }
+    return left.coordX - right.coordX;
+  });
+
+  const selected = [];
+  for (const candidate of candidates) {
+    if (selected.length >= count) {
+      break;
+    }
+    spawnContext.occupiedKeys.add(candidate.key);
+    spawnContext.occupiedCoords.push({
+      coordX: candidate.coordX,
+      coordY: candidate.coordY,
+    });
+    selected.push(candidate);
+  }
+  return selected;
 };
 
 const createAbandonedBotSerialAllocator = () => {
@@ -1250,6 +1531,21 @@ const ABANDONED_VILLAGE_TEMPLATE = {
   units: toUnitTemplateMap(STARTING_ABANDONED_UNITS),
 };
 
+const FIRE_WORLD_VILLAGE_TEMPLATE = {
+  resources: STARTING_RESOURCES,
+  buildings: toBuildingTemplateMap(FIRE_WORLD_STARTING_BUILDING_LEVELS),
+  units: toUnitTemplateMap(FIRE_WORLD_STARTING_UNITS),
+};
+
+const SPAWN_TEMPLATE_BY_TYPE = Object.freeze({
+  'default-player': PLAYER_VILLAGE_TEMPLATE,
+  'default-abandoned': ABANDONED_VILLAGE_TEMPLATE,
+  'fire-world': FIRE_WORLD_VILLAGE_TEMPLATE,
+});
+
+const resolveTemplateByType = (templateType, fallbackTemplate) =>
+  SPAWN_TEMPLATE_BY_TYPE[String(templateType ?? '')] ?? fallbackTemplate;
+
 const applyVillageTemplate = (villageId, template) => {
   const resourceTemplate = template?.resources ?? STARTING_RESOURCES;
   upsertVillageResourcesStmt.run(
@@ -1276,8 +1572,29 @@ const applyVillageTemplate = (villageId, template) => {
   updateVillagePrestigeFromCurrentState(Number(villageId));
 };
 
-const createVillage = ({ playerId, villageName, kingdom, template, spawnContext, createdAtIso, spawnCell = null }) => {
-  const activeSpawnContext = spawnContext ?? buildSpawnContext();
+const buildVillageProtectionUntil = (createdAtIso, protectionDaysRaw) => {
+  const protectionDays = Math.max(0, Number(protectionDaysRaw ?? 0));
+  if (protectionDays <= 0) {
+    return null;
+  }
+  const createdAtMs = Date.parse(String(createdAtIso ?? nowIso()));
+  const safeCreatedAtMs = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
+  return new Date(safeCreatedAtMs + protectionDays * DAY_IN_MS).toISOString();
+};
+
+const createVillage = ({
+  playerId,
+  villageName,
+  kingdom,
+  template,
+  world,
+  spawnContext,
+  createdAtIso,
+  spawnCell = null,
+  peaceUntil = null,
+}) => {
+  const resolvedWorld = world ? resolveWorldById(world.id) : resolveWorldById(DEFAULT_WORLD_ID);
+  const activeSpawnContext = spawnContext ?? buildSpawnContext(resolvedWorld);
   const spawn = spawnCell ?? claimBestSpawnCell(activeSpawnContext);
   if (!spawn) {
     throw new GameRuleError('Ve svete neni volne misto pro nove leno.', 409);
@@ -1289,7 +1606,8 @@ const createVillage = ({ playerId, villageName, kingdom, template, spawnContext,
     String(kingdom ?? 'Neutral'),
     Number(spawn.coordX),
     Number(spawn.coordY),
-    WORLD_REGION.id,
+    Number(resolvedWorld.region),
+    peaceUntil == null ? null : String(peaceUntil),
     0,
     100,
     String(createdAtIso ?? nowIso()),
@@ -1299,14 +1617,26 @@ const createVillage = ({ playerId, villageName, kingdom, template, spawnContext,
   return selectVillageByIdStmt.get(villageId);
 };
 
-const createFreshVillageForPlayer = ({ playerId, username, spawnContext = null, createdAtIso = nowIso() }) =>
+const createFreshVillageForPlayer = ({
+  playerId,
+  username,
+  world,
+  templateType = 'default-player',
+  protectionDays = 0,
+  spawnContext = null,
+  createdAtIso = nowIso(),
+  spawnCell = null,
+}) =>
   createVillage({
     playerId,
     villageName: `${PLAYER_VILLAGE_NAME_PREFIX} ${String(username)}`,
     kingdom: 'Neutral',
-    template: PLAYER_VILLAGE_TEMPLATE,
+    template: resolveTemplateByType(templateType, PLAYER_VILLAGE_TEMPLATE),
+    world,
     spawnContext,
     createdAtIso,
+    spawnCell,
+    peaceUntil: buildVillageProtectionUntil(createdAtIso, protectionDays),
   });
 
 const convertVillageToAbandoned = ({ villageId, serialAllocator, createdAtIso = nowIso() }) => {
@@ -1330,6 +1660,88 @@ const convertVillageToAbandoned = ({ villageId, serialAllocator, createdAtIso = 
   };
 };
 
+const createNearbyAbandonedVillagesAroundSpawn = ({
+  world,
+  spawnContext,
+  centerCoordX,
+  centerCoordY,
+  count,
+  templateType = 'default-abandoned',
+  createdAtIso = nowIso(),
+}) => {
+  const normalizedCount = Math.max(0, Math.floor(Number(count ?? 0)));
+  if (normalizedCount <= 0) {
+    return [];
+  }
+
+  const serialAllocator = createAbandonedBotSerialAllocator();
+  const nearbyCells = claimNearbySpawnCells(
+    spawnContext,
+    Number(centerCoordX),
+    Number(centerCoordY),
+    normalizedCount,
+  );
+  const createdVillages = [];
+
+  for (const spawnCell of nearbyCells) {
+    const serial = Number(serialAllocator());
+    const serialText = String(serial).padStart(2, '0');
+    const botUsername = `${ABANDONED_BOT_USERNAME_PREFIX}${serialText}`;
+    const botVillageName = `${ABANDONED_VILLAGE_NAME_PREFIX} ${serialText}`;
+    const botInsertion = insertAbandonedBotPlayerStmt.run(botUsername, '', String(createdAtIso));
+    const botPlayerId = Number(botInsertion.lastInsertRowid);
+    const village = createVillage({
+      playerId: botPlayerId,
+      villageName: botVillageName,
+      kingdom: 'Neutral',
+      template: resolveTemplateByType(templateType, ABANDONED_VILLAGE_TEMPLATE),
+      world,
+      spawnContext,
+      createdAtIso,
+      spawnCell,
+    });
+    createdVillages.push(village);
+  }
+
+  return createdVillages;
+};
+
+const ensurePlayerHasVillageInWorldTransaction = db.transaction((playerId, username, worldIdRaw) => {
+  const world = resolveWorldById(worldIdRaw);
+  const villages = selectVillagesByPlayerAndRegionStmt.all(Number(playerId), Number(world.region));
+  if (villages.length > 0) {
+    return villages;
+  }
+
+  const spawnConfig = resolveWorldSpawnConfig(world);
+  const spawnContext = buildSpawnContext(world);
+  const playerSpawnCell = claimBestSpawnCell(spawnContext);
+  if (!playerSpawnCell) {
+    throw new GameRuleError('Ve svete neni volne misto pro nove leno.', 409);
+  }
+
+  createFreshVillageForPlayer({
+    playerId: Number(playerId),
+    username: String(username),
+    world,
+    templateType: spawnConfig.playerTemplateType,
+    protectionDays: spawnConfig.playerProtectionDays,
+    spawnContext,
+    spawnCell: playerSpawnCell,
+  });
+
+  createNearbyAbandonedVillagesAroundSpawn({
+    world,
+    spawnContext,
+    centerCoordX: Number(playerSpawnCell.coordX),
+    centerCoordY: Number(playerSpawnCell.coordY),
+    count: spawnConfig.nearbyAbandonedCount,
+    templateType: spawnConfig.abandonedTemplateType,
+  });
+
+  return selectVillagesByPlayerAndRegionStmt.all(Number(playerId), Number(world.region));
+});
+
 const ensurePlayerHasVillageTransaction = db.transaction((playerId, username) => {
   const villages = selectVillagesByPlayerStmt.all(Number(playerId));
   if (villages.length > 0) {
@@ -1339,6 +1751,7 @@ const ensurePlayerHasVillageTransaction = db.transaction((playerId, username) =>
   createFreshVillageForPlayer({
     playerId: Number(playerId),
     username: String(username),
+    world: resolveWorldById(DEFAULT_WORLD_ID),
   });
 
   return selectVillagesByPlayerStmt.all(Number(playerId));
@@ -1387,7 +1800,8 @@ const createAbandonedVillagesTransaction = db.transaction((countRaw = 1) => {
   const parsedCount = Number(countRaw ?? 1);
   const requestedCount = clampNumber(Number.isFinite(parsedCount) ? Math.floor(parsedCount) : 1, 1, 50);
   const serialAllocator = createAbandonedBotSerialAllocator();
-  const spawnContext = buildSpawnContext();
+  const world = resolveWorldById(DEFAULT_WORLD_ID);
+  const spawnContext = buildSpawnContext(world);
   const createdAtIso = nowIso();
   const villages = [];
 
@@ -1407,6 +1821,7 @@ const createAbandonedVillagesTransaction = db.transaction((countRaw = 1) => {
       villageName: botVillageName,
       kingdom: 'Neutral',
       template: ABANDONED_VILLAGE_TEMPLATE,
+      world,
       spawnContext,
       createdAtIso,
       spawnCell,
@@ -1537,24 +1952,60 @@ const calculateMaxRecruitableByResources = (resources, cost) => {
   return Math.max(0, Math.min(maxByWood, maxByStone, maxByIron));
 };
 
-const getPlayerVillageCount = (playerId) =>
-  Math.max(0, Math.floor(Number(selectVillageCountByPlayerStmt.get(Number(playerId))?.total ?? 0)));
+const getPlayerVillageCount = (playerId, region = null) =>
+  Math.max(
+    0,
+    Math.floor(
+      Number(
+        region == null
+          ? selectVillageCountByPlayerStmt.get(Number(playerId))?.total
+          : selectVillageCountByPlayerAndRegionStmt.get(Number(playerId), Number(region))?.total ?? 0,
+      ),
+    ),
+  );
 
-const getPlayerKnightCapacity = (playerId) =>
-  Math.max(0, Math.min(MAX_PLAYER_VILLAGES, getPlayerVillageCount(Number(playerId))));
+const getPlayerKnightCapacity = (playerId, region = null) =>
+  Math.max(0, Math.min(MAX_PLAYER_VILLAGES, getPlayerVillageCount(Number(playerId), region)));
 
-const getPlayerKnightTotalInWorld = (playerId) => {
+const getPlayerKnightTotalInWorld = (playerId, region = null) => {
   const owned = Math.max(
     0,
-    Math.floor(Number(selectTotalPlayerUnitAmountStmt.get(Number(playerId), KNIGHT_UNIT_ID)?.total ?? 0)),
+    Math.floor(
+      Number(
+        region == null
+          ? selectTotalPlayerUnitAmountStmt.get(Number(playerId), KNIGHT_UNIT_ID)?.total
+          : selectTotalPlayerUnitAmountByRegionStmt.get(Number(playerId), KNIGHT_UNIT_ID, Number(region))?.total ??
+              0,
+      ),
+    ),
   );
   const queued = Math.max(
     0,
-    Math.floor(Number(selectTotalPlayerQueuedRecruitmentAmountStmt.get(Number(playerId), KNIGHT_UNIT_ID)?.total ?? 0)),
+    Math.floor(
+      Number(
+        region == null
+          ? selectTotalPlayerQueuedRecruitmentAmountStmt.get(Number(playerId), KNIGHT_UNIT_ID)?.total
+          : selectTotalPlayerQueuedRecruitmentAmountByRegionStmt.get(
+                Number(playerId),
+                KNIGHT_UNIT_ID,
+                Number(region),
+              )?.total ?? 0,
+      ),
+    ),
   );
   const moving = Math.max(
     0,
-    Math.floor(Number(selectTotalPlayerMovementUnitAmountStmt.get(Number(playerId), KNIGHT_UNIT_ID)?.total ?? 0)),
+    Math.floor(
+      Number(
+        region == null
+          ? selectTotalPlayerMovementUnitAmountStmt.get(Number(playerId), KNIGHT_UNIT_ID)?.total
+          : selectTotalPlayerMovementUnitAmountByRegionStmt.get(
+                Number(playerId),
+                KNIGHT_UNIT_ID,
+                Number(region),
+              )?.total ?? 0,
+      ),
+    ),
   );
 
   return owned + queued + moving;
@@ -2160,13 +2611,42 @@ const toMovementWithUnits = (movementRow) => {
   };
 };
 
-const requireVillageForUser = (username, requestedVillageId = null) => {
+const isVillageUnderSpawnProtection = (village, referenceMs = Date.now()) => {
+  const peaceUntil = village?.peaceUntil;
+  if (!peaceUntil) {
+    return false;
+  }
+  const peaceUntilMs = Date.parse(String(peaceUntil));
+  if (!Number.isFinite(peaceUntilMs)) {
+    return false;
+  }
+  return peaceUntilMs > referenceMs;
+};
+
+const requireVillageForUser = (username, requestedVillageId = null, worldId = null) => {
   const player = selectPlayerByUsernameStmt.get(username);
   if (!player) {
     throw new GameRuleError(`Hrac '${username}' neexistuje.`, 404);
   }
 
-  const villages = ensurePlayerHasVillageTransaction(Number(player.id), String(player.username));
+  const requestedVillageNumeric = Number(requestedVillageId);
+  const requestedVillage =
+    Number.isFinite(requestedVillageNumeric) && requestedVillageNumeric > 0
+      ? selectVillageByIdStmt.get(requestedVillageNumeric)
+      : null;
+  const inferredWorldFromVillage =
+    requestedVillage && Number(requestedVillage.playerId) === Number(player.id)
+      ? resolveWorldByRegion(Number(requestedVillage.region))
+      : null;
+  const selectedWorld =
+    worldId != null
+      ? resolveWorldById(worldId)
+      : inferredWorldFromVillage ?? resolveWorldById(DEFAULT_WORLD_ID);
+  const villages = ensurePlayerHasVillageInWorldTransaction(
+    Number(player.id),
+    String(player.username),
+    selectedWorld.id,
+  );
   if (villages.length === 0) {
     throw new GameRuleError(`Hrac '${username}' nema zalozenou osadu.`, 404);
   }
@@ -2182,7 +2662,7 @@ const requireVillageForUser = (username, requestedVillageId = null) => {
     }
   }
 
-  return { player, village, villages };
+  return { player, village, villages, world: selectedWorld };
 };
 
 const normalizeSettlementKind = (isOwn, isRoyalSettlement, isAbandonedBot) => {
@@ -2197,8 +2677,9 @@ const normalizeSettlementKind = (isOwn, isRoyalSettlement, isAbandonedBot) => {
   return isRoyalSettlement ? 'bot' : 'player';
 };
 
-const buildWorldSettlements = (viewerVillage, viewerUsername) => {
-  const villages = selectAllVillagesForWorldStmt.all();
+const buildWorldSettlements = (viewerVillage, viewerUsername, world) => {
+  const region = resolveWorldRegionDefinition(world);
+  const villages = selectAllVillagesForWorldStmt.all(Number(world.region));
   const viewerKingdom = viewerVillage.kingdom;
 
   return villages.map((row) => {
@@ -2217,8 +2698,8 @@ const buildWorldSettlements = (viewerVillage, viewerUsername) => {
       owner: row.owner,
       kingdom: row.kingdom,
       region: Number(row.region),
-      localX: coordX - WORLD_REGION.originX + 1,
-      localY: coordY - WORLD_REGION.originY + 1,
+      localX: coordX - Number(region.originX) + 1,
+      localY: coordY - Number(region.originY) + 1,
       globalX: coordX,
       globalY: coordY,
       prestige: Number(row.prestige),
@@ -2313,8 +2794,10 @@ const sumUnitMapValues = (value) => {
   }, 0);
 };
 
-const buildCombatScoresByPlayerId = () => {
-  const reports = selectBattleReportsForLeaderboardStmt.all();
+const buildCombatScoresByPlayerId = (world) => {
+  const reports = world
+    ? selectBattleReportsForLeaderboardByRegionStmt.all(Number(world.region), Number(world.region))
+    : selectBattleReportsForLeaderboardStmt.all();
   const scoresByPlayerId = new Map();
 
   for (const report of reports) {
@@ -2382,9 +2865,10 @@ const buildCombatRankByPlayerId = (rows, scoreKey) => {
   return rankByPlayerId;
 };
 
-export const listPlayerLeaderboard = () => {
-  const players = selectLeaderboardStmt.all();
-  const combatScoresByPlayerId = buildCombatScoresByPlayerId();
+export const listPlayerLeaderboard = (worldId = null) => {
+  const world = worldId == null ? null : resolveWorldById(worldId);
+  const players = world ? selectLeaderboardByRegionStmt.all(Number(world.region)) : selectLeaderboardStmt.all();
+  const combatScoresByPlayerId = buildCombatScoresByPlayerId(world);
   const rows = players.map((player, index) => {
     const playerId = Number(player.playerId);
     const combatScores = combatScoresByPlayerId.get(playerId) ?? {
@@ -2418,11 +2902,12 @@ export const listPlayerLeaderboard = () => {
   }));
 };
 
-export const listBattleReports = (username, options = {}) => {
+export const listBattleReports = (username, options = {}, worldId = null) => {
   const player = selectPlayerByUsernameStmt.get(username);
   if (!player) {
     throw new GameRuleError(`Hrac '${username}' neexistuje.`, 404);
   }
+  const world = resolveWorldById(worldId);
 
   const requestedPageSize = Number(options.pageSize ?? 20);
   const requestedPage = Number(options.page ?? 1);
@@ -2431,11 +2916,23 @@ export const listBattleReports = (username, options = {}) => {
     5,
     50,
   );
-  const total = Number(selectBattleReportCountByPlayerStmt.get(Number(player.id))?.total ?? 0);
+  const total = Number(
+    selectBattleReportCountByPlayerAndRegionStmt.get(
+      Number(player.id),
+      Number(world.region),
+      Number(world.region),
+    )?.total ?? 0,
+  );
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const page = clampNumber(Number.isInteger(requestedPage) ? requestedPage : 1, 1, totalPages);
   const offset = (page - 1) * pageSize;
-  const rows = selectBattleReportsByPlayerStmt.all(Number(player.id), pageSize, offset);
+  const rows = selectBattleReportsByPlayerAndRegionStmt.all(
+    Number(player.id),
+    Number(world.region),
+    Number(world.region),
+    pageSize,
+    offset,
+  );
 
   return {
     page,
@@ -2751,13 +3248,13 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           : 'Brana zastavila utok bez beranidel. Utocnik ustoupil bez ztrat.'
         : `${outcomeLabelForAttacker}. Ztraty utocnika ${attackerLossesTotal}/${totalSentUnits}, obrance ${defenderLossesTotal}/${defenderStartTotal}.`;
       if (conquestPayload?.conquered) {
-        attackTitle = `Dobytí léna: ${targetVillage.name}`;
-        attackSummary = `Dobytí léna uspesne. ${targetVillage.name} prechazi pod vladu ${attackerName}.`;
+        attackTitle = `DobytÄ‚Â­ lÄ‚Â©na: ${targetVillage.name}`;
+        attackSummary = `DobytÄ‚Â­ lÄ‚Â©na uspesne. ${targetVillage.name} prechazi pod vladu ${attackerName}.`;
         if (conquestPayload.knightConsumed) {
           attackSummary += ' Rytir osadu obsadil a po dobyti zmizel.';
         }
       } else if (conquestPayload?.blockedByVillageLimit) {
-        attackSummary += ` Dobytí se neprovedlo: dosazen limit ${MAX_PLAYER_VILLAGES} osad.`;
+        attackSummary += ` DobytÄ‚Â­ se neprovedlo: dosazen limit ${MAX_PLAYER_VILLAGES} osad.`;
       }
       if (attackerPlayer && Number(attackerPlayer.isBot ?? 0) !== 1) {
         let reportId = null;
@@ -2834,10 +3331,10 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             ? 'Obrana byla znicena. Vsechny obranne jednotky padly. Pocet jednotek utocnika je neznamy.'
             : `${outcomeLabelForDefender}. Ztraty obrance ${defenderLossesTotal}/${defenderStartTotal}, utocnik ${attackerLossesTotal}/${totalSentUnits}.`;
         if (conquestPayload?.conquered) {
-          defenseTitle = `Dobytí léna: ${targetVillage.name}`;
+          defenseTitle = `DobytÄ‚Â­ lÄ‚Â©na: ${targetVillage.name}`;
           defenseSummary = `Leno ${targetVillage.name} bylo dobyto hracem ${attackerName}.`;
         } else if (conquestPayload?.blockedByVillageLimit) {
-          defenseSummary += ` Utocnik dosahl limitu ${MAX_PLAYER_VILLAGES} osad, dobytí se neprovedlo.`;
+          defenseSummary += ` Utocnik dosahl limitu ${MAX_PLAYER_VILLAGES} osad, dobytÄ‚Â­ se neprovedlo.`;
         }
         const defenderPayload = {
           perspective: 'defender',
@@ -3120,17 +3617,6 @@ export const listPlayerWorlds = (username) => {
   const villages = selectVillagesByPlayerStmt.all(Number(player.id));
   const totalPrestige = villages.reduce((sum, village) => sum + Number(village.prestige ?? 0), 0);
   const primaryKingdom = String(villages[0]?.kingdom ?? 'Neutral');
-  const leaderboardRows = listPlayerLeaderboard();
-  const leaderboardEntry =
-    leaderboardRows.find(
-      (entry) =>
-        normalizeUsernameComparable(String(entry.username)) ===
-        normalizeUsernameComparable(String(player.username)),
-    ) ?? null;
-  const playerRank =
-    leaderboardEntry?.rank ?? null;
-  const playerKingdom = leaderboardEntry?.kingdom ?? primaryKingdom;
-  const totalPlayerAccounts = leaderboardRows.length;
 
   return {
     profile: {
@@ -3144,14 +3630,33 @@ export const listPlayerWorlds = (username) => {
     worlds: listWorldCatalog().map((world) => ({
       ...world,
       player: {
-        hasPresence: world.id === DEFAULT_WORLD_ID && villages.length > 0,
-        villages: world.id === DEFAULT_WORLD_ID ? villages.length : 0,
-        prestige: world.id === DEFAULT_WORLD_ID ? totalPrestige : 0,
-        rank: world.id === DEFAULT_WORLD_ID && villages.length > 0 ? playerRank : null,
-        kingdom: world.id === DEFAULT_WORLD_ID && villages.length > 0 ? String(playerKingdom) : null,
+        ...(() => {
+          const villagesInWorld = selectVillagesByPlayerAndRegionStmt.all(Number(player.id), Number(world.region));
+          const prestigeInWorld = villagesInWorld.reduce(
+            (sum, village) => sum + Number(village.prestige ?? 0),
+            0,
+          );
+          const leaderboardRows = listPlayerLeaderboard(world.id);
+          const leaderboardEntry =
+            leaderboardRows.find(
+              (entry) =>
+                normalizeUsernameComparable(String(entry.username)) ===
+                normalizeUsernameComparable(String(player.username)),
+            ) ?? null;
+          const fallbackKingdom = String(villagesInWorld[0]?.kingdom ?? primaryKingdom);
+          return {
+            hasPresence: villagesInWorld.length > 0,
+            villages: villagesInWorld.length,
+            prestige: prestigeInWorld,
+            rank: leaderboardEntry?.rank ?? null,
+            kingdom: villagesInWorld.length > 0 ? String(leaderboardEntry?.kingdom ?? fallbackKingdom) : null,
+          };
+        })(),
       },
       stats: {
-        playerAccounts: world.id === DEFAULT_WORLD_ID ? totalPlayerAccounts : 0,
+        playerAccounts: Number(
+          selectPlayerCountByRegionStmt.get(Number(world.region))?.total ?? 0,
+        ),
       },
     })),
     defaultWorldId: resolveWorldById(DEFAULT_WORLD_ID)?.id ?? DEFAULT_WORLD_ID,
@@ -3173,8 +3678,9 @@ export const listAdminPlayers = () => {
   }));
 };
 
-export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = null) => {
-  const { player, village, villages } = requireVillageForUser(username, requestedVillageId);
+export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = null, worldId = null) => {
+  const { player, village, villages, world } = requireVillageForUser(username, requestedVillageId, worldId);
+  const worldRegion = resolveWorldRegionDefinition(world);
   const resourcesRow = selectResourcesByVillageStmt.get(village.id);
   if (!resourcesRow) {
     throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
@@ -3229,8 +3735,8 @@ export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = nul
     populationUsed,
     reservedPopulationForRecruitment,
   );
-  const knightCapacity = getPlayerKnightCapacity(Number(player.id));
-  const playerKnightTotal = getPlayerKnightTotalInWorld(Number(player.id));
+  const knightCapacity = getPlayerKnightCapacity(Number(player.id), Number(world.region));
+  const playerKnightTotal = getPlayerKnightTotalInWorld(Number(player.id), Number(world.region));
   const remainingKnightCapacity = Math.max(0, knightCapacity - playerKnightTotal);
 
   const buildings = BUILDING_ORDER.map((buildingId) => {
@@ -3381,8 +3887,8 @@ export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = nul
   activeOrders.push('Nabor i vystavba bezi oddelene pro kazde leno.');
 
   const activeUpgrade = activeUpgrades.length > 0 ? activeUpgrades[0] : null;
-  const settlements = buildWorldSettlements(village, player.username);
-  const leaderboard = listPlayerLeaderboard();
+  const settlements = buildWorldSettlements(village, player.username, world);
+  const leaderboard = listPlayerLeaderboard(world.id);
   const kingdomHub = buildKingdomHubState(player, village);
 
   return {
@@ -3413,10 +3919,12 @@ export const getVillageSnapshot = (username = 'Hayato', requestedVillageId = nul
       loyalty: Number(village.loyalty),
     },
     world: {
-      region: WORLD_REGION.id,
-      originX: WORLD_REGION.originX,
-      originY: WORLD_REGION.originY,
-      size: WORLD_REGION.size,
+      id: String(world.id),
+      name: String(world.name),
+      region: Number(worldRegion.id),
+      originX: Number(worldRegion.originX),
+      originY: Number(worldRegion.originY),
+      size: Number(worldRegion.size),
       settlements,
       kingdoms: buildKingdomStats(settlements),
     },
@@ -3496,8 +4004,8 @@ const requirePositiveInteger = (value, fieldName) => {
 
 const ARMY_COMMAND_TYPES = new Set(['attack', 'support', 'move', 'return']);
 
-const issueArmyCommandTransaction = db.transaction((username, requestedVillageId, payload) => {
-  const { player, village } = requireVillageForUser(username, requestedVillageId);
+const issueArmyCommandTransaction = db.transaction((username, requestedVillageId, payload, worldId = null) => {
+  const { player, village, world } = requireVillageForUser(username, requestedVillageId, worldId);
   const commandType = String(payload?.commandType ?? '')
     .trim()
     .toLowerCase();
@@ -3573,9 +4081,12 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
   }
 
   const targetVillageId = requirePositiveInteger(payload?.targetVillageId, 'targetVillageId');
-  const targetVillage = selectVillageByIdStmt.get(targetVillageId);
+  const targetVillage = selectVillageWithOwnerByIdStmt.get(targetVillageId);
   if (!targetVillage) {
     throw new GameRuleError('Cilove leno neexistuje.', 404);
+  }
+  if (Number(targetVillage.region) !== Number(village.region)) {
+    throw new GameRuleError('Cilove leno je v jinem svete.', 400);
   }
 
   if (Number(targetVillage.id) === Number(village.id)) {
@@ -3592,6 +4103,25 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
 
   if (commandType === 'attack' && Number(targetVillage.playerId) === Number(player.id)) {
     throw new GameRuleError('Utok nelze poslat na vlastni leno.');
+  }
+
+  if (commandType === 'attack') {
+    const spawnConfig = resolveWorldSpawnConfig(world);
+    if (spawnConfig.playerProtectionDays > 0) {
+      const isTargetAbandoned = Number(targetVillage.ownerIsBot) === 1;
+      if (!isTargetAbandoned && isVillageUnderSpawnProtection(village)) {
+        throw new GameRuleError(
+          'Jsi pod novackou ochranou. Po dobu 5 dni muzes utocit jen na opustene osady.',
+          403,
+        );
+      }
+      if (!isTargetAbandoned && isVillageUnderSpawnProtection(targetVillage)) {
+        throw new GameRuleError(
+          'Cilovy hrac je pod novackou ochranou. Utok je po dobu 5 dni blokovan.',
+          403,
+        );
+      }
+    }
   }
 
   const selectedUnits = parseArmyUnitSelection(payload?.units);
@@ -3896,17 +4426,17 @@ const validateKingdomName = (rawValue) => {
     .map((row) => String(row.kingdom))
     .find((kingdomName) => normalizeKingdomComparable(kingdomName) === normalizedComparable);
   if (existing) {
-    throw new GameRuleError('Království s tímto názvem už existuje.', 400);
+    throw new GameRuleError('KrÄ‚Ë‡lovstvÄ‚Â­ s tÄ‚Â­mto nÄ‚Ë‡zvem uÄąÄľ existuje.', 400);
   }
 
   return normalized;
 };
 
-const createKingdomTransaction = db.transaction((username, kingdomNameRaw) => {
-  const { player, village } = requireVillageForUser(username);
+const createKingdomTransaction = db.transaction((username, kingdomNameRaw, requestedVillageId = null, worldId = null) => {
+  const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
   const currentKingdom = normalizeKingdomValue(village.kingdom) || 'Neutral';
   if (!isNeutralKingdom(currentKingdom)) {
-    throw new GameRuleError('Už jsi členem království. Nejprve musíš odejít.', 400);
+    throw new GameRuleError('UÄąÄľ jsi Ă„Ĺ¤lenem krÄ‚Ë‡lovstvÄ‚Â­. Nejprve musÄ‚Â­ÄąË‡ odejÄ‚Â­t.', 400);
   }
 
   const kingdomName = validateKingdomName(kingdomNameRaw);
@@ -3927,8 +4457,9 @@ const createKingdomTransaction = db.transaction((username, kingdomNameRaw) => {
   };
 });
 
-const invitePlayerToKingdomTransaction = db.transaction((username, targetUsernameRaw) => {
-  const { player, village } = requireVillageForUser(username);
+const invitePlayerToKingdomTransaction = db.transaction(
+  (username, targetUsernameRaw, requestedVillageId = null, worldId = null) => {
+    const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
   const inviterKingdom = normalizeKingdomValue(village.kingdom) || 'Neutral';
   requireKingdomLeadership(player, inviterKingdom);
 
@@ -3971,17 +4502,18 @@ const invitePlayerToKingdomTransaction = db.transaction((username, targetUsernam
     payload: { inviteId },
   });
 
-  return {
-    inviteId,
-    kingdom: inviterKingdom,
-    inviterUsername: player.username,
-    targetUsername: String(targetPlayer.username),
-    createdAt,
-  };
-});
+    return {
+      inviteId,
+      kingdom: inviterKingdom,
+      inviterUsername: player.username,
+      targetUsername: String(targetPlayer.username),
+      createdAt,
+    };
+  },
+);
 
-const acceptKingdomInviteTransaction = db.transaction((username, inviteIdRaw) => {
-  const { player, village } = requireVillageForUser(username);
+const acceptKingdomInviteTransaction = db.transaction((username, inviteIdRaw, requestedVillageId = null, worldId = null) => {
+  const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
   const inviteId = requirePositiveInteger(inviteIdRaw, 'inviteId');
 
   if (!isNeutralKingdom(village.kingdom)) {
@@ -4019,8 +4551,8 @@ const acceptKingdomInviteTransaction = db.transaction((username, inviteIdRaw) =>
   };
 });
 
-const rejectKingdomInviteTransaction = db.transaction((username, inviteIdRaw) => {
-  const { player } = requireVillageForUser(username);
+const rejectKingdomInviteTransaction = db.transaction((username, inviteIdRaw, requestedVillageId = null, worldId = null) => {
+  const { player } = requireVillageForUser(username, requestedVillageId, worldId);
   const inviteId = requirePositiveInteger(inviteIdRaw, 'inviteId');
   const invite = selectPendingKingdomInviteByIdForTargetStmt.get(inviteId, Number(player.id));
   if (!invite) {
@@ -4043,8 +4575,8 @@ const rejectKingdomInviteTransaction = db.transaction((username, inviteIdRaw) =>
   };
 });
 
-const leaveKingdomTransaction = db.transaction((username) => {
-  const { player, village } = requireVillageForUser(username);
+const leaveKingdomTransaction = db.transaction((username, requestedVillageId = null, worldId = null) => {
+  const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
   const currentKingdom = normalizeKingdomValue(village.kingdom) || 'Neutral';
   if (isNeutralKingdom(currentKingdom)) {
     throw new GameRuleError('Nejsi clenem zadneho kralovstvi.', 400);
@@ -4066,8 +4598,8 @@ const leaveKingdomTransaction = db.transaction((username) => {
   };
 });
 
-const kickKingdomMemberTransaction = db.transaction((username, targetUsernameRaw) => {
-  const { player, village } = requireVillageForUser(username);
+const kickKingdomMemberTransaction = db.transaction((username, targetUsernameRaw, requestedVillageId = null, worldId = null) => {
+  const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
   const managerKingdom = normalizeKingdomValue(village.kingdom) || 'Neutral';
   requireKingdomLeadership(player, managerKingdom);
 
@@ -4107,22 +4639,23 @@ const kickKingdomMemberTransaction = db.transaction((username, targetUsernameRaw
   };
 });
 
-export const createKingdom = (username, kingdomName) =>
-  createKingdomTransaction(username, kingdomName);
+export const createKingdom = (username, kingdomName, requestedVillageId = null, worldId = null) =>
+  createKingdomTransaction(username, kingdomName, requestedVillageId, worldId);
 
-export const invitePlayerToKingdom = (username, targetUsername) =>
-  invitePlayerToKingdomTransaction(username, targetUsername);
+export const invitePlayerToKingdom = (username, targetUsername, requestedVillageId = null, worldId = null) =>
+  invitePlayerToKingdomTransaction(username, targetUsername, requestedVillageId, worldId);
 
-export const acceptKingdomInvite = (username, inviteId) =>
-  acceptKingdomInviteTransaction(username, inviteId);
+export const acceptKingdomInvite = (username, inviteId, requestedVillageId = null, worldId = null) =>
+  acceptKingdomInviteTransaction(username, inviteId, requestedVillageId, worldId);
 
-export const rejectKingdomInvite = (username, inviteId) =>
-  rejectKingdomInviteTransaction(username, inviteId);
+export const rejectKingdomInvite = (username, inviteId, requestedVillageId = null, worldId = null) =>
+  rejectKingdomInviteTransaction(username, inviteId, requestedVillageId, worldId);
 
-export const leaveKingdom = (username) => leaveKingdomTransaction(username);
+export const leaveKingdom = (username, requestedVillageId = null, worldId = null) =>
+  leaveKingdomTransaction(username, requestedVillageId, worldId);
 
-export const kickKingdomMember = (username, targetUsername) =>
-  kickKingdomMemberTransaction(username, targetUsername);
+export const kickKingdomMember = (username, targetUsername, requestedVillageId = null, worldId = null) =>
+  kickKingdomMemberTransaction(username, targetUsername, requestedVillageId, worldId);
 
 const recruitTransaction = db.transaction((username, unitId, amount, requestedVillageId) => {
   const { player, village } = requireVillageForUser(username, requestedVillageId);
@@ -4165,8 +4698,8 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
   }
 
   if (unitId === KNIGHT_UNIT_ID) {
-    const knightCapacity = getPlayerKnightCapacity(Number(player.id));
-    const playerKnightTotal = getPlayerKnightTotalInWorld(Number(player.id));
+    const knightCapacity = getPlayerKnightCapacity(Number(player.id), Number(village.region));
+    const playerKnightTotal = getPlayerKnightTotalInWorld(Number(player.id), Number(village.region));
     if (playerKnightTotal >= knightCapacity) {
       throw new GameRuleError('Limit rytiru podle poctu osad je vycerpan.');
     }
@@ -4304,7 +4837,8 @@ export const cancelRecruitment = (username, recruitmentId, requestedVillageId = 
 export const recallKnight = (username, requestedVillageId = null) =>
   recallKnightTransaction(username, requestedVillageId);
 
-export const issueArmyCommand = (username, payload, requestedVillageId = null) =>
-  issueArmyCommandTransaction(username, requestedVillageId, payload);
+export const issueArmyCommand = (username, payload, requestedVillageId = null, worldId = null) =>
+  issueArmyCommandTransaction(username, requestedVillageId, payload, worldId);
 
 export { GameRuleError };
+

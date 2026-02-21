@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS villages (
   coord_x INTEGER NOT NULL,
   coord_y INTEGER NOT NULL,
   region INTEGER NOT NULL,
+  peace_until TEXT,
   prestige INTEGER NOT NULL DEFAULT 0,
   loyalty INTEGER NOT NULL DEFAULT 100,
   created_at TEXT NOT NULL,
@@ -298,6 +299,10 @@ CREATE TABLE IF NOT EXISTS game_state (
   const hasKingdomColumn = villageColumns.some((column) => column.name === 'kingdom');
   if (!hasKingdomColumn) {
     db.prepare("ALTER TABLE villages ADD COLUMN kingdom TEXT NOT NULL DEFAULT 'Neutral'").run();
+  }
+  const hasPeaceUntilColumn = villageColumns.some((column) => column.name === 'peace_until');
+  if (!hasPeaceUntilColumn) {
+    db.prepare('ALTER TABLE villages ADD COLUMN peace_until TEXT').run();
   }
 
   const playerColumns = db.prepare('PRAGMA table_info(players)').all();

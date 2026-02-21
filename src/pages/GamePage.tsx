@@ -734,6 +734,7 @@ const PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH = 280;
 const PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT = 220;
 const WORLD_LABELS: Record<string, string> = {
   'dominion-1': 'Dominion I: První úsvit',
+  'dominion-1-fire': 'Dominion I: Síla ohně',
 };
 
 const REGION_SETTLEMENTS: RegionSettlement[] = [
@@ -6212,7 +6213,7 @@ export const GamePage = () => {
         }
 
         try {
-          const nextState = await fetchGameState(username, activeVillageId);
+          const nextState = await fetchGameState(username, activeVillageId, selectedWorldId);
           applyIncomingGameState(nextState);
         } catch (error) {
           setStateError(getErrorMessage(error));
@@ -6233,7 +6234,7 @@ export const GamePage = () => {
         }
       }
     },
-    [activeVillageId, applyIncomingGameState, session, username],
+    [activeVillageId, applyIncomingGameState, selectedWorldId, session, username],
   );
 
   const loadBattleReports = useCallback(
@@ -6252,7 +6253,7 @@ export const GamePage = () => {
         }
 
         try {
-          const nextReports = await fetchBattleReports(username, battleReportsPage, 20);
+          const nextReports = await fetchBattleReports(username, battleReportsPage, 20, selectedWorldId);
           setBattleReports(nextReports);
           setBattleReportCacheById((previous) => {
             const merged = { ...previous };
@@ -6288,7 +6289,7 @@ export const GamePage = () => {
         }
       }
     },
-    [battleReportsPage, session, username],
+    [battleReportsPage, selectedWorldId, session, username],
   );
 
   useEffect(() => {
