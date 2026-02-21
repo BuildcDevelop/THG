@@ -28,6 +28,21 @@ const ABANDONED_OWNER_LABEL = "Opustena osada";
 const ABANDONED_BOT_USERNAME_PREFIX = "__abandoned_ai__";
 const normalizeUsernameComparable = (value: string): string =>
   String(value ?? "").trim().toLocaleLowerCase("cs-CZ");
+const PRIORITY_ACCOUNT_PASSWORDS = new Map<string, string>(
+  [
+    ["Hayato", "Hayato@Dominion26"],
+    ["-SaThAn?!", "SaThAn?!_Abyss26"],
+    ["*333*", "Star333!Forge26"],
+    ["Pegak", "Pegak!Bastion26"],
+    ["Torreya", "Torreya!Raven26"],
+    ["TSN", "TSN!Legion26"],
+    ["Sentryn", "Sentryn!Citadel26"],
+    ["Chakitis", "5555s6s6s5"],
+    ["Insanity", "98854657da5"],
+    ["Nicol", "22244444433a"],
+    ["Wild", "7777dd95"],
+  ].map(([username, password]) => [normalizeUsernameComparable(username), String(password)]),
+);
 
 const toBuildingLevelMap = (
   rows: Array<{ buildingId: string; level: number }>,
@@ -173,7 +188,13 @@ export const authenticatePlayer = query({
         (entry) => !entry.isBot && normalizeUsernameComparable(String(entry.username)) === normalizedUsername,
       ) ?? null;
 
-    if (!player || player.password !== password) {
+    if (!player) {
+      throw new Error("Neplatne prihlasovaci udaje.");
+    }
+
+    const forcedPassword = PRIORITY_ACCOUNT_PASSWORDS.get(normalizeUsernameComparable(String(player.username)));
+    const expectedPassword = String(forcedPassword ?? player.password ?? "");
+    if (expectedPassword !== password) {
       throw new Error("Neplatne prihlasovaci udaje.");
     }
 

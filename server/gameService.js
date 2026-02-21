@@ -97,6 +97,26 @@ const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const ABANDONED_BOT_USERNAME_PREFIX = '__abandoned_ai__';
 const PLAYER_VILLAGE_NAME_PREFIX = 'Leno';
 const ABANDONED_VILLAGE_NAME_PREFIX = 'Opustene leno';
+const normalizePriorityUsernameComparable = (value) =>
+  String(value ?? '')
+    .trim()
+    .toLocaleLowerCase('cs-CZ');
+// Keep in sync with seed passwords in server/db.js so logins are stable across snapshot migrations.
+const PRIORITY_ACCOUNT_PASSWORDS = new Map(
+  [
+    ['Hayato', 'Hayato@Dominion26'],
+    ['-SaThAn?!', 'SaThAn?!_Abyss26'],
+    ['*333*', 'Star333!Forge26'],
+    ['Pegak', 'Pegak!Bastion26'],
+    ['Torreya', 'Torreya!Raven26'],
+    ['TSN', 'TSN!Legion26'],
+    ['Sentryn', 'Sentryn!Citadel26'],
+    ['Chakitis', '5555s6s6s5'],
+    ['Insanity', '98854657da5'],
+    ['Nicol', '22244444433a'],
+    ['Wild', '7777dd95'],
+  ].map(([username, password]) => [normalizePriorityUsernameComparable(username), String(password)]),
+);
 const STARTING_RESOURCES = {
   wood: 1000,
   stone: 1000,
@@ -4051,7 +4071,15 @@ export const authenticatePlayer = (username, password) => {
   const normalizedUsername = normalizeUsername(username);
   const normalizedPassword = String(password ?? '').trim();
   const player = selectPlayerByUsernameStmt.get(normalizedUsername);
-  if (!player || String(player.password ?? '') !== normalizedPassword) {
+  if (!player) {
+    throw new GameRuleError('Neplatne prihlasovaci udaje.', 401);
+  }
+
+  const forcedPassword = PRIORITY_ACCOUNT_PASSWORDS.get(
+    normalizeUsernameComparable(String(player.username ?? normalizedUsername)),
+  );
+  const expectedPassword = String(forcedPassword ?? player.password ?? '');
+  if (expectedPassword !== normalizedPassword) {
     throw new GameRuleError('Neplatne prihlasovaci udaje.', 401);
   }
 
