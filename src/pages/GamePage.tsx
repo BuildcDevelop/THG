@@ -120,6 +120,10 @@ type ResourceStock = {
   delta: string;
   cap: number;
   buildingId: string;
+  buildingName: string;
+  buildingLevel: number;
+  upgradeQueueCount: number;
+  upgradeSummary: string | null;
 };
 
 type WorldSwitchOption = {
@@ -612,6 +616,7 @@ type ArmyQuickSelection = {
   commandType: ArmyCommandSelectableType;
   targetVillageId: number;
 };
+type GameFontScaleOption = 'base' | 'plus5' | 'plus10' | 'plus15' | 'plus20';
 
 const MAP_ORDER_ICON_LABELS: Record<MapOrderCommandType, string> = {
   attack: 'Útok',
@@ -739,6 +744,8 @@ const ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'tld_active_village';
 const LEGACY_ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'thg_active_village';
 const ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX = 'tld_army_target_history';
 const LEGACY_ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX = 'thg_army_target_history';
+const GAME_FONT_SCALE_STORAGE_KEY_PREFIX = 'tld_game_font_scale';
+const LEGACY_GAME_FONT_SCALE_STORAGE_KEY_PREFIX = 'thg_game_font_scale';
 const MAP_WINDOW_MIN_WIDTH = 620;
 const MAP_WINDOW_MIN_HEIGHT = 460;
 const STATE_POLL_INTERVAL_MS = 7000;
@@ -756,6 +763,20 @@ const PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT = 220;
 const WORLD_LABELS: Record<string, string> = {
   'dominion-1': 'Dominion I: První úsvit',
   'dominion-1-fire': 'Dominion I: Síla ohně',
+};
+const GAME_FONT_SCALE_OPTIONS: { value: GameFontScaleOption; label: string; scalePercent: number }[] = [
+  { value: 'base', label: 'Aktuální', scalePercent: 100 },
+  { value: 'plus5', label: 'Zvětšit font o 5 %', scalePercent: 105 },
+  { value: 'plus10', label: 'Zvětšit font o 10 %', scalePercent: 110 },
+  { value: 'plus15', label: 'Zvětšit font o 15 %', scalePercent: 115 },
+  { value: 'plus20', label: 'Zvětšit font o 20 %', scalePercent: 120 },
+];
+const GAME_FONT_SCALE_PERCENT_BY_OPTION: Record<GameFontScaleOption, number> = {
+  base: 100,
+  plus5: 105,
+  plus10: 110,
+  plus15: 115,
+  plus20: 120,
 };
 
 const REGION_SETTLEMENTS: RegionSettlement[] = [
@@ -1425,6 +1446,65 @@ const saveStoredMapZoom = (username: string, zoomPercent: number): void => {
   }
 };
 
+const getGameFontScaleStorageKey = (username: string): string =>
+  `${GAME_FONT_SCALE_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+const getLegacyGameFontScaleStorageKey = (username: string): string =>
+  `${LEGACY_GAME_FONT_SCALE_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+
+const isGameFontScaleOption = (value: unknown): value is GameFontScaleOption =>
+  value === 'base' || value === 'plus5' || value === 'plus10' || value === 'plus15' || value === 'plus20';
+
+const normalizeGameFontScaleOption = (value: unknown): GameFontScaleOption => {
+  if (isGameFontScaleOption(value)) {
+    return value;
+  }
+
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === '105' || normalized === '1.05') {
+    return 'plus5';
+  }
+  if (normalized === '110' || normalized === '1.1' || normalized === '1.10') {
+    return 'plus10';
+  }
+  if (normalized === '115' || normalized === '1.15') {
+    return 'plus15';
+  }
+  if (normalized === '120' || normalized === '1.2' || normalized === '1.20') {
+    return 'plus20';
+  }
+  return 'base';
+};
+
+const readStoredGameFontScaleOption = (username: string): GameFontScaleOption => {
+  if (typeof window === 'undefined') {
+    return 'base';
+  }
+
+  try {
+    const raw =
+      window.localStorage.getItem(getGameFontScaleStorageKey(username)) ??
+      window.localStorage.getItem(getLegacyGameFontScaleStorageKey(username));
+    if (!raw) {
+      return 'base';
+    }
+    return normalizeGameFontScaleOption(raw);
+  } catch {
+    return 'base';
+  }
+};
+
+const saveStoredGameFontScaleOption = (username: string, option: GameFontScaleOption): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(getGameFontScaleStorageKey(username), option);
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
 const getPanelLayoutStorageKey = (username: string): string =>
   `${PANEL_LAYOUT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
 const getLegacyPanelLayoutStorageKey = (username: string): string =>
@@ -1678,6 +1758,43 @@ const formatDurationLabel = (seconds: number | null): string => {
   return `${secs}s`;
 };
 
+const formatCzechCountLabel = (countRaw: number, one: string, few: string, many: string): string => {
+  const count = Math.abs(Math.floor(Number(countRaw)));
+  if (count % 10 === 1 && count % 100 !== 11) {
+    return one;
+  }
+  if ([2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)) {
+    return few;
+  }
+  return many;
+};
+
+const formatDurationVerboseLabel = (seconds: number | null): string => {
+  if (seconds == null) {
+    return '-';
+  }
+
+  const safe = Math.max(0, Math.floor(seconds));
+  const totalHours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const secs = safe % 60;
+
+  const parts: string[] = [];
+  if (totalHours > 0) {
+    parts.push(`${totalHours} ${formatCzechCountLabel(totalHours, 'hodina', 'hodiny', 'hodin')}`);
+  }
+  if (minutes > 0) {
+    parts.push(`${minutes} ${formatCzechCountLabel(minutes, 'minuta', 'minuty', 'minut')}`);
+  }
+  if (parts.length === 0) {
+    parts.push(`${secs} ${formatCzechCountLabel(secs, 'sekunda', 'sekundy', 'sekund')}`);
+  }
+  if (parts.length === 1) {
+    return parts[0];
+  }
+  return `${parts[0]} a ${parts[1]}`;
+};
+
 const getErrorMessage = (error: unknown): string => {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -1874,10 +1991,12 @@ const CityPanel = ({
                       const queuedUpgradeCount = upgradeQueue.length;
                       const canTriggerUpgrade = building.canUpgrade && !isUpgradePending;
                       const isUnbuilt = building.level <= 0;
-                      const queueInfoLabel =
-                        queuedUpgradeCount > 1
-                          ? `Ve frontě: ${queuedUpgradeCount.toLocaleString('cs-CZ')} upgrady`
-                          : null;
+                      const queueInfoLabel = `Fronta staveb: ${queuedUpgradeCount.toLocaleString('cs-CZ')} ${formatCzechCountLabel(
+                        queuedUpgradeCount,
+                        'položka',
+                        'položky',
+                        'položek',
+                      )}`;
 
                       return (
                         <article
@@ -1942,7 +2061,7 @@ const CityPanel = ({
                               </button>
                             ) : null}
                           </div>
-                          {queueInfoLabel ? <small className="row-help">{queueInfoLabel}</small> : null}
+                          <small className="row-help">{queueInfoLabel}</small>
                           <small className="city-building-hover-hint">
                             Levým klikem postav/rozšiř budovu · pravým klikem zobraz detail budovy
                           </small>
@@ -3703,7 +3822,7 @@ const KingdomPanel = ({
 
   const handleLeaveClick = () => {
     const confirmed = window.confirm(
-      'Opravdu chces odejit z kralovstvi? Budes prepnuty do neutralniho stavu.',
+      'Opravdu chceš odejít z království? Budeš přepnutý do neutrálního stavu.',
     );
     if (!confirmed) {
       return;
@@ -3713,7 +3832,7 @@ const KingdomPanel = ({
 
   const handleKickClick = (targetUsername: string) => {
     const confirmed = window.confirm(
-      `Opravdu chces vyhodit hrace ${targetUsername} z kralovstvi?`,
+      `Opravdu chceš vyhodit hráče ${targetUsername} z království?`,
     );
     if (!confirmed) {
       return;
@@ -4760,15 +4879,53 @@ const ProfilePanel = ({
 const SettingsPanel = ({
   onLogout,
   onRestartVillageProgress,
+  fontScaleOption,
+  isFontScaleDirty,
+  onFontScaleChange,
+  onSaveFontScale,
   restartPending,
   notice,
 }: {
   onLogout: () => void;
   onRestartVillageProgress: () => void;
+  fontScaleOption: GameFontScaleOption;
+  isFontScaleDirty: boolean;
+  onFontScaleChange: (option: GameFontScaleOption) => void;
+  onSaveFontScale: () => void;
   restartPending: boolean;
   notice: string | null;
 }) => (
   <div className="panel-stack">
+    <section>
+      <h3>Nastavení rozhraní hry</h3>
+      <p>Velikost písma se aplikuje pouze ve hře a ukládá se pro tvůj účet.</p>
+      <div className="settings-font-scale-options" role="radiogroup" aria-label="Velikost herního fontu">
+        {GAME_FONT_SCALE_OPTIONS.map((option) => {
+          const isActive = fontScaleOption === option.value;
+          return (
+            <label key={`font-scale-${option.value}`} className="settings-font-scale-option">
+              <input
+                type="radio"
+                name="game-font-scale"
+                value={option.value}
+                checked={isActive}
+                onChange={() => onFontScaleChange(option.value)}
+              />
+              <span>{option.label}</span>
+            </label>
+          );
+        })}
+      </div>
+      <button
+        type="button"
+        className="upgrade-action settings-save-button"
+        onClick={onSaveFontScale}
+        disabled={!isFontScaleDirty}
+      >
+        Uložit velikost fontu
+      </button>
+    </section>
+
     <section>
       <h3>Nastavení účtu</h3>
       <p>
@@ -4855,14 +5012,6 @@ const MapPanel = memo(({
     );
   }, [focusedSettlementId, settlements]);
 
-  const settlementsByCell = useMemo(() => {
-    const map = new Map<string, RegionSettlement>();
-    for (const settlement of settlements) {
-      map.set(`${settlement.localX}|${settlement.localY}`, settlement);
-    }
-    return map;
-  }, [settlements]);
-
   const settlementsById = useMemo(() => {
     const map = new Map<string, RegionSettlement>();
     for (const settlement of settlements) {
@@ -4878,8 +5027,113 @@ const MapPanel = memo(({
   const pinnedSettlement = safePinnedSettlementId
     ? settlementsById.get(safePinnedSettlementId) ?? null
     : null;
+  const resolveSettlementLocalCoords = useCallback(
+    (settlement: RegionSettlement): { localX: number; localY: number } => {
+      const globalX = Number(settlement.globalX);
+      const globalY = Number(settlement.globalY);
+      if (Number.isFinite(globalX) && Number.isFinite(globalY)) {
+        return {
+          localX: Math.round(globalX - Number(regionOriginX) + 1),
+          localY: Math.round(globalY - Number(regionOriginY) + 1),
+        };
+      }
+
+      return {
+        localX: Math.round(Number(settlement.localX)),
+        localY: Math.round(Number(settlement.localY)),
+      };
+    },
+    [regionOriginX, regionOriginY],
+  );
+  const mapDisplaySettlements = useMemo(() => {
+    const byCell = new Map<string, { settlement: RegionSettlement; localX: number; localY: number }>();
+    const kindPriority: Record<MapSettlementKind, number> = {
+      active: 5,
+      own: 4,
+      player: 3,
+      bot: 2,
+      abandoned: 1,
+    };
+
+    const scoreSettlement = (settlement: RegionSettlement): number => {
+      let score = 0;
+      if (focusedSettlementId && settlement.id === focusedSettlementId) {
+        score += 10000;
+      }
+      if (safePinnedSettlementId && settlement.id === safePinnedSettlementId) {
+        score += 8000;
+      }
+      if (safeHoveredId && settlement.id === safeHoveredId) {
+        score += 6000;
+      }
+
+      const mapKind = getSettlementMapKind(settlement, activeVillageId);
+      score += kindPriority[mapKind] * 1000;
+
+      if (settlement.villageId != null) {
+        score += 100;
+      }
+
+      score += Math.max(0, Number(settlement.prestige ?? 0));
+      return score;
+    };
+
+    for (const settlement of settlements) {
+      const { localX, localY } = resolveSettlementLocalCoords(settlement);
+      if (localX < 1 || localX > regionSize || localY < 1 || localY > regionSize) {
+        continue;
+      }
+
+      const key = `${localX}|${localY}`;
+      const current = byCell.get(key);
+      if (!current) {
+        byCell.set(key, { settlement, localX, localY });
+        continue;
+      }
+
+      const candidateScore = scoreSettlement(settlement);
+      const currentScore = scoreSettlement(current.settlement);
+      if (candidateScore > currentScore) {
+        byCell.set(key, { settlement, localX, localY });
+        continue;
+      }
+      if (candidateScore === currentScore && settlement.id.localeCompare(current.settlement.id, 'cs') < 0) {
+        byCell.set(key, { settlement, localX, localY });
+      }
+    }
+
+    return Array.from(byCell.values());
+  }, [
+    activeVillageId,
+    focusedSettlementId,
+    regionSize,
+    resolveSettlementLocalCoords,
+    safeHoveredId,
+    safePinnedSettlementId,
+    settlements,
+  ]);
+  const mapDisplaySettlementById = useMemo(() => {
+    const byId = new Map<string, { settlement: RegionSettlement; localX: number; localY: number }>();
+    for (const entry of mapDisplaySettlements) {
+      byId.set(entry.settlement.id, entry);
+    }
+    return byId;
+  }, [mapDisplaySettlements]);
   const previewSettlement = pinnedSettlement ?? hoveredSettlement;
   const isPreviewPinned = pinnedSettlement != null;
+  const previewSettlementCell = useMemo(() => {
+    if (!previewSettlement) {
+      return null;
+    }
+
+    const visibleEntry = mapDisplaySettlementById.get(previewSettlement.id);
+    if (visibleEntry) {
+      return visibleEntry;
+    }
+
+    const { localX, localY } = resolveSettlementLocalCoords(previewSettlement);
+    return { settlement: previewSettlement, localX, localY };
+  }, [mapDisplaySettlementById, previewSettlement, resolveSettlementLocalCoords]);
   const previewSettlementKind = previewSettlement
     ? getSettlementMapKind(previewSettlement, activeVillageId)
     : null;
@@ -4911,8 +5165,9 @@ const MapPanel = memo(({
     };
   }, [activeVillageId, currentUsername, previewSettlement]);
   const zoomScale = 1 + zoomPercent / 100;
-  const cellSize = Math.max(8, REGION_CELL_SIZE * zoomScale);
+  const cellSize = Math.max(8, Math.round(REGION_CELL_SIZE * zoomScale));
   const mapCellGapPx = 2;
+  const mapGridSizePx = regionSize * cellSize + Math.max(0, regionSize - 1) * mapCellGapPx;
 
   const distanceOriginSettlement = useMemo(() => {
     if (focusedSettlementId) {
@@ -4934,28 +5189,26 @@ const MapPanel = memo(({
   }, [distanceOriginSettlement, previewSettlement]);
 
   const previewCardPlacement = useMemo(() => {
-    if (!previewSettlement) {
+    if (!previewSettlementCell) {
       return 'placement-right-above';
     }
-    const horizontal = previewSettlement.localX > regionSize - 4 ? 'left' : 'right';
-    const vertical = previewSettlement.localY <= 4 ? 'below' : 'above';
+    const horizontal = previewSettlementCell.localX > regionSize - 4 ? 'left' : 'right';
+    const vertical = previewSettlementCell.localY <= 4 ? 'below' : 'above';
     return `placement-${horizontal}-${vertical}`;
-  }, [previewSettlement, regionSize]);
+  }, [previewSettlementCell, regionSize]);
 
   const previewCardStyle = useMemo<CSSProperties | null>(() => {
-    if (!previewSettlement) {
+    if (!previewSettlementCell) {
       return null;
     }
-    const anchorX =
-      (previewSettlement.localX - 1) * (cellSize + mapCellGapPx) + cellSize / 2;
-    const anchorY =
-      (previewSettlement.localY - 1) * (cellSize + mapCellGapPx) + cellSize / 2;
+    const anchorX = (previewSettlementCell.localX - 1) * (cellSize + mapCellGapPx) + cellSize / 2;
+    const anchorY = (previewSettlementCell.localY - 1) * (cellSize + mapCellGapPx) + cellSize / 2;
 
     return {
       '--map-preview-anchor-x': `${anchorX}px`,
       '--map-preview-anchor-y': `${anchorY}px`,
     } as CSSProperties;
-  }, [cellSize, previewSettlement]);
+  }, [cellSize, previewSettlementCell]);
 
   const updateMiniViewportImmediate = useCallback(() => {
     const wrap = gridWrapRef.current;
@@ -5213,17 +5466,9 @@ const MapPanel = memo(({
     jumpToMinimapPoint(event.clientX, event.clientY);
   };
 
-  const regionGridCells = useMemo(
+  const settlementMarkers = useMemo(
     () =>
-      Array.from({ length: regionSize * regionSize }, (_, index) => {
-        const localX = (index % regionSize) + 1;
-        const localY = Math.floor(index / regionSize) + 1;
-        const settlement = settlementsByCell.get(`${localX}|${localY}`);
-
-        if (!settlement) {
-          return <div key={`${localX}-${localY}`} className="region-cell" />;
-        }
-
+      mapDisplaySettlements.map(({ settlement, localX, localY }) => {
         const markerState =
           settlement.villageId != null
             ? orderMarkersByVillageId.get(Number(settlement.villageId)) ?? null
@@ -5231,12 +5476,20 @@ const MapPanel = memo(({
         const coverageCommandTypes = markerState
           ? MAP_ORDER_COMMAND_TYPES.filter((commandType) => Number(markerState[commandType] ?? 0) > 0)
           : [];
+        const leftPx = (localX - 1) * (cellSize + mapCellGapPx);
+        const topPx = (localY - 1) * (cellSize + mapCellGapPx);
 
         return (
           <button
             key={settlement.id}
             className={`region-cell settlement ${getSettlementMapKind(settlement, activeVillageId)} ${focusedSettlementId === settlement.id ? 'focused' : ''}`}
             data-settlement-id={settlement.id}
+            style={{
+              left: `${leftPx}px`,
+              top: `${topPx}px`,
+              width: `${cellSize}px`,
+              height: `${cellSize}px`,
+            }}
             onMouseEnter={() =>
               setHoveredId((previous) => (previous === settlement.id ? previous : settlement.id))
             }
@@ -5265,7 +5518,6 @@ const MapPanel = memo(({
                 ))}
               </div>
             ) : null}
-            <span className="settlement-core-dot" />
             {markerState ? (
               <div className="settlement-order-icons" aria-hidden="true">
                 {MAP_ORDER_COMMAND_TYPES.map((commandType) => {
@@ -5301,29 +5553,23 @@ const MapPanel = memo(({
           </button>
         );
       }),
-    [
-      activeVillageId,
-      focusedSettlementId,
-      orderMarkersByVillageId,
-      regionSize,
-      settlementsByCell,
-    ],
+    [activeVillageId, cellSize, focusedSettlementId, mapDisplaySettlements, orderMarkersByVillageId],
   );
 
   const miniMapDots = useMemo(
     () =>
-      settlements.map((settlement) => (
+      mapDisplaySettlements.map(({ settlement, localX, localY }) => (
         <span
           key={`mini-${settlement.id}`}
           className={`mini-map-dot ${getSettlementMapKind(settlement, activeVillageId)} ${focusedSettlementId === settlement.id ? 'focused' : ''}`}
           style={{
-            left: `${((settlement.localX - 0.5) / regionSize) * 100}%`,
-            top: `${((settlement.localY - 0.5) / regionSize) * 100}%`,
+            left: `${((localX - 0.5) / regionSize) * 100}%`,
+            top: `${((localY - 0.5) / regionSize) * 100}%`,
           }}
           aria-hidden="true"
         />
       )),
-    [activeVillageId, focusedSettlementId, regionSize, settlements],
+    [activeVillageId, focusedSettlementId, mapDisplaySettlements, regionSize],
   );
 
   return (
@@ -5363,11 +5609,15 @@ const MapPanel = memo(({
         >
           <div
             className="region-grid"
-            style={{
-              gridTemplateColumns: `repeat(${regionSize}, ${cellSize}px)`,
-            }}
+            style={
+              {
+                '--map-grid-size': `${mapGridSizePx}px`,
+                '--map-cell-size': `${cellSize}px`,
+                '--map-cell-gap': `${mapCellGapPx}px`,
+              } as CSSProperties
+            }
           >
-            {regionGridCells}
+            {settlementMarkers}
             {previewSettlement && previewCardStyle ? (
               <article
                 className={`map-settlement-info-card ${previewCardPlacement} ${isPreviewPinned ? 'is-pinned' : 'is-hover'}`}
@@ -6062,12 +6312,19 @@ export const GamePage = () => {
   const [kingdomNotice, setKingdomNotice] = useState<string | null>(null);
   const [restartVillagePending, setRestartVillagePending] = useState(false);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
+  const [gameFontScaleOption, setGameFontScaleOption] = useState<GameFontScaleOption>(() =>
+    readStoredGameFontScaleOption(username),
+  );
+  const [gameFontScaleDraft, setGameFontScaleDraft] = useState<GameFontScaleOption>(() =>
+    readStoredGameFontScaleOption(username),
+  );
   const [isVillageMenuOpen, setVillageMenuOpen] = useState(false);
   const [villageMenuPosition, setVillageMenuPosition] = useState<VillageMenuPosition | null>(null);
   const [armyTargetHistoryByVillageId, setArmyTargetHistoryByVillageId] = useState<ArmyTargetHistoryByVillageId>(
     () => readStoredArmyTargetHistory(username),
   );
   const [armyQuickSelection, setArmyQuickSelection] = useState<ArmyQuickSelection | null>(null);
+  const [protectionClockMs, setProtectionClockMs] = useState(() => Date.now());
 
   useEffect(() => {
     mutationPendingRef.current = Boolean(
@@ -6093,7 +6350,42 @@ export const GamePage = () => {
 
   useEffect(() => {
     setArmyTargetHistoryByVillageId(readStoredArmyTargetHistory(username));
+    const storedFontScale = readStoredGameFontScaleOption(username);
+    setGameFontScaleOption(storedFontScale);
+    setGameFontScaleDraft(storedFontScale);
   }, [username]);
+
+  const activeGameFontScalePercent = GAME_FONT_SCALE_PERCENT_BY_OPTION[gameFontScaleOption];
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
+    const root = document.documentElement;
+    const previousFontSize = root.style.fontSize;
+    const previousDataFontScale = root.getAttribute('data-game-font-scale');
+    root.style.fontSize = `${activeGameFontScalePercent}%`;
+    root.setAttribute('data-game-font-scale', gameFontScaleOption);
+
+    return () => {
+      root.style.fontSize = previousFontSize;
+      if (previousDataFontScale == null) {
+        root.removeAttribute('data-game-font-scale');
+      } else {
+        root.setAttribute('data-game-font-scale', previousDataFontScale);
+      }
+    };
+  }, [activeGameFontScalePercent, gameFontScaleOption]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setProtectionClockMs(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const latestAppliedStateServerTimeMsRef = useRef(0);
   const applyIncomingGameState = useCallback((nextState: GameStateResponse): boolean => {
@@ -6287,12 +6579,77 @@ export const GamePage = () => {
   }, [armyActiveMovements, armyStationedSupports]);
 
   const resourceStocks = useMemo<ResourceStock[]>(() => {
+    const resolveUpgradeMeta = (buildingId: string): { upgradeQueueCount: number; upgradeSummary: string | null } => {
+      const queue = buildingUpgradeQueueByBuilding.get(buildingId) ?? [];
+      if (queue.length === 0) {
+        return {
+          upgradeQueueCount: 0,
+          upgradeSummary: null,
+        };
+      }
+
+      const firstOrder = queue[0];
+      const lastOrder = queue[queue.length - 1];
+      const levelIncrease = Math.max(1, Number(lastOrder.toLevel) - Number(firstOrder.fromLevel));
+      const levelIncreaseLabel = `${levelIncrease} ${formatCzechCountLabel(levelIncrease, 'stupeň', 'stupně', 'stupňů')}`;
+      return {
+        upgradeQueueCount: queue.length,
+        upgradeSummary: `Rozšiřuje se o ${levelIncreaseLabel} ${formatDurationVerboseLabel(lastOrder.remainingSec)}.`,
+      };
+    };
+
+    const resolveBuildingMeta = (buildingId: string): { buildingName: string; buildingLevel: number } => {
+      if (!gameState) {
+        return {
+          buildingName: BUILDING_ART[buildingId]?.fallbackName ?? buildingId,
+          buildingLevel: 0,
+        };
+      }
+      const building = gameState.buildings.find((entry) => entry.id === buildingId);
+      return {
+        buildingName: BUILDING_ART[buildingId]?.fallbackName ?? building?.name ?? buildingId,
+        buildingLevel: Math.max(0, Number(building?.level ?? 0)),
+      };
+    };
+
     if (!gameState) {
       return [
-        { name: 'Dřevo', amount: 0, delta: '+0 / h', cap: 0, buildingId: 'woodcutter' },
-        { name: 'Kámen', amount: 0, delta: '+0 / h', cap: 0, buildingId: 'quarry' },
-        { name: 'Železo', amount: 0, delta: '+0 / h', cap: 0, buildingId: 'iron-mine' },
-        { name: 'Populace', amount: 0, delta: 'kapacita 0', cap: 0, buildingId: 'residential-quarter' },
+        {
+          name: 'Dřevo',
+          amount: 0,
+          delta: '+0 / h',
+          cap: 0,
+          buildingId: 'woodcutter',
+          ...resolveBuildingMeta('woodcutter'),
+          ...resolveUpgradeMeta('woodcutter'),
+        },
+        {
+          name: 'Kámen',
+          amount: 0,
+          delta: '+0 / h',
+          cap: 0,
+          buildingId: 'quarry',
+          ...resolveBuildingMeta('quarry'),
+          ...resolveUpgradeMeta('quarry'),
+        },
+        {
+          name: 'Železo',
+          amount: 0,
+          delta: '+0 / h',
+          cap: 0,
+          buildingId: 'iron-mine',
+          ...resolveBuildingMeta('iron-mine'),
+          ...resolveUpgradeMeta('iron-mine'),
+        },
+        {
+          name: 'Populace',
+          amount: 0,
+          delta: 'kapacita 0',
+          cap: 0,
+          buildingId: 'residential-quarter',
+          ...resolveBuildingMeta('residential-quarter'),
+          ...resolveUpgradeMeta('residential-quarter'),
+        },
       ];
     }
 
@@ -6303,6 +6660,8 @@ export const GamePage = () => {
         delta: `+${gameState.resources.productionPerHour.wood.toLocaleString('cs-CZ')} / h`,
         cap: gameState.resources.cap,
         buildingId: 'woodcutter',
+        ...resolveBuildingMeta('woodcutter'),
+        ...resolveUpgradeMeta('woodcutter'),
       },
       {
         name: 'Kámen',
@@ -6310,6 +6669,8 @@ export const GamePage = () => {
         delta: `+${gameState.resources.productionPerHour.stone.toLocaleString('cs-CZ')} / h`,
         cap: gameState.resources.cap,
         buildingId: 'quarry',
+        ...resolveBuildingMeta('quarry'),
+        ...resolveUpgradeMeta('quarry'),
       },
       {
         name: 'Železo',
@@ -6317,6 +6678,8 @@ export const GamePage = () => {
         delta: `+${gameState.resources.productionPerHour.iron.toLocaleString('cs-CZ')} / h`,
         cap: gameState.resources.cap,
         buildingId: 'iron-mine',
+        ...resolveBuildingMeta('iron-mine'),
+        ...resolveUpgradeMeta('iron-mine'),
       },
       {
         name: 'Populace',
@@ -6324,9 +6687,11 @@ export const GamePage = () => {
         delta: `kapacita ${gameState.population.cap.toLocaleString('cs-CZ')}`,
         cap: gameState.population.cap,
         buildingId: 'residential-quarter',
+        ...resolveBuildingMeta('residential-quarter'),
+        ...resolveUpgradeMeta('residential-quarter'),
       },
     ];
-  }, [gameState]);
+  }, [buildingUpgradeQueueByBuilding, gameState]);
   const currentResearchTask = useMemo(
     () => RESEARCH_TASKS.find((task) => task.progress < 100) ?? null,
     [],
@@ -6345,6 +6710,35 @@ export const GamePage = () => {
     [armyTargetHistoryByVillageId, currentVillageHistoryKey],
   );
   const playerVillages = gameState?.villages ?? [];
+  const isGameFontScaleDirty = gameFontScaleDraft !== gameFontScaleOption;
+  const activeVillageProtection = useMemo(() => {
+    const protectionRuleDays = Math.max(0, Number(gameState?.village.protectionRuleDays ?? 0));
+    const protectionUntil = gameState?.village.protectionUntil;
+    if (protectionRuleDays <= 0 || !protectionUntil) {
+      return null;
+    }
+
+    const protectionUntilMs = Date.parse(protectionUntil);
+    if (!Number.isFinite(protectionUntilMs)) {
+      return null;
+    }
+
+    const remainingSec = Math.max(0, Math.ceil((protectionUntilMs - protectionClockMs) / 1000));
+    const formattedUntil = new Intl.DateTimeFormat('cs-CZ', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }).format(new Date(protectionUntilMs));
+
+    return {
+      isActive: remainingSec > 0,
+      remainingSec,
+      formattedUntil,
+    };
+  }, [gameState?.village.protectionRuleDays, gameState?.village.protectionUntil, protectionClockMs]);
   const currentVillageName = gameState?.village.name ?? 'Neznámé léno';
   const villageRegionLabel = gameState
     ? `Region ${gameState.village.region}, království ${gameState.village.kingdom}`
@@ -8264,6 +8658,19 @@ export const GamePage = () => {
     [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
   );
 
+  const handleChangeFontScale = useCallback((option: GameFontScaleOption) => {
+    setGameFontScaleDraft(option);
+    setSettingsNotice(null);
+  }, []);
+
+  const handleSaveFontScale = useCallback(() => {
+    saveStoredGameFontScaleOption(username, gameFontScaleDraft);
+    setGameFontScaleOption(gameFontScaleDraft);
+    setSettingsNotice(
+      `Nastavení fontu uloženo (${GAME_FONT_SCALE_PERCENT_BY_OPTION[gameFontScaleDraft]} %).`,
+    );
+  }, [gameFontScaleDraft, username]);
+
   const handleRestartVillageProgress = useCallback(async () => {
     const confirmed = window.confirm(
       'Potvrď reset postupu. Tvoje stávající léna se změní na opuštěná a dostaneš nové startovní léno.',
@@ -8577,7 +8984,7 @@ export const GamePage = () => {
         return (
           <ProfilePanel
             username={username}
-            kingdom={gameState?.village.kingdom ?? 'Nezname kralovstvi'}
+            kingdom={gameState?.village.kingdom ?? 'Neznámé království'}
             prestige={gameState?.village.prestige ?? 0}
             villageCount={playerLeaderboardEntry?.villages ?? 1}
             rank={playerLeaderboardEntry?.rank ?? null}
@@ -8588,6 +8995,10 @@ export const GamePage = () => {
           <SettingsPanel
             onLogout={handleLogout}
             onRestartVillageProgress={handleRestartVillageProgress}
+            fontScaleOption={gameFontScaleDraft}
+            isFontScaleDirty={isGameFontScaleDirty}
+            onFontScaleChange={handleChangeFontScale}
+            onSaveFontScale={handleSaveFontScale}
             restartPending={restartVillagePending}
             notice={settingsNotice}
           />
@@ -8670,7 +9081,7 @@ export const GamePage = () => {
           <div className="world-indicator">
             <span>Svět:</span> <strong>{selectedWorldName}</strong>
           </div>
-          <small className="world-version-note">Aktuální verze hry 0.1.03</small>
+          <small className="world-version-note">Aktuální verze hry build-0.1.04</small>
         </div>
         <nav>
           {NAV_BUTTONS.map((button) => (
@@ -8738,34 +9149,60 @@ export const GamePage = () => {
       </header>
 
       <section className="resource-strip">
-        <article className="resource-card village-resource-card" aria-label="Aktivní město a seznam lén">
-          <p>Aktivní město</p>
-          <strong>{villageLabel}</strong>
-          <span>{playerVillages.length.toLocaleString('cs-CZ')} dostupných lén</span>
-          <button
-            ref={villageMenuTriggerRef}
-            type="button"
-            className="village-menu-trigger"
-            onClick={toggleVillageMenu}
-            disabled={playerVillages.length === 0}
-            aria-haspopup="menu"
-            aria-expanded={isVillageMenuOpen}
-          >
-            {playerVillages.length === 0 ? 'Načítám léna...' : 'Seznam lén'}
-          </button>
-        </article>
+        <div className="village-card-stack">
+          <article className="resource-card village-resource-card" aria-label="Aktivní město a seznam lén">
+            <p>Aktivní město</p>
+            <strong>{villageLabel}</strong>
+            <span>{playerVillages.length.toLocaleString('cs-CZ')} dostupných lén</span>
+            <button
+              ref={villageMenuTriggerRef}
+              type="button"
+              className="village-menu-trigger"
+              onClick={toggleVillageMenu}
+              disabled={playerVillages.length === 0}
+              aria-haspopup="menu"
+              aria-expanded={isVillageMenuOpen}
+            >
+              {playerVillages.length === 0 ? 'Načítám léna...' : 'Seznam lén'}
+            </button>
+          </article>
+          {activeVillageProtection ? (
+            <div className={`village-protection-timer ${activeVillageProtection.isActive ? '' : 'is-expired'}`}>
+              {activeVillageProtection.isActive
+                ? `Nováčkovská ochrana: ${formatDurationLabel(activeVillageProtection.remainingSec)} (do ${activeVillageProtection.formattedUntil})`
+                : `Nováčkovská ochrana vypršela (${activeVillageProtection.formattedUntil})`}
+            </div>
+          ) : null}
+        </div>
         {resourceStocks.map((resource) => (
           <button
             key={resource.name}
             type="button"
-            className="resource-card"
+            className="resource-card resource-card-split"
             onClick={() => handleResourceCardClick(resource)}
             title={`Otevřít budovu: ${resource.name}`}
           >
-            <p>{resource.name}</p>
-            <strong>{resource.amount.toLocaleString('cs-CZ')}</strong>
-            <span>{resource.delta}</span>
-            <small>Cap {resource.cap.toLocaleString('cs-CZ')}</small>
+            <div className="resource-card-left">
+              <p>{resource.name}</p>
+              <strong>{resource.amount.toLocaleString('cs-CZ')}</strong>
+              <span>{resource.delta}</span>
+              <small>Kapacita {resource.cap.toLocaleString('cs-CZ')}</small>
+            </div>
+            <div className="resource-card-right">
+              <p>{resource.buildingName}</p>
+              <strong>Úroveň {resource.buildingLevel}</strong>
+              {resource.upgradeSummary ? (
+                <small className="resource-upgrade-note">{resource.upgradeSummary}</small>
+              ) : (
+                <small className="resource-upgrade-idle">Bez aktivního rozšíření</small>
+              )}
+              {resource.upgradeQueueCount > 0 ? (
+                <small className="resource-upgrade-queue">
+                  Fronta: {resource.upgradeQueueCount.toLocaleString('cs-CZ')}{' '}
+                  {formatCzechCountLabel(resource.upgradeQueueCount, 'položka', 'položky', 'položek')}
+                </small>
+              ) : null}
+            </div>
           </button>
         ))}
         {currentResearchTask ? (
@@ -8781,6 +9218,7 @@ export const GamePage = () => {
               {Math.round(currentResearchTask.progress)} % · ETA {currentResearchTask.eta}
             </span>
             <small>Klikni pro detail v Univerzitě</small>
+            <small className="research-preparing-note">Výzkum se do hry teprve připravuje.</small>
           </button>
         ) : null}
       </section>

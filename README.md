@@ -128,6 +128,9 @@ Environment variables:
 - `CONVEX_URL`
 - `CONVEX_DEPLOY_KEY`
 - `USE_CONVEX_FULL=true`
+- `TLD_VERSION_LABEL` (napr. `build-0.1.04`)
+- `TLD_BUILD_ID` (unikatni identifikator buildu, idealne commit SHA)
+- `TLD_UPDATE_STATUS` (`idle` / `building` / `deploying` / `maintenance`)
 
 Volitelne:
 

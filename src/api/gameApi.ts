@@ -177,6 +177,9 @@ export type GameStateResponse = {
     kingdom: string;
     prestige: number;
     loyalty: number;
+    protectionUntil?: string | null;
+    protectionRemainingSec?: number;
+    protectionRuleDays?: number;
   }[];
   village: {
     id: number;
@@ -187,6 +190,10 @@ export type GameStateResponse = {
     kingdom: string;
     prestige: number;
     loyalty: number;
+    protectionUntil?: string | null;
+    protectionRemainingSec?: number;
+    protectionRuleDays?: number;
+    isUnderProtection?: boolean;
   };
   world: {
     id?: string;
@@ -313,6 +320,25 @@ export type WorldsPortalResponse = {
   profile: WorldsPortalProfile;
   worlds: WorldPortalItem[];
   defaultWorldId: string;
+};
+
+export type BackendHealthStatus = {
+  ok: true;
+  service: string;
+  serverTime: string;
+  deployment?: {
+    provider?: string;
+    versionLabel?: string;
+    buildId?: string;
+    isUpdating?: boolean;
+    status?: string;
+  };
+  features?: {
+    useConvexAuth?: boolean;
+    useConvexState?: boolean;
+    useConvexFull?: boolean;
+    convexConfigured?: boolean;
+  };
 };
 
 export type AdminPlayerRow = {
@@ -637,6 +663,11 @@ export const fetchWorlds = async (username: string): Promise<WorldsPortalRespons
   const params = new URLSearchParams({ username });
   const payload = await request<ApiOk<WorldsPortalResponse>>(`/api/v1/worlds?${params.toString()}`);
   return payload.data;
+};
+
+export const fetchHealthStatus = async (): Promise<BackendHealthStatus> => {
+  const payload = await request<BackendHealthStatus>('/api/health');
+  return payload;
 };
 
 export const fetchAdminPlayers = async (): Promise<AdminPlayerRow[]> => {

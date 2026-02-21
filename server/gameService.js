@@ -204,6 +204,7 @@ const selectVillageByPlayerStmt = db.prepare(
       kingdom,
       prestige,
       loyalty,
+      created_at AS createdAt,
       peace_until AS peaceUntil
    FROM villages
    WHERE player_id = ?
@@ -220,6 +221,7 @@ const selectVillageByPlayerAndRegionStmt = db.prepare(
       kingdom,
       prestige,
       loyalty,
+      created_at AS createdAt,
       peace_until AS peaceUntil
    FROM villages
    WHERE player_id = ? AND region = ?
@@ -236,6 +238,7 @@ const selectVillagesByPlayerStmt = db.prepare(
       kingdom,
       prestige,
       loyalty,
+      created_at AS createdAt,
       peace_until AS peaceUntil
    FROM villages
    WHERE player_id = ?
@@ -251,6 +254,7 @@ const selectVillagesByPlayerAndRegionStmt = db.prepare(
       kingdom,
       prestige,
       loyalty,
+      created_at AS createdAt,
       peace_until AS peaceUntil
    FROM villages
    WHERE player_id = ? AND region = ?
@@ -589,6 +593,7 @@ const selectVillageByIdStmt = db.prepare(
       coord_x AS coordX,
       coord_y AS coordY,
       region,
+      created_at AS createdAt,
       peace_until AS peaceUntil
    FROM villages
    WHERE id = ?
@@ -603,6 +608,7 @@ const selectVillageWithOwnerByIdStmt = db.prepare(
       v.coord_x AS coordX,
       v.coord_y AS coordY,
       v.region,
+      v.created_at AS createdAt,
       v.peace_until AS peaceUntil,
       p.username AS ownerUsername,
       p.is_bot AS ownerIsBot
@@ -1279,23 +1285,23 @@ const buildKingdomAuditLog = (playerId, kingdomName) => {
 
   return rows.map((row) => {
     const payload = parseJsonSafe(row.payloadJson, {});
-    const actorUsername = row.actorUsername ? String(row.actorUsername) : 'NeznÄ‚Ë‡mÄ‚Ëť hrÄ‚Ë‡Ă„Ĺ¤';
-    const targetUsername = row.targetUsername ? String(row.targetUsername) : 'NeznÄ‚Ë‡mÄ‚Ëť hrÄ‚Ë‡Ă„Ĺ¤';
+    const actorUsername = row.actorUsername ? String(row.actorUsername) : 'Neznámý hráč';
+    const targetUsername = row.targetUsername ? String(row.targetUsername) : 'Neznámý hráč';
     const eventKingdom = row.kingdom ? String(row.kingdom) : null;
-    let message = 'NeznÄ‚Ë‡mÄ‚Ë‡ krÄ‚Ë‡lovskÄ‚Ë‡ udÄ‚Ë‡lost.';
+    let message = 'Neznámá královská událost.';
 
     if (row.eventType === 'kingdom_created') {
-      message = `${actorUsername} zaloÄąÄľil krÄ‚Ë‡lovstvÄ‚Â­ ${eventKingdom ?? 'bez nÄ‚Ë‡zvu'}.`;
+      message = `${actorUsername} založil království ${eventKingdom ?? 'bez názvu'}.`;
     } else if (row.eventType === 'invite_sent') {
-      message = `${actorUsername} poslal pozvÄ‚Ë‡nku hrÄ‚Ë‡Ă„Ĺ¤i ${targetUsername}.`;
+      message = `${actorUsername} poslal pozvánku hráči ${targetUsername}.`;
     } else if (row.eventType === 'invite_accepted') {
-      message = `${actorUsername} pÄąâ„˘ijal pozvÄ‚Ë‡nku do krÄ‚Ë‡lovstvÄ‚Â­ ${eventKingdom ?? 'bez nÄ‚Ë‡zvu'}.`;
+      message = `${actorUsername} přijal pozvánku do království ${eventKingdom ?? 'bez názvu'}.`;
     } else if (row.eventType === 'invite_rejected') {
-      message = `${actorUsername} odmÄ‚Â­tl pozvÄ‚Ë‡nku do krÄ‚Ë‡lovstvÄ‚Â­ ${eventKingdom ?? 'bez nÄ‚Ë‡zvu'}.`;
+      message = `${actorUsername} odmítl pozvánku do království ${eventKingdom ?? 'bez názvu'}.`;
     } else if (row.eventType === 'member_left') {
-      message = `${actorUsername} opustil krÄ‚Ë‡lovstvÄ‚Â­ ${eventKingdom ?? 'bez nÄ‚Ë‡zvu'}.`;
+      message = `${actorUsername} opustil království ${eventKingdom ?? 'bez názvu'}.`;
     } else if (row.eventType === 'member_kicked') {
-      message = `${actorUsername} vyhodil hrÄ‚Ë‡Ă„Ĺ¤e ${targetUsername} z krÄ‚Ë‡lovstvÄ‚Â­.`;
+      message = `${actorUsername} vyhodil hráče ${targetUsername} z království.`;
     } else if (typeof payload.message === 'string' && payload.message.trim()) {
       message = payload.message.trim();
     }
@@ -2980,17 +2986,41 @@ const toMovementWithUnits = (movementRow) => {
   };
 };
 
-const isVillageUnderSpawnProtection = (village, referenceMs = Date.now()) => {
-  const peaceUntil = village?.peaceUntil;
-  if (!peaceUntil) {
-    return false;
-  }
-  const peaceUntilMs = Date.parse(String(peaceUntil));
-  if (!Number.isFinite(peaceUntilMs)) {
-    return false;
-  }
-  return peaceUntilMs > referenceMs;
+const parseIsoMs = (value) => {
+  const parsed = Date.parse(String(value ?? ''));
+  return Number.isFinite(parsed) ? parsed : null;
 };
+
+const resolveVillageProtectionUntilIso = (village, protectionDaysRaw = 0) => {
+  const peaceUntilMs = parseIsoMs(village?.peaceUntil);
+  if (peaceUntilMs != null) {
+    return new Date(peaceUntilMs).toISOString();
+  }
+
+  const protectionDays = Math.max(0, Number(protectionDaysRaw ?? 0));
+  if (protectionDays <= 0) {
+    return null;
+  }
+
+  const createdAtMs = parseIsoMs(village?.createdAt);
+  if (createdAtMs == null) {
+    return null;
+  }
+
+  return new Date(createdAtMs + protectionDays * DAY_IN_MS).toISOString();
+};
+
+const getVillageProtectionRemainingSec = (village, protectionDaysRaw = 0, referenceMs = Date.now()) => {
+  const protectionUntilIso = resolveVillageProtectionUntilIso(village, protectionDaysRaw);
+  const protectionUntilMs = parseIsoMs(protectionUntilIso);
+  if (protectionUntilMs == null) {
+    return 0;
+  }
+  return Math.max(0, Math.ceil((protectionUntilMs - Number(referenceMs)) / 1000));
+};
+
+const isVillageUnderSpawnProtection = (village, protectionDaysRaw = 0, referenceMs = Date.now()) =>
+  getVillageProtectionRemainingSec(village, protectionDaysRaw, referenceMs) > 0;
 
 const requireVillageForUser = (
   username,
@@ -3753,13 +3783,13 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           : 'Brana zastavila utok bez beranidel. Utocnik ustoupil bez ztrat.'
         : `${outcomeLabelForAttacker}. Ztraty utocnika ${attackerLossesTotal}/${totalSentUnits}, obrance ${defenderLossesTotal}/${defenderStartTotal}.`;
       if (conquestPayload?.conquered) {
-        attackTitle = `DobytÄ‚Â­ lÄ‚Â©na: ${targetVillage.name}`;
-        attackSummary = `DobytÄ‚Â­ lÄ‚Â©na uspesne. ${targetVillage.name} prechazi pod vladu ${attackerName}.`;
+        attackTitle = `Dobytí léna: ${targetVillage.name}`;
+        attackSummary = `Dobytí léna úspěšné. ${targetVillage.name} přechází pod vládu ${attackerName}.`;
         if (conquestPayload.knightConsumed) {
           attackSummary += ' Rytir osadu obsadil a po dobyti zmizel.';
         }
       } else if (conquestPayload?.blockedByVillageLimit) {
-        attackSummary += ` DobytÄ‚Â­ se neprovedlo: dosazen limit ${MAX_PLAYER_VILLAGES} osad.`;
+        attackSummary += ` Dobytí se neprovedlo: dosažen limit ${MAX_PLAYER_VILLAGES} osad.`;
       }
       if (attackerPlayer && Number(attackerPlayer.isBot ?? 0) !== 1) {
         let reportId = null;
@@ -3835,10 +3865,10 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             ? `Obrana byla znicena. Vsechny obranne jednotky padly. Ztraty utocnika ${attackerLossesTotal}/${totalSentUnits}.`
             : `${outcomeLabelForDefender}. Ztraty obrance ${defenderLossesTotal}/${defenderStartTotal}, utocnik ${attackerLossesTotal}/${totalSentUnits}.`;
         if (conquestPayload?.conquered) {
-          defenseTitle = `DobytÄ‚Â­ lÄ‚Â©na: ${targetVillage.name}`;
+          defenseTitle = `Dobytí léna: ${targetVillage.name}`;
           defenseSummary = `Leno ${targetVillage.name} bylo dobyto hracem ${attackerName}.`;
         } else if (conquestPayload?.blockedByVillageLimit) {
-          defenseSummary += ` Utocnik dosahl limitu ${MAX_PLAYER_VILLAGES} osad, dobytÄ‚Â­ se neprovedlo.`;
+          defenseSummary += ` Utocnik dosahl limitu ${MAX_PLAYER_VILLAGES} osad, dobytí se neprovedlo.`;
         }
         const defenderPayload = {
           perspective: 'defender',
@@ -4403,6 +4433,11 @@ export const getVillageSnapshot = (
   const settlements = buildWorldSettlements(village, player.username, world);
   const leaderboard = listPlayerLeaderboard(world.id);
   const kingdomHub = buildKingdomHubState(player, village);
+  const worldSpawnConfig = resolveWorldSpawnConfig(world);
+  const villageProtectionRuleDays = Math.max(0, Number(worldSpawnConfig.playerProtectionDays ?? 0));
+  const villageProtectionUntil = resolveVillageProtectionUntilIso(village, villageProtectionRuleDays);
+  const villageProtectionRemainingSec = getVillageProtectionRemainingSec(village, villageProtectionRuleDays);
+  const isVillageUnderProtection = villageProtectionRemainingSec > 0;
 
   return {
     serverTime: nowIso(),
@@ -4420,6 +4455,9 @@ export const getVillageSnapshot = (
       kingdom: entry.kingdom,
       prestige: Number(entry.prestige),
       loyalty: Number(entry.loyalty),
+      protectionUntil: resolveVillageProtectionUntilIso(entry, villageProtectionRuleDays),
+      protectionRemainingSec: getVillageProtectionRemainingSec(entry, villageProtectionRuleDays),
+      protectionRuleDays: villageProtectionRuleDays,
     })),
     village: {
       id: Number(village.id),
@@ -4430,6 +4468,10 @@ export const getVillageSnapshot = (
       kingdom: village.kingdom,
       prestige: Number(village.prestige),
       loyalty: Number(village.loyalty),
+      protectionUntil: villageProtectionUntil,
+      protectionRemainingSec: villageProtectionRemainingSec,
+      protectionRuleDays: villageProtectionRuleDays,
+      isUnderProtection: isVillageUnderProtection,
     },
     world: {
       id: String(world.id),
@@ -4620,15 +4662,16 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
 
   if (commandType === 'attack') {
     const spawnConfig = resolveWorldSpawnConfig(world);
-    if (spawnConfig.playerProtectionDays > 0) {
+    const protectionDays = Math.max(0, Number(spawnConfig.playerProtectionDays ?? 0));
+    if (protectionDays > 0) {
       const isTargetAbandoned = Number(targetVillage.ownerIsBot) === 1;
-      if (!isTargetAbandoned && isVillageUnderSpawnProtection(village)) {
+      if (!isTargetAbandoned && isVillageUnderSpawnProtection(village, protectionDays)) {
         throw new GameRuleError(
           'Jsi pod novackou ochranou. Po dobu 5 dni muzes utocit jen na opustene osady.',
           403,
         );
       }
-      if (!isTargetAbandoned && isVillageUnderSpawnProtection(targetVillage)) {
+      if (!isTargetAbandoned && isVillageUnderSpawnProtection(targetVillage, protectionDays)) {
         throw new GameRuleError(
           'Cilovy hrac je pod novackou ochranou. Utok je po dobu 5 dni blokovan.',
           403,
@@ -4943,7 +4986,7 @@ const validateKingdomName = (rawValue) => {
     .map((row) => String(row.kingdom))
     .find((kingdomName) => normalizeKingdomComparable(kingdomName) === normalizedComparable);
   if (existing) {
-    throw new GameRuleError('KrÄ‚Ë‡lovstvÄ‚Â­ s tÄ‚Â­mto nÄ‚Ë‡zvem uÄąÄľ existuje.', 400);
+    throw new GameRuleError('Království s tímto názvem už existuje.', 400);
   }
 
   return normalized;
@@ -4953,7 +4996,7 @@ const createKingdomTransaction = db.transaction((username, kingdomNameRaw, reque
   const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
   const currentKingdom = normalizeKingdomValue(village.kingdom) || 'Neutral';
   if (!isNeutralKingdom(currentKingdom)) {
-    throw new GameRuleError('UÄąÄľ jsi Ă„Ĺ¤lenem krÄ‚Ë‡lovstvÄ‚Â­. Nejprve musÄ‚Â­ÄąË‡ odejÄ‚Â­t.', 400);
+    throw new GameRuleError('Už jsi členem království. Nejprve musíš odejít.', 400);
   }
 
   const kingdomName = validateKingdomName(kingdomNameRaw);
