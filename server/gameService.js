@@ -25,6 +25,22 @@ const WORLD_REGION = {
   originY: 430,
   size: 50,
 };
+const WORLD_STATUS_ONLINE = 'online';
+const WORLD_CATALOG = Object.freeze([
+  {
+    id: 'dominion-1',
+    name: 'Dominion I: První úsvit',
+    subtitle: 'Prvni verejny svet',
+    status: WORLD_STATUS_ONLINE,
+    region: WORLD_REGION.id,
+    regionSize: WORLD_REGION.size,
+    seasonLabel: 'Sezona 0 - Zakladatelska',
+    timelineLabel: 'Spusteno',
+    description:
+      'Temna hranice se otevrela. Postav prvni linii, ovladni region a zanech stopu v kronikach.',
+  },
+]);
+const DEFAULT_WORLD_ID = WORLD_CATALOG[0]?.id ?? 'dominion-1';
 const KNIGHT_UNIT_ID = 'knight';
 const KNIGHT_RECALL_REFUND = { wood: 1000, stone: 1000, iron: 1000 };
 
@@ -74,10 +90,24 @@ class GameRuleError extends Error {
 const nowIso = () => new Date().toISOString();
 
 const selectPlayerByUsernameStmt = db.prepare(
-  'SELECT id, username, password FROM players WHERE username = ? AND is_bot = 0 LIMIT 1',
+  `SELECT
+      id,
+      username,
+      password,
+      created_at AS createdAt
+   FROM players
+   WHERE username = ? COLLATE NOCASE
+     AND is_bot = 0
+   LIMIT 1`,
 );
 const selectNonBotPlayerByUsernameStmt = db.prepare(
-  'SELECT id, username FROM players WHERE username = ? AND is_bot = 0 LIMIT 1',
+  `SELECT
+      id,
+      username
+   FROM players
+   WHERE username = ? COLLATE NOCASE
+     AND is_bot = 0
+   LIMIT 1`,
 );
 const selectPlayerByIdStmt = db.prepare(
   'SELECT id, username, is_bot AS isBot FROM players WHERE id = ? LIMIT 1',
@@ -108,6 +138,9 @@ const selectAbandonedBotUsernamesStmt = db.prepare(
 );
 const insertAbandonedBotPlayerStmt = db.prepare(
   'INSERT INTO players (username, password, is_bot, created_at) VALUES (?, ?, 1, ?)',
+);
+const insertPlayerAccountStmt = db.prepare(
+  'INSERT INTO players (username, password, is_bot, created_at) VALUES (?, ?, 0, ?)',
 );
 const insertVillageForPlayerStmt = db.prepare(
   `INSERT INTO villages (
@@ -650,6 +683,13 @@ const selectBattleReportsByPlayerStmt = db.prepare(
    ORDER BY created_at DESC, id DESC
    LIMIT ? OFFSET ?`,
 );
+const selectBattleReportsForLeaderboardStmt = db.prepare(
+  `SELECT
+      player_id AS playerId,
+      payload_json AS payloadJson
+   FROM battle_reports
+   ORDER BY id ASC`,
+);
 const selectKingdomLeaderByKingdomStmt = db.prepare(
   `SELECT
       p.id AS playerId,
@@ -843,6 +883,61 @@ const normalizeKingdomComparable = (value) =>
     .toLowerCase();
 
 const normalizeUsername = (value) => String(value ?? '').trim();
+const normalizeUsernameComparable = (value) => normalizeUsername(value).toLocaleLowerCase('cs-CZ');
+
+const resolveWorldById = (worldIdRaw) => {
+  const worldId = String(worldIdRaw ?? '').trim();
+  if (!worldId) {
+    return WORLD_CATALOG.find((world) => world.id === DEFAULT_WORLD_ID) ?? WORLD_CATALOG[0] ?? null;
+  }
+  const selectedWorld = WORLD_CATALOG.find((world) => world.id === worldId) ?? null;
+  if (!selectedWorld) {
+    throw new GameRuleError(`Svet '${worldId}' nebyl nalezen.`, 404);
+  }
+  return selectedWorld;
+};
+
+const listWorldCatalog = () =>
+  WORLD_CATALOG.map((world) => ({
+    id: String(world.id),
+    name: String(world.name),
+    subtitle: String(world.subtitle),
+    status: String(world.status),
+    region: Number(world.region),
+    regionSize: Number(world.regionSize),
+    seasonLabel: String(world.seasonLabel),
+    timelineLabel: String(world.timelineLabel),
+    description: String(world.description),
+    isDefault: String(world.id) === DEFAULT_WORLD_ID,
+  }));
+
+const validateRegistrationUsername = (usernameRaw) => {
+  const username = normalizeUsername(usernameRaw);
+  if (username.length < 3) {
+    throw new GameRuleError('Herni nick musi mit alespon 3 znaky.', 400);
+  }
+  if (username.length > 20) {
+    throw new GameRuleError('Herni nick muze mit maximalne 20 znaku.', 400);
+  }
+  if (!/^[\p{L}\p{N}_.*!?-]+$/u.test(username)) {
+    throw new GameRuleError('Herni nick obsahuje nepovolene znaky.', 400);
+  }
+  if (normalizeUsernameComparable(username).startsWith(ABANDONED_BOT_USERNAME_PREFIX)) {
+    throw new GameRuleError('Tento herni nick neni povolen.', 400);
+  }
+  return username;
+};
+
+const validateRegistrationPassword = (passwordRaw) => {
+  const password = String(passwordRaw ?? '').trim();
+  if (password.length < 3) {
+    throw new GameRuleError('Heslo musi mit alespon 3 znaky.', 400);
+  }
+  if (password.length > 128) {
+    throw new GameRuleError('Heslo muze mit maximalne 128 znaku.', 400);
+  }
+  return password;
+};
 
 const parseJsonSafe = (value, fallback = {}) => {
   if (value == null || value === '') {
@@ -1247,6 +1342,45 @@ const ensurePlayerHasVillageTransaction = db.transaction((playerId, username) =>
   });
 
   return selectVillagesByPlayerStmt.all(Number(playerId));
+});
+
+const createPlayerAccountTransaction = db.transaction((usernameRaw, passwordRaw) => {
+  const username = validateRegistrationUsername(usernameRaw);
+  const password = validateRegistrationPassword(passwordRaw);
+  const existingPlayer = selectPlayerByUsernameStmt.get(username);
+  if (existingPlayer) {
+    throw new GameRuleError('Herni nick je uz zabrany.', 409);
+  }
+
+  const createdAt = nowIso();
+  let insertion;
+  try {
+    insertion = insertPlayerAccountStmt.run(username, password, createdAt);
+  } catch (error) {
+    if (error instanceof Error && String(error.message).toLowerCase().includes('unique')) {
+      throw new GameRuleError('Herni nick je uz zabrany.', 409);
+    }
+    throw error;
+  }
+  const playerId = Number(insertion.lastInsertRowid);
+  const village = createFreshVillageForPlayer({
+    playerId,
+    username,
+    createdAtIso: createdAt,
+  });
+
+  return {
+    username,
+    village: village
+      ? {
+          id: Number(village.id),
+          name: String(village.name),
+          kingdom: String(village.kingdom ?? 'Neutral'),
+          coordX: Number(village.coordX),
+          coordY: Number(village.coordY),
+        }
+      : null,
+  };
 });
 
 const createAbandonedVillagesTransaction = db.transaction((countRaw = 1) => {
@@ -2165,15 +2299,122 @@ const buildArmyState = (playerId, currentVillageId) => {
   };
 };
 
+const sumUnitMapValues = (value) => {
+  if (!value || typeof value !== 'object') {
+    return 0;
+  }
+
+  return Object.values(value).reduce((sum, amount) => {
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      return sum;
+    }
+    return sum + Math.floor(numericAmount);
+  }, 0);
+};
+
+const buildCombatScoresByPlayerId = () => {
+  const reports = selectBattleReportsForLeaderboardStmt.all();
+  const scoresByPlayerId = new Map();
+
+  for (const report of reports) {
+    const playerId = Number(report.playerId);
+    if (!Number.isFinite(playerId) || playerId <= 0) {
+      continue;
+    }
+
+    const payload = parseJsonSafe(report.payloadJson, null);
+    if (!payload || typeof payload !== 'object') {
+      continue;
+    }
+
+    const perspective = String(payload.perspective ?? '')
+      .trim()
+      .toLowerCase();
+    const role = String(payload.role ?? '')
+      .trim()
+      .toLowerCase();
+    const current = scoresByPlayerId.get(playerId) ?? {
+      attackerScore: 0,
+      defenderScore: 0,
+      supporterScore: 0,
+    };
+
+    if (perspective === 'attacker') {
+      current.attackerScore += sumUnitMapValues(payload?.battle?.defender?.losses);
+    }
+
+    if (perspective === 'defender' && role !== 'support') {
+      current.defenderScore += sumUnitMapValues(payload?.battle?.attacker?.losses);
+    }
+
+    if (role === 'support') {
+      current.supporterScore += sumUnitMapValues(payload?.support?.losses);
+    }
+
+    scoresByPlayerId.set(playerId, current);
+  }
+
+  return scoresByPlayerId;
+};
+
+const buildCombatRankByPlayerId = (rows, scoreKey) => {
+  const sortedRows = [...rows].sort((left, right) => {
+    const scoreDiff = Number(right[scoreKey] ?? 0) - Number(left[scoreKey] ?? 0);
+    if (scoreDiff !== 0) {
+      return scoreDiff;
+    }
+    if (Number(right.prestige ?? 0) !== Number(left.prestige ?? 0)) {
+      return Number(right.prestige ?? 0) - Number(left.prestige ?? 0);
+    }
+    if (Number(right.villages ?? 0) !== Number(left.villages ?? 0)) {
+      return Number(right.villages ?? 0) - Number(left.villages ?? 0);
+    }
+    return String(left.username ?? '').localeCompare(String(right.username ?? ''), 'cs', {
+      sensitivity: 'base',
+    });
+  });
+
+  const rankByPlayerId = new Map();
+  sortedRows.forEach((row, index) => {
+    rankByPlayerId.set(Number(row.playerId), index + 1);
+  });
+  return rankByPlayerId;
+};
+
 export const listPlayerLeaderboard = () => {
   const players = selectLeaderboardStmt.all();
-  return players.map((player, index) => ({
-    rank: index + 1,
-    playerId: Number(player.playerId),
-    username: player.username,
-    kingdom: player.kingdom,
-    villages: Number(player.villageCount),
-    prestige: Number(player.prestige),
+  const combatScoresByPlayerId = buildCombatScoresByPlayerId();
+  const rows = players.map((player, index) => {
+    const playerId = Number(player.playerId);
+    const combatScores = combatScoresByPlayerId.get(playerId) ?? {
+      attackerScore: 0,
+      defenderScore: 0,
+      supporterScore: 0,
+    };
+
+    return {
+      rank: index + 1,
+      playerId,
+      username: player.username,
+      kingdom: player.kingdom,
+      villages: Number(player.villageCount),
+      prestige: Number(player.prestige),
+      attackerScore: Number(combatScores.attackerScore ?? 0),
+      defenderScore: Number(combatScores.defenderScore ?? 0),
+      supporterScore: Number(combatScores.supporterScore ?? 0),
+    };
+  });
+
+  const attackerRankByPlayerId = buildCombatRankByPlayerId(rows, 'attackerScore');
+  const defenderRankByPlayerId = buildCombatRankByPlayerId(rows, 'defenderScore');
+  const supporterRankByPlayerId = buildCombatRankByPlayerId(rows, 'supporterScore');
+
+  return rows.map((row) => ({
+    ...row,
+    attackerRank: attackerRankByPlayerId.get(row.playerId) ?? null,
+    defenderRank: defenderRankByPlayerId.get(row.playerId) ?? null,
+    supporterRank: supporterRankByPlayerId.get(row.playerId) ?? null,
   }));
 };
 
@@ -2839,8 +3080,10 @@ export const runGameTick = () => {
 };
 
 export const authenticatePlayer = (username, password) => {
-  const player = selectPlayerByUsernameStmt.get(username);
-  if (!player || player.password !== password) {
+  const normalizedUsername = normalizeUsername(username);
+  const normalizedPassword = String(password ?? '').trim();
+  const player = selectPlayerByUsernameStmt.get(normalizedUsername);
+  if (!player || String(player.password ?? '') !== normalizedPassword) {
     throw new GameRuleError('Neplatne prihlasovaci udaje.', 401);
   }
 
@@ -2862,6 +3105,56 @@ export const authenticatePlayer = (username, password) => {
       coordX: Number(village.coordX),
       coordY: Number(village.coordY),
     },
+  };
+};
+
+export const createPlayerAccount = (username, password) => createPlayerAccountTransaction(username, password);
+
+export const listPlayerWorlds = (username) => {
+  const normalizedUsername = normalizeUsername(username);
+  const player = selectPlayerByUsernameStmt.get(normalizedUsername);
+  if (!player) {
+    throw new GameRuleError(`Hrac '${normalizedUsername}' neexistuje.`, 404);
+  }
+
+  const villages = selectVillagesByPlayerStmt.all(Number(player.id));
+  const totalPrestige = villages.reduce((sum, village) => sum + Number(village.prestige ?? 0), 0);
+  const primaryKingdom = String(villages[0]?.kingdom ?? 'Neutral');
+  const leaderboardRows = listPlayerLeaderboard();
+  const leaderboardEntry =
+    leaderboardRows.find(
+      (entry) =>
+        normalizeUsernameComparable(String(entry.username)) ===
+        normalizeUsernameComparable(String(player.username)),
+    ) ?? null;
+  const playerRank =
+    leaderboardEntry?.rank ?? null;
+  const playerKingdom = leaderboardEntry?.kingdom ?? primaryKingdom;
+  const totalPlayerAccounts = leaderboardRows.length;
+
+  return {
+    profile: {
+      id: Number(player.id),
+      username: String(player.username),
+      kingdom: primaryKingdom,
+      villageCount: villages.length,
+      prestige: totalPrestige,
+      joinedAt: String(player.createdAt ?? nowIso()),
+    },
+    worlds: listWorldCatalog().map((world) => ({
+      ...world,
+      player: {
+        hasPresence: world.id === DEFAULT_WORLD_ID && villages.length > 0,
+        villages: world.id === DEFAULT_WORLD_ID ? villages.length : 0,
+        prestige: world.id === DEFAULT_WORLD_ID ? totalPrestige : 0,
+        rank: world.id === DEFAULT_WORLD_ID && villages.length > 0 ? playerRank : null,
+        kingdom: world.id === DEFAULT_WORLD_ID && villages.length > 0 ? String(playerKingdom) : null,
+      },
+      stats: {
+        playerAccounts: world.id === DEFAULT_WORLD_ID ? totalPlayerAccounts : 0,
+      },
+    })),
+    defaultWorldId: resolveWorldById(DEFAULT_WORLD_ID)?.id ?? DEFAULT_WORLD_ID,
   };
 };
 

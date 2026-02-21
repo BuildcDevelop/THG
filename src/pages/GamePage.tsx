@@ -7,7 +7,7 @@ import type {
   WheelEvent as ReactWheelEvent,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getSession, logout } from '../auth';
+import { getSession, logout, setSelectedWorld } from '../auth';
 import {
   acceptKingdomInvite as acceptKingdomInviteRequest,
   cancelBuildingUpgrade as cancelBuildingUpgradeRequest,
@@ -15,6 +15,7 @@ import {
   createKingdom as createKingdomRequest,
   fetchBattleReports,
   fetchGameState,
+  fetchWorlds,
   invitePlayerToKingdom as invitePlayerToKingdomRequest,
   issueArmyCommand,
   kickKingdomMember as kickKingdomMemberRequest,
@@ -38,6 +39,7 @@ import {
   type KingdomAuditLogEntry,
   type LeaderboardRow,
   type LootPriority,
+  type WorldPortalItem,
 } from '../api/gameApi';
 
 type PanelType =
@@ -120,6 +122,12 @@ type ResourceStock = {
   buildingId: string;
 };
 
+type WorldSwitchOption = {
+  id: string;
+  name: string;
+  status: string;
+};
+
 type ResourceCost = {
   wood: number;
   stone: number;
@@ -176,7 +184,8 @@ type BuildingUpgradeQueueOrder = {
   finishAt: string;
 };
 
-type RankingMode = 'players' | 'kingdoms';
+type RankingMode = 'players' | 'kingdoms' | 'attacker' | 'defender' | 'supporter';
+type CombatRankingMode = Extract<RankingMode, 'attacker' | 'defender' | 'supporter'>;
 type RankingPageSize = 20 | 50;
 
 type KingdomLeaderboardRow = {
@@ -185,6 +194,17 @@ type KingdomLeaderboardRow = {
   prestige: number;
   villages: number;
   members: number;
+};
+
+type CombatLeaderboardRow = {
+  rank: number;
+  playerId: number;
+  username: string;
+  kingdom: string;
+  villages: number;
+  prestige: number;
+  score: number;
+  mode: CombatRankingMode;
 };
 
 type ResearchTask = {
@@ -686,12 +706,18 @@ const REGION_CELL_SIZE = 25;
 const MAP_ZOOM_MIN = -50;
 const MAP_ZOOM_MAX = 50;
 const MAP_ZOOM_STEP = 10;
-const MAP_WINDOW_SIZE_STORAGE_KEY = 'thg_map_window_size';
-const PANEL_LAYOUT_STORAGE_KEY_PREFIX = 'thg_panel_layout';
-const LAST_OWN_SETTLEMENT_STORAGE_KEY_PREFIX = 'thg_last_own_settlement';
-const MAP_ZOOM_STORAGE_KEY_PREFIX = 'thg_map_zoom';
-const ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'thg_active_village';
-const ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX = 'thg_army_target_history';
+const MAP_WINDOW_SIZE_STORAGE_KEY = 'tld_map_window_size';
+const LEGACY_MAP_WINDOW_SIZE_STORAGE_KEY = 'thg_map_window_size';
+const PANEL_LAYOUT_STORAGE_KEY_PREFIX = 'tld_panel_layout';
+const LEGACY_PANEL_LAYOUT_STORAGE_KEY_PREFIX = 'thg_panel_layout';
+const LAST_OWN_SETTLEMENT_STORAGE_KEY_PREFIX = 'tld_last_own_settlement';
+const LEGACY_LAST_OWN_SETTLEMENT_STORAGE_KEY_PREFIX = 'thg_last_own_settlement';
+const MAP_ZOOM_STORAGE_KEY_PREFIX = 'tld_map_zoom';
+const LEGACY_MAP_ZOOM_STORAGE_KEY_PREFIX = 'thg_map_zoom';
+const ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'tld_active_village';
+const LEGACY_ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'thg_active_village';
+const ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX = 'tld_army_target_history';
+const LEGACY_ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX = 'thg_army_target_history';
 const MAP_WINDOW_MIN_WIDTH = 620;
 const MAP_WINDOW_MIN_HEIGHT = 460;
 const STATE_POLL_INTERVAL_MS = 7000;
@@ -706,6 +732,9 @@ const PANEL_VIEWPORT_MARGIN_X = 32;
 const PANEL_VIEWPORT_MARGIN_Y = 56;
 const PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH = 280;
 const PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT = 220;
+const WORLD_LABELS: Record<string, string> = {
+  'dominion-1': 'Dominion I: První úsvit',
+};
 
 const REGION_SETTLEMENTS: RegionSettlement[] = [
   {
@@ -1119,7 +1148,9 @@ const readStoredMapWindowSize = (): WindowSize | null => {
   }
 
   try {
-    const raw = window.localStorage.getItem(MAP_WINDOW_SIZE_STORAGE_KEY);
+    const raw =
+      window.localStorage.getItem(MAP_WINDOW_SIZE_STORAGE_KEY) ??
+      window.localStorage.getItem(LEGACY_MAP_WINDOW_SIZE_STORAGE_KEY);
     if (!raw) {
       return null;
     }
@@ -1154,6 +1185,8 @@ const saveMapWindowSize = (size: WindowSize): void => {
 
 const getLastOwnSettlementStorageKey = (username: string): string =>
   `${LAST_OWN_SETTLEMENT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+const getLegacyLastOwnSettlementStorageKey = (username: string): string =>
+  `${LEGACY_LAST_OWN_SETTLEMENT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
 
 const readStoredLastOwnSettlementId = (username: string): string | null => {
   if (typeof window === 'undefined') {
@@ -1161,7 +1194,9 @@ const readStoredLastOwnSettlementId = (username: string): string | null => {
   }
 
   try {
-    const raw = window.localStorage.getItem(getLastOwnSettlementStorageKey(username));
+    const raw =
+      window.localStorage.getItem(getLastOwnSettlementStorageKey(username)) ??
+      window.localStorage.getItem(getLegacyLastOwnSettlementStorageKey(username));
     if (!raw) {
       return null;
     }
@@ -1191,6 +1226,8 @@ const saveLastOwnSettlementId = (username: string, settlementId: string | null):
 
 const getActiveVillageStorageKey = (username: string): string =>
   `${ACTIVE_VILLAGE_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+const getLegacyActiveVillageStorageKey = (username: string): string =>
+  `${LEGACY_ACTIVE_VILLAGE_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
 
 const readStoredActiveVillageId = (username: string): number | null => {
   if (typeof window === 'undefined') {
@@ -1198,7 +1235,9 @@ const readStoredActiveVillageId = (username: string): number | null => {
   }
 
   try {
-    const raw = window.localStorage.getItem(getActiveVillageStorageKey(username));
+    const raw =
+      window.localStorage.getItem(getActiveVillageStorageKey(username)) ??
+      window.localStorage.getItem(getLegacyActiveVillageStorageKey(username));
     if (!raw) {
       return null;
     }
@@ -1231,6 +1270,8 @@ const saveActiveVillageId = (username: string, villageId: number | null): void =
 
 const getArmyTargetHistoryStorageKey = (username: string): string =>
   `${ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+const getLegacyArmyTargetHistoryStorageKey = (username: string): string =>
+  `${LEGACY_ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
 
 const readStoredArmyTargetHistory = (username: string): ArmyTargetHistoryByVillageId => {
   if (typeof window === 'undefined') {
@@ -1238,7 +1279,9 @@ const readStoredArmyTargetHistory = (username: string): ArmyTargetHistoryByVilla
   }
 
   try {
-    const raw = window.localStorage.getItem(getArmyTargetHistoryStorageKey(username));
+    const raw =
+      window.localStorage.getItem(getArmyTargetHistoryStorageKey(username)) ??
+      window.localStorage.getItem(getLegacyArmyTargetHistoryStorageKey(username));
     if (!raw) {
       return {};
     }
@@ -1316,6 +1359,8 @@ const saveStoredArmyTargetHistory = (username: string, history: ArmyTargetHistor
 
 const getMapZoomStorageKey = (username: string): string =>
   `${MAP_ZOOM_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+const getLegacyMapZoomStorageKey = (username: string): string =>
+  `${LEGACY_MAP_ZOOM_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
 
 const normalizeMapZoom = (value: number): number => {
   const clamped = clamp(value, MAP_ZOOM_MIN, MAP_ZOOM_MAX);
@@ -1328,7 +1373,9 @@ const readStoredMapZoom = (username: string): number => {
   }
 
   try {
-    const raw = window.localStorage.getItem(getMapZoomStorageKey(username));
+    const raw =
+      window.localStorage.getItem(getMapZoomStorageKey(username)) ??
+      window.localStorage.getItem(getLegacyMapZoomStorageKey(username));
     if (!raw) {
       return 0;
     }
@@ -1358,6 +1405,8 @@ const saveStoredMapZoom = (username: string, zoomPercent: number): void => {
 
 const getPanelLayoutStorageKey = (username: string): string =>
   `${PANEL_LAYOUT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+const getLegacyPanelLayoutStorageKey = (username: string): string =>
+  `${LEGACY_PANEL_LAYOUT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
 
 const isPanelType = (value: unknown): value is PanelType =>
   typeof value === 'string' && value in PANEL_META;
@@ -1446,7 +1495,9 @@ const readStoredPanelLayout = (username: string): PanelWindow[] | null => {
   }
 
   try {
-    const raw = window.localStorage.getItem(getPanelLayoutStorageKey(username));
+    const raw =
+      window.localStorage.getItem(getPanelLayoutStorageKey(username)) ??
+      window.localStorage.getItem(getLegacyPanelLayoutStorageKey(username));
     if (!raw) {
       return null;
     }
@@ -3808,7 +3859,53 @@ const RankingPanel = ({
       }));
   }, [rows]);
 
-  const activeRows = mode === 'players' ? rows : kingdomRows;
+  const combatRowsByMode = useMemo(() => {
+    const buildRows = (
+      targetMode: CombatRankingMode,
+      resolveScore: (entry: LeaderboardRow) => number,
+    ): CombatLeaderboardRow[] =>
+      [...rows]
+        .sort((left, right) => {
+          const scoreDiff = resolveScore(right) - resolveScore(left);
+          if (scoreDiff !== 0) {
+            return scoreDiff;
+          }
+          if (right.prestige !== left.prestige) {
+            return right.prestige - left.prestige;
+          }
+          if (right.villages !== left.villages) {
+            return right.villages - left.villages;
+          }
+          return left.username.localeCompare(right.username, 'cs');
+        })
+        .map((entry, index) => ({
+          rank: index + 1,
+          playerId: entry.playerId,
+          username: entry.username,
+          kingdom: entry.kingdom,
+          villages: entry.villages,
+          prestige: entry.prestige,
+          score: resolveScore(entry),
+          mode: targetMode,
+        }));
+
+    return {
+      attacker: buildRows('attacker', (entry) => Number(entry.attackerScore ?? 0)),
+      defender: buildRows('defender', (entry) => Number(entry.defenderScore ?? 0)),
+      supporter: buildRows('supporter', (entry) => Number(entry.supporterScore ?? 0)),
+    };
+  }, [rows]);
+
+  const activeRows =
+    mode === 'players'
+      ? rows
+      : mode === 'kingdoms'
+        ? kingdomRows
+        : mode === 'attacker'
+          ? combatRowsByMode.attacker
+          : mode === 'defender'
+            ? combatRowsByMode.defender
+            : combatRowsByMode.supporter;
   const totalRows = activeRows.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
   const normalizedCurrentPage = clamp(currentPage, 1, totalPages);
@@ -3821,15 +3918,43 @@ const RankingPanel = ({
     if (mode === 'players') {
       return rows.findIndex((entry) => entry.username === currentUsername);
     }
-    if (isNeutralKingdom(currentKingdom)) {
-      return -1;
+    if (mode === 'kingdoms') {
+      if (isNeutralKingdom(currentKingdom)) {
+        return -1;
+      }
+      return kingdomRows.findIndex((entry) => entry.kingdom === currentKingdom);
     }
-    return kingdomRows.findIndex((entry) => entry.kingdom === currentKingdom);
-  }, [mode, rows, currentUsername, currentKingdom, kingdomRows]);
+    const combatRows =
+      mode === 'attacker'
+        ? combatRowsByMode.attacker
+        : mode === 'defender'
+          ? combatRowsByMode.defender
+          : combatRowsByMode.supporter;
+    return combatRows.findIndex((entry) => entry.username === currentUsername);
+  }, [mode, rows, currentUsername, currentKingdom, kingdomRows, combatRowsByMode]);
+
   const currentPlayerRow = useMemo(
     () => rows.find((entry) => entry.username === currentUsername) ?? null,
     [rows, currentUsername],
   );
+  const currentCombatRow = useMemo(() => {
+    if (mode === 'attacker') {
+      return combatRowsByMode.attacker.find((entry) => entry.username === currentUsername) ?? null;
+    }
+    if (mode === 'defender') {
+      return combatRowsByMode.defender.find((entry) => entry.username === currentUsername) ?? null;
+    }
+    if (mode === 'supporter') {
+      return combatRowsByMode.supporter.find((entry) => entry.username === currentUsername) ?? null;
+    }
+    return null;
+  }, [mode, combatRowsByMode, currentUsername]);
+  const currentKingdomRow = useMemo(() => {
+    if (isNeutralKingdom(currentKingdom)) {
+      return null;
+    }
+    return kingdomRows.find((entry) => entry.kingdom === currentKingdom) ?? null;
+  }, [currentKingdom, kingdomRows]);
 
   const jumpToTop = () => {
     setCurrentPage(1);
@@ -3846,9 +3971,50 @@ const RankingPanel = ({
     setCurrentPage(Math.floor(selfRowIndex / pageSize) + 1);
   };
 
-  const bestButtonLabel = mode === 'players' ? 'Ten nejlepší hráč' : 'To nejlepší království';
-  const centerButtonLabel =
-    mode === 'players' ? 'Vycentruj mě v žebříčku' : 'Vycentruj mě v žebříčku';
+  const bestButtonLabel =
+    mode === 'players'
+      ? 'Top hráč'
+      : mode === 'kingdoms'
+        ? 'Top království'
+        : mode === 'attacker'
+          ? 'Top útočník'
+          : mode === 'defender'
+            ? 'Top obránce'
+            : 'Top podporovatel';
+  const centerButtonLabel = 'Vycentruj mě';
+  const currentPlacementLabel =
+    mode === 'players'
+      ? currentPlayerRow?.rank != null
+        ? `#${currentPlayerRow.rank}`
+        : 'N/A'
+      : mode === 'kingdoms'
+        ? currentKingdomRow?.rank != null
+          ? `#${currentKingdomRow.rank}`
+          : 'N/A'
+        : currentCombatRow?.rank != null
+          ? `#${currentCombatRow.rank}`
+          : 'N/A';
+  const currentPlacementSuffix =
+    mode === 'players'
+      ? 'v pořadí hráčů'
+      : mode === 'kingdoms'
+        ? 'v pořadí království'
+        : mode === 'attacker'
+          ? 'v pořadí útočníků'
+          : mode === 'defender'
+            ? 'v pořadí obránců'
+            : 'v pořadí podporovatelů';
+  const summaryNoun =
+    mode === 'players'
+      ? 'hráčů'
+      : mode === 'kingdoms'
+        ? 'království'
+        : mode === 'attacker'
+          ? 'útočníků'
+          : mode === 'defender'
+            ? 'obránců'
+            : 'podporovatelů';
+  const combatScoreColumnLabel = mode === 'supporter' ? 'Padlé jednotky' : 'Zabitých jednotek';
 
   const renderPagination = (placement: 'top' | 'bottom') => (
     <div className={`ranking-pagination ranking-pagination-${placement}`}>
@@ -3886,7 +4052,7 @@ const RankingPanel = ({
   return (
     <div className="panel-stack ranking-panel">
       <section>
-        <h3>Globální žebříček podle prestiže</h3>
+        <h3>Válečný žebříček Dominionu</h3>
 
         <div className="ranking-toolbar">
           <div className="ranking-mode-switch">
@@ -3897,7 +4063,7 @@ const RankingPanel = ({
                 setCurrentPage(1);
               }}
             >
-              Žebříček hráčů
+              Hráči
             </button>
             <button
               className={mode === 'kingdoms' ? 'is-active' : ''}
@@ -3906,13 +4072,39 @@ const RankingPanel = ({
                 setCurrentPage(1);
               }}
             >
-              Žebříček království
+              Království
+            </button>
+            <button
+              className={mode === 'attacker' ? 'is-active' : ''}
+              onClick={() => {
+                setMode('attacker');
+                setCurrentPage(1);
+              }}
+            >
+              Útočník
+            </button>
+            <button
+              className={mode === 'defender' ? 'is-active' : ''}
+              onClick={() => {
+                setMode('defender');
+                setCurrentPage(1);
+              }}
+            >
+              Obránce
+            </button>
+            <button
+              className={mode === 'supporter' ? 'is-active' : ''}
+              onClick={() => {
+                setMode('supporter');
+                setCurrentPage(1);
+              }}
+            >
+              Podporovatel
             </button>
           </div>
 
           <span className="ranking-summary-inline">
-            Zobrazeno {visibleFrom}-{visibleTo} z {totalRows}{' '}
-            {mode === 'players' ? 'hráčů' : 'království'}.
+            Zobrazeno {visibleFrom}-{visibleTo} z {totalRows} {summaryNoun}.
           </span>
 
           <div className="ranking-limit-switch">
@@ -3949,13 +4141,21 @@ const RankingPanel = ({
                 <th>Prestiž</th>
                 <th>Vesnice</th>
               </tr>
-            ) : (
+            ) : mode === 'kingdoms' ? (
               <tr>
                 <th>#</th>
                 <th>Království</th>
                 <th>Prestiž</th>
                 <th>Osady</th>
                 <th>Členové</th>
+              </tr>
+            ) : (
+              <tr>
+                <th>#</th>
+                <th>Hráč</th>
+                <th>Království</th>
+                <th>{combatScoreColumnLabel}</th>
+                <th>Prestiž</th>
               </tr>
             )}
           </thead>
@@ -3988,7 +4188,8 @@ const RankingPanel = ({
                     </tr>
                   );
                 })
-              : pageRows.map((item) => {
+              : mode === 'kingdoms'
+                ? pageRows.map((item) => {
                   const kingdomRow = item as KingdomLeaderboardRow;
                   const isSelf = kingdomRow.kingdom === currentKingdom;
                   return (
@@ -4007,6 +4208,33 @@ const RankingPanel = ({
                       <td>{kingdomRow.members}</td>
                     </tr>
                   );
+                })
+                : pageRows.map((item) => {
+                  const combatRow = item as CombatLeaderboardRow;
+                  const isSelf = combatRow.username === currentUsername;
+                  return (
+                    <tr key={`${combatRow.mode}-${combatRow.playerId}`} className={isSelf ? 'is-self' : ''}>
+                      <td>{combatRow.rank}</td>
+                      <td>
+                        <button
+                          className="ranking-link-button"
+                          onClick={() => onOpenPlayerProfile(combatRow.username)}
+                        >
+                          {combatRow.username}
+                        </button>
+                      </td>
+                      <td>
+                        <button
+                          className="ranking-link-button"
+                          onClick={() => onOpenKingdomProfile(combatRow.kingdom)}
+                        >
+                          {combatRow.kingdom}
+                        </button>
+                      </td>
+                      <td>{combatRow.score.toLocaleString('cs-CZ')}</td>
+                      <td>{combatRow.prestige.toLocaleString('cs-CZ')}</td>
+                    </tr>
+                  );
                 })}
 
             {pageRows.length === 0 ? (
@@ -4018,9 +4246,8 @@ const RankingPanel = ({
         </table>
 
         {renderPagination('bottom')}
-        <p className="ranking-player-position-note">
-          Aktuálně jsi na pozici{' '}
-          <strong>{currentPlayerRow ? `#${currentPlayerRow.rank}` : 'N/A'}</strong> mezi hráči.
+        <p className="ranking-player-position-note ranking-player-position-epic">
+          <span>Tvé umístění je</span> <strong>{currentPlacementLabel}</strong> <span>{currentPlacementSuffix}</span>.
         </p>
       </section>
     </div>
@@ -5530,6 +5757,7 @@ export const GamePage = () => {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const villageMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const villageMenuOverlayRef = useRef<HTMLDivElement | null>(null);
+  const worldMenuRef = useRef<HTMLDivElement | null>(null);
   const stateRequestPromiseRef = useRef<Promise<void> | null>(null);
   const reportsRequestPromiseRef = useRef<Promise<void> | null>(null);
   const mutationPendingRef = useRef(false);
@@ -5537,6 +5765,10 @@ export const GamePage = () => {
   const initialAutoStretchAppliedRef = useRef(false);
   const armyQuickSelectionRequestIdRef = useRef(0);
   const username = session?.username ?? 'Hayato';
+  const selectedWorldId = session?.selectedWorldId ?? null;
+  const selectedWorldName = selectedWorldId
+    ? WORLD_LABELS[selectedWorldId] ?? selectedWorldId
+    : null;
   const getCanvasViewportSize = useCallback(() => {
     const bounds = canvasRef.current?.getBoundingClientRect();
     const viewportWidth = Math.max(
@@ -5600,6 +5832,28 @@ export const GamePage = () => {
   const [battleReportsPage, setBattleReportsPage] = useState(1);
   const [selectedBattleReportId, setSelectedBattleReportId] = useState<number | null>(null);
   const [battleReportCacheById, setBattleReportCacheById] = useState<Record<number, BattleReportItem>>({});
+  const [availableWorlds, setAvailableWorlds] = useState<WorldPortalItem[]>([]);
+  const [isWorldMenuOpen, setIsWorldMenuOpen] = useState(false);
+  const [worldMenuError, setWorldMenuError] = useState<string | null>(null);
+  const worldSwitchOptions = useMemo<WorldSwitchOption[]>(() => {
+    if (availableWorlds.length > 0) {
+      return availableWorlds.map((world) => ({
+        id: world.id,
+        name: world.name,
+        status: world.status,
+      }));
+    }
+    if (!selectedWorldId) {
+      return [];
+    }
+    return [
+      {
+        id: selectedWorldId,
+        name: selectedWorldName ?? selectedWorldId,
+        status: 'online',
+      },
+    ];
+  }, [availableWorlds, selectedWorldId, selectedWorldName]);
   const [kingdomActionPending, setKingdomActionPending] = useState(false);
   const [kingdomNotice, setKingdomNotice] = useState<string | null>(null);
   const [restartVillagePending, setRestartVillagePending] = useState(false);
@@ -5901,6 +6155,10 @@ export const GamePage = () => {
     () => leaderboardRows.find((entry) => entry.username === username) ?? null,
     [leaderboardRows, username],
   );
+  const playerRankingCallout =
+    playerLeaderboardEntry?.rank != null
+      ? `Tvé umístění je #${playerLeaderboardEntry.rank}`
+      : 'Tvé umístění je N/A';
   const mapRegionSize = gameState?.world.size ?? REGION_SIZE;
   const mapRegionOriginX = gameState?.world.originX ?? REGION_ORIGIN_X;
   const mapRegionOriginY = gameState?.world.originY ?? REGION_ORIGIN_Y;
@@ -6038,6 +6296,10 @@ export const GamePage = () => {
       navigate('/login', { replace: true });
       return;
     }
+    if (!selectedWorldId) {
+      navigate('/worlds', { replace: true });
+      return;
+    }
 
     void loadGameState(false);
     const pollTimer = window.setInterval(() => {
@@ -6048,10 +6310,10 @@ export const GamePage = () => {
     }, STATE_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(pollTimer);
-  }, [loadGameState, navigate, session]);
+  }, [loadGameState, navigate, selectedWorldId, session]);
 
   useEffect(() => {
-    if (!session) {
+    if (!session || !selectedWorldId) {
       return;
     }
 
@@ -6064,7 +6326,62 @@ export const GamePage = () => {
     }, REPORTS_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(reportsTimer);
-  }, [loadBattleReports, session]);
+  }, [loadBattleReports, selectedWorldId, session]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    let cancelled = false;
+    const loadWorldOptions = async () => {
+      try {
+        const response = await fetchWorlds(username);
+        if (cancelled) {
+          return;
+        }
+        setAvailableWorlds(response.worlds);
+        setWorldMenuError(null);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setWorldMenuError(getErrorMessage(error));
+      }
+    };
+
+    void loadWorldOptions();
+    return () => {
+      cancelled = true;
+    };
+  }, [session, username]);
+
+  useEffect(() => {
+    if (!isWorldMenuOpen) {
+      return;
+    }
+
+    const handleGlobalMouseDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (target && worldMenuRef.current?.contains(target)) {
+        return;
+      }
+      setIsWorldMenuOpen(false);
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsWorldMenuOpen(false);
+      }
+    };
+
+    window.addEventListener('mousedown', handleGlobalMouseDown);
+    window.addEventListener('keydown', handleEscape);
+    return () => {
+      window.removeEventListener('mousedown', handleGlobalMouseDown);
+      window.removeEventListener('keydown', handleEscape);
+    };
+  }, [isWorldMenuOpen]);
 
   useEffect(() => {
     const notifyTimer = window.setInterval(() => {
@@ -7773,6 +8090,24 @@ export const GamePage = () => {
     navigate('/login', { replace: true });
   }, [navigate]);
 
+  const handleLeaveWorld = useCallback(() => {
+    setSelectedWorld('');
+    navigate('/worlds', { replace: true });
+  }, [navigate]);
+
+  const handleSwitchWorld = useCallback(
+    (worldId: string) => {
+      const nextWorldId = String(worldId ?? '').trim();
+      if (!nextWorldId) {
+        return;
+      }
+      setSelectedWorld(nextWorldId);
+      setIsWorldMenuOpen(false);
+      navigate('/worlds', { replace: true });
+    },
+    [navigate],
+  );
+
   const openBattleReportPanel = useCallback(
     (reportId: number) => {
       if (!Number.isFinite(reportId) || reportId <= 0) {
@@ -8115,7 +8450,7 @@ export const GamePage = () => {
     }
   };
 
-  if (!session) {
+  if (!session || !selectedWorldId) {
     return null;
   }
 
@@ -8125,22 +8460,75 @@ export const GamePage = () => {
       <div className="game-grid-layer" />
 
       <header className="top-navigation">
+        <div className="world-indicator-wrap">
+          <div className="world-indicator">
+            <span>Svět:</span> <strong>{selectedWorldName}</strong>
+          </div>
+          <small className="world-version-note">Aktuální verze hry 0.1.1</small>
+        </div>
         <nav>
           {NAV_BUTTONS.map((button) => (
             <button
               key={button.type}
-              className="nav-action"
+              className={`nav-action ${button.type === 'rankings' ? 'nav-action-rankings' : ''}`}
               onClick={() => openPanel(button.type)}
               title={`Otevřít panel: ${button.text}`}
             >
-              {button.text}
+              <span className="nav-action-title">{button.text}</span>
+              {button.type === 'rankings' ? (
+                <span className="nav-action-subtitle">{playerRankingCallout}</span>
+              ) : null}
             </button>
           ))}
         </nav>
-
-        <button className="quick-logout" onClick={handleLogout}>
-          Odhlásit
-        </button>
+        <div className="session-actions" ref={worldMenuRef}>
+          <button className="quick-session-action" onClick={() => setIsWorldMenuOpen((previous) => !previous)}>
+            Změnit svět
+          </button>
+          <button className="quick-session-action" onClick={handleLeaveWorld}>
+            Odejít ze světa
+          </button>
+          <button className="quick-session-action quick-logout" onClick={handleLogout}>
+            Odhlásit
+          </button>
+          {isWorldMenuOpen ? (
+            <div className="world-switch-menu" role="menu" aria-label="Nabídka herních světů">
+              <header>
+                <h4>Změna světa</h4>
+                <button
+                  type="button"
+                  className="secondary-action"
+                  onClick={() => setIsWorldMenuOpen(false)}
+                  aria-label="Zavřít nabídku změny světa"
+                >
+                  Zavřít
+                </button>
+              </header>
+              <ul>
+                {worldSwitchOptions.map((world) => {
+                  const worldStatus = String(world.status).toLowerCase();
+                  const isPlayable = worldStatus === 'online';
+                  const isActive = world.id === selectedWorldId;
+                  return (
+                    <li key={`world-switch-${world.id}`}>
+                      <button
+                        type="button"
+                        className={`world-switch-option ${isActive ? 'is-active' : ''}`}
+                        disabled={!isPlayable}
+                        onClick={() => handleSwitchWorld(world.id)}
+                      >
+                        <strong>{world.name}</strong>
+                        <span>{isPlayable ? 'ONLINE' : 'UZAVŘENO'}</span>
+                      </button>
+                    </li>
+                  );
+                })}
+                {worldSwitchOptions.length === 0 ? <li className="world-switch-empty">Světy se načítají...</li> : null}
+              </ul>
+              {worldMenuError ? <p className="world-switch-error">{worldMenuError}</p> : null}
+            </div>
+          ) : null}
+        </div>
       </header>
 
       <section className="resource-strip">

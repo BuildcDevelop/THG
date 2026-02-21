@@ -44,7 +44,7 @@ export const AdminPage = () => {
   }, [filter, players]);
 
   const handlePlayAs = (username: string) => {
-    setSession(username);
+    setSession(username, { selectedWorldId: 'dominion-1' });
     navigate('/game', { replace: true });
   };
 
@@ -56,10 +56,10 @@ export const AdminPage = () => {
       <main className="admin-shell">
         <header>
           <p className="intro-eyebrow">Admin panel</p>
-          <h1>Prepnuti mezi ucty bez prihlaseni</h1>
+          <h1>Prepnuti mezi ucty pro interni spravu</h1>
           <p>
-            Klikni na hrace a okamzite se prepnes do hry pod jeho uctem. Idealni pro testovani mapy,
-            ekonomiky a bojovych flow.
+            Klikni na hrace a okamzite se prepnes do hry pod jeho uctem. Panel je urceny jen pro
+            interni testovani mapy, ekonomiky a bojovych flow.
           </p>
         </header>
 
@@ -70,8 +70,8 @@ export const AdminPage = () => {
               onChange={(event) => setFilter(event.target.value)}
               placeholder="Filtruj podle jmena, kralovstvi nebo lena"
             />
-            <button className="secondary-action" onClick={() => navigate('/login')}>
-              Zpet na login
+            <button className="secondary-action" onClick={() => navigate('/worlds')}>
+              Zpet na portal svetu
             </button>
           </div>
 

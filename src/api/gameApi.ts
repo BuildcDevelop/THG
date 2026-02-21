@@ -101,6 +101,12 @@ export type LeaderboardRow = {
   kingdom: string;
   villages: number;
   prestige: number;
+  attackerScore?: number;
+  defenderScore?: number;
+  supporterScore?: number;
+  attackerRank?: number | null;
+  defenderRank?: number | null;
+  supporterRank?: number | null;
 };
 
 export type KingdomHubMember = {
@@ -264,6 +270,46 @@ export type LoginResponse = {
     coordX: number;
     coordY: number;
   };
+};
+
+export type RegisterResponse = LoginResponse;
+
+export type WorldsPortalProfile = {
+  id: number;
+  username: string;
+  kingdom: string;
+  villageCount: number;
+  prestige: number;
+  joinedAt: string;
+};
+
+export type WorldPortalItem = {
+  id: string;
+  name: string;
+  subtitle: string;
+  status: string;
+  region: number;
+  regionSize: number;
+  seasonLabel: string;
+  timelineLabel: string;
+  description: string;
+  isDefault: boolean;
+  player: {
+    hasPresence: boolean;
+    villages: number;
+    prestige: number;
+    rank: number | null;
+    kingdom: string | null;
+  };
+  stats: {
+    playerAccounts: number;
+  };
+};
+
+export type WorldsPortalResponse = {
+  profile: WorldsPortalProfile;
+  worlds: WorldPortalItem[];
+  defaultWorldId: string;
 };
 
 export type AdminPlayerRow = {
@@ -556,6 +602,21 @@ export const loginRequest = async (username: string, password: string): Promise<
     body: JSON.stringify({ username, password }),
   });
 
+  return payload.data;
+};
+
+export const registerRequest = async (username: string, password: string): Promise<RegisterResponse> => {
+  const payload = await request<ApiOk<RegisterResponse>>('/api/v1/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  });
+
+  return payload.data;
+};
+
+export const fetchWorlds = async (username: string): Promise<WorldsPortalResponse> => {
+  const params = new URLSearchParams({ username });
+  const payload = await request<ApiOk<WorldsPortalResponse>>(`/api/v1/worlds?${params.toString()}`);
   return payload.data;
 };
 

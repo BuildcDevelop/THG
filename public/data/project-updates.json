@@ -1,0 +1,34 @@
+{
+  "updates": [
+    {
+      "id": "prototype-phase",
+      "date": "2026-02-21",
+      "title": "První funkční prototyp",
+      "summary": "Dokončujeme login, portál světů a základní hratelné jádro.",
+      "status": "in-progress"
+    },
+    {
+      "id": "dominion-world",
+      "date": "2026-02-18",
+      "title": "Dominion I: První úsvit",
+      "summary": "Svět je aktivní a hráči s globálním účtem si jej volí po přihlášení.",
+      "status": "live"
+    },
+    {
+      "id": "discord-channel",
+      "date": "2026-02-17",
+      "title": "Komunitní komunikace přes Discord",
+      "summary": "Všechny novinky, patch notes a koordinace budou centrálně vedené na Discordu.",
+      "status": "live",
+      "href": "https://discord.com/channels/1358102394180730944/1473961374949441628",
+      "hrefLabel": "Přejít na Discord"
+    },
+    {
+      "id": "ruleset-plan",
+      "date": "2026-03-10",
+      "title": "Plný svět podle pravidel",
+      "summary": "Připravujeme navazující krok s plnou ekonomikou, bojem a mapovou dominancí.",
+      "status": "planned"
+    }
+  ]
+}

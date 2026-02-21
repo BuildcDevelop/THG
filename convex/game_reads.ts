@@ -26,6 +26,8 @@ const WORLD_REGION = {
 
 const ABANDONED_OWNER_LABEL = "Opustena osada";
 const ABANDONED_BOT_USERNAME_PREFIX = "__abandoned_ai__";
+const normalizeUsernameComparable = (value: string): string =>
+  String(value ?? "").trim().toLocaleLowerCase("cs-CZ");
 
 const toBuildingLevelMap = (
   rows: Array<{ buildingId: string; level: number }>,
@@ -164,11 +166,12 @@ export const authenticatePlayer = query({
   handler: async (ctx, args) => {
     const username = String(args.username ?? "").trim();
     const password = String(args.password ?? "").trim();
-    const playerRows = await ctx.db
-      .query("players")
-      .withIndex("by_username", (index) => index.eq("username", username))
-      .collect();
-    const player = playerRows.find((entry) => !entry.isBot) ?? null;
+    const normalizedUsername = normalizeUsernameComparable(username);
+    const playerRows = await ctx.db.query("players").collect();
+    const player =
+      playerRows.find(
+        (entry) => !entry.isBot && normalizeUsernameComparable(String(entry.username)) === normalizedUsername,
+      ) ?? null;
 
     if (!player || player.password !== password) {
       throw new Error("Neplatne prihlasovaci udaje.");
@@ -205,12 +208,13 @@ export const getVillageSnapshot = query({
   handler: async (ctx, args) => {
     const username = String(args.username ?? "Hayato").trim() || "Hayato";
     const requestedVillageId = Number.isFinite(args.villageId) ? Number(args.villageId) : null;
+    const normalizedUsername = normalizeUsernameComparable(username);
 
-    const playerRows = await ctx.db
-      .query("players")
-      .withIndex("by_username", (index) => index.eq("username", username))
-      .collect();
-    const player = playerRows.find((entry) => !entry.isBot) ?? null;
+    const playerRows = await ctx.db.query("players").collect();
+    const player =
+      playerRows.find(
+        (entry) => !entry.isBot && normalizeUsernameComparable(String(entry.username)) === normalizedUsername,
+      ) ?? null;
     if (!player) {
       throw new Error(`Hrac '${username}' neexistuje.`);
     }

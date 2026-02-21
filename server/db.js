@@ -3,13 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BUILDING_ORDER, UNIT_ORDER, getMaxBuildingLevel } from './gameConfig.js';
 
-const configuredDataDir = String(process.env.THG_DATA_DIR ?? '').trim();
+const configuredDataDir = String(process.env.TLD_DATA_DIR ?? process.env.THG_DATA_DIR ?? '').trim();
 const isNetlifyRuntime = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const localDataDir = path.join(process.cwd(), 'server', 'data');
 const dataDir = configuredDataDir
   ? path.resolve(configuredDataDir)
   : isNetlifyRuntime
-    ? path.join('/tmp', 'thg-data')
+    ? path.join('/tmp', 'tld-data')
     : localDataDir;
 const dbPath = path.join(dataDir, 'game.sqlite');
 
@@ -31,13 +31,26 @@ const WORLD_REGION = {
 const BASE_ACCOUNTS = ['Hayato', 'Torreya', 'Pegak', 'Sentryn', 'TSN'];
 const EXTRA_ACCOUNTS = Array.from({ length: 100 }, (_, index) => `Player${String(index + 1).padStart(3, '0')}`);
 const SPECIAL_PLAYER_ACCOUNTS = [
-  { username: '-SaThAn?!', password: '123', boostedStart: true },
-  { username: '*333*', password: '123', boostedStart: true },
+  { username: '-SaThAn?!', password: 'SaThAn?!_Abyss26', boostedStart: true },
+  { username: '*333*', password: 'Star333!Forge26', boostedStart: true },
   { username: 'Wild', password: '7777dd95' },
   { username: 'Insanity', password: '98854657da5' },
   { username: 'Nicol', password: '22244444433a' },
   { username: 'Chakitis', password: '5555s6s6s5' },
 ];
+const PRIORITY_PLAYER_PASSWORDS = new Map([
+  ['Hayato', 'Hayato@Dominion26'],
+  ['-SaThAn?!', 'SaThAn?!_Abyss26'],
+  ['*333*', 'Star333!Forge26'],
+  ['Pegak', 'Pegak!Bastion26'],
+  ['Torreya', 'Torreya!Raven26'],
+  ['TSN', 'TSN!Legion26'],
+  ['Sentryn', 'Sentryn!Citadel26'],
+  ['Chakitis', '5555s6s6s5'],
+  ['Insanity', '98854657da5'],
+  ['Nicol', '22244444433a'],
+  ['Wild', '7777dd95'],
+]);
 const ALL_ACCOUNTS = [...BASE_ACCOUNTS, ...EXTRA_ACCOUNTS, ...SPECIAL_PLAYER_ACCOUNTS.map((entry) => entry.username)];
 const SPECIAL_PLAYER_ACCOUNT_BY_USERNAME = new Map(
   SPECIAL_PLAYER_ACCOUNTS.map((entry) => [entry.username, entry]),
@@ -94,6 +107,8 @@ const SPECIAL_PLAYER_BOOSTED_BUILDING_LEVELS = {
 const ABANDONED_MILITIA_COUNT = 100;
 
 const nowIso = () => new Date().toISOString();
+const resolveSeedPassword = (username, fallbackPassword = '123') =>
+  String(PRIORITY_PLAYER_PASSWORDS.get(String(username)) ?? fallbackPassword);
 
 const createSchema = () => {
   db.exec(`
@@ -387,7 +402,7 @@ const seedWorld = db.transaction(() => {
   for (let index = 0; index < ALL_ACCOUNTS.length; index += 1) {
     const username = ALL_ACCOUNTS[index];
     const specialAccount = SPECIAL_PLAYER_ACCOUNT_BY_USERNAME.get(username);
-    const password = specialAccount?.password ?? '123';
+    const password = resolveSeedPassword(username, specialAccount?.password ?? '123');
     const boostedStartLevels = specialAccount?.boostedStart ? SPECIAL_PLAYER_BOOSTED_BUILDING_LEVELS : null;
     const kingdom = KINGDOMS[index % KINGDOMS.length];
     const spawn = spawns[index];
@@ -956,6 +971,47 @@ const ensureReferentialIntegrity = db.transaction(() => {
   }
 });
 
+const ensurePriorityPlayerPasswords = db.transaction(() => {
+  const updatePasswordStmt = db.prepare(
+    `UPDATE players
+     SET password = ?
+     WHERE username = ? COLLATE NOCASE
+       AND is_bot = 0`,
+  );
+
+  for (const [username, password] of PRIORITY_PLAYER_PASSWORDS.entries()) {
+    updatePasswordStmt.run(String(password), String(username));
+  }
+});
+
+const ensureCaseInsensitiveUsernameUniqueness = () => {
+  const duplicates = db
+    .prepare(
+      `SELECT
+          LOWER(username) AS normalizedUsername,
+          GROUP_CONCAT(username, ', ') AS conflictingUsernames,
+          COUNT(*) AS total
+       FROM players
+       WHERE is_bot = 0
+       GROUP BY LOWER(username)
+       HAVING COUNT(*) > 1`,
+    )
+    .all();
+
+  if (duplicates.length > 0) {
+    console.warn(
+      `[db] Nelze aktivovat case-insensitive unikatnost nicku: existuji konfliktni ucty (${duplicates.length}).`,
+    );
+    return;
+  }
+
+  db.prepare(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_players_username_nocase
+     ON players(username COLLATE NOCASE)
+     WHERE is_bot = 0`,
+  ).run();
+};
+
 const shouldReseedWorld = () => {
   const playerRows = db.prepare('SELECT username FROM players').all();
   if (playerRows.length === 0) {
@@ -967,6 +1023,7 @@ const shouldReseedWorld = () => {
 };
 
 createSchema();
+ensureCaseInsensitiveUsernameUniqueness();
 
 if (shouldReseedWorld()) {
   clearWorld();
@@ -976,6 +1033,7 @@ if (shouldReseedWorld()) {
 ensureBotFlagConsistency();
 ensureAbandonedVillages();
 ensureSpecialPlayerAccounts();
+ensurePriorityPlayerPasswords();
 ensureVillageBuildingLevelFloors();
 ensureVillageBuildingLevelCaps();
 ensureHayatoOwnsAbandonedVillage13();

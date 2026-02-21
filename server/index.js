@@ -5,6 +5,7 @@ import {
   acceptKingdomInvite,
   cancelBuildingUpgrade,
   cancelRecruitment,
+  createPlayerAccount,
   createKingdom,
   GameRuleError,
   authenticatePlayer,
@@ -17,6 +18,7 @@ import {
   leaveKingdom,
   listAdminPlayers,
   listBattleReports,
+  listPlayerWorlds,
   listPlayerLeaderboard,
   rejectKingdomInvite,
   recallKnight,
@@ -89,7 +91,7 @@ app.use(express.json());
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
-    service: 'thg-backend',
+    service: 'tld-backend',
     serverTime: new Date().toISOString(),
     features: {
       useConvexAuth,
@@ -109,6 +111,44 @@ app.post('/api/v1/auth/login', async (req, res, next) => {
       : useConvexAuth
         ? await authenticatePlayerConvex(username, password)
         : authenticatePlayer(username, password);
+
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/auth/register', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    const password = String(req.body?.password ?? '').trim();
+    const data = await executeWithConvexPersistence(() => createPlayerAccount(username, password));
+
+    res.status(201).json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.get('/api/v1/worlds', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError("Query parametr 'username' je povinny.", 400);
+    }
+
+    const data = useConvexFull
+      ? await executeWithConvexRead(() => listPlayerWorlds(username))
+      : await executeWithConvexPersistence(() => {
+          runGameTick();
+          return listPlayerWorlds(username);
+        });
 
     res.json({
       ok: true,
