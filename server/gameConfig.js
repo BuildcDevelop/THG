@@ -160,6 +160,7 @@ export const UNIT_DEFS = {
     role: 'Zakladni pechota',
     cost: { wood: 18, stone: 10, iron: 8 },
     requiredBuilding: 'barracks',
+    requiredBuildingLevel: 1,
     baseRecruitDurationSec: 26,
     speedTilesPerHour: 18,
     populationCost: 1,
@@ -170,6 +171,7 @@ export const UNIT_DEFS = {
     role: 'Obrana hradeb',
     cost: { wood: 16, stone: 8, iron: 14 },
     requiredBuilding: 'workshop',
+    requiredBuildingLevel: 1,
     baseRecruitDurationSec: 34,
     speedTilesPerHour: 16,
     populationCost: 1,
@@ -180,8 +182,20 @@ export const UNIT_DEFS = {
     role: 'Rychly utok',
     cost: { wood: 22, stone: 14, iron: 20 },
     requiredBuilding: 'stable',
+    requiredBuildingLevel: 1,
     baseRecruitDurationSec: 42,
     speedTilesPerHour: 28,
+    populationCost: 1,
+  },
+  scout: {
+    id: 'scout',
+    name: 'Zved',
+    role: 'Spion osad',
+    cost: { wood: 14, stone: 9, iron: 11 },
+    requiredBuilding: 'stable',
+    requiredBuildingLevel: 3,
+    baseRecruitDurationSec: 30,
+    speedTilesPerHour: 36,
     populationCost: 1,
   },
   knight: {
@@ -190,6 +204,7 @@ export const UNIT_DEFS = {
     role: 'Dobytel osad',
     cost: { wood: 10000, stone: 10000, iron: 10000 },
     requiredBuilding: 'townhall',
+    requiredBuildingLevel: 1,
     baseRecruitDurationSec: 60,
     speedTilesPerHour: 42,
     populationCost: 10,
@@ -200,6 +215,7 @@ export const UNIT_DEFS = {
     role: 'Prolomeni brany',
     cost: { wood: 30, stone: 22, iron: 18 },
     requiredBuilding: 'workshop',
+    requiredBuildingLevel: 1,
     baseRecruitDurationSec: 55,
     speedTilesPerHour: 10,
     populationCost: 1,
@@ -210,19 +226,24 @@ export const UNIT_DEFS = {
     role: 'Prevoz koristi',
     cost: { wood: 20, stone: 12, iron: 10 },
     requiredBuilding: 'workshop',
+    requiredBuildingLevel: 1,
     baseRecruitDurationSec: 32,
     speedTilesPerHour: 14,
     populationCost: 1,
   },
 };
 
-export const UNIT_ORDER = ['militia', 'archer', 'cavalry', 'knight', 'ram', 'caravan'];
+export const UNIT_ORDER = ['militia', 'archer', 'cavalry', 'scout', 'knight', 'ram', 'caravan'];
 
 const roundNumber = (value) => Math.max(0, Math.round(value));
 const RESOURCE_PRODUCTION_CURVE_FACTOR = 0.045;
 const WAREHOUSE_BASE_CAP = 1200;
 const WAREHOUSE_MAX_CAP = 300000;
 const WAREHOUSE_CAP_CURVE_EXPONENT = 1.6;
+const BUILDING_TIME_MULTIPLIER = 1.45;
+const RECRUIT_TIME_MULTIPLIER = 1.4;
+const ARMY_TRAVEL_TIME_MULTIPLIER = 1.25;
+const MIN_ARMY_TRAVEL_DURATION_SEC = 45;
 
 const clampNumber = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -279,9 +300,9 @@ export const calculateUpgradeDurationSec = (buildingId, currentLevel, townhallLe
 
   const levelFactor = Math.pow(1.14, currentLevel);
   const townHallReduction = Math.min(0.15, Math.max(0, Number(townhallLevel ?? 0)) * 0.15);
-  const duration = def.baseDurationSec * levelFactor * (1 - townHallReduction);
+  const duration = def.baseDurationSec * levelFactor * (1 - townHallReduction) * BUILDING_TIME_MULTIPLIER;
 
-  return Math.max(25, Math.round(duration));
+  return Math.max(35, Math.round(duration));
 };
 
 export const calculateRecruitDurationSec = (unitId, amount, requiredBuildingLevel) => {
@@ -297,9 +318,9 @@ export const calculateRecruitDurationSec = (unitId, amount, requiredBuildingLeve
     0.55,
     Math.max(0, buildingLevel * 0.012 + Math.log2(buildingLevel + 1) * 0.04),
   );
-  const duration = base * safeAmount * (1 - levelReduction);
+  const duration = base * safeAmount * (1 - levelReduction) * RECRUIT_TIME_MULTIPLIER;
 
-  return Math.max(8, Math.round(duration));
+  return Math.max(12, Math.round(duration));
 };
 
 export const calculateArmyTravelDurationSec = (unitAmounts, distanceTiles) => {
@@ -309,24 +330,25 @@ export const calculateArmyTravelDurationSec = (unitAmounts, distanceTiles) => {
   }
 
   let hasUnits = false;
-  let hasKnight = false;
+  let slowestSpeedTilesPerHour = Number.POSITIVE_INFINITY;
   for (const unitId of UNIT_ORDER) {
     const amount = Math.max(0, Math.floor(Number(unitAmounts[unitId] ?? 0)));
     if (amount <= 0) {
       continue;
     }
-    hasUnits = true;
-    if (unitId === 'knight') {
-      hasKnight = true;
+    const unitSpeed = Number(UNIT_DEFS[unitId]?.speedTilesPerHour ?? 0);
+    if (Number.isFinite(unitSpeed) && unitSpeed > 0) {
+      slowestSpeedTilesPerHour = Math.min(slowestSpeedTilesPerHour, unitSpeed);
     }
-    break;
+    hasUnits = true;
   }
 
-  if (!hasUnits) {
+  if (!hasUnits || !Number.isFinite(slowestSpeedTilesPerHour) || slowestSpeedTilesPerHour <= 0) {
     return 0;
   }
 
-  return hasKnight ? 3 : 5;
+  const durationSec = (safeDistance / slowestSpeedTilesPerHour) * 3600 * ARMY_TRAVEL_TIME_MULTIPLIER;
+  return Math.max(MIN_ARMY_TRAVEL_DURATION_SEC, Math.round(durationSec));
 };
 
 export const calculateResourceCap = (warehouseLevel) => {

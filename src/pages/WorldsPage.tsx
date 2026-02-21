@@ -4,12 +4,42 @@ import { fetchWorlds, type WorldPortalItem, type WorldsPortalResponse } from '..
 import { getSession, logout, setSelectedWorld } from '../auth';
 
 const isWorldPlayable = (world: WorldPortalItem): boolean => String(world.status).toLowerCase() === 'online';
+const SPAWN_DIRECTION_OPTIONS = [
+  {
+    id: 'center',
+    label: 'Střed',
+    glyph: '✦',
+  },
+  {
+    id: 'north',
+    label: 'Sever',
+    glyph: '▲',
+  },
+  {
+    id: 'east',
+    label: 'Východ',
+    glyph: '▶',
+  },
+  {
+    id: 'south',
+    label: 'Jih',
+    glyph: '▼',
+  },
+  {
+    id: 'west',
+    label: 'Západ',
+    glyph: '◀',
+  },
+] as const;
 
 export const WorldsPage = () => {
   const navigate = useNavigate();
   const session = useMemo(() => getSession(), []);
   const [portalData, setPortalData] = useState<WorldsPortalResponse | null>(null);
   const [selectedWorldId, setSelectedWorldId] = useState<string | null>(session?.selectedWorldId ?? null);
+  const [selectedSpawnDirection, setSelectedSpawnDirection] = useState<string>(
+    String(session?.selectedSpawnDirection ?? 'center'),
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [isEntering, setIsEntering] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +84,10 @@ export const WorldsPage = () => {
   const hasFounderBadge = useMemo(() => {
     return Boolean(portalData?.worlds.some((world) => world.player.hasPresence));
   }, [portalData]);
+  const shouldShowSpawnPortal = useMemo(
+    () => Boolean(selectedWorld && !selectedWorld.player.hasPresence),
+    [selectedWorld],
+  );
 
   const handleEnterWorld = async () => {
     if (!selectedWorld || !isWorldPlayable(selectedWorld)) {
@@ -61,7 +95,7 @@ export const WorldsPage = () => {
     }
 
     setIsEntering(true);
-    setSelectedWorld(selectedWorld.id);
+    setSelectedWorld(selectedWorld.id, selectedSpawnDirection);
     navigate('/game', { replace: true });
   };
 
@@ -200,6 +234,30 @@ export const WorldsPage = () => {
         ) : null}
 
         <footer className="worlds-footer">
+          {shouldShowSpawnPortal ? (
+            <section className="worlds-spawn-portal" aria-label="Preferovaná strana prvního spawnu">
+              <p className="worlds-spawn-title">Portál prvního spawnu</p>
+              <div className="worlds-spawn-grid">
+                {SPAWN_DIRECTION_OPTIONS.map((option) => {
+                  const isActive = selectedSpawnDirection === option.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className={`worlds-spawn-option ${isActive ? 'is-active' : ''}`}
+                      onClick={() => setSelectedSpawnDirection(option.id)}
+                      disabled={isEntering}
+                    >
+                      <span className="worlds-spawn-glyph" aria-hidden="true">
+                        {option.glyph}
+                      </span>
+                      <strong>{option.label}</strong>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
           <button
             className="auth-submit worlds-enter"
             onClick={() => {

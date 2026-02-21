@@ -472,6 +472,20 @@ const BUILDING_ART: Record<string, { icon: string; fallbackName: string; fallbac
     fallbackCategory: 'Podpora',
   },
 };
+const BUILDING_INTEL_ORDER = [
+  'townhall',
+  'warehouse',
+  'residential-quarter',
+  'university',
+  'woodcutter',
+  'quarry',
+  'iron-mine',
+  'barracks',
+  'stable',
+  'workshop',
+  'fortification',
+  'gate',
+] as const;
 
 const UNIT_META: Record<string, { fallbackName: string; fallbackRole: string; icon: string }> = {
   militia: {
@@ -488,6 +502,11 @@ const UNIT_META: Record<string, { fallbackName: string; fallbackRole: string; ic
     fallbackName: 'Jezdci',
     fallbackRole: 'Rychlý útok',
     icon: getUnitIconPath('cavalry.svg'),
+  },
+  scout: {
+    fallbackName: 'Zvěd',
+    fallbackRole: 'Špion osad',
+    icon: getUnitIconPath('scout.svg'),
   },
   knight: {
     fallbackName: 'Rytíř',
@@ -516,12 +535,13 @@ const getUnitMetaById = (unitId: string): { fallbackName: string; fallbackRole: 
     icon: DEFAULT_UNIT_ICON,
   };
 };
-const COMMAND_UNIT_ORDER = ['militia', 'archer', 'cavalry', 'knight', 'ram', 'caravan'] as const;
+const COMMAND_UNIT_ORDER = ['militia', 'archer', 'cavalry', 'scout', 'knight', 'ram', 'caravan'] as const;
 type CommandUnitId = (typeof COMMAND_UNIT_ORDER)[number];
 const UNIT_ATTACK_POWER: Record<CommandUnitId, number> = {
   militia: 12,
   archer: 8,
   cavalry: 17,
+  scout: 3,
   knight: 340,
   ram: 7,
   caravan: 0,
@@ -530,6 +550,7 @@ const UNIT_DEFENSE_POWER: Record<CommandUnitId, number> = {
   militia: 12,
   archer: 14,
   cavalry: 9,
+  scout: 2,
   knight: 280,
   ram: 7,
   caravan: 0,
@@ -2935,7 +2956,46 @@ const collectSelectionRows = (selection?: Record<string, number>): { unitId: str
   }));
 };
 
+const collectSpyIntelRows = (
+  selection: Record<string, number> | undefined,
+  orderedIds: readonly string[],
+): { id: string; amount: number }[] => {
+  if (!selection) {
+    return [];
+  }
+
+  const ids = new Set<string>();
+  for (const [entryId, amount] of Object.entries(selection)) {
+    if (normalizeBattleAmount(amount) > 0) {
+      ids.add(entryId);
+    }
+  }
+
+  const known = orderedIds.filter((entryId) => ids.has(entryId));
+  const unknown = [...ids]
+    .filter((entryId) => !orderedIds.includes(entryId))
+    .sort((a, b) => a.localeCompare(b, 'cs'));
+  const ordered = [...known, ...unknown];
+
+  return ordered.map((entryId) => ({
+    id: entryId,
+    amount: normalizeBattleAmount(selection[entryId]),
+  }));
+};
+
 const getBattleOutcomeMeta = (payload: BattleReportPayload): { label: string; tone: BattleOutcomeTone } => {
+  if (payload.spy) {
+    const success = payload.spy.success === true;
+    if (payload.perspective === 'defender') {
+      return success
+        ? { label: 'Špionáž pronikla', tone: 'defeat' }
+        : { label: 'Špionáž odražena', tone: 'victory' };
+    }
+    return success
+      ? { label: 'Průzkum úspěšný', tone: 'victory' }
+      : { label: 'Zvěd zlikvidován', tone: 'defeat' };
+  }
+
   const perspective = payload.perspective ?? 'attacker';
   if (payload.outcome === 'attacker_victory') {
     if (perspective === 'attacker') {
@@ -2954,6 +3014,7 @@ const getBattleOutcomeMeta = (payload: BattleReportPayload): { label: string; to
 
 const hasBattleIntel = (payload: BattleReportPayload): boolean =>
   Boolean(
+    (payload.spy && payload.spy.quality !== 'none') ||
     payload.battle ||
       payload.support ||
       payload.returnMovement ||
@@ -3062,12 +3123,22 @@ const BattleReportPanel = ({ report }: { report: BattleReportItem | null }) => {
   const outcomeMeta = getBattleOutcomeMeta(payload);
   const attackerName = payload.attacker ?? 'Neznámý útočník';
   const defenderName = payload.defender ?? 'Neznámý obránce';
+  const spy = payload.spy;
   const defenderCardTitle = payload.role === 'support' ? 'Podpora obránce' : `Obránce · ${defenderName}`;
   const defenderSnapshot = payload.role === 'support' ? payload.support : battle?.defender;
-  const attackerIsUnknown = payload.attackerForcesUnknown === true && payload.perspective === 'defender';
+  const attackerIsUnknown =
+    spy == null && payload.attackerForcesUnknown === true && payload.perspective === 'defender';
   const bonuses = battle?.bonuses ?? [];
   const returnMovement = payload.returnMovement;
   const returnRows = collectSelectionRows(returnMovement?.units);
+  const spyUnitRows = collectSpyIntelRows(spy?.intel?.units, COMMAND_UNIT_ORDER);
+  const spyBuildingRows = collectSpyIntelRows(spy?.intel?.buildings, BUILDING_INTEL_ORDER);
+  const hasSpyIntel = spy != null && spy.quality !== 'none';
+  const isSpyApproximate = spy?.quality === 'approximate' || spy?.approximate === true;
+  const attackerScoutStart = normalizeBattleAmount(spy?.attackerScouts?.start);
+  const attackerScoutLosses = normalizeBattleAmount(spy?.attackerScouts?.losses);
+  const attackerScoutSurvivors = normalizeBattleAmount(spy?.attackerScouts?.survivors);
+  const defenderScoutCount = normalizeBattleAmount(spy?.defenderScouts);
   const lootTaken = returnMovement?.lootTaken ?? payload.lootTaken;
   const lootWood = normalizeBattleAmount(lootTaken?.wood);
   const lootStone = normalizeBattleAmount(lootTaken?.stone);
@@ -3107,120 +3178,251 @@ const BattleReportPanel = ({ report }: { report: BattleReportItem | null }) => {
         {payload.armyDestroyed ? <p className="battle-alert">Útočná armáda byla zcela zničena.</p> : null}
       </section>
 
-      <section>
-        <h3>Armády ve střetu</h3>
-        <div className="battle-frontline-grid">
-          <BattleArmyBreakdownCard
-            heading={`Útočník · ${attackerName}`}
-            subheading={payload.originVillageName}
-            tone="attacker"
-            snapshot={battle?.attacker}
-            hidden={attackerIsUnknown}
-            hiddenReason="Obranná strana byla zničena. Přesné počty útočníka nejsou známé."
-          />
-          <BattleArmyBreakdownCard
-            heading={defenderCardTitle}
-            subheading={payload.targetVillageName}
-            tone={payload.role === 'support' ? 'support' : 'defender'}
-            snapshot={defenderSnapshot}
-          />
-        </div>
-      </section>
-
-      <section>
-        <h3>Bojová síla a bonusy</h3>
-        {hasPowerIntel ? (
-          <div className="battle-power-grid">
-            <article>
-              <span>Základ útok/obrana</span>
-              <strong>
-                {formatBattlePower(battle?.baseAttackPower)} / {formatBattlePower(battle?.baseDefensePower)}
-              </strong>
-            </article>
-            <article>
-              <span>Finální útok/obrana</span>
-              <strong>
-                {formatBattlePower(battle?.finalAttackPower)} / {formatBattlePower(battle?.finalDefensePower)}
-              </strong>
-            </article>
-            <article>
-              <span>Multiplikátor útok/obrana</span>
-              <strong>
-                {formatBattleMultiplier(battle?.attackMultiplier)} / {formatBattleMultiplier(battle?.defenseMultiplier)}
-              </strong>
-            </article>
-            <article>
-              <span>Ztráty útok/obrana</span>
-              <strong>
-                {attackerLosses.toLocaleString('cs-CZ')} / {defenderLosses.toLocaleString('cs-CZ')}
-              </strong>
-              <small>
-                Poměr: {formatBattlePercent(battle?.attackerLossRatio)} / {formatBattlePercent(battle?.defenderLossRatio)}
-              </small>
-            </article>
-          </div>
-        ) : (
-          <p>Není dostupný kompletní rozklad síly střetu.</p>
-        )}
-        {bonuses.length > 0 ? (
-          <ul className="battle-bonus-list">
-            {bonuses.map((bonus) => (
-              <li key={`${report.id}-${bonus}`}>{bonus}</li>
-            ))}
-          </ul>
-        ) : (
-          <p>Žádné aktivní bojové bonusy.</p>
-        )}
-      </section>
-
-      <section>
-        <h3>Návrat armády a kořist</h3>
-        {returnMovement ? (
-          <div className="battle-return-block">
-            <p>
-              Návrat: <strong>{returnMovement.fromVillageName ?? 'Cíl'} → {returnMovement.toVillageName ?? 'Domov'}</strong>{' '}
-              · ETA <strong>{new Date(returnMovement.arriveAt ?? report.createdAt).toLocaleString('cs-CZ')}</strong> ·{' '}
-              trvání <strong>{formatDurationLabel(returnMovement.durationSec ?? null)}</strong>
-            </p>
-            {returnRows.length > 0 ? (
-              <table className="battle-return-table">
-                <thead>
-                  <tr>
-                    <th>Vracející se jednotka</th>
-                    <th>Počet</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {returnRows.map((row) => (
-                    <tr key={`${report.id}-return-${row.unitId}`}>
-                      <td>{UNIT_META[row.unitId]?.fallbackName ?? row.unitId}</td>
-                      <td>{row.amount.toLocaleString('cs-CZ')}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+      {spy ? (
+        <>
+          <section>
+            <h3>Špionážní hlášení</h3>
+            <div className="battle-power-grid">
+              <article>
+                <span>Nasazení zvědů</span>
+                <strong>{attackerScoutStart.toLocaleString('cs-CZ')}</strong>
+              </article>
+              <article>
+                <span>Ztráty zvědů</span>
+                <strong>{attackerScoutLosses.toLocaleString('cs-CZ')}</strong>
+              </article>
+              <article>
+                <span>Přežilo zvědů</span>
+                <strong>{attackerScoutSurvivors.toLocaleString('cs-CZ')}</strong>
+              </article>
+              <article>
+                <span>Obranní zvědi v osadě</span>
+                <strong>{defenderScoutCount.toLocaleString('cs-CZ')}</strong>
+              </article>
+            </div>
+            {hasSpyIntel ? (
+              <p className="battle-spy-note">
+                {isSpyApproximate
+                  ? 'Zvědové utrpěli ztráty. Intel je přibližný a může být zkreslený.'
+                  : 'Zvědové pronikli bez ztrát. Intel je přesný.'}
+              </p>
             ) : (
-              <p className="battle-army-hidden">Žádná vracející se armáda nebyla zaznamenána.</p>
+              <p className="battle-army-hidden">Zvědové nepřežili. Žádné informace o osadě nebyly získány.</p>
             )}
-          </div>
-        ) : (
-          <p>Po bitvě nevznikl návratový přesun (armáda padla nebo nebyly jednotky k návratu).</p>
-        )}
-        <div className="battle-loot-strip">
-          <span>
-            Dřevo <strong>{lootWood.toLocaleString('cs-CZ')}</strong>
-          </span>
-          <span>
-            Kámen <strong>{lootStone.toLocaleString('cs-CZ')}</strong>
-          </span>
-          <span>
-            Železo <strong>{lootIron.toLocaleString('cs-CZ')}</strong>
-          </span>
-          <span>
-            Celkem <strong>{totalLoot.toLocaleString('cs-CZ')}</strong>
-          </span>
-        </div>
-      </section>
+          </section>
+
+          {hasSpyIntel ? (
+            <section>
+              <h3>Zjištěné informace o osadě</h3>
+              <div className="battle-frontline-grid">
+                <article className="battle-army-card attacker">
+                  <header>
+                    <h4>Jednotky v osadě</h4>
+                  </header>
+                  {spyUnitRows.length > 0 ? (
+                    <table className="battle-army-table">
+                      <thead>
+                        <tr>
+                          <th>Jednotka</th>
+                          <th>Počet</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {spyUnitRows.map((row) => (
+                          <tr key={`${report.id}-spy-unit-${row.id}`}>
+                            <td>{UNIT_META[row.id]?.fallbackName ?? row.id}</td>
+                            <td>{row.amount.toLocaleString('cs-CZ')}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="battle-army-hidden">V osadě nebyly zachyceny žádné jednotky.</p>
+                  )}
+                </article>
+
+                <article className="battle-army-card defender">
+                  <header>
+                    <h4>Budovy v osadě</h4>
+                  </header>
+                  {spyBuildingRows.length > 0 ? (
+                    <table className="battle-army-table">
+                      <thead>
+                        <tr>
+                          <th>Budova</th>
+                          <th>Úroveň</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {spyBuildingRows.map((row) => (
+                          <tr key={`${report.id}-spy-building-${row.id}`}>
+                            <td>{BUILDING_ART[row.id]?.fallbackName ?? row.id}</td>
+                            <td>{row.amount.toLocaleString('cs-CZ')}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="battle-army-hidden">Zvědové neidentifikovali žádné budovy.</p>
+                  )}
+                </article>
+              </div>
+            </section>
+          ) : null}
+
+          <section>
+            <h3>Návrat zvědů</h3>
+            {returnMovement ? (
+              <div className="battle-return-block">
+                <p>
+                  Návrat: <strong>{returnMovement.fromVillageName ?? 'Cíl'} → {returnMovement.toVillageName ?? 'Domov'}</strong>{' '}
+                  · ETA <strong>{new Date(returnMovement.arriveAt ?? report.createdAt).toLocaleString('cs-CZ')}</strong>{' '}
+                  · trvání <strong>{formatDurationLabel(returnMovement.durationSec ?? null)}</strong>
+                </p>
+                {returnRows.length > 0 ? (
+                  <table className="battle-return-table">
+                    <thead>
+                      <tr>
+                        <th>Vracející se jednotka</th>
+                        <th>Počet</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {returnRows.map((row) => (
+                        <tr key={`${report.id}-return-${row.unitId}`}>
+                          <td>{UNIT_META[row.unitId]?.fallbackName ?? row.unitId}</td>
+                          <td>{row.amount.toLocaleString('cs-CZ')}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p className="battle-army-hidden">Žádná vracející se jednotka nebyla zaznamenána.</p>
+                )}
+              </div>
+            ) : (
+              <p>Zvědové byli eliminováni a žádný návratový přesun nevznikl.</p>
+            )}
+          </section>
+        </>
+      ) : (
+        <>
+          <section>
+            <h3>Armády ve střetu</h3>
+            <div className="battle-frontline-grid">
+              <BattleArmyBreakdownCard
+                heading={`Útočník · ${attackerName}`}
+                subheading={payload.originVillageName}
+                tone="attacker"
+                snapshot={battle?.attacker}
+                hidden={attackerIsUnknown}
+                hiddenReason="Obranná strana byla zničena. Přesné počty útočníka nejsou známé."
+              />
+              <BattleArmyBreakdownCard
+                heading={defenderCardTitle}
+                subheading={payload.targetVillageName}
+                tone={payload.role === 'support' ? 'support' : 'defender'}
+                snapshot={defenderSnapshot}
+              />
+            </div>
+          </section>
+
+          <section>
+            <h3>Bojová síla a bonusy</h3>
+            {hasPowerIntel ? (
+              <div className="battle-power-grid">
+                <article>
+                  <span>Základ útok/obrana</span>
+                  <strong>
+                    {formatBattlePower(battle?.baseAttackPower)} / {formatBattlePower(battle?.baseDefensePower)}
+                  </strong>
+                </article>
+                <article>
+                  <span>Finální útok/obrana</span>
+                  <strong>
+                    {formatBattlePower(battle?.finalAttackPower)} / {formatBattlePower(battle?.finalDefensePower)}
+                  </strong>
+                </article>
+                <article>
+                  <span>Multiplikátor útok/obrana</span>
+                  <strong>
+                    {formatBattleMultiplier(battle?.attackMultiplier)} / {formatBattleMultiplier(battle?.defenseMultiplier)}
+                  </strong>
+                </article>
+                <article>
+                  <span>Ztráty útok/obrana</span>
+                  <strong>
+                    {attackerLosses.toLocaleString('cs-CZ')} / {defenderLosses.toLocaleString('cs-CZ')}
+                  </strong>
+                  <small>
+                    Poměr: {formatBattlePercent(battle?.attackerLossRatio)} / {formatBattlePercent(battle?.defenderLossRatio)}
+                  </small>
+                </article>
+              </div>
+            ) : (
+              <p>Není dostupný kompletní rozklad síly střetu.</p>
+            )}
+            {bonuses.length > 0 ? (
+              <ul className="battle-bonus-list">
+                {bonuses.map((bonus) => (
+                  <li key={`${report.id}-${bonus}`}>{bonus}</li>
+                ))}
+              </ul>
+            ) : (
+              <p>Žádné aktivní bojové bonusy.</p>
+            )}
+          </section>
+
+          <section>
+            <h3>Návrat armády a kořist</h3>
+            {returnMovement ? (
+              <div className="battle-return-block">
+                <p>
+                  Návrat: <strong>{returnMovement.fromVillageName ?? 'Cíl'} → {returnMovement.toVillageName ?? 'Domov'}</strong>{' '}
+                  · ETA <strong>{new Date(returnMovement.arriveAt ?? report.createdAt).toLocaleString('cs-CZ')}</strong> ·{' '}
+                  trvání <strong>{formatDurationLabel(returnMovement.durationSec ?? null)}</strong>
+                </p>
+                {returnRows.length > 0 ? (
+                  <table className="battle-return-table">
+                    <thead>
+                      <tr>
+                        <th>Vracející se jednotka</th>
+                        <th>Počet</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {returnRows.map((row) => (
+                        <tr key={`${report.id}-return-${row.unitId}`}>
+                          <td>{UNIT_META[row.unitId]?.fallbackName ?? row.unitId}</td>
+                          <td>{row.amount.toLocaleString('cs-CZ')}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p className="battle-army-hidden">Žádná vracející se armáda nebyla zaznamenána.</p>
+                )}
+              </div>
+            ) : (
+              <p>Po bitvě nevznikl návratový přesun (armáda padla nebo nebyly jednotky k návratu).</p>
+            )}
+            <div className="battle-loot-strip">
+              <span>
+                Dřevo <strong>{lootWood.toLocaleString('cs-CZ')}</strong>
+              </span>
+              <span>
+                Kámen <strong>{lootStone.toLocaleString('cs-CZ')}</strong>
+              </span>
+              <span>
+                Železo <strong>{lootIron.toLocaleString('cs-CZ')}</strong>
+              </span>
+              <span>
+                Celkem <strong>{totalLoot.toLocaleString('cs-CZ')}</strong>
+              </span>
+            </div>
+          </section>
+        </>
+      )}
     </div>
   );
 };
@@ -5767,6 +5969,7 @@ export const GamePage = () => {
   const armyQuickSelectionRequestIdRef = useRef(0);
   const username = session?.username ?? 'Hayato';
   const selectedWorldId = session?.selectedWorldId ?? null;
+  const selectedSpawnDirection = session?.selectedSpawnDirection ?? null;
   const selectedWorldName = selectedWorldId
     ? WORLD_LABELS[selectedWorldId] ?? selectedWorldId
     : null;
@@ -6213,7 +6416,12 @@ export const GamePage = () => {
         }
 
         try {
-          const nextState = await fetchGameState(username, activeVillageId, selectedWorldId);
+          const nextState = await fetchGameState(
+            username,
+            activeVillageId,
+            selectedWorldId,
+            selectedSpawnDirection,
+          );
           applyIncomingGameState(nextState);
         } catch (error) {
           setStateError(getErrorMessage(error));
@@ -6234,7 +6442,7 @@ export const GamePage = () => {
         }
       }
     },
-    [activeVillageId, applyIncomingGameState, selectedWorldId, session, username],
+    [activeVillageId, applyIncomingGameState, selectedSpawnDirection, selectedWorldId, session, username],
   );
 
   const loadBattleReports = useCallback(
@@ -7753,10 +7961,7 @@ export const GamePage = () => {
           rememberArmyCommandTarget(originVillageId, payload.commandType, payload.targetVillageId);
         }
         const etaLabel = formatDurationLabel(response.result.durationSec);
-        const testingHint = payload.commandType === 'attack' ? ' Test režim: útok max 5s.' : '';
-        setArmyCommandNotice(
-          `Rozkaz ${ARMY_COMMAND_LABELS[payload.commandType]} byl odeslán. ETA ${etaLabel}.${testingHint}`,
-        );
+        setArmyCommandNotice(`Rozkaz ${ARMY_COMMAND_LABELS[payload.commandType]} byl odeslán. ETA ${etaLabel}.`);
         void loadGameState(true, true);
       } catch (error) {
         setArmyCommandNotice(getErrorMessage(error));
@@ -8465,7 +8670,7 @@ export const GamePage = () => {
           <div className="world-indicator">
             <span>Svět:</span> <strong>{selectedWorldName}</strong>
           </div>
-          <small className="world-version-note">Aktuální verze hry 0.1.1</small>
+          <small className="world-version-note">Aktuální verze hry 0.1.03</small>
         </div>
         <nav>
           {NAV_BUTTONS.map((button) => (

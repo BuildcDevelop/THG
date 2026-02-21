@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { hasSelectedWorld, isAuthenticated, login, register } from '../auth';
@@ -19,24 +19,40 @@ type ProjectUpdate = {
 
 const PROJECT_UPDATES_FALLBACK: ProjectUpdate[] = [
   {
-    id: 'prototype-phase',
+    id: 'v0-1-03',
     date: '2026-02-21',
-    title: 'První funkční prototyp',
-    summary: 'Dokončujeme login, portál světů a základní hratelné jádro.',
-    status: 'in-progress',
+    title: 'Verze 0.1.03: světy a spawn',
+    summary: 'Nasazen portál světů, spawn logika a aktualizace hry na verzi 0.1.03.',
+    status: 'live',
   },
   {
-    id: 'dominion-world',
-    date: '2026-02-18',
-    title: 'Dominion I: První úsvit',
-    summary: 'Svět je aktivní a hráči s globálním účtem si jej volí po přihlášení.',
+    id: 'spawn-random-1-3',
+    date: '2026-02-21',
+    title: 'Náhodný rozestup spawnu 1-3',
+    summary: 'Nové osady i opuštěné osady kolem spawnu se rozmisťují v náhodném rozestupu 1-3 políčka.',
     status: 'live',
+  },
+  {
+    id: 'scout-intel',
+    date: '2026-02-21',
+    title: 'Nová jednotka Zvěd',
+    summary: 'Zvěd přináší špionážní hlášení o budovách a jednotkách, při ztrátách mohou být data přibližná.',
+    status: 'live',
+  },
+  {
+    id: 'discord-channel',
+    date: '2026-02-17',
+    title: 'Komunitní komunikace přes Discord',
+    summary: 'Všechny novinky, patch notes a koordinace jsou centralizované na Discordu.',
+    status: 'live',
+    href: 'https://discord.com/channels/1358102394180730944/1473961374949441628',
+    hrefLabel: 'Přejít na Discord',
   },
   {
     id: 'ruleset-plan',
     date: '2026-03-10',
     title: 'Plný svět podle pravidel',
-    summary: 'Připravujeme navazující krok s plnou ekonomikou, bojem a mapovou dominancí.',
+    summary: 'Další krok je dotažení ekonomiky, boje a mapové dominance podle kompletních pravidel.',
     status: 'planned',
   },
 ];
@@ -395,3 +411,5 @@ export const LoginPage = () => {
     </div>
   );
 };
+
+
