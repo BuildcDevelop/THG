@@ -19,10 +19,10 @@ type ProjectUpdate = {
 
 const PROJECT_UPDATES_FALLBACK: ProjectUpdate[] = [
   {
-    id: 'v0-1-03',
+    id: 'build-0-1-04',
     date: '2026-02-21',
-    title: 'Verze 0.1.03: světy a spawn',
-    summary: 'Nasazen portál světů, spawn logika a aktualizace hry na verzi 0.1.03.',
+    title: 'Verze build-0.1.04: deployment a UX',
+    summary: 'Aktualizace UI, verze build-0.1.04 a globální oznámení při nasazování nové verze hry.',
     status: 'live',
   },
   {

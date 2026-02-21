@@ -43,6 +43,16 @@ const tickSchedule = process.env.GAME_TICK_SCHEDULE ?? '*/5 * * * * *';
 const useConvexAuth = String(process.env.USE_CONVEX_AUTH ?? '').trim().toLowerCase() === 'true';
 const useConvexState = String(process.env.USE_CONVEX_STATE ?? '').trim().toLowerCase() === 'true';
 const useConvexFull = String(process.env.USE_CONVEX_FULL ?? '').trim().toLowerCase() === 'true';
+const versionLabel = String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.04').trim() || 'build-0.1.04';
+const buildId =
+  String(process.env.TLD_BUILD_ID ?? process.env.NETLIFY_COMMIT_REF ?? process.env.COMMIT_REF ?? versionLabel).trim() ||
+  versionLabel;
+const updateStatusRaw = String(process.env.TLD_UPDATE_STATUS ?? process.env.TLD_UPDATE_IN_PROGRESS ?? '')
+  .trim()
+  .toLowerCase();
+const isUpdateInProgress = ['1', 'true', 'yes', 'on', 'building', 'deploying', 'updating', 'maintenance'].includes(
+  updateStatusRaw,
+);
 const isServerlessRuntime = Boolean(
   process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.LAMBDA_TASK_ROOT,
 );
@@ -107,6 +117,13 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     service: 'tld-backend',
     serverTime: new Date().toISOString(),
+    deployment: {
+      provider: process.env.NETLIFY ? 'netlify' : 'node',
+      versionLabel,
+      buildId,
+      isUpdating: isUpdateInProgress,
+      status: updateStatusRaw || 'idle',
+    },
     features: {
       useConvexAuth,
       useConvexState,
