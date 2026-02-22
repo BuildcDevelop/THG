@@ -3628,7 +3628,8 @@
 .map-settlement-info-card {
   position: absolute;
   z-index: 8;
-  width: min(240px, 72vw);
+  width: 240px;
+  max-width: calc(100% - 24px);
   min-width: 168px;
   border: 1px solid rgba(151, 201, 238, 0.22);
   border-radius: 10px;
@@ -3639,29 +3640,6 @@
   text-align: left;
   pointer-events: auto;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.44);
-}
-
-.map-settlement-info-card.placement-right-above {
-  left: calc(var(--map-preview-anchor-x) + 0.48rem);
-  top: calc(var(--map-preview-anchor-y) - 0.4rem);
-  transform: translateY(-100%);
-}
-
-.map-settlement-info-card.placement-left-above {
-  left: calc(var(--map-preview-anchor-x) - 0.48rem);
-  top: calc(var(--map-preview-anchor-y) - 0.4rem);
-  transform: translate(-100%, -100%);
-}
-
-.map-settlement-info-card.placement-right-below {
-  left: calc(var(--map-preview-anchor-x) + 0.48rem);
-  top: calc(var(--map-preview-anchor-y) + 0.4rem);
-}
-
-.map-settlement-info-card.placement-left-below {
-  left: calc(var(--map-preview-anchor-x) - 0.48rem);
-  top: calc(var(--map-preview-anchor-y) + 0.4rem);
-  transform: translateX(-100%);
 }
 
 .map-settlement-info-card header {

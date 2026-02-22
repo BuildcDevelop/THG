@@ -84,6 +84,16 @@ type RegionSettlement = {
   relation?: 'self' | 'ally' | 'enemy';
 };
 
+type GridPosition = {
+  x: number;
+  y: number;
+};
+
+type GridPixelPosition = {
+  left: number;
+  top: number;
+};
+
 type SettlementOrderMarkerCounts = {
   attack: number;
   support: number;
@@ -733,6 +743,12 @@ const MAP_ZOOM_MIN = -50;
 const MAP_ZOOM_MAX = 50;
 const MAP_ZOOM_STEP = 5;
 const MAP_CELL_GAP_PX = 2;
+const MAP_PREVIEW_CARD_WIDTH_PX = 240;
+const MAP_PREVIEW_CARD_OFFSET_PX = 10;
+const MAP_PREVIEW_CARD_SAFE_EDGE_PX = 12;
+const MAP_PREVIEW_CARD_SAFE_TOP_PX = 80;
+const MAP_PREVIEW_CARD_HOVER_HEIGHT_PX = 140;
+const MAP_PREVIEW_CARD_PINNED_HEIGHT_PX = 260;
 const MAP_WINDOW_SIZE_STORAGE_KEY = 'tld_map_window_size';
 const LEGACY_MAP_WINDOW_SIZE_STORAGE_KEY = 'thg_map_window_size';
 const PANEL_LAYOUT_STORAGE_KEY_PREFIX = 'tld_panel_layout';
@@ -1087,6 +1103,18 @@ const calculateCellDistance = (
   toX: number,
   toY: number,
 ): number => Math.max(Math.abs(toX - fromX), Math.abs(toY - fromY));
+
+const toGridCellKey = (position: GridPosition): string => `${position.x},${position.y}`;
+
+const toGridPixelPosition = (
+  position: GridPosition,
+  cellSize: number,
+  cellGap: number,
+  inset = 0,
+): GridPixelPosition => ({
+  left: (position.x - 1) * (cellSize + cellGap) + inset,
+  top: (position.y - 1) * (cellSize + cellGap) + inset,
+});
 
 const getPanelMinSize = (type: PanelType): WindowSize => {
   if (type === 'map') {
@@ -5028,26 +5056,30 @@ const MapPanel = memo(({
   const pinnedSettlement = safePinnedSettlementId
     ? settlementsById.get(safePinnedSettlementId) ?? null
     : null;
-  const resolveSettlementLocalCoords = useCallback(
-    (settlement: RegionSettlement): { localX: number; localY: number } => {
+  const resolveSettlementGridCoords = useCallback(
+    (settlement: RegionSettlement): GridPosition => {
       const globalX = Number(settlement.globalX);
       const globalY = Number(settlement.globalY);
       if (Number.isFinite(globalX) && Number.isFinite(globalY)) {
         return {
-          localX: Math.round(globalX - Number(regionOriginX) + 1),
-          localY: Math.round(globalY - Number(regionOriginY) + 1),
+          x: Math.round(globalX - Number(regionOriginX) + 1),
+          y: Math.round(globalY - Number(regionOriginY) + 1),
         };
       }
 
       return {
-        localX: Math.round(Number(settlement.localX)),
-        localY: Math.round(Number(settlement.localY)),
+        x: Math.round(Number(settlement.localX)),
+        y: Math.round(Number(settlement.localY)),
       };
     },
     [regionOriginX, regionOriginY],
   );
   const mapDisplaySettlements = useMemo(() => {
-    const byCell = new Map<string, { settlement: RegionSettlement; localX: number; localY: number }>();
+    const occupiedCells = new Set<string>();
+    const byCell = new Map<
+      string,
+      { settlement: RegionSettlement; localX: number; localY: number; score: number }
+    >();
     const kindPriority: Record<MapSettlementKind, number> = {
       active: 5,
       own: 4,
@@ -5080,35 +5112,45 @@ const MapPanel = memo(({
     };
 
     for (const settlement of settlements) {
-      const { localX, localY } = resolveSettlementLocalCoords(settlement);
+      const gridPosition = resolveSettlementGridCoords(settlement);
+      const { x: localX, y: localY } = gridPosition;
       if (localX < 1 || localX > regionSize || localY < 1 || localY > regionSize) {
         continue;
       }
 
-      const key = `${localX}|${localY}`;
-      const current = byCell.get(key);
-      if (!current) {
-        byCell.set(key, { settlement, localX, localY });
+      const key = toGridCellKey(gridPosition);
+      const candidateScore = scoreSettlement(settlement);
+      if (!occupiedCells.has(key)) {
+        occupiedCells.add(key);
+        byCell.set(key, { settlement, localX, localY, score: candidateScore });
         continue;
       }
 
-      const candidateScore = scoreSettlement(settlement);
-      const currentScore = scoreSettlement(current.settlement);
-      if (candidateScore > currentScore) {
-        byCell.set(key, { settlement, localX, localY });
+      const current = byCell.get(key);
+      if (!current) {
+        byCell.set(key, { settlement, localX, localY, score: candidateScore });
         continue;
       }
-      if (candidateScore === currentScore && settlement.id.localeCompare(current.settlement.id, 'cs') < 0) {
-        byCell.set(key, { settlement, localX, localY });
+
+      if (candidateScore > current.score) {
+        byCell.set(key, { settlement, localX, localY, score: candidateScore });
+        continue;
+      }
+      if (candidateScore === current.score && settlement.id.localeCompare(current.settlement.id, 'cs') < 0) {
+        byCell.set(key, { settlement, localX, localY, score: candidateScore });
       }
     }
 
-    return Array.from(byCell.values());
+    return Array.from(byCell.values()).map(({ settlement, localX, localY }) => ({
+      settlement,
+      localX,
+      localY,
+    }));
   }, [
     activeVillageId,
     focusedSettlementId,
     regionSize,
-    resolveSettlementLocalCoords,
+    resolveSettlementGridCoords,
     safeHoveredId,
     safePinnedSettlementId,
     settlements,
@@ -5132,9 +5174,9 @@ const MapPanel = memo(({
       return visibleEntry;
     }
 
-    const { localX, localY } = resolveSettlementLocalCoords(previewSettlement);
-    return { settlement: previewSettlement, localX, localY };
-  }, [mapDisplaySettlementById, previewSettlement, resolveSettlementLocalCoords]);
+    const gridPosition = resolveSettlementGridCoords(previewSettlement);
+    return { settlement: previewSettlement, localX: gridPosition.x, localY: gridPosition.y };
+  }, [mapDisplaySettlementById, previewSettlement, resolveSettlementGridCoords]);
   const previewSettlementKind = previewSettlement
     ? getSettlementMapKind(previewSettlement, activeVillageId)
     : null;
@@ -5168,23 +5210,20 @@ const MapPanel = memo(({
   const zoomScale = 1 + zoomPercent / 100;
   const cellSize = Math.max(8, Math.round(REGION_CELL_SIZE * zoomScale));
   const mapCellGapPx = MAP_CELL_GAP_PX;
-  const mapStepSizePx = cellSize + mapCellGapPx;
   const settlementMarkerInsetPx = Math.max(1, Math.floor(mapCellGapPx / 2));
   const settlementMarkerSizePx = Math.max(6, cellSize - settlementMarkerInsetPx * 2);
   const mapGridSizePx = regionSize * cellSize + Math.max(0, regionSize - 1) * mapCellGapPx;
   const resolveCellAnchorPx = useCallback(
     (localX: number, localY: number): { x: number; y: number } => ({
-      x: (localX - 1) * mapStepSizePx + cellSize / 2,
-      y: (localY - 1) * mapStepSizePx + cellSize / 2,
+      x: toGridPixelPosition({ x: localX, y: localY }, cellSize, mapCellGapPx).left + cellSize / 2,
+      y: toGridPixelPosition({ x: localX, y: localY }, cellSize, mapCellGapPx).top + cellSize / 2,
     }),
-    [cellSize, mapStepSizePx],
+    [cellSize, mapCellGapPx],
   );
   const resolveCellTopLeftPx = useCallback(
-    (localX: number, localY: number): { x: number; y: number } => ({
-      x: (localX - 1) * mapStepSizePx + settlementMarkerInsetPx,
-      y: (localY - 1) * mapStepSizePx + settlementMarkerInsetPx,
-    }),
-    [mapStepSizePx, settlementMarkerInsetPx],
+    (localX: number, localY: number): GridPixelPosition =>
+      toGridPixelPosition({ x: localX, y: localY }, cellSize, mapCellGapPx, settlementMarkerInsetPx),
+    [cellSize, mapCellGapPx, settlementMarkerInsetPx],
   );
 
   const distanceOriginSettlement = useMemo(() => {
@@ -5206,29 +5245,42 @@ const MapPanel = memo(({
     );
   }, [distanceOriginSettlement, previewSettlement]);
 
-  const previewCardPlacement = useMemo(() => {
-    if (!previewSettlementCell) {
-      return 'placement-right-above';
-    }
-    const horizontal = previewSettlementCell.localX > regionSize - 4 ? 'left' : 'right';
-    const vertical = previewSettlementCell.localY <= 4 ? 'below' : 'above';
-    return `placement-${horizontal}-${vertical}`;
-  }, [previewSettlementCell, regionSize]);
-
   const previewCardStyle = useMemo<CSSProperties | null>(() => {
     if (!previewSettlementCell) {
       return null;
     }
-    const { x: anchorX, y: anchorY } = resolveCellAnchorPx(
-      previewSettlementCell.localX,
-      previewSettlementCell.localY,
+    const { x: anchorX, y: anchorY } = resolveCellAnchorPx(previewSettlementCell.localX, previewSettlementCell.localY);
+    const cardWidth = Math.min(
+      MAP_PREVIEW_CARD_WIDTH_PX,
+      Math.max(168, mapGridSizePx - MAP_PREVIEW_CARD_SAFE_EDGE_PX * 2),
     );
+    const cardHeight = isPreviewPinned ? MAP_PREVIEW_CARD_PINNED_HEIGHT_PX : MAP_PREVIEW_CARD_HOVER_HEIGHT_PX;
+    const preferLeft = previewSettlementCell.localX > regionSize - 4;
+    const preferBelow = previewSettlementCell.localY <= 4;
+
+    const preferredLeft = preferLeft
+      ? anchorX - MAP_PREVIEW_CARD_OFFSET_PX - cardWidth
+      : anchorX + MAP_PREVIEW_CARD_OFFSET_PX;
+    const preferredTop = preferBelow
+      ? anchorY + MAP_PREVIEW_CARD_OFFSET_PX
+      : anchorY - MAP_PREVIEW_CARD_OFFSET_PX - cardHeight;
+    const maxLeft = Math.max(
+      MAP_PREVIEW_CARD_SAFE_EDGE_PX,
+      mapGridSizePx - cardWidth - MAP_PREVIEW_CARD_SAFE_EDGE_PX,
+    );
+    const maxTop = Math.max(
+      MAP_PREVIEW_CARD_SAFE_TOP_PX,
+      mapGridSizePx - cardHeight - MAP_PREVIEW_CARD_SAFE_EDGE_PX,
+    );
+    const safeLeft = clamp(preferredLeft, MAP_PREVIEW_CARD_SAFE_EDGE_PX, maxLeft);
+    const safeTop = clamp(preferredTop, MAP_PREVIEW_CARD_SAFE_TOP_PX, maxTop);
 
     return {
-      '--map-preview-anchor-x': `${anchorX}px`,
-      '--map-preview-anchor-y': `${anchorY}px`,
+      width: `${Math.round(cardWidth)}px`,
+      left: `${Math.round(safeLeft)}px`,
+      top: `${Math.round(safeTop)}px`,
     } as CSSProperties;
-  }, [previewSettlementCell, resolveCellAnchorPx]);
+  }, [isPreviewPinned, mapGridSizePx, previewSettlementCell, regionSize, resolveCellAnchorPx]);
 
   const updateMiniViewportImmediate = useCallback(() => {
     const wrap = gridWrapRef.current;
@@ -5496,7 +5548,7 @@ const MapPanel = memo(({
         const coverageCommandTypes = markerState
           ? MAP_ORDER_COMMAND_TYPES.filter((commandType) => Number(markerState[commandType] ?? 0) > 0)
           : [];
-        const { x: leftPx, y: topPx } = resolveCellTopLeftPx(localX, localY);
+        const { left: leftPx, top: topPx } = resolveCellTopLeftPx(localX, localY);
 
         return (
           <button
@@ -5646,7 +5698,7 @@ const MapPanel = memo(({
             {settlementMarkers}
             {previewSettlement && previewCardStyle ? (
               <article
-                className={`map-settlement-info-card ${previewCardPlacement} ${isPreviewPinned ? 'is-pinned' : 'is-hover'}`}
+                className={`map-settlement-info-card ${isPreviewPinned ? 'is-pinned' : 'is-hover'}`}
                 style={previewCardStyle}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
