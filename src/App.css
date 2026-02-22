@@ -3187,7 +3187,7 @@
   border: 1px solid rgba(117, 158, 189, 0.2);
   border-radius: 4px;
   background: rgba(9, 21, 32, 0.86);
-  transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease;
 }
 
 .region-cell.settlement {
@@ -3195,10 +3195,7 @@
   border-color: rgba(166, 209, 244, 0.56);
   position: relative;
   overflow: visible;
-  transform-origin: center;
   --settlement-dot-color: #c3d3df;
-  backdrop-filter: blur(1px);
-  will-change: transform;
 }
 
 .region-cell.settlement::after {
@@ -3364,8 +3361,7 @@
 .region-cell.settlement:focus-visible {
   border-color: rgba(156, 207, 247, 0.88);
   outline: none;
-  transform: translateY(-1px) scale(1.03);
-  box-shadow: 0 0 0 1px rgba(156, 207, 247, 0.34);
+  box-shadow: 0 0 0 1px rgba(156, 207, 247, 0.48);
 }
 
 .region-cell.settlement.focused {

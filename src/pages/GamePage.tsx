@@ -5169,7 +5169,8 @@ const MapPanel = memo(({
   const cellSize = Math.max(8, Math.round(REGION_CELL_SIZE * zoomScale));
   const mapCellGapPx = MAP_CELL_GAP_PX;
   const mapStepSizePx = cellSize + mapCellGapPx;
-  const settlementMarkerSizePx = Math.max(8, Math.round(cellSize * 0.8));
+  const settlementMarkerInsetPx = Math.max(1, Math.floor(mapCellGapPx / 2));
+  const settlementMarkerSizePx = Math.max(6, cellSize - settlementMarkerInsetPx * 2);
   const mapGridSizePx = regionSize * cellSize + Math.max(0, regionSize - 1) * mapCellGapPx;
   const resolveCellAnchorPx = useCallback(
     (localX: number, localY: number): { x: number; y: number } => ({
@@ -5177,6 +5178,13 @@ const MapPanel = memo(({
       y: (localY - 1) * mapStepSizePx + cellSize / 2,
     }),
     [cellSize, mapStepSizePx],
+  );
+  const resolveCellTopLeftPx = useCallback(
+    (localX: number, localY: number): { x: number; y: number } => ({
+      x: (localX - 1) * mapStepSizePx + settlementMarkerInsetPx,
+      y: (localY - 1) * mapStepSizePx + settlementMarkerInsetPx,
+    }),
+    [mapStepSizePx, settlementMarkerInsetPx],
   );
 
   const distanceOriginSettlement = useMemo(() => {
@@ -5488,9 +5496,7 @@ const MapPanel = memo(({
         const coverageCommandTypes = markerState
           ? MAP_ORDER_COMMAND_TYPES.filter((commandType) => Number(markerState[commandType] ?? 0) > 0)
           : [];
-        const { x: anchorX, y: anchorY } = resolveCellAnchorPx(localX, localY);
-        const leftPx = anchorX - settlementMarkerSizePx / 2;
-        const topPx = anchorY - settlementMarkerSizePx / 2;
+        const { x: leftPx, y: topPx } = resolveCellTopLeftPx(localX, localY);
 
         return (
           <button
@@ -5571,7 +5577,7 @@ const MapPanel = memo(({
       focusedSettlementId,
       mapDisplaySettlements,
       orderMarkersByVillageId,
-      resolveCellAnchorPx,
+      resolveCellTopLeftPx,
       settlementMarkerSizePx,
     ],
   );
