@@ -9,8 +9,9 @@ import { WorldsPage } from './pages/WorldsPage';
 import './App.css';
 
 const GAME_VERSION_LABEL = (import.meta.env.VITE_GAME_VERSION as string | undefined)?.trim() || '0.1.0.04';
-const CLIENT_BUILD_ID = (import.meta.env.VITE_BUILD_ID as string | undefined)?.trim() || GAME_VERSION_LABEL;
+const CLIENT_BUILD_ID = (import.meta.env.VITE_BUILD_ID as string | undefined)?.trim() || null;
 const HEALTH_POLL_INTERVAL_MS = 15000;
+const ACTIVE_DEPLOYMENT_STATUSES = new Set(['building', 'deploying', 'updating', 'maintenance']);
 
 type DeploymentNoticeState = {
   mode: 'updating' | 'new-build';
@@ -65,7 +66,8 @@ function App() {
 
         const serverBuildIdRaw = String(health.deployment?.buildId ?? '').trim();
         const serverVersionRaw = String(health.deployment?.versionLabel ?? '').trim();
-        const isUpdating = Boolean(health.deployment?.isUpdating);
+        const deploymentStatus = String(health.deployment?.status ?? '').trim().toLowerCase();
+        const isUpdating = Boolean(health.deployment?.isUpdating) && ACTIVE_DEPLOYMENT_STATUSES.has(deploymentStatus);
         const serverBuildId = serverBuildIdRaw.length > 0 ? serverBuildIdRaw : null;
         const serverVersion = serverVersionRaw.length > 0 ? serverVersionRaw : null;
 
@@ -78,7 +80,7 @@ function App() {
           return;
         }
 
-        if (serverBuildId && serverBuildId !== CLIENT_BUILD_ID) {
+        if (CLIENT_BUILD_ID && serverBuildId && serverBuildId !== CLIENT_BUILD_ID) {
           setDeploymentNotice({
             mode: 'new-build',
             serverVersion,
@@ -145,7 +147,7 @@ function App() {
                 : 'Byla zjištěna nová verze hry. Pro jistotu obnov stránku, aby ses připojil na aktuální build.'}
             </p>
             <p className="deployment-meta">
-              Klient: {GAME_VERSION_LABEL} ({CLIENT_BUILD_ID})
+              Klient: {GAME_VERSION_LABEL} ({CLIENT_BUILD_ID ?? 'bez ID'})
             </p>
             <p className="deployment-meta">
               Server: {deploymentNotice.serverVersion ?? 'neznámá verze'} ({deploymentNotice.serverBuildId ?? 'bez ID'})

@@ -46,6 +46,35 @@ Tick interval lze zmenit pres env promennou:
 GAME_TICK_SCHEDULE="*/5 * * * * *"
 ```
 
+## Self-host backend (Docker, bez Convexu)
+
+Pokud chces odchod z Convexu kvuli limitum, nejjednodussi je bezet na vlastnim Node serveru se SQLite.
+V repu je pripraveny `compose.yaml` pro backend (`server/index.js`).
+
+Na serveru v rootu repa spust:
+
+```bash
+docker compose up -d --build
+```
+
+Stack obsahuje:
+
+- `api` (Express + SQLite)
+- `proxy` (Caddy reverse proxy/TLS pro `api.tld.com`)
+
+Data se ukladaji do SQLite souboru (volume mount):
+
+- host: `server/data/`
+- container: `/data/` (pres `THG_DATA_DIR=/data`)
+
+### Frontend napojeni na self-host backend
+
+Frontend defaultne vola relativni `'/api/*'`. Pro oddeleny backend nastav ve frontendu env:
+
+- `VITE_API_BASE=https://<tvoje-api-domena>` (bez trailing slash)
+
+Na Netlify to nastav jako environment variable pro build.
+
 ## Build
 
 ```bash
@@ -55,52 +84,7 @@ npm run preview
 
 ## Convex databaze
 
-Projekt je pripraveny na public provoz pres Convex.
-
-### 1) Konfigurace a deploy Convex funkcí
-
-```bash
-npm run convex:codegen
-npm run convex:deploy
-```
-
-Pokud jeste neni Convex projekt sparovany, CLI te provede konfiguraci deploymentu.
-
-### 2) Migrace dat ze SQLite do Convex
-
-Pred migraci nastav env promenne:
-
-- `CONVEX_URL` - URL deploymentu
-- `CONVEX_DEPLOY_KEY` - admin key deploymentu
-- `SQLITE_PATH` (volitelne) - cesta k SQLite souboru, default `server/data/game.sqlite`
-- `WIPE_BEFORE_IMPORT` (volitelne) - `true`/`false`, default `true`
-
-Pak spust:
-
-```bash
-npm run db:migrate:convex
-```
-
-Skript zavola Convex mutation `migrations:importSqliteSnapshot` a vypise souhrn importu.
-
-### 3) Rezimy API
-
-- `USE_CONVEX_FULL=true`:
-  - vsechny endpointy bez zmenn ve frontendu bezi nad Convex,
-  - backend pouziva snapshot sync (optimistic lock s `revision`),
-  - vhodne pro public nasazeni na Netlify.
-- `USE_CONVEX_AUTH=true` a `USE_CONVEX_STATE=true`:
-  - prechodovy rezim po endpointu,
-  - lze nechat vypnute, pokud bezis v `USE_CONVEX_FULL=true`.
-
-Priklad lokalniho full rezimu:
-
-```powershell
-$env:CONVEX_URL='https://<deployment>.convex.cloud'
-$env:CONVEX_DEPLOY_KEY='dev:<deployment>|...'
-$env:USE_CONVEX_FULL='true'
-npm run dev:server
-```
+Convex cast je ponechana jen jako historicka reference. Aktivni backend rezim je `Express + SQLite` a pro self-host deployment se pouziva Docker (`compose.yaml`).
 
 ## Netlify deploy
 
@@ -125,17 +109,13 @@ npx netlify link
 
 Environment variables:
 
-- `CONVEX_URL`
-- `CONVEX_DEPLOY_KEY`
-- `USE_CONVEX_FULL=true`
+- `VITE_API_BASE` (napr. `https://api.tvoje-domena.cz`)
 - `TLD_VERSION_LABEL` (napr. `build-0.1.04`)
 - `TLD_BUILD_ID` (unikatni identifikator buildu, idealne commit SHA)
 - `TLD_UPDATE_STATUS` (`idle` / `building` / `deploying` / `maintenance`)
 
 Volitelne:
 
-- `USE_CONVEX_AUTH=true` (prechodovy rezim pro login)
-- `USE_CONVEX_STATE=true` (prechodovy rezim pro state)
 - `GAME_TICK_SCHEDULE` (hlavne pro lokalni server, v serverless full rezimu se cron nepouziva)
 - `THG_DATA_DIR` (custom cesta pro SQLite fallback)
 

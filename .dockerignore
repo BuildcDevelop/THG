@@ -1,0 +1,9 @@
+**/node_modules
+dist
+.netlify
+.git
+.vscode
+**/*.log
+server/data/*.sqlite
+server/data/*.sqlite-*
+
