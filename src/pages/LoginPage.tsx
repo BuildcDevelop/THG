@@ -19,10 +19,11 @@ type ProjectUpdate = {
 
 const PROJECT_UPDATES_FALLBACK: ProjectUpdate[] = [
   {
-    id: 'build-0-1-04',
-    date: '2026-02-21',
-    title: 'Verze build-0.1.04: deployment a UX',
-    summary: 'Aktualizace UI, verze build-0.1.04 a globální oznámení při nasazování nové verze hry.',
+    id: 'v0-1-0-04',
+    date: '2026-02-22',
+    title: 'Verze 0.1.0.04: 2D mapa a stabilita UI',
+    summary:
+      'Mapa používá 2D souřadnicový grid, ochranu proti kolizím buněk a bezpečné umístění info karet mimo horní UI.',
     status: 'live',
   },
   {

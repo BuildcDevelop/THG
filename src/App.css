@@ -3146,9 +3146,16 @@
 
 .region-grid {
   --map-grid-size: 0px;
+  --map-grid-count: 50;
   --map-cell-size: 25px;
   --map-cell-gap: 2px;
   position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--map-grid-count), var(--map-cell-size));
+  grid-template-rows: repeat(var(--map-grid-count), var(--map-cell-size));
+  gap: var(--map-cell-gap);
+  align-content: start;
+  justify-content: start;
   width: var(--map-grid-size);
   height: var(--map-grid-size);
   min-width: var(--map-grid-size);
@@ -3176,9 +3183,11 @@
 }
 
 .region-cell {
-  position: absolute;
+  position: relative;
   box-sizing: border-box;
   display: block;
+  width: 100%;
+  height: 100%;
   margin: 0;
   padding: 0;
   border: 0;

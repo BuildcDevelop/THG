@@ -8,7 +8,7 @@ import { LoginPage } from './pages/LoginPage';
 import { WorldsPage } from './pages/WorldsPage';
 import './App.css';
 
-const GAME_VERSION_LABEL = (import.meta.env.VITE_GAME_VERSION as string | undefined)?.trim() || 'build-0.1.04';
+const GAME_VERSION_LABEL = (import.meta.env.VITE_GAME_VERSION as string | undefined)?.trim() || '0.1.0.04';
 const CLIENT_BUILD_ID = (import.meta.env.VITE_BUILD_ID as string | undefined)?.trim() || GAME_VERSION_LABEL;
 const HEALTH_POLL_INTERVAL_MS = 15000;
 

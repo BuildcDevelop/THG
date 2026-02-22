@@ -5210,8 +5210,6 @@ const MapPanel = memo(({
   const zoomScale = 1 + zoomPercent / 100;
   const cellSize = Math.max(8, Math.round(REGION_CELL_SIZE * zoomScale));
   const mapCellGapPx = MAP_CELL_GAP_PX;
-  const settlementMarkerInsetPx = Math.max(1, Math.floor(mapCellGapPx / 2));
-  const settlementMarkerSizePx = Math.max(6, cellSize - settlementMarkerInsetPx * 2);
   const mapGridSizePx = regionSize * cellSize + Math.max(0, regionSize - 1) * mapCellGapPx;
   const resolveCellAnchorPx = useCallback(
     (localX: number, localY: number): { x: number; y: number } => ({
@@ -5219,11 +5217,6 @@ const MapPanel = memo(({
       y: toGridPixelPosition({ x: localX, y: localY }, cellSize, mapCellGapPx).top + cellSize / 2,
     }),
     [cellSize, mapCellGapPx],
-  );
-  const resolveCellTopLeftPx = useCallback(
-    (localX: number, localY: number): GridPixelPosition =>
-      toGridPixelPosition({ x: localX, y: localY }, cellSize, mapCellGapPx, settlementMarkerInsetPx),
-    [cellSize, mapCellGapPx, settlementMarkerInsetPx],
   );
 
   const distanceOriginSettlement = useMemo(() => {
@@ -5548,7 +5541,6 @@ const MapPanel = memo(({
         const coverageCommandTypes = markerState
           ? MAP_ORDER_COMMAND_TYPES.filter((commandType) => Number(markerState[commandType] ?? 0) > 0)
           : [];
-        const { left: leftPx, top: topPx } = resolveCellTopLeftPx(localX, localY);
 
         return (
           <button
@@ -5556,10 +5548,8 @@ const MapPanel = memo(({
             className={`region-cell settlement ${getSettlementMapKind(settlement, activeVillageId)} ${focusedSettlementId === settlement.id ? 'focused' : ''}`}
             data-settlement-id={settlement.id}
             style={{
-              left: `${leftPx}px`,
-              top: `${topPx}px`,
-              width: `${settlementMarkerSizePx}px`,
-              height: `${settlementMarkerSizePx}px`,
+              gridColumnStart: localX,
+              gridRowStart: localY,
             }}
             onMouseEnter={() =>
               setHoveredId((previous) => (previous === settlement.id ? previous : settlement.id))
@@ -5629,8 +5619,6 @@ const MapPanel = memo(({
       focusedSettlementId,
       mapDisplaySettlements,
       orderMarkersByVillageId,
-      resolveCellTopLeftPx,
-      settlementMarkerSizePx,
     ],
   );
 
@@ -5690,6 +5678,7 @@ const MapPanel = memo(({
             style={
               {
                 '--map-grid-size': `${mapGridSizePx}px`,
+                '--map-grid-count': `${regionSize}`,
                 '--map-cell-size': `${cellSize}px`,
                 '--map-cell-gap': `${mapCellGapPx}px`,
               } as CSSProperties
@@ -5707,7 +5696,10 @@ const MapPanel = memo(({
                   <h4>
                     {previewSettlement.name} ({previewSettlement.globalX}|{previewSettlement.globalY})
                   </h4>
-                  <small>Region {previewSettlement.region}</small>
+                  <small>
+                    Region {previewSettlement.region} · Grid {previewSettlementCell?.localX ?? '-'}|
+                    {previewSettlementCell?.localY ?? '-'}
+                  </small>
                 </header>
                 <div className="map-settlement-info-body">
                   {isPreviewPinned ? (
@@ -5865,6 +5857,7 @@ const MapPanel = memo(({
               Zoom mapy: kolečko myši po {MAP_ZOOM_STEP} %. Rozsah je od {MAP_ZOOM_MIN} % do +
               {MAP_ZOOM_MAX} %.
             </p>
+            <p>Mapa běží nad 2D souřadnicemi (grid X|Y), rendering je snapnutý na buňky.</p>
             <p>Značky rozkazů: <strong className="order-legend attack">⌖ útok</strong>, <strong className="order-legend support">🛡 podpora</strong>, <strong className="order-legend move">➜ přesun</strong>, <strong className="order-legend knight">♞ rytířský útok</strong>.</p>
             <p>Klik na osadu kartu zakotví, klik do mapy ji odkotví.</p>
           </div>
@@ -9186,7 +9179,7 @@ export const GamePage = () => {
           <div className="world-indicator">
             <span>Svět:</span> <strong>{selectedWorldName}</strong>
           </div>
-          <small className="world-version-note">Aktuální verze hry build-0.1.04</small>
+          <small className="world-version-note">Aktuální verze hry 0.1.0.04</small>
         </div>
         <nav>
           {NAV_BUTTONS.map((button) => (

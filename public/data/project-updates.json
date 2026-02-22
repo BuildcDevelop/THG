@@ -1,40 +1,40 @@
 {
   "updates": [
     {
-      "id": "v0-1-03",
-      "date": "2026-02-21",
-      "title": "Verze 0.1.03: světy a spawn",
-      "summary": "Nasazen portal svetu, spawn logika a aktualizace hry na verzi 0.1.03.",
+      "id": "v0-1-0-04",
+      "date": "2026-02-22",
+      "title": "Verze 0.1.0.04: 2D mapa a stabilita UI",
+      "summary": "Mapa pouziva 2D souradnicovy grid, ochranu proti kolizim bunek a bezpecne umisteni info karet mimo horni UI.",
       "status": "live"
     },
     {
       "id": "spawn-random-1-3",
       "date": "2026-02-21",
-      "title": "Náhodný rozestup spawnu 1-3",
-      "summary": "Nové osady i opuštěné osady kolem spawnu se rozmisťují v náhodném rozestupu 1-3 políčka.",
+      "title": "Nahodny rozestup spawnu 1-3",
+      "summary": "Nove osady i opustene osady kolem spawnu se rozmistuji v nahodnem rozestupu 1-3 policka.",
       "status": "live"
     },
     {
       "id": "scout-intel",
       "date": "2026-02-21",
-      "title": "Nová jednotka Zvěd",
-      "summary": "Zvěd přináší špionážní hlášení o budovách a jednotkách, při ztrátách mohou být data přibližná.",
+      "title": "Nova jednotka Zved",
+      "summary": "Zved prinasi spionazni hlaseni o budovach a jednotkach, pri ztratach mohou byt data priblizna.",
       "status": "live"
     },
     {
       "id": "discord-channel",
       "date": "2026-02-17",
-      "title": "Komunitní komunikace přes Discord",
-      "summary": "Všechny novinky, patch notes a koordinace jsou centralizované na Discordu.",
+      "title": "Komunitni komunikace pres Discord",
+      "summary": "Vsechny novinky, patch notes a koordinace jsou centralizovane na Discordu.",
       "status": "live",
       "href": "https://discord.com/channels/1358102394180730944/1473961374949441628",
-      "hrefLabel": "Přejít na Discord"
+      "hrefLabel": "Prejit na Discord"
     },
     {
       "id": "ruleset-plan",
       "date": "2026-03-10",
-      "title": "Plný svět podle pravidel",
-      "summary": "Další krok je dotažení ekonomiky, boje a mapové dominance podle kompletních pravidel.",
+      "title": "Plny svet podle pravidel",
+      "summary": "Dalsi krok je dotazeni ekonomiky, boje a mapove dominance podle kompletnich pravidel.",
       "status": "planned"
     }
   ]
