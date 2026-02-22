@@ -731,7 +731,8 @@ const REGION_ORIGIN_Y = 430;
 const REGION_CELL_SIZE = 25;
 const MAP_ZOOM_MIN = -50;
 const MAP_ZOOM_MAX = 50;
-const MAP_ZOOM_STEP = 10;
+const MAP_ZOOM_STEP = 5;
+const MAP_CELL_GAP_PX = 2;
 const MAP_WINDOW_SIZE_STORAGE_KEY = 'tld_map_window_size';
 const LEGACY_MAP_WINDOW_SIZE_STORAGE_KEY = 'thg_map_window_size';
 const PANEL_LAYOUT_STORAGE_KEY_PREFIX = 'tld_panel_layout';
@@ -748,8 +749,8 @@ const GAME_FONT_SCALE_STORAGE_KEY_PREFIX = 'tld_game_font_scale';
 const LEGACY_GAME_FONT_SCALE_STORAGE_KEY_PREFIX = 'thg_game_font_scale';
 const MAP_WINDOW_MIN_WIDTH = 620;
 const MAP_WINDOW_MIN_HEIGHT = 460;
-const STATE_POLL_INTERVAL_MS = 7000;
-const REPORTS_POLL_INTERVAL_MS = 7000;
+const STATE_POLL_INTERVAL_MS = 15000;
+const REPORTS_POLL_INTERVAL_MS = 25000;
 const PANEL_DEFAULT_MIN_WIDTH = 360;
 const PANEL_DEFAULT_MIN_HEIGHT = 280;
 const PANEL_CITY_MIN_WIDTH = 1080;
@@ -5166,8 +5167,17 @@ const MapPanel = memo(({
   }, [activeVillageId, currentUsername, previewSettlement]);
   const zoomScale = 1 + zoomPercent / 100;
   const cellSize = Math.max(8, Math.round(REGION_CELL_SIZE * zoomScale));
-  const mapCellGapPx = 2;
+  const mapCellGapPx = MAP_CELL_GAP_PX;
+  const mapStepSizePx = cellSize + mapCellGapPx;
+  const settlementMarkerSizePx = Math.max(8, Math.round(cellSize * 0.8));
   const mapGridSizePx = regionSize * cellSize + Math.max(0, regionSize - 1) * mapCellGapPx;
+  const resolveCellAnchorPx = useCallback(
+    (localX: number, localY: number): { x: number; y: number } => ({
+      x: (localX - 1) * mapStepSizePx + cellSize / 2,
+      y: (localY - 1) * mapStepSizePx + cellSize / 2,
+    }),
+    [cellSize, mapStepSizePx],
+  );
 
   const distanceOriginSettlement = useMemo(() => {
     if (focusedSettlementId) {
@@ -5201,14 +5211,16 @@ const MapPanel = memo(({
     if (!previewSettlementCell) {
       return null;
     }
-    const anchorX = (previewSettlementCell.localX - 1) * (cellSize + mapCellGapPx) + cellSize / 2;
-    const anchorY = (previewSettlementCell.localY - 1) * (cellSize + mapCellGapPx) + cellSize / 2;
+    const { x: anchorX, y: anchorY } = resolveCellAnchorPx(
+      previewSettlementCell.localX,
+      previewSettlementCell.localY,
+    );
 
     return {
       '--map-preview-anchor-x': `${anchorX}px`,
       '--map-preview-anchor-y': `${anchorY}px`,
     } as CSSProperties;
-  }, [cellSize, previewSettlementCell]);
+  }, [previewSettlementCell, resolveCellAnchorPx]);
 
   const updateMiniViewportImmediate = useCallback(() => {
     const wrap = gridWrapRef.current;
@@ -5476,8 +5488,9 @@ const MapPanel = memo(({
         const coverageCommandTypes = markerState
           ? MAP_ORDER_COMMAND_TYPES.filter((commandType) => Number(markerState[commandType] ?? 0) > 0)
           : [];
-        const leftPx = (localX - 1) * (cellSize + mapCellGapPx);
-        const topPx = (localY - 1) * (cellSize + mapCellGapPx);
+        const { x: anchorX, y: anchorY } = resolveCellAnchorPx(localX, localY);
+        const leftPx = anchorX - settlementMarkerSizePx / 2;
+        const topPx = anchorY - settlementMarkerSizePx / 2;
 
         return (
           <button
@@ -5487,8 +5500,8 @@ const MapPanel = memo(({
             style={{
               left: `${leftPx}px`,
               top: `${topPx}px`,
-              width: `${cellSize}px`,
-              height: `${cellSize}px`,
+              width: `${settlementMarkerSizePx}px`,
+              height: `${settlementMarkerSizePx}px`,
             }}
             onMouseEnter={() =>
               setHoveredId((previous) => (previous === settlement.id ? previous : settlement.id))
@@ -5553,7 +5566,14 @@ const MapPanel = memo(({
           </button>
         );
       }),
-    [activeVillageId, cellSize, focusedSettlementId, mapDisplaySettlements, orderMarkersByVillageId],
+    [
+      activeVillageId,
+      focusedSettlementId,
+      mapDisplaySettlements,
+      orderMarkersByVillageId,
+      resolveCellAnchorPx,
+      settlementMarkerSizePx,
+    ],
   );
 
   const miniMapDots = useMemo(
@@ -5783,7 +5803,10 @@ const MapPanel = memo(({
             </div>
           </div>
           <div className="map-nav-hint">
-            <p>Zoom mapy: kolečko myši po 10 %. Rozsah je od -50 % do +50 %.</p>
+            <p>
+              Zoom mapy: kolečko myši po {MAP_ZOOM_STEP} %. Rozsah je od {MAP_ZOOM_MIN} % do +
+              {MAP_ZOOM_MAX} %.
+            </p>
             <p>Značky rozkazů: <strong className="order-legend attack">⌖ útok</strong>, <strong className="order-legend support">🛡 podpora</strong>, <strong className="order-legend move">➜ přesun</strong>, <strong className="order-legend knight">♞ rytířský útok</strong>.</p>
             <p>Klik na osadu kartu zakotví, klik do mapy ji odkotví.</p>
           </div>
@@ -6904,15 +6927,27 @@ export const GamePage = () => {
       return;
     }
 
-    void loadGameState(false);
-    const pollTimer = window.setInterval(() => {
-      if (mutationPendingRef.current) {
+    const pollGameState = () => {
+      if (document.hidden || mutationPendingRef.current) {
         return;
       }
       void loadGameState(true);
-    }, STATE_POLL_INTERVAL_MS);
+    };
 
-    return () => window.clearInterval(pollTimer);
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        void loadGameState(true);
+      }
+    };
+
+    void loadGameState(false);
+    const pollTimer = window.setInterval(pollGameState, STATE_POLL_INTERVAL_MS);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(pollTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [loadGameState, navigate, selectedWorldId, session]);
 
   useEffect(() => {
@@ -6920,15 +6955,27 @@ export const GamePage = () => {
       return;
     }
 
-    void loadBattleReports(false);
-    const reportsTimer = window.setInterval(() => {
-      if (mutationPendingRef.current) {
+    const pollBattleReports = () => {
+      if (document.hidden || mutationPendingRef.current) {
         return;
       }
       void loadBattleReports(true);
-    }, REPORTS_POLL_INTERVAL_MS);
+    };
 
-    return () => window.clearInterval(reportsTimer);
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        void loadBattleReports(true);
+      }
+    };
+
+    void loadBattleReports(false);
+    const reportsTimer = window.setInterval(pollBattleReports, REPORTS_POLL_INTERVAL_MS);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(reportsTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [loadBattleReports, selectedWorldId, session]);
 
   useEffect(() => {

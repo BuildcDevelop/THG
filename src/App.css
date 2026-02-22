@@ -3129,6 +3129,7 @@
   height: 100%;
   cursor: grab;
   user-select: none;
+  scroll-behavior: smooth;
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
@@ -3157,13 +3158,15 @@
   background:
     linear-gradient(
       to right,
-      rgba(103, 146, 182, 0.2) var(--map-cell-gap),
-      transparent var(--map-cell-gap)
+      transparent var(--map-cell-size),
+      rgba(103, 146, 182, 0.2) var(--map-cell-size),
+      rgba(103, 146, 182, 0.2) calc(var(--map-cell-size) + var(--map-cell-gap))
     ),
     linear-gradient(
       to bottom,
-      rgba(103, 146, 182, 0.2) var(--map-cell-gap),
-      transparent var(--map-cell-gap)
+      transparent var(--map-cell-size),
+      rgba(103, 146, 182, 0.2) var(--map-cell-size),
+      rgba(103, 146, 182, 0.2) calc(var(--map-cell-size) + var(--map-cell-gap))
     ),
     rgba(9, 21, 32, 0.86);
   background-size:
@@ -3194,6 +3197,8 @@
   overflow: visible;
   transform-origin: center;
   --settlement-dot-color: #c3d3df;
+  backdrop-filter: blur(1px);
+  will-change: transform;
 }
 
 .region-cell.settlement::after {
