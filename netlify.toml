@@ -8,6 +8,7 @@
 
 [context.production.environment]
   VITE_API_BASE = "https://thg.89-167-89-109.sslip.io"
+  TLD_PRODUCTION_API_ORIGIN = "https://thg.89-167-89-109.sslip.io"
 
 [functions]
   node_bundler = "esbuild"
