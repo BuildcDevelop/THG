@@ -11,6 +11,18 @@
   external_node_modules = ["better-sqlite3"]
   included_files = ["server/data/game.seed.sqlite.backup"]
 
+[[context.production.redirects]]
+  from = "/api"
+  to = "https://thg.89-167-89-109.sslip.io/api"
+  status = 200
+  force = true
+
+[[context.production.redirects]]
+  from = "/api/*"
+  to = "https://thg.89-167-89-109.sslip.io/api/:splat"
+  status = 200
+  force = true
+
 [[redirects]]
   from = "/api"
   to = "/.netlify/functions/api/api"
