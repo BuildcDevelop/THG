@@ -4,17 +4,25 @@ import path from 'node:path';
 import { BUILDING_ORDER, UNIT_ORDER, getMaxBuildingLevel } from './gameConfig.js';
 
 const configuredDataDir = String(process.env.TLD_DATA_DIR ?? process.env.THG_DATA_DIR ?? '').trim();
+const configuredSeedDbPath = String(process.env.TLD_SEED_DB_PATH ?? process.env.THG_SEED_DB_PATH ?? '').trim();
 const isNetlifyRuntime = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const localDataDir = path.join(process.cwd(), 'server', 'data');
+const localSeedDbPath = path.join(localDataDir, 'game.seed.sqlite.backup');
 const dataDir = configuredDataDir
   ? path.resolve(configuredDataDir)
   : isNetlifyRuntime
     ? path.join('/tmp', 'tld-data')
     : localDataDir;
 const dbPath = path.join(dataDir, 'game.sqlite');
+const seedDbPath = configuredSeedDbPath ? path.resolve(configuredSeedDbPath) : localSeedDbPath;
 
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
+}
+
+const hasExistingDatabase = fs.existsSync(dbPath) && fs.statSync(dbPath).size > 0;
+if (!hasExistingDatabase && fs.existsSync(seedDbPath)) {
+  fs.copyFileSync(seedDbPath, dbPath);
 }
 
 export const db = new Database(dbPath);
