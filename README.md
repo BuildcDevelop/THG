@@ -75,6 +75,12 @@ Frontend defaultne vola relativni `'/api/*'`. Pro oddeleny backend nastav ve fro
 
 Na Netlify to nastav jako environment variable pro build.
 
+### Bezpecny lokalni vyvoj (dulezite)
+
+- Lokalni `npm run dev` ma mit `VITE_API_BASE=http://localhost:3001` (viz `.env.development`).
+- Pokud otevres aplikaci na `localhost` a `VITE_API_BASE` miri na vzdalenou API domenu, klient to ted zablokuje.
+- Vyjimka je mozna jen vedome pres `VITE_ALLOW_REMOTE_API_FROM_LOCALHOST=true`.
+
 ## Build
 
 ```bash
@@ -113,6 +119,8 @@ Environment variables:
 - `TLD_VERSION_LABEL` (napr. `build-0.1.04`)
 - `TLD_BUILD_ID` (unikatni identifikator buildu, idealne commit SHA)
 - `TLD_UPDATE_STATUS` (`idle` / `building` / `deploying` / `maintenance`)
+
+Pozn.: pokud chces na Netlify pouzivat Netlify Functions (`/api/*`), nenechavej `VITE_API_BASE` nastavene na externi produkcni API. Jinak frontend obejde Netlify funkci a mutace pujdou primo na externi databazi.
 
 Volitelne:
 
