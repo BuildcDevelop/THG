@@ -6,7 +6,9 @@ const productionProxyOrigin = String(process.env.TLD_PRODUCTION_API_ORIGIN ?? de
   .trim()
   .replace(/\/+$/, '');
 
-const shouldProxyProductionRequest = () => String(process.env.CONTEXT ?? '').trim().toLowerCase() === 'production';
+const shouldProxyRemoteBackend = () =>
+  Boolean(productionProxyOrigin) &&
+  Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.LAMBDA_TASK_ROOT);
 
 const resolveApiPath = (event) => {
   const directPath = String(event?.path ?? '').trim();
@@ -160,7 +162,7 @@ const resolveExpressApp = async () => {
 };
 
 export const handler = async (event, context) => {
-  if (shouldProxyProductionRequest() && productionProxyOrigin) {
+  if (shouldProxyRemoteBackend()) {
     return proxyToProductionBackend(event);
   }
 
