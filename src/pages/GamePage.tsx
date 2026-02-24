@@ -30,6 +30,7 @@ import {
   type ArmyMovementState,
   type BattleReportListResponse,
   type BattleReportPayload,
+  type DeveloperResourceBoostState,
   type GameBuildingState,
   type GameStateResponse,
   type GameUnitState,
@@ -128,12 +129,21 @@ type ResourceStock = {
   name: string;
   amount: number;
   delta: string;
+  boostLabel: string | null;
   cap: number;
   buildingId: string;
   buildingName: string;
   buildingLevel: number;
   upgradeQueueCount: number;
   upgradeSummary: string | null;
+};
+
+type TownhallDeveloperBoostNotice = {
+  isActive: boolean;
+  label: string;
+  reason: string;
+  remainingSec: number;
+  endsAtLabel: string;
 };
 
 type WorldSwitchOption = {
@@ -1822,6 +1832,24 @@ const formatDurationVerboseLabel = (seconds: number | null): string => {
     return parts[0];
   }
   return `${parts[0]} a ${parts[1]}`;
+};
+
+const formatDateTimeLabel = (value: string | number | Date | null | undefined): string => {
+  if (value == null) {
+    return '-';
+  }
+  const timestampMs = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  if (!Number.isFinite(timestampMs)) {
+    return '-';
+  }
+  return new Intl.DateTimeFormat('cs-CZ', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(new Date(timestampMs));
 };
 
 const getErrorMessage = (error: unknown): string => {
@@ -6193,6 +6221,7 @@ const BuildingPanel = memo(({
   knightCount,
   isRecallKnightPending,
   isUpgradePending,
+  developerBoost,
   notice,
 }: {
   building: Building;
@@ -6202,6 +6231,7 @@ const BuildingPanel = memo(({
   knightCount: number;
   isRecallKnightPending: boolean;
   isUpgradePending: boolean;
+  developerBoost: TownhallDeveloperBoostNotice | null;
   notice: string | null;
 }) => (
   <div className="panel-stack building-panel">
@@ -6262,6 +6292,21 @@ const BuildingPanel = memo(({
             >
               {isRecallKnightPending ? 'Odvolávám rytíře...' : 'Odvolat rytíře (+1000 dřevo/kámen/železo)'}
             </button>
+            {developerBoost ? (
+              <div className={`townhall-dev-boost ${developerBoost.isActive ? 'is-active' : 'is-inactive'}`}>
+                <p className="townhall-dev-boost-title">
+                  {developerBoost.isActive
+                    ? `Boost od vývojáře: ${developerBoost.label}`
+                    : 'Boost od vývojáře je ukončen'}
+                </p>
+                <p className="townhall-dev-boost-meta">
+                  {developerBoost.isActive
+                    ? `Trvání: ${formatDurationLabel(developerBoost.remainingSec)} (konec ${developerBoost.endsAtLabel})`
+                    : `Boost skončil ${developerBoost.endsAtLabel}.`}
+                </p>
+                <p className="townhall-dev-boost-reason">{developerBoost.reason}</p>
+              </div>
+            ) : null}
           </>
         ) : null}
         {notice ? <p className="panel-feedback">{notice}</p> : null}
@@ -6651,6 +6696,27 @@ export const GamePage = () => {
 
     return markerMap;
   }, [armyActiveMovements, armyStationedSupports]);
+  const townhallDeveloperBoost = useMemo<TownhallDeveloperBoostNotice | null>(() => {
+    const developerBoost: DeveloperResourceBoostState | undefined = gameState?.resources?.developerBoost;
+    if (!developerBoost || !developerBoost.worldId || !developerBoost.reason || !developerBoost.label) {
+      return null;
+    }
+
+    const endsAtMs = Date.parse(String(developerBoost.endsAt ?? ''));
+    if (!Number.isFinite(endsAtMs)) {
+      return null;
+    }
+    const remainingSec = Math.max(0, Math.ceil((endsAtMs - protectionClockMs) / 1000));
+    const isActive = Boolean(developerBoost.isActive) && remainingSec > 0;
+
+    return {
+      isActive,
+      label: String(developerBoost.label),
+      reason: String(developerBoost.reason),
+      remainingSec,
+      endsAtLabel: formatDateTimeLabel(endsAtMs),
+    };
+  }, [gameState?.resources?.developerBoost, protectionClockMs]);
 
   const resourceStocks = useMemo<ResourceStock[]>(() => {
     const resolveUpgradeMeta = (buildingId: string): { upgradeQueueCount: number; upgradeSummary: string | null } => {
@@ -6692,6 +6758,7 @@ export const GamePage = () => {
           name: 'Dřevo',
           amount: 0,
           delta: '+0 / h',
+          boostLabel: null,
           cap: 0,
           buildingId: 'woodcutter',
           ...resolveBuildingMeta('woodcutter'),
@@ -6701,6 +6768,7 @@ export const GamePage = () => {
           name: 'Kámen',
           amount: 0,
           delta: '+0 / h',
+          boostLabel: null,
           cap: 0,
           buildingId: 'quarry',
           ...resolveBuildingMeta('quarry'),
@@ -6710,6 +6778,7 @@ export const GamePage = () => {
           name: 'Železo',
           amount: 0,
           delta: '+0 / h',
+          boostLabel: null,
           cap: 0,
           buildingId: 'iron-mine',
           ...resolveBuildingMeta('iron-mine'),
@@ -6719,6 +6788,7 @@ export const GamePage = () => {
           name: 'Populace',
           amount: 0,
           delta: 'kapacita 0',
+          boostLabel: null,
           cap: 0,
           buildingId: 'residential-quarter',
           ...resolveBuildingMeta('residential-quarter'),
@@ -6727,11 +6797,17 @@ export const GamePage = () => {
       ];
     }
 
+    const resourceBoostLabel =
+      gameState.resources.developerBoost?.isActive && gameState.resources.developerBoost.label
+        ? String(gameState.resources.developerBoost.label)
+        : null;
+
     return [
       {
         name: 'Dřevo',
         amount: gameState.resources.wood,
         delta: `+${gameState.resources.productionPerHour.wood.toLocaleString('cs-CZ')} / h`,
+        boostLabel: resourceBoostLabel,
         cap: gameState.resources.cap,
         buildingId: 'woodcutter',
         ...resolveBuildingMeta('woodcutter'),
@@ -6741,6 +6817,7 @@ export const GamePage = () => {
         name: 'Kámen',
         amount: gameState.resources.stone,
         delta: `+${gameState.resources.productionPerHour.stone.toLocaleString('cs-CZ')} / h`,
+        boostLabel: resourceBoostLabel,
         cap: gameState.resources.cap,
         buildingId: 'quarry',
         ...resolveBuildingMeta('quarry'),
@@ -6750,6 +6827,7 @@ export const GamePage = () => {
         name: 'Železo',
         amount: gameState.resources.iron,
         delta: `+${gameState.resources.productionPerHour.iron.toLocaleString('cs-CZ')} / h`,
+        boostLabel: resourceBoostLabel,
         cap: gameState.resources.cap,
         buildingId: 'iron-mine',
         ...resolveBuildingMeta('iron-mine'),
@@ -6759,6 +6837,7 @@ export const GamePage = () => {
         name: 'Populace',
         amount: gameState.population.used,
         delta: `kapacita ${gameState.population.cap.toLocaleString('cs-CZ')}`,
+        boostLabel: null,
         cap: gameState.population.cap,
         buildingId: 'residential-quarter',
         ...resolveBuildingMeta('residential-quarter'),
@@ -8337,6 +8416,7 @@ export const GamePage = () => {
           unit.id,
           normalizedAmount,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         applyIncomingGameState(nextState);
         setArmyNotice(`${unit.name}: +${normalizedAmount.toLocaleString('cs-CZ')} jednotek`);
@@ -8351,7 +8431,7 @@ export const GamePage = () => {
         setRecruitPendingUnitId(null);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleCancelRecruitment = useCallback(
@@ -8369,6 +8449,7 @@ export const GamePage = () => {
           username,
           order.id,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         applyIncomingGameState(response.data);
         setArmyNotice(
@@ -8383,7 +8464,7 @@ export const GamePage = () => {
         setCancelRecruitmentPendingId(null);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const rememberArmyCommandTarget = useCallback(
@@ -8439,6 +8520,7 @@ export const GamePage = () => {
         const response = await issueArmyCommand(username, {
           commandType: payload.commandType,
           villageId: originVillageId,
+          worldId: selectedWorldId,
           targetVillageId: payload.targetVillageId,
           lootPriority: payload.lootPriority,
           units: payload.units,
@@ -8467,6 +8549,7 @@ export const GamePage = () => {
       gameState?.village.id,
       loadGameState,
       rememberArmyCommandTarget,
+      selectedWorldId,
       username,
     ],
   );
@@ -8480,6 +8563,7 @@ export const GamePage = () => {
         const response = await issueArmyCommand(username, {
           commandType: 'return',
           villageId: gameState?.village.id ?? activeVillageId,
+          worldId: selectedWorldId,
           supportMovementId,
         });
         const nextState = response.data;
@@ -8492,7 +8576,7 @@ export const GamePage = () => {
         setArmyCommandPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleBuildingUpgrade = useCallback(
@@ -8508,6 +8592,7 @@ export const GamePage = () => {
           username,
           building.id,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         applyIncomingGameState(nextState);
         setBuildingNotices((previous) => ({
@@ -8524,7 +8609,7 @@ export const GamePage = () => {
         setUpgradePendingBuildingId(null);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleRecallKnight = useCallback(async () => {
@@ -8538,6 +8623,7 @@ export const GamePage = () => {
       const response = await recallKnightRequest(
         username,
         gameState?.village.id ?? activeVillageId,
+        selectedWorldId,
       );
       applyIncomingGameState(response.data);
       setBuildingNotices((previous) => ({
@@ -8553,7 +8639,7 @@ export const GamePage = () => {
     } finally {
       setRecallKnightPending(false);
     }
-  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username]);
+  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username]);
 
   const handleCancelBuildingUpgrade = useCallback(
     async (upgradeOrderId: number, buildingId: string) => {
@@ -8572,6 +8658,7 @@ export const GamePage = () => {
           username,
           upgradeOrderId,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         applyIncomingGameState(response.data);
         const canceledCount = Number(response.result.canceledCount ?? 1);
@@ -8593,7 +8680,7 @@ export const GamePage = () => {
         setCancelUpgradePendingOrderId(null);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleCreateKingdom = useCallback(
@@ -8611,6 +8698,7 @@ export const GamePage = () => {
           username,
           normalizedKingdomName,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         const nextState = response.data;
         applyIncomingGameState(nextState);
@@ -8622,7 +8710,7 @@ export const GamePage = () => {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleInvitePlayerToKingdom = useCallback(
@@ -8640,6 +8728,7 @@ export const GamePage = () => {
           username,
           normalizedTarget,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         const nextState = response.data;
         applyIncomingGameState(nextState);
@@ -8651,7 +8740,7 @@ export const GamePage = () => {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleAcceptKingdomInvite = useCallback(
@@ -8668,6 +8757,7 @@ export const GamePage = () => {
           username,
           inviteId,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         const nextState = response.data;
         applyIncomingGameState(nextState);
@@ -8679,7 +8769,7 @@ export const GamePage = () => {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleRejectKingdomInvite = useCallback(
@@ -8696,6 +8786,7 @@ export const GamePage = () => {
           username,
           inviteId,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         const nextState = response.data;
         applyIncomingGameState(nextState);
@@ -8707,7 +8798,7 @@ export const GamePage = () => {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleLeaveKingdom = useCallback(async () => {
@@ -8715,7 +8806,11 @@ export const GamePage = () => {
     setKingdomNotice(null);
 
     try {
-      const response = await leaveKingdomRequest(username, gameState?.village.id ?? activeVillageId);
+      const response = await leaveKingdomRequest(
+        username,
+        gameState?.village.id ?? activeVillageId,
+        selectedWorldId,
+      );
       const nextState = response.data;
       applyIncomingGameState(nextState);
       setKingdomNotice(`Opustil jsi království ${response.result.previousKingdom}.`);
@@ -8725,7 +8820,7 @@ export const GamePage = () => {
     } finally {
       setKingdomActionPending(false);
     }
-  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username]);
+  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username]);
 
   const handleKickKingdomMember = useCallback(
     async (targetUsername: string) => {
@@ -8742,6 +8837,7 @@ export const GamePage = () => {
           username,
           normalizedTarget,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         const nextState = response.data;
         applyIncomingGameState(nextState);
@@ -8753,7 +8849,7 @@ export const GamePage = () => {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleChangeFontScale = useCallback((option: GameFontScaleOption) => {
@@ -8781,7 +8877,11 @@ export const GamePage = () => {
     setSettingsNotice(null);
 
     try {
-      const response = await restartVillageProgressRequest(username, gameState?.village.id ?? activeVillageId);
+      const response = await restartVillageProgressRequest(
+        username,
+        gameState?.village.id ?? activeVillageId,
+        selectedWorldId,
+      );
       const nextState = response.data;
       applyIncomingGameState(nextState);
       setSettingsNotice(
@@ -8794,7 +8894,7 @@ export const GamePage = () => {
     } finally {
       setRestartVillagePending(false);
     }
-  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username]);
+  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username]);
 
   const handleLogout = useCallback(() => {
     logout();
@@ -9156,6 +9256,7 @@ export const GamePage = () => {
             knightCount={currentVillageKnightCount}
             isRecallKnightPending={recallKnightPending}
             isUpgradePending={upgradePendingBuildingId === building.id}
+            developerBoost={building.id === 'townhall' ? townhallDeveloperBoost : null}
             notice={buildingNotices[building.id] ?? null}
           />
         );
@@ -9179,7 +9280,7 @@ export const GamePage = () => {
           <div className="world-indicator">
             <span>Svět:</span> <strong>{selectedWorldName}</strong>
           </div>
-          <small className="world-version-note">Aktuální verze hry 0.1.0.04</small>
+          <small className="world-version-note">Aktuální verze hry 0.1.0.05</small>
         </div>
         <nav>
           {NAV_BUTTONS.map((button) => (
@@ -9284,6 +9385,7 @@ export const GamePage = () => {
               <p>{resource.name}</p>
               <strong>{resource.amount.toLocaleString('cs-CZ')}</strong>
               <span>{resource.delta}</span>
+              {resource.boostLabel ? <small className="resource-boost-note">{resource.boostLabel}</small> : null}
               <small>Kapacita {resource.cap.toLocaleString('cs-CZ')}</small>
             </div>
             <div className="resource-card-right">

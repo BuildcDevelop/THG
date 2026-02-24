@@ -5,21 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n client,server \"npm run dev:client\" \"npm run dev:server\"",
-    "dev:convex": "convex dev",
     "dev:client": "vite",
     "dev:server": "node server/index.js",
     "dev:netlify": "npx netlify dev",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "server": "node server/index.js",
-    "convex:codegen": "convex codegen --init",
-    "convex:deploy": "convex deploy",
-    "db:migrate:convex": "node scripts/migrate-sqlite-to-convex.mjs"
+    "server": "node server/index.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",
-    "convex": "^1.31.7",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "node-cron": "^4.2.1",

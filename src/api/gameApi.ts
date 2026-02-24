@@ -161,6 +161,19 @@ export type KingdomHubState = {
   auditLog: KingdomAuditLogEntry[];
 };
 
+export type DeveloperResourceBoostState = {
+  isActive: boolean;
+  source: string;
+  worldId: string | null;
+  reason: string | null;
+  label: string | null;
+  bonusPercent: number;
+  multiplier: number;
+  startsAt: string | null;
+  endsAt: string | null;
+  remainingSec: number;
+};
+
 export type GameStateResponse = {
   serverTime: string;
   player: {
@@ -216,6 +229,7 @@ export type GameStateResponse = {
       iron: number;
       penalty: number;
     };
+    developerBoost: DeveloperResourceBoostState;
   };
   population: {
     used: number;
@@ -274,11 +288,11 @@ export type GameStateResponse = {
 export type LoginResponse = {
   username: string;
   village: {
-    id: number;
-    name: string;
-    kingdom: string;
-    coordX: number;
-    coordY: number;
+    id: number | null;
+    name: string | null;
+    kingdom: string | null;
+    coordX: number | null;
+    coordY: number | null;
   };
 };
 
@@ -516,6 +530,7 @@ export type ArmyCommandType = 'attack' | 'support' | 'move' | 'return';
 export type IssueArmyCommandPayload = {
   commandType: ArmyCommandType;
   villageId?: number | null;
+  worldId?: string | null;
   targetVillageId?: number;
   supportMovementId?: number;
   lootPriority?: LootPriority;
@@ -606,8 +621,43 @@ type ApiError = {
 };
 
 const baseUrl = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/+$/, '') ?? '';
+const allowRemoteApiFromLocalhost =
+  String(import.meta.env.VITE_ALLOW_REMOTE_API_FROM_LOCALHOST ?? '')
+    .trim()
+    .toLowerCase() === 'true';
+const LOCALHOST_NAMES = new Set(['localhost', '127.0.0.1', '::1']);
+
+const resolveUnsafeLocalhostRemoteApiMessage = (): string | null => {
+  if (allowRemoteApiFromLocalhost || !baseUrl || typeof window === 'undefined') {
+    return null;
+  }
+
+  const currentHost = String(window.location.hostname ?? '').trim().toLowerCase();
+  if (!LOCALHOST_NAMES.has(currentHost)) {
+    return null;
+  }
+
+  let targetHost = '';
+  try {
+    targetHost = String(new URL(baseUrl).hostname ?? '').trim().toLowerCase();
+  } catch {
+    return null;
+  }
+
+  if (!targetHost || LOCALHOST_NAMES.has(targetHost)) {
+    return null;
+  }
+
+  return `Blokováno: localhost klient míří na vzdálené API (${baseUrl}). Nastav VITE_API_BASE=http://localhost:3001 nebo povol výjimku přes VITE_ALLOW_REMOTE_API_FROM_LOCALHOST=true.`;
+};
+
+const unsafeLocalhostRemoteApiMessage = resolveUnsafeLocalhostRemoteApiMessage();
 
 const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
+  if (unsafeLocalhostRemoteApiMessage) {
+    throw new Error(unsafeLocalhostRemoteApiMessage);
+  }
+
   const response = await fetch(`${baseUrl}${path}`, {
     headers: {
       'Content-Type': 'application/json',
@@ -699,12 +749,13 @@ export const upgradeBuilding = async (
   username: string,
   buildingId: string,
   villageId?: number | null,
+  worldId?: string | null,
 ): Promise<GameStateResponse> => {
   const payload = await request<ApiOk<GameStateResponse>>(
     `/api/v1/buildings/${encodeURIComponent(buildingId)}/upgrade`,
     {
       method: 'POST',
-      body: JSON.stringify({ username, villageId }),
+      body: JSON.stringify({ username, villageId, worldId }),
     },
   );
 
@@ -716,12 +767,13 @@ export const recruitUnit = async (
   unitId: string,
   amount: number,
   villageId?: number | null,
+  worldId?: string | null,
 ): Promise<GameStateResponse> => {
   const payload = await request<ApiOk<GameStateResponse>>(
     `/api/v1/units/${encodeURIComponent(unitId)}/recruit`,
     {
       method: 'POST',
-      body: JSON.stringify({ username, amount, villageId }),
+      body: JSON.stringify({ username, amount, villageId, worldId }),
     },
   );
 
@@ -732,12 +784,13 @@ export const cancelBuildingUpgrade = async (
   username: string,
   upgradeId: number,
   villageId?: number | null,
+  worldId?: string | null,
 ): Promise<{ result: CancelBuildingUpgradeResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: CancelBuildingUpgradeResult }>(
     `/api/v1/buildings/upgrades/${encodeURIComponent(String(upgradeId))}/cancel`,
     {
       method: 'POST',
-      body: JSON.stringify({ username, villageId }),
+      body: JSON.stringify({ username, villageId, worldId }),
     },
   );
 
@@ -751,12 +804,13 @@ export const cancelRecruitment = async (
   username: string,
   recruitmentId: number,
   villageId?: number | null,
+  worldId?: string | null,
 ): Promise<{ result: CancelRecruitmentResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: CancelRecruitmentResult }>(
     `/api/v1/units/recruitments/${encodeURIComponent(String(recruitmentId))}/cancel`,
     {
       method: 'POST',
-      body: JSON.stringify({ username, villageId }),
+      body: JSON.stringify({ username, villageId, worldId }),
     },
   );
 
@@ -769,12 +823,13 @@ export const cancelRecruitment = async (
 export const recallKnight = async (
   username: string,
   villageId?: number | null,
+  worldId?: string | null,
 ): Promise<{ result: RecallKnightResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: RecallKnightResult }>(
     '/api/v1/townhall/knight/recall',
     {
       method: 'POST',
-      body: JSON.stringify({ username, villageId }),
+      body: JSON.stringify({ username, villageId, worldId }),
     },
   );
 
@@ -787,12 +842,14 @@ export const recallKnight = async (
 export const conquerVillage = async (
   username: string,
   villageId: number,
+  requestedVillageId?: number | null,
+  worldId?: string | null,
 ): Promise<{ result: ConquerVillageResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: ConquerVillageResult }>(
     `/api/v1/villages/${encodeURIComponent(String(villageId))}/conquer`,
     {
       method: 'POST',
-      body: JSON.stringify({ username }),
+      body: JSON.stringify({ username, villageId: requestedVillageId, worldId }),
     },
   );
 
@@ -805,12 +862,13 @@ export const conquerVillage = async (
 export const restartVillageProgress = async (
   username: string,
   villageId?: number | null,
+  worldId?: string | null,
 ): Promise<{ result: RestartVillageResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: RestartVillageResult }>(
     '/api/v1/villages/restart',
     {
       method: 'POST',
-      body: JSON.stringify({ username, villageId }),
+      body: JSON.stringify({ username, villageId, worldId }),
     },
   );
 
@@ -841,6 +899,7 @@ export const issueArmyCommand = async (
   const requestBody = {
     username,
     villageId: payload.villageId,
+    worldId: payload.worldId,
     commandType: payload.commandType,
     targetVillageId: payload.targetVillageId,
     supportMovementId: payload.supportMovementId,
@@ -884,12 +943,13 @@ export const createKingdom = async (
   username: string,
   kingdomName: string,
   villageId?: number | null,
+  worldId?: string | null,
 ): Promise<{ result: KingdomCreateResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: KingdomCreateResult }>(
     '/api/v1/kingdom/create',
     {
       method: 'POST',
-      body: JSON.stringify({ username, kingdomName, villageId }),
+      body: JSON.stringify({ username, kingdomName, villageId, worldId }),
     },
   );
 
@@ -903,12 +963,13 @@ export const invitePlayerToKingdom = async (
   username: string,
   targetUsername: string,
   villageId?: number | null,
+  worldId?: string | null,
 ): Promise<{ result: KingdomInviteResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: KingdomInviteResult }>(
     '/api/v1/kingdom/invite',
     {
       method: 'POST',
-      body: JSON.stringify({ username, targetUsername, villageId }),
+      body: JSON.stringify({ username, targetUsername, villageId, worldId }),
     },
   );
 
@@ -922,12 +983,13 @@ export const acceptKingdomInvite = async (
   username: string,
   inviteId: number,
   villageId?: number | null,
+  worldId?: string | null,
 ): Promise<{ result: KingdomInviteAcceptResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: KingdomInviteAcceptResult }>(
     `/api/v1/kingdom/invite/${encodeURIComponent(String(inviteId))}/accept`,
     {
       method: 'POST',
-      body: JSON.stringify({ username, villageId }),
+      body: JSON.stringify({ username, villageId, worldId }),
     },
   );
 
@@ -941,12 +1003,13 @@ export const rejectKingdomInvite = async (
   username: string,
   inviteId: number,
   villageId?: number | null,
+  worldId?: string | null,
 ): Promise<{ result: KingdomInviteRejectResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: KingdomInviteRejectResult }>(
     `/api/v1/kingdom/invite/${encodeURIComponent(String(inviteId))}/reject`,
     {
       method: 'POST',
-      body: JSON.stringify({ username, villageId }),
+      body: JSON.stringify({ username, villageId, worldId }),
     },
   );
 
@@ -959,12 +1022,13 @@ export const rejectKingdomInvite = async (
 export const leaveKingdom = async (
   username: string,
   villageId?: number | null,
+  worldId?: string | null,
 ): Promise<{ result: KingdomLeaveResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: KingdomLeaveResult }>(
     '/api/v1/kingdom/leave',
     {
       method: 'POST',
-      body: JSON.stringify({ username, villageId }),
+      body: JSON.stringify({ username, villageId, worldId }),
     },
   );
 
@@ -978,12 +1042,13 @@ export const kickKingdomMember = async (
   username: string,
   targetUsername: string,
   villageId?: number | null,
+  worldId?: string | null,
 ): Promise<{ result: KingdomKickResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: KingdomKickResult }>(
     '/api/v1/kingdom/kick',
     {
       method: 'POST',
-      body: JSON.stringify({ username, targetUsername, villageId }),
+      body: JSON.stringify({ username, targetUsername, villageId, worldId }),
     },
   );
 

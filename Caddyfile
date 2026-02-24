@@ -1,0 +1,3 @@
+static.109.89.167.89.clients.your-server.de {
+	reverse_proxy api:3001
+}

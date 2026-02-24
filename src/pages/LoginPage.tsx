@@ -19,11 +19,11 @@ type ProjectUpdate = {
 
 const PROJECT_UPDATES_FALLBACK: ProjectUpdate[] = [
   {
-    id: 'v0-1-0-04',
-    date: '2026-02-22',
-    title: 'Verze 0.1.0.04: 2D mapa a stabilita UI',
+    id: 'v0-1-0-05',
+    date: '2026-02-23',
+    title: 'Verze 0.1.0.05: Izolace herních dat podle světa',
     summary:
-      'Mapa používá 2D souřadnicový grid, ochranu proti kolizím buněk a bezpečné umístění info karet mimo horní UI.',
+      'Království, pozvánky, audity a reset postupu jsou striktně oddělené po světech. Účet hráče zůstává univerzální napříč platformou.',
     status: 'live',
   },
   {

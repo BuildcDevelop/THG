@@ -177,7 +177,7 @@ export const WorldsPage = () => {
               const isSelected = world.id === selectedWorldId;
               const playable = isWorldPlayable(world);
               const worldRank = world.player?.rank ?? null;
-              const worldKingdom = world.player?.kingdom ?? portalData?.profile.kingdom ?? 'Bez kralovstvi';
+              const worldKingdom = world.player?.kingdom ?? 'Bez kralovstvi';
               const worldPlayerAccounts = world.stats?.playerAccounts ?? 0;
               return (
                 <article
