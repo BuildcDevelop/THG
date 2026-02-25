@@ -562,25 +562,33 @@ const getUnitMetaById = (unitId: string): { fallbackName: string; fallbackRole: 
 const COMMAND_UNIT_ORDER = ['militia', 'archer', 'cavalry', 'scout', 'knight', 'ram', 'caravan'] as const;
 type CommandUnitId = (typeof COMMAND_UNIT_ORDER)[number];
 const UNIT_ATTACK_POWER: Record<CommandUnitId, number> = {
-  militia: 12,
-  archer: 8,
-  cavalry: 17,
-  scout: 3,
-  knight: 340,
-  ram: 7,
+  militia: 11,
+  archer: 9,
+  cavalry: 18,
+  scout: 4,
+  knight: 300,
+  ram: 0,
   caravan: 0,
 };
 const UNIT_DEFENSE_POWER: Record<CommandUnitId, number> = {
   militia: 12,
   archer: 14,
-  cavalry: 9,
-  scout: 2,
-  knight: 280,
-  ram: 7,
+  cavalry: 10,
+  scout: 4,
+  knight: 255,
+  ram: 0,
   caravan: 0,
 };
 const RAM_ATTACK_BONUS_MULTIPLIER = 1.1;
-const CARAVAN_LOOT_CAPACITY = 250;
+const UNIT_LOOT_CAPACITY: Record<CommandUnitId, number> = {
+  militia: 20,
+  archer: 16,
+  cavalry: 80,
+  scout: 0,
+  knight: 45,
+  ram: 0,
+  caravan: 250,
+};
 
 const ARMY_COMMAND_LABELS: Record<ArmyCommandType, string> = {
   attack: 'Útok',
@@ -589,6 +597,7 @@ const ARMY_COMMAND_LABELS: Record<ArmyCommandType, string> = {
   return: 'Návrat',
 };
 const LOOT_PRIORITY_LABELS: Record<LootPriority, string> = {
+  balanced: 'Rovnoměrně',
   wood: 'Dřevo',
   stone: 'Kámen',
   iron: 'Železo',
@@ -718,6 +727,27 @@ const buildSelectedUnitsFromDraft = (
   return selectedUnits;
 };
 
+const buildDraftUnitAmountsFromAvailable = (
+  units: Unit[],
+  options?: { excludeCaravan?: boolean },
+): Record<string, string> => {
+  const draft = {} as Record<string, string>;
+  for (const unit of units) {
+    if (!COMMAND_UNIT_ORDER.includes(unit.id as CommandUnitId)) {
+      continue;
+    }
+    if (options?.excludeCaravan && unit.id === 'caravan') {
+      continue;
+    }
+    const availableAmount = Math.max(0, Math.floor(Number(unit.amount ?? 0)));
+    if (availableAmount <= 0) {
+      continue;
+    }
+    draft[unit.id] = String(availableAmount);
+  }
+  return draft;
+};
+
 const calculateTotalUnitsInSelection = (selection: Record<CommandUnitId, number>): number =>
   COMMAND_UNIT_ORDER.reduce((sum, unitId) => sum + Number(selection[unitId] ?? 0), 0);
 
@@ -726,6 +756,9 @@ const calculateAttackPowerFromSelection = (selection: Record<CommandUnitId, numb
 
 const calculateDefensePowerFromSelection = (selection: Record<CommandUnitId, number>): number =>
   COMMAND_UNIT_ORDER.reduce((sum, unitId) => sum + Number(selection[unitId] ?? 0) * UNIT_DEFENSE_POWER[unitId], 0);
+
+const calculateLootCapacityFromSelection = (selection: Record<CommandUnitId, number>): number =>
+  COMMAND_UNIT_ORDER.reduce((sum, unitId) => sum + Number(selection[unitId] ?? 0) * UNIT_LOOT_CAPACITY[unitId], 0);
 
 const FALLBACK_ACTIVE_ORDERS = [
   'Výstavba: žádná aktivní fronta',
@@ -2359,7 +2392,7 @@ const ArmyPanel = ({
   commandNotice: string | null;
 }) => {
   const [commandType, setCommandType] = useState<ArmyCommandType>('move');
-  const [lootPriority, setLootPriority] = useState<LootPriority>('wood');
+  const [lootPriority, setLootPriority] = useState<LootPriority>('balanced');
   const [targetVillageId, setTargetVillageId] = useState<number | null>(null);
   const [draftUnitAmounts, setDraftUnitAmounts] = useState<Record<string, string>>({});
   const [recruitDraftAmounts, setRecruitDraftAmounts] = useState<Record<string, string>>({});
@@ -2551,7 +2584,6 @@ const ArmyPanel = ({
     () => calculateTotalUnitsInSelection(selectedCommandUnits),
     [selectedCommandUnits],
   );
-  const selectedCaravanCount = Number(selectedCommandUnits.caravan ?? 0);
   const baseAttackPower = useMemo(
     () => calculateAttackPowerFromSelection(selectedCommandUnits),
     [selectedCommandUnits],
@@ -2564,7 +2596,29 @@ const ArmyPanel = ({
   const attackPowerWithBonuses = hasRamAttackBonus
     ? Math.round(baseAttackPower * RAM_ATTACK_BONUS_MULTIPLIER)
     : baseAttackPower;
-  const caravanLootCapacity = selectedCaravanCount * CARAVAN_LOOT_CAPACITY;
+  const lootCapacity = useMemo(() => calculateLootCapacityFromSelection(selectedCommandUnits), [selectedCommandUnits]);
+  const hasAvailableCommandUnits = useMemo(
+    () =>
+      units.some((unit) => {
+        if (commandType === 'support' && unit.id === 'caravan') {
+          return false;
+        }
+        return Number(unit.amount ?? 0) > 0;
+      }),
+    [commandType, units],
+  );
+  const selectAllCommandUnitsTooltip =
+    commandType === 'support'
+      ? 'Vyplní dostupné jednotky bez karavan (podpora je nepovoluje).'
+      : 'Vyplní dostupné množství všech aktuálních jednotek.';
+
+  const handleSelectAllCommandUnits = () => {
+    setDraftUnitAmounts(
+      buildDraftUnitAmountsFromAvailable(units, {
+        excludeCaravan: commandType === 'support',
+      }),
+    );
+  };
 
   const handleSendCommand = () => {
     if (resolvedTargetVillageId == null) {
@@ -2591,6 +2645,7 @@ const ArmyPanel = ({
       units: selectedUnitsPayload,
     });
     setDraftUnitAmounts({});
+    setLootPriority('balanced');
   };
 
   return (
@@ -2830,6 +2885,7 @@ const ArmyPanel = ({
                 onChange={(event) => setLootPriority(event.target.value as LootPriority)}
                 disabled={isArmyCommandPending}
               >
+                <option value="balanced">{LOOT_PRIORITY_LABELS.balanced}</option>
                 <option value="wood">{LOOT_PRIORITY_LABELS.wood}</option>
                 <option value="stone">{LOOT_PRIORITY_LABELS.stone}</option>
                 <option value="iron">{LOOT_PRIORITY_LABELS.iron}</option>
@@ -2876,6 +2932,17 @@ const ArmyPanel = ({
             </div>
           </div>
         ) : null}
+        <div className="army-draft-actions">
+          <button
+            type="button"
+            className="secondary-action"
+            onClick={handleSelectAllCommandUnits}
+            disabled={isArmyCommandPending || !hasAvailableCommandUnits}
+            title={selectAllCommandUnitsTooltip}
+          >
+            Vybrat všechny aktuální jednotky
+          </button>
+        </div>
         <div className="army-draft-grid">
           {units.map((unit) => (
             <label key={`draft-${unit.id}`}>
@@ -2919,8 +2986,8 @@ const ArmyPanel = ({
                 {hasRamAttackBonus ? <span>(včetně +10 % bonusu beranidel bez brány)</span> : null}
               </p>
               <p>
-                Kapacita kořisti (karavany):{' '}
-                <strong>{caravanLootCapacity.toLocaleString('cs-CZ')} surovin</strong>
+                Kapacita kořisti (bez zvědů a beranidel):{' '}
+                <strong>{lootCapacity.toLocaleString('cs-CZ')} surovin</strong>
               </p>
             </>
           ) : (
@@ -5209,6 +5276,7 @@ const MapPanel = memo(({
     ? getSettlementMapKind(previewSettlement, activeVillageId)
     : null;
   const isPreviewAbandoned = previewSettlementKind === 'abandoned';
+  const isPreviewPlayerSettlement = previewSettlementKind === 'player';
   const previewCommandAvailability = useMemo<Record<ArmyCommandSelectableType, boolean>>(() => {
     if (!previewSettlement) {
       return { attack: false, support: false, move: false };
@@ -5562,6 +5630,8 @@ const MapPanel = memo(({
   const settlementMarkers = useMemo(
     () =>
       mapDisplaySettlements.map(({ settlement, localX, localY }) => {
+        const settlementMapKind = getSettlementMapKind(settlement, activeVillageId);
+        const isHoveredPlayerSettlement = safeHoveredId === settlement.id && settlementMapKind === 'player';
         const markerState =
           settlement.villageId != null
             ? orderMarkersByVillageId.get(Number(settlement.villageId)) ?? null
@@ -5573,7 +5643,7 @@ const MapPanel = memo(({
         return (
           <button
             key={settlement.id}
-            className={`region-cell settlement ${getSettlementMapKind(settlement, activeVillageId)} ${focusedSettlementId === settlement.id ? 'focused' : ''}`}
+            className={`region-cell settlement ${settlementMapKind} ${focusedSettlementId === settlement.id ? 'focused' : ''} ${isHoveredPlayerSettlement ? 'hover-player' : ''}`}
             data-settlement-id={settlement.id}
             style={{
               gridColumnStart: localX,
@@ -5647,6 +5717,7 @@ const MapPanel = memo(({
       focusedSettlementId,
       mapDisplaySettlements,
       orderMarkersByVillageId,
+      safeHoveredId,
     ],
   );
 
@@ -5715,7 +5786,7 @@ const MapPanel = memo(({
             {settlementMarkers}
             {previewSettlement && previewCardStyle ? (
               <article
-                className={`map-settlement-info-card ${isPreviewPinned ? 'is-pinned' : 'is-hover'}`}
+                className={`map-settlement-info-card ${isPreviewPinned ? 'is-pinned' : 'is-hover'} ${isPreviewPlayerSettlement ? 'is-player' : ''}`}
                 style={previewCardStyle}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
@@ -5745,17 +5816,19 @@ const MapPanel = memo(({
                     ) : (
                       <button
                         type="button"
-                        className="map-settlement-link"
+                        className={`map-settlement-link owner ${isPreviewPlayerSettlement ? 'player-owner' : ''}`}
                         onClick={(event) => {
                           event.stopPropagation();
                           onOpenPlayerProfile(previewSettlement.owner);
                         }}
                       >
-                        {previewSettlement.owner}
+                        <span className="map-settlement-owner-label">Hráč:</span> {previewSettlement.owner}
                       </button>
                     )
                   ) : (
-                    <p className="map-settlement-owner">{previewSettlement.owner}</p>
+                    <p className={`map-settlement-owner ${isPreviewPlayerSettlement ? 'player-owner' : ''}`}>
+                      <span className="map-settlement-owner-label">Hráč:</span> {previewSettlement.owner}
+                    </p>
                   )}
                   <p className="map-settlement-prestige">
                     Prestiž <strong>{previewSettlement.prestige.toLocaleString('cs-CZ')}</strong>
@@ -5931,7 +6004,7 @@ const VillagePanel = memo(({
 }) => {
   const settlementKind = getSettlementMapKind(settlement, activeVillageId);
   const [draftUnitAmounts, setDraftUnitAmounts] = useState<Record<string, string>>({});
-  const [attackLootPriority, setAttackLootPriority] = useState<LootPriority>('wood');
+  const [attackLootPriority, setAttackLootPriority] = useState<LootPriority>('balanced');
   const normalizedUsername = currentUsername.trim().toLowerCase();
   const targetVillageId =
     settlement.villageId != null && Number.isFinite(settlement.villageId)
@@ -5976,7 +6049,7 @@ const VillagePanel = memo(({
   const villageAttackPowerWithBonus = villageHasRamAttackBonus
     ? Math.round(villageAttackPower * RAM_ATTACK_BONUS_MULTIPLIER)
     : villageAttackPower;
-  const villageLootCapacity = selectedCaravanCount * CARAVAN_LOOT_CAPACITY;
+  const villageLootCapacity = useMemo(() => calculateLootCapacityFromSelection(selectedUnits), [selectedUnits]);
   const supportWithCaravansSelected = selectedCaravanCount > 0;
   const supportMovementsAtSettlement = useMemo(
     () =>
@@ -6018,6 +6091,25 @@ const VillagePanel = memo(({
       units: selectedUnits,
     });
     setDraftUnitAmounts({});
+    setAttackLootPriority('balanced');
+  };
+  const hasAvailableVillageUnits = useMemo(
+    () => units.some((unit) => Number(unit.amount ?? 0) > 0),
+    [units],
+  );
+  const isSupportOnlyTarget = useMemo(
+    () => availableCommandTypes.length === 1 && availableCommandTypes[0] === 'support',
+    [availableCommandTypes],
+  );
+  const selectAllVillageUnitsTooltip = isSupportOnlyTarget
+    ? 'Vyplní dostupné jednotky bez karavan (podpora je nepovoluje).'
+    : 'Vyplní dostupné množství všech aktuálních jednotek.';
+  const handleSelectAllVillageUnits = () => {
+    setDraftUnitAmounts(
+      buildDraftUnitAmountsFromAvailable(units, {
+        excludeCaravan: isSupportOnlyTarget,
+      }),
+    );
   };
 
   return (
@@ -6069,6 +6161,17 @@ const VillagePanel = memo(({
           <p>Jsi v této osadě. Pro přesun nebo útok otevři jiné léno na mapě.</p>
         ) : (
           <>
+            <div className="army-draft-actions">
+              <button
+                type="button"
+                className="secondary-action"
+                onClick={handleSelectAllVillageUnits}
+                disabled={isArmyCommandPending || !hasAvailableVillageUnits}
+                title={selectAllVillageUnitsTooltip}
+              >
+                Vybrat všechny aktuální jednotky
+              </button>
+            </div>
             <div className="army-draft-grid village-action-draft">
               {units.map((unit) => (
                 <label key={`village-draft-${settlement.id}-${unit.id}`}>
@@ -6108,7 +6211,8 @@ const VillagePanel = memo(({
                 Síla obrany: <strong>{villageDefensePower.toLocaleString('cs-CZ')}</strong>
               </p>
               <p>
-                Kapacita kořisti (karavany): <strong>{villageLootCapacity.toLocaleString('cs-CZ')}</strong>
+                Kapacita kořisti (bez zvědů a beranidel):{' '}
+                <strong>{villageLootCapacity.toLocaleString('cs-CZ')}</strong>
               </p>
             </div>
             <div className="village-action-buttons">
@@ -6139,6 +6243,7 @@ const VillagePanel = memo(({
                   onChange={(event) => setAttackLootPriority(event.target.value as LootPriority)}
                   disabled={isArmyCommandPending}
                 >
+                  <option value="balanced">{LOOT_PRIORITY_LABELS.balanced}</option>
                   <option value="wood">{LOOT_PRIORITY_LABELS.wood}</option>
                   <option value="stone">{LOOT_PRIORITY_LABELS.stone}</option>
                   <option value="iron">{LOOT_PRIORITY_LABELS.iron}</option>

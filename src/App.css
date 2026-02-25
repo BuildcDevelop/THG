@@ -2495,6 +2495,11 @@
   gap: 0.4rem;
 }
 
+.army-draft-actions {
+  margin-top: 0.45rem;
+  margin-bottom: 0.4rem;
+}
+
 .army-command-preview {
   border: 1px solid rgba(154, 199, 236, 0.2);
   border-radius: 9px;
@@ -3424,6 +3429,14 @@
   box-shadow: 0 0 0 1px rgba(156, 207, 247, 0.48);
 }
 
+.region-cell.settlement.player.hover-player,
+.region-cell.settlement.player:hover,
+.region-cell.settlement.player:focus-visible {
+  border-color: rgba(214, 162, 74, 0.9);
+  box-shadow: 0 0 0 1px rgba(214, 162, 74, 0.5), 0 0 12px rgba(214, 162, 74, 0.32);
+  background: rgba(139, 90, 43, 0.34);
+}
+
 .region-cell.settlement.focused {
   border-color: rgba(149, 205, 247, 0.95);
   box-shadow: 0 0 0 1px rgba(149, 205, 247, 0.45);
@@ -3723,6 +3736,11 @@
   box-shadow: 0 0 0 1px rgba(214, 162, 74, 0.24), 0 12px 24px rgba(0, 0, 0, 0.46);
 }
 
+.map-settlement-info-card.is-player {
+  border-color: rgba(214, 162, 74, 0.58);
+  box-shadow: 0 0 0 1px rgba(214, 162, 74, 0.2), 0 12px 24px rgba(0, 0, 0, 0.46);
+}
+
 .map-settlement-info-body {
   display: grid;
   gap: 0.18rem;
@@ -3737,6 +3755,19 @@
 .map-settlement-owner {
   font-size: 0.82rem;
   color: #eff7ff;
+}
+
+.map-settlement-owner-label {
+  color: #b9d5ee;
+  font-size: 0.72rem;
+  margin-right: 0.24rem;
+}
+
+.map-settlement-owner.player-owner,
+.map-settlement-link.owner.player-owner {
+  color: #ffd58b;
+  font-weight: 700;
+  text-shadow: 0 0 8px rgba(214, 162, 74, 0.28);
 }
 
 .map-settlement-prestige strong {

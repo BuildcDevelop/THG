@@ -4,7 +4,7 @@ type ResourceCost = {
   iron: number;
 };
 
-export type LootPriority = 'wood' | 'stone' | 'iron';
+export type LootPriority = 'wood' | 'stone' | 'iron' | 'balanced';
 export type SpawnDirection = 'center' | 'north' | 'east' | 'south' | 'west';
 
 export type WorldSettlement = {
