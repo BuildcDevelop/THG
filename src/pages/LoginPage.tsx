@@ -19,6 +19,14 @@ type ProjectUpdate = {
 
 const PROJECT_UPDATES_FALLBACK: ProjectUpdate[] = [
   {
+    id: 'v0-1-06',
+    date: '2026-02-25',
+    title: 'Verze 0.1.06: Rework boje, kořisti a plánování útoku',
+    summary:
+      'Prázdné osady už nezpůsobují útočníkovi bojové ztráty, beranidla ničí úrovně brány (1:1) a po průrazu se spotřebují. Zvěd jde posílat ve smíšených útocích, limit osad je 6 na každý svět zvlášť, kořist nesou všechny bojové jednotky kromě zvěda a beranidla, útoky jsou vyváženější a na mapě jsou hráčské osady výrazněji zvýrazněné. Nově je výchozí drancování Rovnoměrně a přibylo „Vybrat všechny aktuální jednotky“.',
+    status: 'live',
+  },
+  {
     id: 'v0-1-0-05',
     date: '2026-02-23',
     title: 'Verze 0.1.0.05: Izolace herních dat podle světa',

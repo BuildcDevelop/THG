@@ -1,6 +1,13 @@
 {
   "updates": [
     {
+      "id": "v0-1-06",
+      "date": "2026-02-25",
+      "title": "Verze 0.1.06: Rework boje, koristi a planovani utoku",
+      "summary": "Prazdne osady uz nezpusobuji utocnikovi bojove ztraty, beranidla nici urovne brany (1:1) a po prurazu se spotrebuji. Zved jde posilat ve smisenych utocich, limit osad je 6 na kazdy svet zvlast, korist nesou vsechny bojove jednotky krome zveda a beranidla, utoky jsou vyvazenejsi a na mape jsou hracske osady vyrazneji zvyraznene. Nove je vychozi drancovani Rovnomerne a pribylo Vybrat vsechny aktualni jednotky.",
+      "status": "live"
+    },
+    {
       "id": "v0-1-0-04",
       "date": "2026-02-22",
       "title": "Verze 0.1.0.04: 2D mapa a stabilita UI",

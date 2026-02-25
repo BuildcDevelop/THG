@@ -10,7 +10,7 @@ export const WORKSHOP_MAX_LEVEL = 20;
 export const FORTIFICATION_MAX_LEVEL = 10;
 export const GATE_MAX_LEVEL = 1;
 export const MAX_BUILDING_LEVEL = RESOURCE_BUILDING_MAX_LEVEL;
-export const MAX_PLAYER_VILLAGES = 3;
+export const MAX_PLAYER_VILLAGES = 6;
 
 export const BUILDING_DEFS = {
   woodcutter: {

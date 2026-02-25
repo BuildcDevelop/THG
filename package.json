@@ -9,6 +9,7 @@
     "dev:server": "node server/index.js",
     "dev:netlify": "npx netlify dev",
     "build": "tsc -b && vite build",
+    "test:regression": "node --test tests/regression/game-rules.regression.test.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "server": "node server/index.js"

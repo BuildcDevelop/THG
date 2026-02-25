@@ -2410,13 +2410,13 @@ const calculateBuildingEffect = (buildingId, level) => {
   if (buildingId === 'fortification') {
     const defenseBonusPct = Math.round(Math.min(45, Math.max(0, Number(level ?? 0)) * 3));
     return defenseBonusPct > 0
-      ? `Obrana osady: +${defenseBonusPct} % (dalsi bonus s lucistniky)`
+      ? `Obrana osady: +${defenseBonusPct} % (dalsi bonus s lucistniky na hradbach)`
       : 'Obrana osady bez bonusu';
   }
   if (buildingId === 'gate') {
     return Number(level ?? 0) > 0
-      ? 'Brana aktivni: utok bez beranidel je odrazen pred bojem'
-      : 'Bez brany muze utocnik vstoupit i bez beranidel';
+      ? 'Brana aktivni: s opevnenim zastavi utok bez beranidel, beranidla spotrebovavaji urovne brany'
+      : 'Bez brany muze utocnik vstoupit i bez beranidel, prezivsi beranidla davaji bonus utoku';
   }
 
   return `Uroven ${level}`;
@@ -2481,16 +2481,28 @@ const sumSelectedCost = (selection) => {
   return total;
 };
 
-const LOOT_PRIORITIES = ['wood', 'stone', 'iron'];
-const BATTLE_UNIT_POWER = {
-  militia: { attack: 12, defense: 12 },
-  archer: { attack: 8, defense: 14 },
-  cavalry: { attack: 17, defense: 9 },
-  scout: { attack: 3, defense: 2 },
-  knight: { attack: 340, defense: 280 },
-  ram: { attack: 7, defense: 7 },
-  caravan: { attack: 0, defense: 0 },
-};
+const LOOT_RESOURCE_ORDER = ['wood', 'stone', 'iron'];
+const LOOT_BALANCED_PRIORITY = 'balanced';
+const LOOT_PRIORITIES = [...LOOT_RESOURCE_ORDER, LOOT_BALANCED_PRIORITY];
+const UNIT_LOOT_CAPACITY = Object.freeze({
+  militia: 20,
+  archer: 16,
+  cavalry: 80,
+  scout: 0,
+  knight: 45,
+  ram: 0,
+  caravan: 250,
+});
+const BATTLE_UNIT_STATS = Object.freeze({
+  militia: { attack: 11, defense: 12, health: 18 },
+  archer: { attack: 9, defense: 14, health: 12 },
+  cavalry: { attack: 18, defense: 10, health: 21 },
+  scout: { attack: 4, defense: 4, health: 9 },
+  knight: { attack: 300, defense: 255, health: 240 },
+  ram: { attack: 0, defense: 0, health: 42 },
+  caravan: { attack: 0, defense: 0, health: 8 },
+});
+const RAM_ATTACK_SUPPORT_MULTIPLIER = 1.1;
 const clampNumber = (value, min, max) => Math.max(min, Math.min(max, value));
 
 const toCompleteUnitSelection = (partialSelection) => {
@@ -2560,14 +2572,31 @@ const getVillagePopulationStatus = (villageId) => {
   };
 };
 
+const getBattleUnitStats = (unitId) => BATTLE_UNIT_STATS[unitId] ?? { attack: 0, defense: 0, health: 10 };
+
 const sumCombatPower = (selection, role) =>
   UNIT_ORDER.reduce((sum, unitId) => {
     const amount = Number(selection[unitId] ?? 0);
     if (amount <= 0) {
       return sum;
     }
-    const unitPower = Number(BATTLE_UNIT_POWER[unitId]?.[role] ?? 0);
-    return sum + amount * unitPower;
+    const unitStats = getBattleUnitStats(unitId);
+    const rolePower = Number(unitStats?.[role] ?? 0);
+    if (rolePower <= 0) {
+      return sum;
+    }
+    const healthWeight = clampNumber(Math.sqrt(Math.max(1, Number(unitStats.health ?? 10))) / 4, 0.5, 1.75);
+    return sum + amount * rolePower * healthWeight;
+  }, 0);
+
+const sumHealthPool = (selection) =>
+  UNIT_ORDER.reduce((sum, unitId) => {
+    const amount = Number(selection?.[unitId] ?? 0);
+    if (amount <= 0) {
+      return sum;
+    }
+    const health = Math.max(1, Number(getBattleUnitStats(unitId).health ?? 10));
+    return sum + amount * health;
   }, 0);
 
 const applyCasualties = (selection, casualtyRatio) => {
@@ -2577,13 +2606,100 @@ const applyCasualties = (selection, casualtyRatio) => {
 
   for (const unitId of UNIT_ORDER) {
     const startAmount = Math.max(0, Math.floor(Number(selection[unitId] ?? 0)));
-    const lossAmount = Math.min(startAmount, Math.round(startAmount * safeRatio));
+    const unitStats = getBattleUnitStats(unitId);
+    const durabilityFactor = clampNumber(Math.sqrt(Math.max(1, Number(unitStats.health ?? 10))) / 4.2, 0.55, 1.65);
+    let unitRatio = safeRatio / durabilityFactor;
+    if (unitId === 'ram' || unitId === 'caravan') {
+      unitRatio *= 1.15;
+    }
+    if (unitId === KNIGHT_UNIT_ID) {
+      unitRatio *= 0.82;
+    }
+    unitRatio = clampNumber(unitRatio, 0, 1);
+
+    const lossAmount = Math.min(startAmount, Math.round(startAmount * unitRatio));
     const survivorAmount = Math.max(0, startAmount - lossAmount);
     losses[unitId] = lossAmount;
     survivors[unitId] = survivorAmount;
   }
 
   return { losses, survivors };
+};
+
+const buildLossesFromStartAndSurvivors = (startSelection, survivorsSelection) => {
+  const losses = {};
+  for (const unitId of UNIT_ORDER) {
+    const startAmount = Math.max(0, Math.floor(Number(startSelection?.[unitId] ?? 0)));
+    const survivorAmount = Math.max(0, Math.floor(Number(survivorsSelection?.[unitId] ?? 0)));
+    losses[unitId] = Math.max(0, startAmount - survivorAmount);
+  }
+  return losses;
+};
+
+const resolveArmyTacticalModifier = (selection, role) => {
+  let totalCombatants = 0;
+  for (const unitId of UNIT_ORDER) {
+    const amount = Math.max(0, Math.floor(Number(selection?.[unitId] ?? 0)));
+    const stats = getBattleUnitStats(unitId);
+    if (amount <= 0 || (Number(stats.attack) <= 0 && Number(stats.defense) <= 0)) {
+      continue;
+    }
+    totalCombatants += amount;
+  }
+
+  if (totalCombatants <= 0) {
+    return { multiplier: 1, notes: [] };
+  }
+
+  const share = (unitId) => Math.max(0, Math.floor(Number(selection?.[unitId] ?? 0))) / totalCombatants;
+  const cavalryShare = share('cavalry');
+  const archerShare = share('archer');
+  const scoutShare = share('scout');
+  const militiaShare = share('militia');
+  const hasKnight = Math.max(0, Math.floor(Number(selection?.[KNIGHT_UNIT_ID] ?? 0))) > 0;
+
+  let multiplier = 1;
+  const notes = [];
+
+  if (role === 'attack') {
+    const cavalryBonus = clampNumber(cavalryShare * 0.12, 0, 0.1);
+    if (cavalryBonus > 0) {
+      multiplier *= 1 + cavalryBonus;
+      notes.push(`Jezdecky tlak: utok +${Math.round(cavalryBonus * 100)} %`);
+    }
+    const scoutBonus = clampNumber(scoutShare * 0.08, 0, 0.05);
+    if (scoutBonus > 0) {
+      multiplier *= 1 + scoutBonus;
+      notes.push(`Prumysl zvedu: utok +${Math.round(scoutBonus * 100)} %`);
+    }
+    if (hasKnight) {
+      multiplier *= 1.04;
+      notes.push('Rytir vede armadu: utok +4 %');
+    }
+    if (militiaShare > 0.75) {
+      multiplier *= 0.96;
+      notes.push('Prebytek pechoty: utok -4 %');
+    }
+  } else {
+    const archerBonus = clampNumber(archerShare * 0.1, 0, 0.08);
+    if (archerBonus > 0) {
+      multiplier *= 1 + archerBonus;
+      notes.push(`Strelci drzi formaci: obrana +${Math.round(archerBonus * 100)} %`);
+    }
+    if (cavalryShare > 0.5 && archerShare < 0.1) {
+      multiplier *= 0.95;
+      notes.push('Mobilni obrana bez strelcu: obrana -5 %');
+    }
+    if (hasKnight) {
+      multiplier *= 1.03;
+      notes.push('Rytir drzi linii: obrana +3 %');
+    }
+  }
+
+  return {
+    multiplier: clampNumber(multiplier, 0.65, 1.6),
+    notes,
+  };
 };
 
 const getUnitAmountFromSelection = (selection, unitId) =>
@@ -2725,17 +2841,96 @@ const normalizeLootPriority = (rawValue) => {
   if (LOOT_PRIORITIES.includes(normalized)) {
     return normalized;
   }
-  return 'wood';
+  return LOOT_BALANCED_PRIORITY;
 };
 
-const calculateLootDistribution = (resourcePocket, priority, carryingCapacity) => {
+const getUnitLootCapacity = (unitId) => Math.max(0, Math.floor(Number(UNIT_LOOT_CAPACITY[unitId] ?? 0)));
+
+const calculateLootCapacityFromSelection = (selection) =>
+  UNIT_ORDER.reduce((sum, unitId) => {
+    const amount = Math.max(0, Math.floor(Number(selection?.[unitId] ?? 0)));
+    if (amount <= 0) {
+      return sum;
+    }
+    return sum + amount * getUnitLootCapacity(unitId);
+  }, 0);
+
+const calculateBalancedLootDistribution = (resourcePocket, carryingCapacity) => {
   const loot = { wood: 0, stone: 0, iron: 0 };
   let remainingCapacity = Math.max(0, Math.floor(Number(carryingCapacity ?? 0)));
   if (remainingCapacity <= 0) {
     return { loot, total: 0 };
   }
 
-  const order = [priority, ...LOOT_PRIORITIES.filter((resourceId) => resourceId !== priority)];
+  const remainingByResource = {};
+  for (const resourceId of LOOT_RESOURCE_ORDER) {
+    remainingByResource[resourceId] = Math.max(0, Math.floor(Number(resourcePocket[resourceId] ?? 0)));
+  }
+
+  while (remainingCapacity > 0) {
+    const activeResources = LOOT_RESOURCE_ORDER.filter((resourceId) => remainingByResource[resourceId] > 0);
+    if (activeResources.length === 0) {
+      break;
+    }
+
+    const evenShare = Math.floor(remainingCapacity / activeResources.length);
+    if (evenShare > 0) {
+      let consumed = 0;
+      for (const resourceId of activeResources) {
+        if (remainingCapacity <= 0) {
+          break;
+        }
+        const taken = Math.min(remainingByResource[resourceId], evenShare, remainingCapacity);
+        if (taken <= 0) {
+          continue;
+        }
+        loot[resourceId] += taken;
+        remainingByResource[resourceId] -= taken;
+        remainingCapacity -= taken;
+        consumed += taken;
+      }
+      if (consumed > 0) {
+        continue;
+      }
+    }
+
+    let consumedOneByOne = 0;
+    for (const resourceId of activeResources) {
+      if (remainingCapacity <= 0) {
+        break;
+      }
+      if (remainingByResource[resourceId] <= 0) {
+        continue;
+      }
+      loot[resourceId] += 1;
+      remainingByResource[resourceId] -= 1;
+      remainingCapacity -= 1;
+      consumedOneByOne += 1;
+    }
+    if (consumedOneByOne <= 0) {
+      break;
+    }
+  }
+
+  return {
+    loot,
+    total: loot.wood + loot.stone + loot.iron,
+  };
+};
+
+const calculateLootDistribution = (resourcePocket, priority, carryingCapacity) => {
+  if (priority === LOOT_BALANCED_PRIORITY) {
+    return calculateBalancedLootDistribution(resourcePocket, carryingCapacity);
+  }
+
+  const loot = { wood: 0, stone: 0, iron: 0 };
+  let remainingCapacity = Math.max(0, Math.floor(Number(carryingCapacity ?? 0)));
+  if (remainingCapacity <= 0) {
+    return { loot, total: 0 };
+  }
+
+  const normalizedPriority = LOOT_RESOURCE_ORDER.includes(priority) ? priority : LOOT_RESOURCE_ORDER[0];
+  const order = [normalizedPriority, ...LOOT_RESOURCE_ORDER.filter((resourceId) => resourceId !== normalizedPriority)];
   for (const resourceId of order) {
     if (remainingCapacity <= 0) {
       break;
@@ -2894,118 +3089,261 @@ const simulateAttackBattle = ({
   defenderUnitsRaw,
   defenderBuildingLevels,
 }) => {
+  const attackerStartUnits = toCompleteUnitSelection(attackerUnitsRaw);
   const attackerUnits = toCompleteUnitSelection(attackerUnitsRaw);
+  const defenderStartUnits = toCompleteUnitSelection(defenderUnitsRaw);
   const defenderUnits = toCompleteUnitSelection(defenderUnitsRaw);
-  const gateLevel = Math.max(0, Math.floor(Number(defenderBuildingLevels.gate ?? 0)));
+  const gateLevelStart = Math.max(0, Math.floor(Number(defenderBuildingLevels.gate ?? 0)));
   const fortificationLevel = Math.max(0, Math.floor(Number(defenderBuildingLevels.fortification ?? 0)));
-  const hasGate = gateLevel > 0;
+  let gateLevel = gateLevelStart;
   const hasFortification = fortificationLevel > 0;
-  const hasAttackingRam = Number(attackerUnits.ram ?? 0) > 0;
   const defenderArchers = Number(defenderUnits.archer ?? 0);
   const defenderUnitsTotal = sumSelectedUnits(defenderUnits);
   const defenderHasUnits = defenderUnitsTotal > 0;
-  const blockedByGate = hasGate && !hasAttackingRam;
+  let gateDamage = 0;
+  let ramsConsumedOnGate = 0;
 
-  let attackMultiplier = 1;
-  let defenseMultiplier = 1;
   const bonuses = [];
 
-  const baseAttackPower = sumCombatPower(attackerUnits, 'attack');
-  const baseDefensePower = sumCombatPower(defenderUnits, 'defense');
+  if (gateLevel > 0) {
+    const availableRams = Math.max(0, Math.floor(Number(attackerUnits.ram ?? 0)));
+    if (availableRams > 0) {
+      gateDamage = Math.min(gateLevel, availableRams);
+      gateLevel -= gateDamage;
+      ramsConsumedOnGate = gateDamage;
+      attackerUnits.ram = Math.max(0, availableRams - ramsConsumedOnGate);
+      bonuses.push(`Beranidla prorazila ${gateDamage} uroven brany.`);
+      bonuses.push(`Beranidla spotrebovana pri prorazeni: ${ramsConsumedOnGate}.`);
+    }
+  }
+
+  const gateStillStanding = gateLevel > 0;
+  const hasAttackingRam = Number(attackerUnits.ram ?? 0) > 0;
+  const blockedByGate = gateStillStanding && hasFortification && !hasAttackingRam;
 
   if (blockedByGate) {
-    let gateDamageLossRatio = 0;
-    if (defenderArchers > 0) {
-      const archerPressure = Math.log2(defenderArchers + 1) * 0.025;
-      const fortificationPressure = hasFortification ? 0.025 + fortificationLevel * 0.012 : 0.015;
-      gateDamageLossRatio = clampNumber(archerPressure + fortificationPressure, 0.03, 0.42);
-      bonuses.push('Brana zastavila utok bez beranidel.');
-      bonuses.push('Lucistnici ostrelovali utocnika z hradeb.');
+    let retreatLossRatio = 0;
+    if (defenderHasUnits && defenderArchers > 0) {
+      const archerPressure = Math.log2(defenderArchers + 1) * 0.018;
+      const fortificationPressure = 0.01 + fortificationLevel * 0.006;
+      retreatLossRatio = clampNumber(archerPressure + fortificationPressure, 0.015, 0.24);
+      bonuses.push('Brana s opevnenim zastavila utok bez beranidel.');
+      bonuses.push('Lucistnici ostrelovali utocnika pri ustupu.');
     } else {
-      bonuses.push('Brana zastavila utok bez beranidel. Obrana neutrpela ztraty.');
+      bonuses.push('Brana s opevnenim zastavila utok bez beranidel.');
+      bonuses.push('Bez obranne posadky nevznikly utocnikovi bojove ztraty.');
     }
 
-    const attackerAfterLoss = applyCasualties(attackerUnits, gateDamageLossRatio);
-    const defenderAfterLoss = applyCasualties(defenderUnits, 0);
-    const attackerSurvivorsTotal = sumSelectedUnits(attackerAfterLoss.survivors);
-    const defenderSurvivorsTotal = sumSelectedUnits(defenderAfterLoss.survivors);
+    const attackerAfterLoss =
+      retreatLossRatio > 0 ? applyCasualties(attackerUnits, retreatLossRatio) : { survivors: toCompleteUnitSelection(attackerUnits) };
+    const attackerSurvivors = toCompleteUnitSelection(attackerAfterLoss.survivors);
+    const attackerLosses = buildLossesFromStartAndSurvivors(attackerStartUnits, attackerSurvivors);
+    const defenderSurvivors = toCompleteUnitSelection(defenderStartUnits);
+    const defenderLosses = buildLossesFromStartAndSurvivors(defenderStartUnits, defenderSurvivors);
+    const attackerStartTotal = sumSelectedUnits(attackerStartUnits);
+    const defenderStartTotal = sumSelectedUnits(defenderStartUnits);
+    const attackerSurvivorsTotal = sumSelectedUnits(attackerSurvivors);
+    const defenderSurvivorsTotal = sumSelectedUnits(defenderSurvivors);
+    const attackerLossesTotal = sumSelectedUnits(attackerLosses);
+    const defenderLossesTotal = sumSelectedUnits(defenderLosses);
 
+    const baseAttackPower = sumCombatPower(attackerUnits, 'attack');
+    const baseDefensePower = sumCombatPower(defenderUnits, 'defense');
     return {
       attackerWins: false,
+      attackerRetreated: attackerSurvivorsTotal > 0,
       blockedByGate: true,
-      gateDamageLossRatio: Number(gateDamageLossRatio.toFixed(4)),
+      gateDamageLossRatio: Number(retreatLossRatio.toFixed(4)),
       baseAttackPower: Number(baseAttackPower.toFixed(2)),
       baseDefensePower: Number(baseDefensePower.toFixed(2)),
       finalAttackPower: Number(baseAttackPower.toFixed(2)),
       finalDefensePower: Number(baseDefensePower.toFixed(2)),
-      attackMultiplier: Number(attackMultiplier.toFixed(3)),
-      defenseMultiplier: Number(defenseMultiplier.toFixed(3)),
+      attackMultiplier: 1,
+      defenseMultiplier: 1,
       bonuses,
-      attackerLossRatio: Number(gateDamageLossRatio.toFixed(4)),
-      defenderLossRatio: 0,
+      attackerLossRatio: Number((attackerStartTotal > 0 ? attackerLossesTotal / attackerStartTotal : 0).toFixed(4)),
+      defenderLossRatio: Number((defenderStartTotal > 0 ? defenderLossesTotal / defenderStartTotal : 0).toFixed(4)),
+      gate: {
+        startLevel: gateLevelStart,
+        endLevel: gateLevel,
+        damagedLevels: gateDamage,
+        ramsConsumed: ramsConsumedOnGate,
+        blockedByFortifiedGate: true,
+        retreatLossRatio: Number(retreatLossRatio.toFixed(4)),
+      },
       attacker: {
-        start: attackerUnits,
-        losses: attackerAfterLoss.losses,
-        survivors: attackerAfterLoss.survivors,
+        start: attackerStartUnits,
+        losses: attackerLosses,
+        survivors: attackerSurvivors,
         survivorsTotal: attackerSurvivorsTotal,
       },
       defender: {
-        start: defenderUnits,
-        losses: defenderAfterLoss.losses,
-        survivors: defenderAfterLoss.survivors,
+        start: defenderStartUnits,
+        losses: defenderLosses,
+        survivors: defenderSurvivors,
         survivorsTotal: defenderSurvivorsTotal,
       },
     };
   }
 
-  if (hasGate) {
-    defenseMultiplier *= 1.14;
-    bonuses.push('Brana aktivni: obrana +14 %');
-    if (hasAttackingRam) {
-      attackMultiplier *= 1.1;
-      bonuses.push('Beranidla prorazi branu: utok +10 %');
-    }
-  } else if (hasAttackingRam) {
-    attackMultiplier *= 1.08;
-    bonuses.push('Beranidla bez brany: utok +8 %');
+  if (!defenderHasUnits) {
+    bonuses.push('Osada byla prazdna - utocnik neutrpel bojove ztraty.');
+    const attackerSurvivors = toCompleteUnitSelection(attackerUnits);
+    const attackerLosses = buildLossesFromStartAndSurvivors(attackerStartUnits, attackerSurvivors);
+    const defenderSurvivors = toCompleteUnitSelection(defenderStartUnits);
+    const defenderLosses = buildLossesFromStartAndSurvivors(defenderStartUnits, defenderSurvivors);
+    const attackerStartTotal = sumSelectedUnits(attackerStartUnits);
+    const attackerLossesTotal = sumSelectedUnits(attackerLosses);
+    const defenderStartTotal = sumSelectedUnits(defenderStartUnits);
+    const defenderLossesTotal = sumSelectedUnits(defenderLosses);
+    const baseAttackPower = sumCombatPower(attackerUnits, 'attack');
+    const baseDefensePower = sumCombatPower(defenderUnits, 'defense');
+
+    return {
+      attackerWins: true,
+      attackerRetreated: false,
+      blockedByGate: false,
+      gateDamageLossRatio: 0,
+      baseAttackPower: Number(baseAttackPower.toFixed(2)),
+      baseDefensePower: Number(baseDefensePower.toFixed(2)),
+      finalAttackPower: Number(baseAttackPower.toFixed(2)),
+      finalDefensePower: Number(baseDefensePower.toFixed(2)),
+      attackMultiplier: 1,
+      defenseMultiplier: 1,
+      bonuses,
+      attackerLossRatio: Number((attackerStartTotal > 0 ? attackerLossesTotal / attackerStartTotal : 0).toFixed(4)),
+      defenderLossRatio: Number((defenderStartTotal > 0 ? defenderLossesTotal / defenderStartTotal : 0).toFixed(4)),
+      gate: {
+        startLevel: gateLevelStart,
+        endLevel: gateLevel,
+        damagedLevels: gateDamage,
+        ramsConsumed: ramsConsumedOnGate,
+        blockedByFortifiedGate: false,
+        retreatLossRatio: 0,
+      },
+      attacker: {
+        start: attackerStartUnits,
+        losses: attackerLosses,
+        survivors: attackerSurvivors,
+        survivorsTotal: sumSelectedUnits(attackerSurvivors),
+      },
+      defender: {
+        start: defenderStartUnits,
+        losses: defenderLosses,
+        survivors: defenderSurvivors,
+        survivorsTotal: sumSelectedUnits(defenderSurvivors),
+      },
+    };
   }
-  if (hasFortification && defenderHasUnits) {
-    const fortificationDefenseBonus = Math.min(0.45, fortificationLevel * 0.03);
+
+  let attackMultiplier = 1;
+  let defenseMultiplier = 1;
+  const attackerTactical = resolveArmyTacticalModifier(attackerUnits, 'attack');
+  const defenderTactical = resolveArmyTacticalModifier(defenderUnits, 'defense');
+  attackMultiplier *= attackerTactical.multiplier;
+  defenseMultiplier *= defenderTactical.multiplier;
+  bonuses.push(...attackerTactical.notes);
+  bonuses.push(...defenderTactical.notes);
+
+  if (gateStillStanding) {
+    defenseMultiplier *= 1.08;
+    bonuses.push('Brana drzi vstup: obrana +8 %');
+    if (hasAttackingRam) {
+      attackMultiplier *= 1.04;
+      bonuses.push('Beranidla tlaci na vstup: utok +4 %');
+    }
+  }
+
+  if (hasFortification) {
+    const fortificationDefenseBonus = Math.min(0.38, fortificationLevel * 0.028);
     defenseMultiplier *= 1 + fortificationDefenseBonus;
     bonuses.push(`Opevneni: obrana +${Math.round(fortificationDefenseBonus * 100)} %`);
     if (defenderArchers > 0) {
-      const archerWallBonus = Math.min(0.2, fortificationLevel * 0.02);
+      const archerWallBonus = Math.min(0.18, fortificationLevel * 0.018);
       defenseMultiplier *= 1 + archerWallBonus;
       bonuses.push(`Lucistnici na hradbach: obrana +${Math.round(archerWallBonus * 100)} %`);
     }
-  } else if (hasFortification && !defenderHasUnits) {
-    bonuses.push('Opevneni bez obranne posadky: bez bojoveho efektu.');
   }
 
-  const finalAttackPower = baseAttackPower * attackMultiplier;
-  const finalDefensePower = baseDefensePower * defenseMultiplier;
-  const attackerWins = finalAttackPower > finalDefensePower;
-  const totalPower = Math.max(1, finalAttackPower + finalDefensePower);
-
-  let attackerLossRatio = 1;
-  let defenderLossRatio = 1;
-  if (attackerWins) {
-    attackerLossRatio = defenderHasUnits
-      ? clampNumber(0.22 + (finalDefensePower / totalPower) * 0.58, 0.12, 0.9)
-      : 0;
-    defenderLossRatio = 1;
-  } else {
-    attackerLossRatio = 1;
-    defenderLossRatio = clampNumber(0.2 + (finalAttackPower / totalPower) * 0.55, 0.1, 0.92);
+  let ramSupportApplied = false;
+  if (!gateStillStanding && hasAttackingRam) {
+    attackMultiplier *= RAM_ATTACK_SUPPORT_MULTIPLIER;
+    ramSupportApplied = true;
+    bonuses.push('Prezivsi beranidla koordinovala utok: utok +10 %');
   }
 
-  const attackerAfterLoss = applyCasualties(attackerUnits, attackerLossRatio);
-  const defenderAfterLoss = applyCasualties(defenderUnits, defenderLossRatio);
-  const attackerSurvivorsTotal = sumSelectedUnits(attackerAfterLoss.survivors);
-  const defenderSurvivorsTotal = sumSelectedUnits(defenderAfterLoss.survivors);
+  const baseAttackPower = sumCombatPower(attackerUnits, 'attack');
+  const baseDefensePower = sumCombatPower(defenderUnits, 'defense');
+  const attackerHealthPool = Math.max(1, sumHealthPool(attackerUnits));
+  const defenderHealthPool = Math.max(1, sumHealthPool(defenderUnits));
+
+  const resolveLossRatios = (computedFinalAttackPower, computedFinalDefensePower, attackerWon) => {
+    const totalPower = Math.max(1, computedFinalAttackPower + computedFinalDefensePower);
+    const attackShare = clampNumber(computedFinalAttackPower / totalPower, 0, 1);
+    const defenseShare = clampNumber(computedFinalDefensePower / totalPower, 0, 1);
+    const attackerHealthPressure = clampNumber(Math.sqrt((defenderHealthPool + 1) / (attackerHealthPool + 1)), 0.65, 1.35);
+    const defenderHealthPressure = clampNumber(Math.sqrt((attackerHealthPool + 1) / (defenderHealthPool + 1)), 0.65, 1.35);
+
+    if (attackerWon) {
+      return {
+        attackerLossRatio: clampNumber(
+          (0.035 + Math.pow(defenseShare, 1.25) * 0.36) * attackerHealthPressure,
+          0.01,
+          0.72,
+        ),
+        defenderLossRatio: clampNumber(
+          (0.78 + Math.pow(attackShare, 0.6) * 0.34) * defenderHealthPressure,
+          0.68,
+          1,
+        ),
+      };
+    }
+
+    return {
+      attackerLossRatio: clampNumber(
+        (0.62 + Math.pow(defenseShare, 0.9) * 0.34) * attackerHealthPressure,
+        0.58,
+        1,
+      ),
+      defenderLossRatio: clampNumber(
+        (0.08 + Math.pow(attackShare, 1.2) * 0.42) * defenderHealthPressure,
+        0.04,
+        0.76,
+      ),
+    };
+  };
+
+  let finalAttackPower = baseAttackPower * attackMultiplier;
+  let finalDefensePower = baseDefensePower * defenseMultiplier;
+  let attackerWins = finalAttackPower > finalDefensePower;
+  let { attackerLossRatio, defenderLossRatio } = resolveLossRatios(finalAttackPower, finalDefensePower, attackerWins);
+
+  let attackerAfterLoss = applyCasualties(attackerUnits, attackerLossRatio);
+  let defenderAfterLoss = applyCasualties(defenderUnits, defenderLossRatio);
+
+  if (ramSupportApplied && Number(attackerAfterLoss.survivors.ram ?? 0) <= 0) {
+    attackMultiplier /= RAM_ATTACK_SUPPORT_MULTIPLIER;
+    bonuses.push('Beranidla padla v boji, bonus utoku se neuplatnil.');
+    finalAttackPower = baseAttackPower * attackMultiplier;
+    finalDefensePower = baseDefensePower * defenseMultiplier;
+    attackerWins = finalAttackPower > finalDefensePower;
+    const ratios = resolveLossRatios(finalAttackPower, finalDefensePower, attackerWins);
+    attackerLossRatio = ratios.attackerLossRatio;
+    defenderLossRatio = ratios.defenderLossRatio;
+    attackerAfterLoss = applyCasualties(attackerUnits, attackerLossRatio);
+    defenderAfterLoss = applyCasualties(defenderUnits, defenderLossRatio);
+  }
+
+  const attackerSurvivors = toCompleteUnitSelection(attackerAfterLoss.survivors);
+  const defenderSurvivors = toCompleteUnitSelection(defenderAfterLoss.survivors);
+  const attackerLosses = buildLossesFromStartAndSurvivors(attackerStartUnits, attackerSurvivors);
+  const defenderLosses = buildLossesFromStartAndSurvivors(defenderStartUnits, defenderSurvivors);
+  const attackerSurvivorsTotal = sumSelectedUnits(attackerSurvivors);
+  const defenderSurvivorsTotal = sumSelectedUnits(defenderSurvivors);
 
   return {
     attackerWins,
+    attackerRetreated: !attackerWins && attackerSurvivorsTotal > 0,
     blockedByGate: false,
     gateDamageLossRatio: 0,
     baseAttackPower: Number(baseAttackPower.toFixed(2)),
@@ -3017,16 +3355,24 @@ const simulateAttackBattle = ({
     bonuses,
     attackerLossRatio: Number(attackerLossRatio.toFixed(4)),
     defenderLossRatio: Number(defenderLossRatio.toFixed(4)),
+    gate: {
+      startLevel: gateLevelStart,
+      endLevel: gateLevel,
+      damagedLevels: gateDamage,
+      ramsConsumed: ramsConsumedOnGate,
+      blockedByFortifiedGate: false,
+      retreatLossRatio: 0,
+    },
     attacker: {
-      start: attackerUnits,
-      losses: attackerAfterLoss.losses,
-      survivors: attackerAfterLoss.survivors,
+      start: attackerStartUnits,
+      losses: attackerLosses,
+      survivors: attackerSurvivors,
       survivorsTotal: attackerSurvivorsTotal,
     },
     defender: {
-      start: defenderUnits,
-      losses: defenderAfterLoss.losses,
-      survivors: defenderAfterLoss.survivors,
+      start: defenderStartUnits,
+      losses: defenderLosses,
+      survivors: defenderSurvivors,
       survivorsTotal: defenderSurvivorsTotal,
     },
   };
@@ -3690,6 +4036,12 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         defenderUnitsRaw: defenderUnitsBefore,
         defenderBuildingLevels,
       });
+      const gateStartLevel = Math.max(0, Math.floor(Number(battle?.gate?.startLevel ?? defenderBuildingLevels.gate ?? 0)));
+      const gateEndLevel = Math.max(0, Math.floor(Number(battle?.gate?.endLevel ?? gateStartLevel)));
+      if (gateEndLevel < gateStartLevel) {
+        upsertVillageBuildingLevelStmt.run(Number(targetVillage.id), 'gate', gateEndLevel);
+        villagesToRecalculatePrestige.add(Number(targetVillage.id));
+      }
 
       const villageDefenseAfterLoss = applyCasualties(villageDefenderUnitsBefore, battle.defenderLossRatio);
       for (const unitId of UNIT_ORDER) {
@@ -3778,9 +4130,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       const lootPriority = normalizeLootPriority(movement.lootPriority);
       let lootTaken = { wood: 0, stone: 0, iron: 0 };
       if (battle.attackerWins && Number(battle.attacker.survivorsTotal) > 0) {
-        const survivingCaravans = Number(battle.attacker.survivors.caravan ?? 0);
-        if (survivingCaravans > 0) {
-          const carryingCapacity = survivingCaravans * 250;
+        const carryingCapacity = calculateLootCapacityFromSelection(battle.attacker.survivors);
+        if (carryingCapacity > 0) {
           const defenderResources = selectResourcesByVillageStmt.get(Number(targetVillage.id));
           if (defenderResources) {
             const requestedLoot = calculateLootDistribution(defenderResources, lootPriority, carryingCapacity);
@@ -3803,8 +4154,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         conquestPayload.knightConsumed = true;
       }
       const attackerSurvivorsAfterConquestTotal = sumSelectedUnits(returnUnits);
-      const shouldSpawnReturnMovement =
-        attackerSurvivorsAfterConquestTotal > 0 && (battle.attackerWins || battle.blockedByGate === true);
+      const shouldSpawnReturnMovement = attackerSurvivorsAfterConquestTotal > 0;
       if (shouldSpawnReturnMovement) {
         const distanceTiles = calculateTileDistance(targetVillage, homeVillage);
         const durationSec = calculateArmyTravelDurationSec(returnUnits, distanceTiles);
@@ -3870,8 +4220,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         : `Bitva: ${attackerName} -> ${targetVillage.name}`;
       let attackSummary = blockedByGate
         ? attackerLossesTotal > 0
-          ? `Brana zastavila utok bez beranidel. Utocnik ztratil ${attackerLossesTotal}/${totalSentUnits} jednotek a ustoupil.`
-          : 'Brana zastavila utok bez beranidel. Utocnik ustoupil bez ztrat.'
+          ? `Brana s opevnenim zastavila utok bez beranidel. Utocnik ztratil ${attackerLossesTotal}/${totalSentUnits} jednotek a ustoupil.`
+          : 'Brana s opevnenim zastavila utok bez beranidel. Utocnik ustoupil bez ztrat.'
         : `${outcomeLabelForAttacker}. Ztraty utocnika ${attackerLossesTotal}/${totalSentUnits}, obrance ${defenderLossesTotal}/${defenderStartTotal}.`;
       if (conquestPayload?.conquered) {
         attackTitle = `Dobytí léna: ${targetVillage.name}`;
@@ -3880,7 +4230,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           attackSummary += ' Rytir osadu obsadil a po dobyti zmizel.';
         }
       } else if (conquestPayload?.blockedByVillageLimit) {
-        attackSummary += ` Dobytí se neprovedlo: dosažen limit ${MAX_PLAYER_VILLAGES} osad.`;
+        attackSummary += ` Dobytí se neprovedlo: dosažen limit ${MAX_PLAYER_VILLAGES} osad v tomto svete.`;
       }
       if (attackerPlayer && Number(attackerPlayer.isBot ?? 0) !== 1) {
         let reportId = null;
@@ -3950,8 +4300,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           : `Obrana: ${targetVillage.name} celi utoku`;
         let defenseSummary = blockedByGate
           ? attackerLossesTotal > 0
-            ? `Brana odrazila utok bez beranidel. Utocnik prisel o ${attackerLossesTotal}/${totalSentUnits} jednotek.`
-            : 'Brana odrazila utok bez beranidel. Obrana neutrpela ztraty.'
+            ? `Brana s opevnenim odrazila utok bez beranidel. Utocnik prisel o ${attackerLossesTotal}/${totalSentUnits} jednotek.`
+            : 'Brana s opevnenim odrazila utok bez beranidel. Obrana neutrpela ztraty.'
           : defenderOwnSurvivorsTotal <= 0
             ? `Obrana byla znicena. Vsechny obranne jednotky padly. Ztraty utocnika ${attackerLossesTotal}/${totalSentUnits}.`
             : `${outcomeLabelForDefender}. Ztraty obrance ${defenderLossesTotal}/${defenderStartTotal}, utocnik ${attackerLossesTotal}/${totalSentUnits}.`;
@@ -3959,7 +4309,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           defenseTitle = `Dobytí léna: ${targetVillage.name}`;
           defenseSummary = `Leno ${targetVillage.name} bylo dobyto hracem ${attackerName}.`;
         } else if (conquestPayload?.blockedByVillageLimit) {
-          defenseSummary += ` Utocnik dosahl limitu ${MAX_PLAYER_VILLAGES} osad, dobytí se neprovedlo.`;
+          defenseSummary += ` Utocnik dosahl limitu ${MAX_PLAYER_VILLAGES} osad v tomto svete, dobytí se neprovedlo.`;
         }
         const defenderPayload = {
           perspective: 'defender',
@@ -4430,7 +4780,7 @@ export const getVillageSnapshot = (
           ? `Vybuduj ${BUILDING_DEFS[requiredBuildingId].name}`
           : `Vybuduj ${BUILDING_DEFS[requiredBuildingId].name} na uroveň ${requiredBuildingLevel}`;
     } else if (unitId === KNIGHT_UNIT_ID && remainingKnightCapacity <= 0) {
-      blockedReason = 'Limit rytiru podle poctu osad je vycerpan';
+      blockedReason = 'Limit rytiru podle poctu osad v tomto svete je vycerpan';
     } else if (availablePopulationForRecruitment <= 0) {
       blockedReason = 'Nedostatek volne populace';
     } else if (!canAfford(currentResources, def.cost)) {
@@ -4791,10 +5141,6 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
   if (totalUnits <= 0) {
     throw new GameRuleError('Vyber alespon jednu jednotku pro armadni rozkaz.');
   }
-  const selectedScouts = getUnitAmountFromSelection(selectedUnits, SCOUT_UNIT_ID);
-  if (commandType === 'attack' && selectedScouts > 0 && selectedScouts < totalUnits) {
-    throw new GameRuleError('Zvedy lze v utoku vyslat pouze samostatne bez dalsich jednotek.');
-  }
 
   if (commandType === 'move') {
     const targetPopulation = getVillagePopulationStatus(Number(targetVillage.id));
@@ -5037,7 +5383,7 @@ const conquerVillageTransaction = db.transaction((username, villageIdRaw, reques
 
   const playerVillageCount = getPlayerVillageCount(Number(player.id), Number(world.region));
   if (playerVillageCount >= MAX_PLAYER_VILLAGES) {
-    throw new GameRuleError(`Byl dosazen limit ${MAX_PLAYER_VILLAGES} osad.`, 400);
+    throw new GameRuleError(`Byl dosazen limit ${MAX_PLAYER_VILLAGES} osad v tomto svete.`, 400);
   }
 
   const kingdomRow = selectPrimaryKingdomByPlayerAndRegionStmt.get(Number(player.id), Number(world.region));
@@ -5388,7 +5734,7 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
     const knightCapacity = getPlayerKnightCapacity(Number(player.id), Number(village.region));
     const playerKnightTotal = getPlayerKnightTotalInWorld(Number(player.id), Number(village.region));
     if (playerKnightTotal >= knightCapacity) {
-      throw new GameRuleError('Limit rytiru podle poctu osad je vycerpan.');
+      throw new GameRuleError('Limit rytiru podle poctu osad v tomto svete je vycerpan.');
     }
   }
 
