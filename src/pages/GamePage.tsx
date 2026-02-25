@@ -9385,7 +9385,7 @@ export const GamePage = () => {
           <div className="world-indicator">
             <span>Svět:</span> <strong>{selectedWorldName}</strong>
           </div>
-          <small className="world-version-note">Aktuální verze hry 0.1.0.05</small>
+          <small className="world-version-note">Aktuální verze hry 0.1.06</small>
         </div>
         <nav>
           {NAV_BUTTONS.map((button) => (
