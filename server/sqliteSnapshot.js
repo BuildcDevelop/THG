@@ -20,9 +20,9 @@ const TABLE_SELECT_QUERIES = {
   battleReports:
     'SELECT id, player_id, origin_village_id, target_village_id, battle_at, created_at, title, summary, payload_json FROM battle_reports ORDER BY created_at ASC, id ASC',
   kingdomInvites:
-    'SELECT id, kingdom, inviter_player_id, target_player_id, status, created_at, responded_at FROM kingdom_invites ORDER BY created_at ASC, id ASC',
+    'SELECT id, region, kingdom, inviter_player_id, target_player_id, status, created_at, responded_at FROM kingdom_invites ORDER BY created_at ASC, id ASC',
   kingdomEvents:
-    'SELECT id, kingdom, event_type, actor_player_id, target_player_id, payload_json, created_at FROM kingdom_events ORDER BY created_at ASC, id ASC',
+    'SELECT id, region, kingdom, event_type, actor_player_id, target_player_id, payload_json, created_at FROM kingdom_events ORDER BY created_at ASC, id ASC',
   gameState:
     'SELECT id, last_tick_at FROM game_state ORDER BY id ASC',
 };
@@ -385,17 +385,19 @@ DELETE FROM game_state;
     const insertKingdomInvite = db.prepare(
       `INSERT INTO kingdom_invites (
         id,
+        region,
         kingdom,
         inviter_player_id,
         target_player_id,
         status,
         created_at,
         responded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of kingdomInvites) {
       insertKingdomInvite.run(
         Number(row.id),
+        Number(row.region ?? 1),
         String(row.kingdom ?? 'Neutral'),
         Number(row.inviter_player_id),
         Number(row.target_player_id),
@@ -408,17 +410,19 @@ DELETE FROM game_state;
     const insertKingdomEvent = db.prepare(
       `INSERT INTO kingdom_events (
         id,
+        region,
         kingdom,
         event_type,
         actor_player_id,
         target_player_id,
         payload_json,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of kingdomEvents) {
       insertKingdomEvent.run(
         Number(row.id),
+        Number(row.region ?? 1),
         row.kingdom == null ? null : String(row.kingdom),
         String(row.event_type ?? ''),
         row.actor_player_id == null ? null : Number(row.actor_player_id),

@@ -30,6 +30,7 @@ import {
   type ArmyMovementState,
   type BattleReportListResponse,
   type BattleReportPayload,
+  type DeveloperResourceBoostState,
   type GameBuildingState,
   type GameStateResponse,
   type GameUnitState,
@@ -128,12 +129,21 @@ type ResourceStock = {
   name: string;
   amount: number;
   delta: string;
+  boostLabel: string | null;
   cap: number;
   buildingId: string;
   buildingName: string;
   buildingLevel: number;
   upgradeQueueCount: number;
   upgradeSummary: string | null;
+};
+
+type TownhallDeveloperBoostNotice = {
+  isActive: boolean;
+  label: string;
+  reason: string;
+  remainingSec: number;
+  endsAtLabel: string;
 };
 
 type WorldSwitchOption = {
@@ -552,25 +562,33 @@ const getUnitMetaById = (unitId: string): { fallbackName: string; fallbackRole: 
 const COMMAND_UNIT_ORDER = ['militia', 'archer', 'cavalry', 'scout', 'knight', 'ram', 'caravan'] as const;
 type CommandUnitId = (typeof COMMAND_UNIT_ORDER)[number];
 const UNIT_ATTACK_POWER: Record<CommandUnitId, number> = {
-  militia: 12,
-  archer: 8,
-  cavalry: 17,
-  scout: 3,
-  knight: 340,
-  ram: 7,
+  militia: 11,
+  archer: 9,
+  cavalry: 18,
+  scout: 4,
+  knight: 300,
+  ram: 0,
   caravan: 0,
 };
 const UNIT_DEFENSE_POWER: Record<CommandUnitId, number> = {
   militia: 12,
   archer: 14,
-  cavalry: 9,
-  scout: 2,
-  knight: 280,
-  ram: 7,
+  cavalry: 10,
+  scout: 4,
+  knight: 255,
+  ram: 0,
   caravan: 0,
 };
 const RAM_ATTACK_BONUS_MULTIPLIER = 1.1;
-const CARAVAN_LOOT_CAPACITY = 250;
+const UNIT_LOOT_CAPACITY: Record<CommandUnitId, number> = {
+  militia: 20,
+  archer: 16,
+  cavalry: 80,
+  scout: 0,
+  knight: 45,
+  ram: 0,
+  caravan: 250,
+};
 
 const ARMY_COMMAND_LABELS: Record<ArmyCommandType, string> = {
   attack: 'Útok',
@@ -579,6 +597,7 @@ const ARMY_COMMAND_LABELS: Record<ArmyCommandType, string> = {
   return: 'Návrat',
 };
 const LOOT_PRIORITY_LABELS: Record<LootPriority, string> = {
+  balanced: 'Rovnoměrně',
   wood: 'Dřevo',
   stone: 'Kámen',
   iron: 'Železo',
@@ -708,6 +727,27 @@ const buildSelectedUnitsFromDraft = (
   return selectedUnits;
 };
 
+const buildDraftUnitAmountsFromAvailable = (
+  units: Unit[],
+  options?: { excludeCaravan?: boolean },
+): Record<string, string> => {
+  const draft = {} as Record<string, string>;
+  for (const unit of units) {
+    if (!COMMAND_UNIT_ORDER.includes(unit.id as CommandUnitId)) {
+      continue;
+    }
+    if (options?.excludeCaravan && unit.id === 'caravan') {
+      continue;
+    }
+    const availableAmount = Math.max(0, Math.floor(Number(unit.amount ?? 0)));
+    if (availableAmount <= 0) {
+      continue;
+    }
+    draft[unit.id] = String(availableAmount);
+  }
+  return draft;
+};
+
 const calculateTotalUnitsInSelection = (selection: Record<CommandUnitId, number>): number =>
   COMMAND_UNIT_ORDER.reduce((sum, unitId) => sum + Number(selection[unitId] ?? 0), 0);
 
@@ -716,6 +756,9 @@ const calculateAttackPowerFromSelection = (selection: Record<CommandUnitId, numb
 
 const calculateDefensePowerFromSelection = (selection: Record<CommandUnitId, number>): number =>
   COMMAND_UNIT_ORDER.reduce((sum, unitId) => sum + Number(selection[unitId] ?? 0) * UNIT_DEFENSE_POWER[unitId], 0);
+
+const calculateLootCapacityFromSelection = (selection: Record<CommandUnitId, number>): number =>
+  COMMAND_UNIT_ORDER.reduce((sum, unitId) => sum + Number(selection[unitId] ?? 0) * UNIT_LOOT_CAPACITY[unitId], 0);
 
 const FALLBACK_ACTIVE_ORDERS = [
   'Výstavba: žádná aktivní fronta',
@@ -1824,6 +1867,24 @@ const formatDurationVerboseLabel = (seconds: number | null): string => {
   return `${parts[0]} a ${parts[1]}`;
 };
 
+const formatDateTimeLabel = (value: string | number | Date | null | undefined): string => {
+  if (value == null) {
+    return '-';
+  }
+  const timestampMs = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  if (!Number.isFinite(timestampMs)) {
+    return '-';
+  }
+  return new Intl.DateTimeFormat('cs-CZ', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(new Date(timestampMs));
+};
+
 const getErrorMessage = (error: unknown): string => {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -2331,7 +2392,7 @@ const ArmyPanel = ({
   commandNotice: string | null;
 }) => {
   const [commandType, setCommandType] = useState<ArmyCommandType>('move');
-  const [lootPriority, setLootPriority] = useState<LootPriority>('wood');
+  const [lootPriority, setLootPriority] = useState<LootPriority>('balanced');
   const [targetVillageId, setTargetVillageId] = useState<number | null>(null);
   const [draftUnitAmounts, setDraftUnitAmounts] = useState<Record<string, string>>({});
   const [recruitDraftAmounts, setRecruitDraftAmounts] = useState<Record<string, string>>({});
@@ -2523,7 +2584,6 @@ const ArmyPanel = ({
     () => calculateTotalUnitsInSelection(selectedCommandUnits),
     [selectedCommandUnits],
   );
-  const selectedCaravanCount = Number(selectedCommandUnits.caravan ?? 0);
   const baseAttackPower = useMemo(
     () => calculateAttackPowerFromSelection(selectedCommandUnits),
     [selectedCommandUnits],
@@ -2536,7 +2596,29 @@ const ArmyPanel = ({
   const attackPowerWithBonuses = hasRamAttackBonus
     ? Math.round(baseAttackPower * RAM_ATTACK_BONUS_MULTIPLIER)
     : baseAttackPower;
-  const caravanLootCapacity = selectedCaravanCount * CARAVAN_LOOT_CAPACITY;
+  const lootCapacity = useMemo(() => calculateLootCapacityFromSelection(selectedCommandUnits), [selectedCommandUnits]);
+  const hasAvailableCommandUnits = useMemo(
+    () =>
+      units.some((unit) => {
+        if (commandType === 'support' && unit.id === 'caravan') {
+          return false;
+        }
+        return Number(unit.amount ?? 0) > 0;
+      }),
+    [commandType, units],
+  );
+  const selectAllCommandUnitsTooltip =
+    commandType === 'support'
+      ? 'Vyplní dostupné jednotky bez karavan (podpora je nepovoluje).'
+      : 'Vyplní dostupné množství všech aktuálních jednotek.';
+
+  const handleSelectAllCommandUnits = () => {
+    setDraftUnitAmounts(
+      buildDraftUnitAmountsFromAvailable(units, {
+        excludeCaravan: commandType === 'support',
+      }),
+    );
+  };
 
   const handleSendCommand = () => {
     if (resolvedTargetVillageId == null) {
@@ -2563,6 +2645,7 @@ const ArmyPanel = ({
       units: selectedUnitsPayload,
     });
     setDraftUnitAmounts({});
+    setLootPriority('balanced');
   };
 
   return (
@@ -2802,6 +2885,7 @@ const ArmyPanel = ({
                 onChange={(event) => setLootPriority(event.target.value as LootPriority)}
                 disabled={isArmyCommandPending}
               >
+                <option value="balanced">{LOOT_PRIORITY_LABELS.balanced}</option>
                 <option value="wood">{LOOT_PRIORITY_LABELS.wood}</option>
                 <option value="stone">{LOOT_PRIORITY_LABELS.stone}</option>
                 <option value="iron">{LOOT_PRIORITY_LABELS.iron}</option>
@@ -2848,6 +2932,17 @@ const ArmyPanel = ({
             </div>
           </div>
         ) : null}
+        <div className="army-draft-actions">
+          <button
+            type="button"
+            className="secondary-action"
+            onClick={handleSelectAllCommandUnits}
+            disabled={isArmyCommandPending || !hasAvailableCommandUnits}
+            title={selectAllCommandUnitsTooltip}
+          >
+            Vybrat všechny aktuální jednotky
+          </button>
+        </div>
         <div className="army-draft-grid">
           {units.map((unit) => (
             <label key={`draft-${unit.id}`}>
@@ -2891,8 +2986,8 @@ const ArmyPanel = ({
                 {hasRamAttackBonus ? <span>(včetně +10 % bonusu beranidel bez brány)</span> : null}
               </p>
               <p>
-                Kapacita kořisti (karavany):{' '}
-                <strong>{caravanLootCapacity.toLocaleString('cs-CZ')} surovin</strong>
+                Kapacita kořisti (bez zvědů a beranidel):{' '}
+                <strong>{lootCapacity.toLocaleString('cs-CZ')} surovin</strong>
               </p>
             </>
           ) : (
@@ -5181,6 +5276,7 @@ const MapPanel = memo(({
     ? getSettlementMapKind(previewSettlement, activeVillageId)
     : null;
   const isPreviewAbandoned = previewSettlementKind === 'abandoned';
+  const isPreviewPlayerSettlement = previewSettlementKind === 'player';
   const previewCommandAvailability = useMemo<Record<ArmyCommandSelectableType, boolean>>(() => {
     if (!previewSettlement) {
       return { attack: false, support: false, move: false };
@@ -5534,6 +5630,8 @@ const MapPanel = memo(({
   const settlementMarkers = useMemo(
     () =>
       mapDisplaySettlements.map(({ settlement, localX, localY }) => {
+        const settlementMapKind = getSettlementMapKind(settlement, activeVillageId);
+        const isHoveredPlayerSettlement = safeHoveredId === settlement.id && settlementMapKind === 'player';
         const markerState =
           settlement.villageId != null
             ? orderMarkersByVillageId.get(Number(settlement.villageId)) ?? null
@@ -5545,7 +5643,7 @@ const MapPanel = memo(({
         return (
           <button
             key={settlement.id}
-            className={`region-cell settlement ${getSettlementMapKind(settlement, activeVillageId)} ${focusedSettlementId === settlement.id ? 'focused' : ''}`}
+            className={`region-cell settlement ${settlementMapKind} ${focusedSettlementId === settlement.id ? 'focused' : ''} ${isHoveredPlayerSettlement ? 'hover-player' : ''}`}
             data-settlement-id={settlement.id}
             style={{
               gridColumnStart: localX,
@@ -5619,6 +5717,7 @@ const MapPanel = memo(({
       focusedSettlementId,
       mapDisplaySettlements,
       orderMarkersByVillageId,
+      safeHoveredId,
     ],
   );
 
@@ -5687,7 +5786,7 @@ const MapPanel = memo(({
             {settlementMarkers}
             {previewSettlement && previewCardStyle ? (
               <article
-                className={`map-settlement-info-card ${isPreviewPinned ? 'is-pinned' : 'is-hover'}`}
+                className={`map-settlement-info-card ${isPreviewPinned ? 'is-pinned' : 'is-hover'} ${isPreviewPlayerSettlement ? 'is-player' : ''}`}
                 style={previewCardStyle}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
@@ -5717,17 +5816,19 @@ const MapPanel = memo(({
                     ) : (
                       <button
                         type="button"
-                        className="map-settlement-link"
+                        className={`map-settlement-link owner ${isPreviewPlayerSettlement ? 'player-owner' : ''}`}
                         onClick={(event) => {
                           event.stopPropagation();
                           onOpenPlayerProfile(previewSettlement.owner);
                         }}
                       >
-                        {previewSettlement.owner}
+                        <span className="map-settlement-owner-label">Hráč:</span> {previewSettlement.owner}
                       </button>
                     )
                   ) : (
-                    <p className="map-settlement-owner">{previewSettlement.owner}</p>
+                    <p className={`map-settlement-owner ${isPreviewPlayerSettlement ? 'player-owner' : ''}`}>
+                      <span className="map-settlement-owner-label">Hráč:</span> {previewSettlement.owner}
+                    </p>
                   )}
                   <p className="map-settlement-prestige">
                     Prestiž <strong>{previewSettlement.prestige.toLocaleString('cs-CZ')}</strong>
@@ -5903,7 +6004,7 @@ const VillagePanel = memo(({
 }) => {
   const settlementKind = getSettlementMapKind(settlement, activeVillageId);
   const [draftUnitAmounts, setDraftUnitAmounts] = useState<Record<string, string>>({});
-  const [attackLootPriority, setAttackLootPriority] = useState<LootPriority>('wood');
+  const [attackLootPriority, setAttackLootPriority] = useState<LootPriority>('balanced');
   const normalizedUsername = currentUsername.trim().toLowerCase();
   const targetVillageId =
     settlement.villageId != null && Number.isFinite(settlement.villageId)
@@ -5948,7 +6049,7 @@ const VillagePanel = memo(({
   const villageAttackPowerWithBonus = villageHasRamAttackBonus
     ? Math.round(villageAttackPower * RAM_ATTACK_BONUS_MULTIPLIER)
     : villageAttackPower;
-  const villageLootCapacity = selectedCaravanCount * CARAVAN_LOOT_CAPACITY;
+  const villageLootCapacity = useMemo(() => calculateLootCapacityFromSelection(selectedUnits), [selectedUnits]);
   const supportWithCaravansSelected = selectedCaravanCount > 0;
   const supportMovementsAtSettlement = useMemo(
     () =>
@@ -5990,6 +6091,25 @@ const VillagePanel = memo(({
       units: selectedUnits,
     });
     setDraftUnitAmounts({});
+    setAttackLootPriority('balanced');
+  };
+  const hasAvailableVillageUnits = useMemo(
+    () => units.some((unit) => Number(unit.amount ?? 0) > 0),
+    [units],
+  );
+  const isSupportOnlyTarget = useMemo(
+    () => availableCommandTypes.length === 1 && availableCommandTypes[0] === 'support',
+    [availableCommandTypes],
+  );
+  const selectAllVillageUnitsTooltip = isSupportOnlyTarget
+    ? 'Vyplní dostupné jednotky bez karavan (podpora je nepovoluje).'
+    : 'Vyplní dostupné množství všech aktuálních jednotek.';
+  const handleSelectAllVillageUnits = () => {
+    setDraftUnitAmounts(
+      buildDraftUnitAmountsFromAvailable(units, {
+        excludeCaravan: isSupportOnlyTarget,
+      }),
+    );
   };
 
   return (
@@ -6041,6 +6161,17 @@ const VillagePanel = memo(({
           <p>Jsi v této osadě. Pro přesun nebo útok otevři jiné léno na mapě.</p>
         ) : (
           <>
+            <div className="army-draft-actions">
+              <button
+                type="button"
+                className="secondary-action"
+                onClick={handleSelectAllVillageUnits}
+                disabled={isArmyCommandPending || !hasAvailableVillageUnits}
+                title={selectAllVillageUnitsTooltip}
+              >
+                Vybrat všechny aktuální jednotky
+              </button>
+            </div>
             <div className="army-draft-grid village-action-draft">
               {units.map((unit) => (
                 <label key={`village-draft-${settlement.id}-${unit.id}`}>
@@ -6080,7 +6211,8 @@ const VillagePanel = memo(({
                 Síla obrany: <strong>{villageDefensePower.toLocaleString('cs-CZ')}</strong>
               </p>
               <p>
-                Kapacita kořisti (karavany): <strong>{villageLootCapacity.toLocaleString('cs-CZ')}</strong>
+                Kapacita kořisti (bez zvědů a beranidel):{' '}
+                <strong>{villageLootCapacity.toLocaleString('cs-CZ')}</strong>
               </p>
             </div>
             <div className="village-action-buttons">
@@ -6111,6 +6243,7 @@ const VillagePanel = memo(({
                   onChange={(event) => setAttackLootPriority(event.target.value as LootPriority)}
                   disabled={isArmyCommandPending}
                 >
+                  <option value="balanced">{LOOT_PRIORITY_LABELS.balanced}</option>
                   <option value="wood">{LOOT_PRIORITY_LABELS.wood}</option>
                   <option value="stone">{LOOT_PRIORITY_LABELS.stone}</option>
                   <option value="iron">{LOOT_PRIORITY_LABELS.iron}</option>
@@ -6193,6 +6326,7 @@ const BuildingPanel = memo(({
   knightCount,
   isRecallKnightPending,
   isUpgradePending,
+  developerBoost,
   notice,
 }: {
   building: Building;
@@ -6202,6 +6336,7 @@ const BuildingPanel = memo(({
   knightCount: number;
   isRecallKnightPending: boolean;
   isUpgradePending: boolean;
+  developerBoost: TownhallDeveloperBoostNotice | null;
   notice: string | null;
 }) => (
   <div className="panel-stack building-panel">
@@ -6262,6 +6397,21 @@ const BuildingPanel = memo(({
             >
               {isRecallKnightPending ? 'Odvolávám rytíře...' : 'Odvolat rytíře (+1000 dřevo/kámen/železo)'}
             </button>
+            {developerBoost ? (
+              <div className={`townhall-dev-boost ${developerBoost.isActive ? 'is-active' : 'is-inactive'}`}>
+                <p className="townhall-dev-boost-title">
+                  {developerBoost.isActive
+                    ? `Boost od vývojáře: ${developerBoost.label}`
+                    : 'Boost od vývojáře je ukončen'}
+                </p>
+                <p className="townhall-dev-boost-meta">
+                  {developerBoost.isActive
+                    ? `Trvání: ${formatDurationLabel(developerBoost.remainingSec)} (konec ${developerBoost.endsAtLabel})`
+                    : `Boost skončil ${developerBoost.endsAtLabel}.`}
+                </p>
+                <p className="townhall-dev-boost-reason">{developerBoost.reason}</p>
+              </div>
+            ) : null}
           </>
         ) : null}
         {notice ? <p className="panel-feedback">{notice}</p> : null}
@@ -6651,6 +6801,27 @@ export const GamePage = () => {
 
     return markerMap;
   }, [armyActiveMovements, armyStationedSupports]);
+  const townhallDeveloperBoost = useMemo<TownhallDeveloperBoostNotice | null>(() => {
+    const developerBoost: DeveloperResourceBoostState | undefined = gameState?.resources?.developerBoost;
+    if (!developerBoost || !developerBoost.worldId || !developerBoost.reason || !developerBoost.label) {
+      return null;
+    }
+
+    const endsAtMs = Date.parse(String(developerBoost.endsAt ?? ''));
+    if (!Number.isFinite(endsAtMs)) {
+      return null;
+    }
+    const remainingSec = Math.max(0, Math.ceil((endsAtMs - protectionClockMs) / 1000));
+    const isActive = Boolean(developerBoost.isActive) && remainingSec > 0;
+
+    return {
+      isActive,
+      label: String(developerBoost.label),
+      reason: String(developerBoost.reason),
+      remainingSec,
+      endsAtLabel: formatDateTimeLabel(endsAtMs),
+    };
+  }, [gameState?.resources?.developerBoost, protectionClockMs]);
 
   const resourceStocks = useMemo<ResourceStock[]>(() => {
     const resolveUpgradeMeta = (buildingId: string): { upgradeQueueCount: number; upgradeSummary: string | null } => {
@@ -6692,6 +6863,7 @@ export const GamePage = () => {
           name: 'Dřevo',
           amount: 0,
           delta: '+0 / h',
+          boostLabel: null,
           cap: 0,
           buildingId: 'woodcutter',
           ...resolveBuildingMeta('woodcutter'),
@@ -6701,6 +6873,7 @@ export const GamePage = () => {
           name: 'Kámen',
           amount: 0,
           delta: '+0 / h',
+          boostLabel: null,
           cap: 0,
           buildingId: 'quarry',
           ...resolveBuildingMeta('quarry'),
@@ -6710,6 +6883,7 @@ export const GamePage = () => {
           name: 'Železo',
           amount: 0,
           delta: '+0 / h',
+          boostLabel: null,
           cap: 0,
           buildingId: 'iron-mine',
           ...resolveBuildingMeta('iron-mine'),
@@ -6719,6 +6893,7 @@ export const GamePage = () => {
           name: 'Populace',
           amount: 0,
           delta: 'kapacita 0',
+          boostLabel: null,
           cap: 0,
           buildingId: 'residential-quarter',
           ...resolveBuildingMeta('residential-quarter'),
@@ -6727,11 +6902,17 @@ export const GamePage = () => {
       ];
     }
 
+    const resourceBoostLabel =
+      gameState.resources.developerBoost?.isActive && gameState.resources.developerBoost.label
+        ? String(gameState.resources.developerBoost.label)
+        : null;
+
     return [
       {
         name: 'Dřevo',
         amount: gameState.resources.wood,
         delta: `+${gameState.resources.productionPerHour.wood.toLocaleString('cs-CZ')} / h`,
+        boostLabel: resourceBoostLabel,
         cap: gameState.resources.cap,
         buildingId: 'woodcutter',
         ...resolveBuildingMeta('woodcutter'),
@@ -6741,6 +6922,7 @@ export const GamePage = () => {
         name: 'Kámen',
         amount: gameState.resources.stone,
         delta: `+${gameState.resources.productionPerHour.stone.toLocaleString('cs-CZ')} / h`,
+        boostLabel: resourceBoostLabel,
         cap: gameState.resources.cap,
         buildingId: 'quarry',
         ...resolveBuildingMeta('quarry'),
@@ -6750,6 +6932,7 @@ export const GamePage = () => {
         name: 'Železo',
         amount: gameState.resources.iron,
         delta: `+${gameState.resources.productionPerHour.iron.toLocaleString('cs-CZ')} / h`,
+        boostLabel: resourceBoostLabel,
         cap: gameState.resources.cap,
         buildingId: 'iron-mine',
         ...resolveBuildingMeta('iron-mine'),
@@ -6759,6 +6942,7 @@ export const GamePage = () => {
         name: 'Populace',
         amount: gameState.population.used,
         delta: `kapacita ${gameState.population.cap.toLocaleString('cs-CZ')}`,
+        boostLabel: null,
         cap: gameState.population.cap,
         buildingId: 'residential-quarter',
         ...resolveBuildingMeta('residential-quarter'),
@@ -8337,6 +8521,7 @@ export const GamePage = () => {
           unit.id,
           normalizedAmount,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         applyIncomingGameState(nextState);
         setArmyNotice(`${unit.name}: +${normalizedAmount.toLocaleString('cs-CZ')} jednotek`);
@@ -8351,7 +8536,7 @@ export const GamePage = () => {
         setRecruitPendingUnitId(null);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleCancelRecruitment = useCallback(
@@ -8369,6 +8554,7 @@ export const GamePage = () => {
           username,
           order.id,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         applyIncomingGameState(response.data);
         setArmyNotice(
@@ -8383,7 +8569,7 @@ export const GamePage = () => {
         setCancelRecruitmentPendingId(null);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const rememberArmyCommandTarget = useCallback(
@@ -8439,6 +8625,7 @@ export const GamePage = () => {
         const response = await issueArmyCommand(username, {
           commandType: payload.commandType,
           villageId: originVillageId,
+          worldId: selectedWorldId,
           targetVillageId: payload.targetVillageId,
           lootPriority: payload.lootPriority,
           units: payload.units,
@@ -8467,6 +8654,7 @@ export const GamePage = () => {
       gameState?.village.id,
       loadGameState,
       rememberArmyCommandTarget,
+      selectedWorldId,
       username,
     ],
   );
@@ -8480,6 +8668,7 @@ export const GamePage = () => {
         const response = await issueArmyCommand(username, {
           commandType: 'return',
           villageId: gameState?.village.id ?? activeVillageId,
+          worldId: selectedWorldId,
           supportMovementId,
         });
         const nextState = response.data;
@@ -8492,7 +8681,7 @@ export const GamePage = () => {
         setArmyCommandPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleBuildingUpgrade = useCallback(
@@ -8508,6 +8697,7 @@ export const GamePage = () => {
           username,
           building.id,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         applyIncomingGameState(nextState);
         setBuildingNotices((previous) => ({
@@ -8524,7 +8714,7 @@ export const GamePage = () => {
         setUpgradePendingBuildingId(null);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleRecallKnight = useCallback(async () => {
@@ -8538,6 +8728,7 @@ export const GamePage = () => {
       const response = await recallKnightRequest(
         username,
         gameState?.village.id ?? activeVillageId,
+        selectedWorldId,
       );
       applyIncomingGameState(response.data);
       setBuildingNotices((previous) => ({
@@ -8553,7 +8744,7 @@ export const GamePage = () => {
     } finally {
       setRecallKnightPending(false);
     }
-  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username]);
+  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username]);
 
   const handleCancelBuildingUpgrade = useCallback(
     async (upgradeOrderId: number, buildingId: string) => {
@@ -8572,6 +8763,7 @@ export const GamePage = () => {
           username,
           upgradeOrderId,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         applyIncomingGameState(response.data);
         const canceledCount = Number(response.result.canceledCount ?? 1);
@@ -8593,7 +8785,7 @@ export const GamePage = () => {
         setCancelUpgradePendingOrderId(null);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleCreateKingdom = useCallback(
@@ -8611,6 +8803,7 @@ export const GamePage = () => {
           username,
           normalizedKingdomName,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         const nextState = response.data;
         applyIncomingGameState(nextState);
@@ -8622,7 +8815,7 @@ export const GamePage = () => {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleInvitePlayerToKingdom = useCallback(
@@ -8640,6 +8833,7 @@ export const GamePage = () => {
           username,
           normalizedTarget,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         const nextState = response.data;
         applyIncomingGameState(nextState);
@@ -8651,7 +8845,7 @@ export const GamePage = () => {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleAcceptKingdomInvite = useCallback(
@@ -8668,6 +8862,7 @@ export const GamePage = () => {
           username,
           inviteId,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         const nextState = response.data;
         applyIncomingGameState(nextState);
@@ -8679,7 +8874,7 @@ export const GamePage = () => {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleRejectKingdomInvite = useCallback(
@@ -8696,6 +8891,7 @@ export const GamePage = () => {
           username,
           inviteId,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         const nextState = response.data;
         applyIncomingGameState(nextState);
@@ -8707,7 +8903,7 @@ export const GamePage = () => {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleLeaveKingdom = useCallback(async () => {
@@ -8715,7 +8911,11 @@ export const GamePage = () => {
     setKingdomNotice(null);
 
     try {
-      const response = await leaveKingdomRequest(username, gameState?.village.id ?? activeVillageId);
+      const response = await leaveKingdomRequest(
+        username,
+        gameState?.village.id ?? activeVillageId,
+        selectedWorldId,
+      );
       const nextState = response.data;
       applyIncomingGameState(nextState);
       setKingdomNotice(`Opustil jsi království ${response.result.previousKingdom}.`);
@@ -8725,7 +8925,7 @@ export const GamePage = () => {
     } finally {
       setKingdomActionPending(false);
     }
-  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username]);
+  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username]);
 
   const handleKickKingdomMember = useCallback(
     async (targetUsername: string) => {
@@ -8742,6 +8942,7 @@ export const GamePage = () => {
           username,
           normalizedTarget,
           gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
         );
         const nextState = response.data;
         applyIncomingGameState(nextState);
@@ -8753,7 +8954,7 @@ export const GamePage = () => {
         setKingdomActionPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username],
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleChangeFontScale = useCallback((option: GameFontScaleOption) => {
@@ -8781,7 +8982,11 @@ export const GamePage = () => {
     setSettingsNotice(null);
 
     try {
-      const response = await restartVillageProgressRequest(username, gameState?.village.id ?? activeVillageId);
+      const response = await restartVillageProgressRequest(
+        username,
+        gameState?.village.id ?? activeVillageId,
+        selectedWorldId,
+      );
       const nextState = response.data;
       applyIncomingGameState(nextState);
       setSettingsNotice(
@@ -8794,7 +8999,7 @@ export const GamePage = () => {
     } finally {
       setRestartVillagePending(false);
     }
-  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, username]);
+  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username]);
 
   const handleLogout = useCallback(() => {
     logout();
@@ -9156,6 +9361,7 @@ export const GamePage = () => {
             knightCount={currentVillageKnightCount}
             isRecallKnightPending={recallKnightPending}
             isUpgradePending={upgradePendingBuildingId === building.id}
+            developerBoost={building.id === 'townhall' ? townhallDeveloperBoost : null}
             notice={buildingNotices[building.id] ?? null}
           />
         );
@@ -9179,7 +9385,7 @@ export const GamePage = () => {
           <div className="world-indicator">
             <span>Svět:</span> <strong>{selectedWorldName}</strong>
           </div>
-          <small className="world-version-note">Aktuální verze hry 0.1.0.04</small>
+          <small className="world-version-note">Aktuální verze hry 0.1.06</small>
         </div>
         <nav>
           {NAV_BUTTONS.map((button) => (
@@ -9284,6 +9490,7 @@ export const GamePage = () => {
               <p>{resource.name}</p>
               <strong>{resource.amount.toLocaleString('cs-CZ')}</strong>
               <span>{resource.delta}</span>
+              {resource.boostLabel ? <small className="resource-boost-note">{resource.boostLabel}</small> : null}
               <small>Kapacita {resource.cap.toLocaleString('cs-CZ')}</small>
             </div>
             <div className="resource-card-right">

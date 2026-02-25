@@ -31,7 +31,7 @@ import {
 const app = express();
 const port = Number(process.env.PORT ?? 3001);
 const tickSchedule = process.env.GAME_TICK_SCHEDULE ?? '*/5 * * * * *';
-const versionLabel = String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.04').trim() || 'build-0.1.04';
+const versionLabel = String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.06').trim() || 'build-0.1.06';
 const buildId =
   String(process.env.TLD_BUILD_ID ?? process.env.NETLIFY_COMMIT_REF ?? process.env.COMMIT_REF ?? versionLabel).trim() ||
   versionLabel;
@@ -267,6 +267,7 @@ app.post('/api/v1/buildings/:buildingId/upgrade', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
     const buildingId = String(req.params.buildingId).trim();
+    const worldId = parseOptionalWorldId(req.body?.worldId);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -275,8 +276,8 @@ app.post('/api/v1/buildings/:buildingId/upgrade', async (req, res, next) => {
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
-      const result = startBuildingUpgrade(username, buildingId, normalizedVillageId);
-      const state = getVillageSnapshot(username, normalizedVillageId);
+      const result = startBuildingUpgrade(username, buildingId, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
 
@@ -294,6 +295,7 @@ app.post('/api/v1/buildings/upgrades/:upgradeId/cancel', async (req, res, next) 
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
     const upgradeId = Number(String(req.params.upgradeId ?? '').trim());
+    const worldId = parseOptionalWorldId(req.body?.worldId);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -302,8 +304,8 @@ app.post('/api/v1/buildings/upgrades/:upgradeId/cancel', async (req, res, next) 
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
-      const result = cancelBuildingUpgrade(username, upgradeId, normalizedVillageId);
-      const state = getVillageSnapshot(username, normalizedVillageId);
+      const result = cancelBuildingUpgrade(username, upgradeId, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
 
@@ -322,6 +324,7 @@ app.post('/api/v1/units/:unitId/recruit', async (req, res, next) => {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
     const unitId = String(req.params.unitId).trim();
     const amount = Number(req.body?.amount ?? 1);
+    const worldId = parseOptionalWorldId(req.body?.worldId);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -330,8 +333,8 @@ app.post('/api/v1/units/:unitId/recruit', async (req, res, next) => {
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
-      const result = recruitUnits(username, unitId, amount, normalizedVillageId);
-      const state = getVillageSnapshot(username, normalizedVillageId);
+      const result = recruitUnits(username, unitId, amount, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
 
@@ -349,6 +352,7 @@ app.post('/api/v1/units/recruitments/:recruitmentId/cancel', async (req, res, ne
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
     const recruitmentId = Number(String(req.params.recruitmentId ?? '').trim());
+    const worldId = parseOptionalWorldId(req.body?.worldId);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -357,8 +361,8 @@ app.post('/api/v1/units/recruitments/:recruitmentId/cancel', async (req, res, ne
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
-      const result = cancelRecruitment(username, recruitmentId, normalizedVillageId);
-      const state = getVillageSnapshot(username, normalizedVillageId);
+      const result = cancelRecruitment(username, recruitmentId, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
 
@@ -375,6 +379,7 @@ app.post('/api/v1/units/recruitments/:recruitmentId/cancel', async (req, res, ne
 app.post('/api/v1/townhall/knight/recall', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.body?.worldId);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -383,8 +388,8 @@ app.post('/api/v1/townhall/knight/recall', async (req, res, next) => {
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
-      const result = recallKnight(username, normalizedVillageId);
-      const state = getVillageSnapshot(username, normalizedVillageId);
+      const result = recallKnight(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
 
@@ -402,10 +407,21 @@ app.post('/api/v1/villages/:villageId/conquer', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
     const villageId = Number(String(req.params.villageId ?? '').trim());
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const requestedVillageIdRaw = req.body?.villageId;
+    const requestedVillageId =
+      requestedVillageIdRaw == null || String(requestedVillageIdRaw).trim() === ''
+        ? null
+        : Number(String(requestedVillageIdRaw).trim());
+    const normalizedRequestedVillageId = Number.isFinite(requestedVillageId) ? requestedVillageId : null;
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
-      const result = conquerVillage(username, villageId);
-      const state = getVillageSnapshot(username, Number.isFinite(villageId) ? villageId : null);
+      const result = conquerVillage(username, villageId, normalizedRequestedVillageId, worldId);
+      const state = getVillageSnapshot(
+        username,
+        normalizedRequestedVillageId ?? (Number.isFinite(villageId) ? villageId : null),
+        worldId,
+      );
       return { result, state };
     });
 
@@ -422,6 +438,7 @@ app.post('/api/v1/villages/:villageId/conquer', async (req, res, next) => {
 app.post('/api/v1/villages/restart', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.body?.worldId);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -430,8 +447,8 @@ app.post('/api/v1/villages/restart', async (req, res, next) => {
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
-      const result = restartVillageProgress(username);
-      const state = getVillageSnapshot(username, normalizedVillageId);
+      const result = restartVillageProgress(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
 

@@ -705,6 +705,13 @@
   color: #e2c58f;
 }
 
+.resource-strip .resource-card .resource-boost-note {
+  display: block;
+  color: #ffd95f;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
 .resource-card::before {
   content: '';
   position: absolute;
@@ -1676,6 +1683,50 @@
   color: #eaf4ff;
 }
 
+.townhall-dev-boost {
+  border: 1px solid rgba(245, 205, 105, 0.44);
+  border-radius: 8px;
+  padding: 0.38rem 0.48rem;
+  background: linear-gradient(160deg, rgba(55, 43, 20, 0.78), rgba(30, 24, 12, 0.82));
+  display: grid;
+  gap: 0.2rem;
+}
+
+.townhall-dev-boost.is-inactive {
+  border-color: rgba(148, 165, 182, 0.36);
+  background: linear-gradient(160deg, rgba(20, 26, 33, 0.82), rgba(13, 17, 22, 0.86));
+}
+
+.townhall-dev-boost p {
+  margin: 0;
+}
+
+.townhall-dev-boost-title {
+  color: #ffe39e;
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+
+.townhall-dev-boost-meta {
+  color: #f1d299;
+  font-size: 0.78rem;
+}
+
+.townhall-dev-boost-reason {
+  color: #d4c7af;
+  font-size: 0.74rem;
+  line-height: 1.24;
+}
+
+.townhall-dev-boost.is-inactive .townhall-dev-boost-title {
+  color: #c6d2df;
+}
+
+.townhall-dev-boost.is-inactive .townhall-dev-boost-meta,
+.townhall-dev-boost.is-inactive .townhall-dev-boost-reason {
+  color: #9eafbf;
+}
+
 .secondary-action {
   border: 1px solid rgba(157, 203, 239, 0.28);
   border-radius: 9px;
@@ -2442,6 +2493,11 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.4rem;
+}
+
+.army-draft-actions {
+  margin-top: 0.45rem;
+  margin-bottom: 0.4rem;
 }
 
 .army-command-preview {
@@ -3373,6 +3429,14 @@
   box-shadow: 0 0 0 1px rgba(156, 207, 247, 0.48);
 }
 
+.region-cell.settlement.player.hover-player,
+.region-cell.settlement.player:hover,
+.region-cell.settlement.player:focus-visible {
+  border-color: rgba(214, 162, 74, 0.9);
+  box-shadow: 0 0 0 1px rgba(214, 162, 74, 0.5), 0 0 12px rgba(214, 162, 74, 0.32);
+  background: rgba(139, 90, 43, 0.34);
+}
+
 .region-cell.settlement.focused {
   border-color: rgba(149, 205, 247, 0.95);
   box-shadow: 0 0 0 1px rgba(149, 205, 247, 0.45);
@@ -3672,6 +3736,11 @@
   box-shadow: 0 0 0 1px rgba(214, 162, 74, 0.24), 0 12px 24px rgba(0, 0, 0, 0.46);
 }
 
+.map-settlement-info-card.is-player {
+  border-color: rgba(214, 162, 74, 0.58);
+  box-shadow: 0 0 0 1px rgba(214, 162, 74, 0.2), 0 12px 24px rgba(0, 0, 0, 0.46);
+}
+
 .map-settlement-info-body {
   display: grid;
   gap: 0.18rem;
@@ -3686,6 +3755,19 @@
 .map-settlement-owner {
   font-size: 0.82rem;
   color: #eff7ff;
+}
+
+.map-settlement-owner-label {
+  color: #b9d5ee;
+  font-size: 0.72rem;
+  margin-right: 0.24rem;
+}
+
+.map-settlement-owner.player-owner,
+.map-settlement-link.owner.player-owner {
+  color: #ffd58b;
+  font-weight: 700;
+  text-shadow: 0 0 8px rgba(214, 162, 74, 0.28);
 }
 
 .map-settlement-prestige strong {

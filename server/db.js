@@ -4,17 +4,25 @@ import path from 'node:path';
 import { BUILDING_ORDER, UNIT_ORDER, getMaxBuildingLevel } from './gameConfig.js';
 
 const configuredDataDir = String(process.env.TLD_DATA_DIR ?? process.env.THG_DATA_DIR ?? '').trim();
+const configuredSeedDbPath = String(process.env.TLD_SEED_DB_PATH ?? process.env.THG_SEED_DB_PATH ?? '').trim();
 const isNetlifyRuntime = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const localDataDir = path.join(process.cwd(), 'server', 'data');
+const localSeedDbPath = path.join(localDataDir, 'game.seed.sqlite.backup');
 const dataDir = configuredDataDir
   ? path.resolve(configuredDataDir)
   : isNetlifyRuntime
     ? path.join('/tmp', 'tld-data')
     : localDataDir;
 const dbPath = path.join(dataDir, 'game.sqlite');
+const seedDbPath = configuredSeedDbPath ? path.resolve(configuredSeedDbPath) : localSeedDbPath;
 
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
+}
+
+const hasExistingDatabase = fs.existsSync(dbPath) && fs.statSync(dbPath).size > 0;
+if (!hasExistingDatabase && fs.existsSync(seedDbPath)) {
+  fs.copyFileSync(seedDbPath, dbPath);
 }
 
 export const db = new Database(dbPath);
@@ -248,6 +256,7 @@ CREATE INDEX IF NOT EXISTS idx_battle_reports_player_created
 
 CREATE TABLE IF NOT EXISTS kingdom_invites (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  region INTEGER NOT NULL DEFAULT 1,
   kingdom TEXT NOT NULL,
   inviter_player_id INTEGER NOT NULL,
   target_player_id INTEGER NOT NULL,
@@ -259,17 +268,18 @@ CREATE TABLE IF NOT EXISTS kingdom_invites (
 );
 
 CREATE INDEX IF NOT EXISTS idx_kingdom_invites_target_status
-  ON kingdom_invites(target_player_id, status, created_at DESC, id DESC);
+  ON kingdom_invites(target_player_id, region, status, created_at DESC, id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_kingdom_invites_inviter_status
-  ON kingdom_invites(inviter_player_id, status, created_at DESC, id DESC);
+  ON kingdom_invites(inviter_player_id, region, status, created_at DESC, id DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_kingdom_invites_target_pending
-  ON kingdom_invites(target_player_id)
+  ON kingdom_invites(target_player_id, region)
   WHERE status = 'pending';
 
 CREATE TABLE IF NOT EXISTS kingdom_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  region INTEGER NOT NULL DEFAULT 1,
   kingdom TEXT,
   event_type TEXT NOT NULL,
   actor_player_id INTEGER,
@@ -281,13 +291,13 @@ CREATE TABLE IF NOT EXISTS kingdom_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_kingdom_events_kingdom_created
-  ON kingdom_events(kingdom, created_at DESC, id DESC);
+  ON kingdom_events(region, kingdom, created_at DESC, id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_kingdom_events_actor_created
-  ON kingdom_events(actor_player_id, created_at DESC, id DESC);
+  ON kingdom_events(actor_player_id, region, created_at DESC, id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_kingdom_events_target_created
-  ON kingdom_events(target_player_id, created_at DESC, id DESC);
+  ON kingdom_events(target_player_id, region, created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS game_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -328,6 +338,71 @@ CREATE TABLE IF NOT EXISTS game_state (
   if (!hasCarryIronColumn) {
     db.prepare('ALTER TABLE army_movements ADD COLUMN carry_iron INTEGER NOT NULL DEFAULT 0').run();
   }
+
+  const kingdomInviteColumns = db.prepare('PRAGMA table_info(kingdom_invites)').all();
+  const hasKingdomInviteRegionColumn = kingdomInviteColumns.some((column) => column.name === 'region');
+  if (!hasKingdomInviteRegionColumn) {
+    db.prepare(`ALTER TABLE kingdom_invites ADD COLUMN region INTEGER NOT NULL DEFAULT ${Number(WORLD_REGION.id)}`).run();
+    // Best-effort backfill for legacy rows: infer world by inviter's first village.
+    db.prepare(
+      `UPDATE kingdom_invites
+       SET region = COALESCE((
+         SELECT vv.region
+         FROM villages vv
+         WHERE vv.player_id = kingdom_invites.inviter_player_id
+         ORDER BY vv.id ASC
+         LIMIT 1
+       ), region)`,
+    ).run();
+  }
+
+  const kingdomEventColumns = db.prepare('PRAGMA table_info(kingdom_events)').all();
+  const hasKingdomEventRegionColumn = kingdomEventColumns.some((column) => column.name === 'region');
+  if (!hasKingdomEventRegionColumn) {
+    db.prepare(`ALTER TABLE kingdom_events ADD COLUMN region INTEGER NOT NULL DEFAULT ${Number(WORLD_REGION.id)}`).run();
+    // Best-effort backfill for legacy rows using actor/target world presence.
+    db.prepare(
+      `UPDATE kingdom_events
+       SET region = COALESCE((
+         SELECT vv.region
+         FROM villages vv
+         WHERE vv.player_id = kingdom_events.actor_player_id
+         ORDER BY vv.id ASC
+         LIMIT 1
+       ), (
+         SELECT vv.region
+         FROM villages vv
+         WHERE vv.player_id = kingdom_events.target_player_id
+         ORDER BY vv.id ASC
+         LIMIT 1
+       ), region)`,
+    ).run();
+  }
+
+  // Recreate indexes to enforce per-world membership/invite isolation.
+  db.exec(`
+DROP INDEX IF EXISTS idx_kingdom_invites_target_status;
+DROP INDEX IF EXISTS idx_kingdom_invites_inviter_status;
+DROP INDEX IF EXISTS idx_kingdom_invites_target_pending;
+DROP INDEX IF EXISTS idx_kingdom_events_kingdom_created;
+DROP INDEX IF EXISTS idx_kingdom_events_actor_created;
+DROP INDEX IF EXISTS idx_kingdom_events_target_created;
+`);
+  db.exec(`
+CREATE INDEX IF NOT EXISTS idx_kingdom_invites_target_status
+  ON kingdom_invites(target_player_id, region, status, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_kingdom_invites_inviter_status
+  ON kingdom_invites(inviter_player_id, region, status, created_at DESC, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_kingdom_invites_target_pending
+  ON kingdom_invites(target_player_id, region)
+  WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_kingdom_events_kingdom_created
+  ON kingdom_events(region, kingdom, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_kingdom_events_actor_created
+  ON kingdom_events(actor_player_id, region, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_kingdom_events_target_created
+  ON kingdom_events(target_player_id, region, created_at DESC, id DESC);
+`);
 };
 
 const buildSpawnCells = (count) => {
