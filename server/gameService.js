@@ -2985,6 +2985,100 @@ const buildLossesFromStartAndSurvivors = (startSelection, survivorsSelection) =>
   return losses;
 };
 
+const distributeSurvivorsAcrossDefenderGroups = (groupSelectionsRaw, totalSurvivorsRaw) => {
+  const groupSelections = (Array.isArray(groupSelectionsRaw) ? groupSelectionsRaw : []).map((selection) =>
+    toCompleteUnitSelection(selection),
+  );
+  const totalSurvivors = toCompleteUnitSelection(totalSurvivorsRaw);
+  const distributed = groupSelections.map(() => toCompleteUnitSelection({}));
+
+  for (const unitId of UNIT_ORDER) {
+    const starts = groupSelections.map((selection) =>
+      Math.max(0, Math.floor(Number(selection?.[unitId] ?? 0))),
+    );
+    const totalStart = starts.reduce((sum, amount) => sum + amount, 0);
+    if (totalStart <= 0) {
+      continue;
+    }
+
+    const requestedSurvivors = Math.max(0, Math.floor(Number(totalSurvivors?.[unitId] ?? 0)));
+    const survivorTarget = Math.min(totalStart, requestedSurvivors);
+    if (survivorTarget <= 0) {
+      continue;
+    }
+    if (survivorTarget >= totalStart) {
+      for (let index = 0; index < starts.length; index += 1) {
+        distributed[index][unitId] = starts[index];
+      }
+      continue;
+    }
+
+    const baseAllocations = starts.map((startAmount) => {
+      if (startAmount <= 0) {
+        return 0;
+      }
+      const rawShare = (startAmount * survivorTarget) / totalStart;
+      return Math.min(startAmount, Math.floor(rawShare));
+    });
+    let assigned = baseAllocations.reduce((sum, amount) => sum + amount, 0);
+    let remaining = Math.max(0, survivorTarget - assigned);
+
+    if (remaining > 0) {
+      const remainders = starts
+        .map((startAmount, index) => {
+          if (startAmount <= 0) {
+            return null;
+          }
+          const rawShare = (startAmount * survivorTarget) / totalStart;
+          const baseAllocation = baseAllocations[index];
+          return {
+            index,
+            fraction: rawShare - baseAllocation,
+            startAmount,
+          };
+        })
+        .filter((entry) => entry != null)
+        .sort((left, right) => {
+          if (right.fraction !== left.fraction) {
+            return right.fraction - left.fraction;
+          }
+          if (right.startAmount !== left.startAmount) {
+            return right.startAmount - left.startAmount;
+          }
+          return left.index - right.index;
+        });
+
+      for (const remainderEntry of remainders) {
+        if (remaining <= 0) {
+          break;
+        }
+        const index = Number(remainderEntry.index);
+        if (baseAllocations[index] >= starts[index]) {
+          continue;
+        }
+        baseAllocations[index] += 1;
+        assigned += 1;
+        remaining -= 1;
+      }
+    }
+
+    if (assigned < survivorTarget) {
+      for (let index = 0; index < starts.length && assigned < survivorTarget; index += 1) {
+        while (baseAllocations[index] < starts[index] && assigned < survivorTarget) {
+          baseAllocations[index] += 1;
+          assigned += 1;
+        }
+      }
+    }
+
+    for (let index = 0; index < baseAllocations.length; index += 1) {
+      distributed[index][unitId] = Math.max(0, Math.floor(Number(baseAllocations[index] ?? 0)));
+    }
+  }
+
+  return distributed;
+};
+
 const applyCaravanBinarySurvivalRule = (startSelection, survivorsSelection) => {
   const normalizedStart = toCompleteUnitSelection(startSelection);
   const normalizedSurvivors = toCompleteUnitSelection(survivorsSelection);
@@ -4765,7 +4859,19 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         villagesToRecalculatePrestige.add(Number(targetVillage.id));
       }
 
-      const villageDefenseAfterLoss = applyCasualties(villageDefenderUnitsBefore, battle.defenderLossRatio);
+      const defenderGroupStarts = [
+        toCompleteUnitSelection(villageDefenderUnitsBefore),
+        ...stationedSupportGroups.map((supportGroup) => toCompleteUnitSelection(supportGroup.units)),
+      ];
+      const defenderGroupSurvivors = distributeSurvivorsAcrossDefenderGroups(
+        defenderGroupStarts,
+        battle?.defender?.survivors,
+      );
+      const villageDefenderSurvivors = toCompleteUnitSelection(defenderGroupSurvivors[0]);
+      const villageDefenseAfterLoss = {
+        losses: buildLossesFromStartAndSurvivors(villageDefenderUnitsBefore, villageDefenderSurvivors),
+        survivors: villageDefenderSurvivors,
+      };
       for (const unitId of UNIT_ORDER) {
         updateUnitAmountStmt.run(
           Number(villageDefenseAfterLoss.survivors[unitId] ?? 0),
@@ -4777,7 +4883,12 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
 
       const stationedSupportCasualties = [];
       for (const supportGroup of stationedSupportGroups) {
-        const supportAfterLoss = applyCasualties(supportGroup.units, battle.defenderLossRatio);
+        const groupIndex = stationedSupportCasualties.length + 1;
+        const supportSurvivors = toCompleteUnitSelection(defenderGroupSurvivors[groupIndex]);
+        const supportAfterLoss = {
+          losses: buildLossesFromStartAndSurvivors(supportGroup.units, supportSurvivors),
+          survivors: supportSurvivors,
+        };
         const supportStartTotal = sumSelectedUnits(supportGroup.units);
         const supportSurvivorsTotal = sumSelectedUnits(supportAfterLoss.survivors);
         for (const unitId of UNIT_ORDER) {
@@ -5607,12 +5718,17 @@ export const getVillageSnapshot = (
     const requiredBuildingCurrentLevel = buildingLevels[requiredBuildingId] ?? 0;
     const requiredBuildingLevel = Math.max(1, Math.floor(Number(def.requiredBuildingLevel ?? 1)));
     const queuedCount = Number(activeRecruitmentCountByUnit[unitId] ?? 0);
+    const hasVillageKnightSlotOccupied = unitId === KNIGHT_UNIT_ID && amount + queuedCount > 0;
     const maxByResources = calculateMaxRecruitableByResources(currentResources, def.cost);
     const unitPopulationCost = getUnitPopulationCost(unitId);
     const maxByPopulation = Math.max(0, Math.floor(availablePopulationForRecruitment / unitPopulationCost));
     const maxByKnightLimit = unitId === KNIGHT_UNIT_ID ? remainingKnightCapacity : Number.POSITIVE_INFINITY;
     const maxBySingleOrder = unitId === KNIGHT_UNIT_ID ? 1 : Number.POSITIVE_INFINITY;
-    const maxRecruitable = Math.max(0, Math.min(maxByPopulation, maxByResources, maxByKnightLimit, maxBySingleOrder));
+    const maxByVillageKnightSlot = hasVillageKnightSlotOccupied ? 0 : Number.POSITIVE_INFINITY;
+    const maxRecruitable = Math.max(
+      0,
+      Math.min(maxByPopulation, maxByResources, maxByKnightLimit, maxBySingleOrder, maxByVillageKnightSlot),
+    );
 
     let blockedReason = null;
     let canRecruit = false;
@@ -5621,6 +5737,8 @@ export const getVillageSnapshot = (
         requiredBuildingLevel <= 1
           ? `Vybuduj ${BUILDING_DEFS[requiredBuildingId].name}`
           : `Vybuduj ${BUILDING_DEFS[requiredBuildingId].name} na uroveň ${requiredBuildingLevel}`;
+    } else if (hasVillageKnightSlotOccupied) {
+      blockedReason = 'V osade uz je rytir nebo je ve vycviku';
     } else if (unitId === KNIGHT_UNIT_ID && remainingKnightCapacity <= 0) {
       blockedReason = 'Limit rytiru podle poctu osad v tomto svete je vycerpan';
     } else if (availablePopulationForRecruitment <= 0) {
@@ -6800,6 +6918,13 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
   }
 
   if (unitId === KNIGHT_UNIT_ID) {
+    const currentKnightInVillage = Math.max(0, Math.floor(Number(unitCounts[KNIGHT_UNIT_ID] ?? 0)));
+    const queuedKnightInVillage = activeRecruitments
+      .filter((recruitment) => String(recruitment.unitId) === KNIGHT_UNIT_ID)
+      .reduce((sum, recruitment) => sum + Math.max(0, Math.floor(Number(recruitment.amount ?? 0))), 0);
+    if (currentKnightInVillage + queuedKnightInVillage >= 1) {
+      throw new GameRuleError('V teto osade uz je rytir nebo je ve vycviku.', 400);
+    }
     const knightCapacity = getPlayerKnightCapacity(Number(player.id), Number(village.region));
     const playerKnightTotal = getPlayerKnightTotalInWorld(Number(player.id), Number(village.region));
     if (playerKnightTotal >= knightCapacity) {

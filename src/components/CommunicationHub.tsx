@@ -260,6 +260,15 @@ const getAvatarFallback = (username: string): string => {
   return normalized[0].toLocaleUpperCase('cs-CZ');
 };
 
+const normalizeComparableUsername = (value: unknown): string =>
+  String(value ?? '').trim().toLocaleLowerCase('cs-CZ');
+
+const isInboxOwnedByUsername = (data: CommunicationInboxResponse, username: string | null): boolean => {
+  const responseUsername = normalizeComparableUsername(data?.me?.username ?? '');
+  const currentUsername = normalizeComparableUsername(username ?? '');
+  return Boolean(responseUsername) && Boolean(currentUsername) && responseUsername === currentUsername;
+};
+
 const getSuggestionLabel = (item: CommunicationTokenSuggestion): string => {
   if (item.kind === 'user') {
     return `@${item.label}`;
@@ -319,6 +328,7 @@ export const CommunicationHub = () => {
   const saveTimerRef = useRef<number | null>(null);
   const savedSnapshotRef = useRef('');
   const requestIdRef = useRef(0);
+  const previousUsernameRef = useRef<string | null>(null);
   const composerRefByThreadId = useRef<Record<number, HTMLTextAreaElement | null>>({});
   const isInGame = location.pathname.startsWith('/game');
 
@@ -330,10 +340,66 @@ export const CommunicationHub = () => {
     return Math.max(0, Number(summary.totalAttention ?? 0));
   }, [hubOpen, inbox, lastOpenedAt, openThreadIds.length, summary.totalAttention]);
 
-  const updateInbox = useCallback((data: CommunicationInboxResponse) => {
-    setInbox(data);
-    setSummaryState(data.summary ?? EMPTY_SUMMARY);
-    setThreadMetaById((previous) => mergeThreadMeta(previous, data.threads ?? []));
+  const resetCommunicationState = useCallback(() => {
+    if (saveTimerRef.current != null) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    requestIdRef.current += 1;
+    initializedRef.current = false;
+    savedSnapshotRef.current = '';
+    setInbox(null);
+    setSummaryState(EMPTY_SUMMARY);
+    setMessagesByThreadId({});
+    setThreadMetaById({});
+    setHubOpen(false);
+    setTab('threads');
+    setSearchDraft('');
+    setSearchSuggestions([]);
+    setOpenThreadIds([]);
+    setMinimizedThreadIds([]);
+    setActiveThreadId(null);
+    setThreadDrafts({});
+    setLastOpenedAt(null);
+    setDraggedThreadId(null);
+    setQuickOpenDraft('');
+    setActionKey(null);
+    setAutocomplete(null);
+  }, []);
+
+  const updateInbox = useCallback(
+    (data: CommunicationInboxResponse): boolean => {
+      if (!isInboxOwnedByUsername(data, username)) {
+        resetCommunicationState();
+        setError('Komunikace byla zablokována: dorazila data jiného účtu.');
+        return false;
+      }
+      setInbox(data);
+      setSummaryState(data.summary ?? EMPTY_SUMMARY);
+      setThreadMetaById((previous) => mergeThreadMeta(previous, data.threads ?? []));
+      return true;
+    },
+    [resetCommunicationState, username],
+  );
+
+  useEffect(() => {
+    if (previousUsernameRef.current === username) {
+      return;
+    }
+    previousUsernameRef.current = username;
+    resetCommunicationState();
+    setError(null);
+  }, [resetCommunicationState, username]);
+
+  const shouldResetOnAuthorizationError = useCallback((error: unknown): boolean => {
+    const message = error instanceof Error ? String(error.message ?? '') : String(error ?? '');
+    const normalized = message.toLocaleLowerCase('cs-CZ');
+    return (
+      normalized.includes('http 401') ||
+      normalized.includes('http 403') ||
+      normalized.includes('neplatne prihlasovaci udaje') ||
+      normalized.includes('ucet v requestu neodpovida prihlasene session')
+    );
   }, []);
 
   const refreshMessages = useCallback(
@@ -364,8 +430,10 @@ export const CommunicationHub = () => {
             continue;
           }
           const threadId = ids[index];
+          if (!updateInbox(response.value)) {
+            continue;
+          }
           next[threadId] = response.value.selectedMessages ?? [];
-          updateInbox(response.value);
         }
         return next;
       });
@@ -387,7 +455,9 @@ export const CommunicationHub = () => {
       if (requestId !== requestIdRef.current) {
         return;
       }
-      updateInbox(data);
+      if (!updateInbox(data)) {
+        return;
+      }
       if (data.selectedThreadId != null) {
         setMessagesByThreadId((previous) => ({
           ...previous,
@@ -405,9 +475,20 @@ export const CommunicationHub = () => {
       if (requestId !== requestIdRef.current) {
         return;
       }
+      if (shouldResetOnAuthorizationError(loadError)) {
+        resetCommunicationState();
+      }
       setError(loadError instanceof Error ? loadError.message : 'Komunikace se nepodařila načíst.');
     }
-  }, [activeThreadId, openThreadIds, refreshMessages, updateInbox, username]);
+  }, [
+    activeThreadId,
+    openThreadIds,
+    refreshMessages,
+    resetCommunicationState,
+    shouldResetOnAuthorizationError,
+    updateInbox,
+    username,
+  ]);
 
   const loadSummary = useCallback(async () => {
     if (!username) {
@@ -418,9 +499,12 @@ export const CommunicationHub = () => {
       setSummaryState(data.summary ?? EMPTY_SUMMARY);
       setError(null);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Souhrn komunikace se nepodařilo načíst.');
+      if (shouldResetOnAuthorizationError(loadError)) {
+        resetCommunicationState();
+      }
+      setError(loadError instanceof Error ? loadError.message : 'Souhrn komunikace se nepodarilo nacist.');
     }
-  }, [username]);
+  }, [resetCommunicationState, shouldResetOnAuthorizationError, username]);
 
   const closeThread = useCallback((threadId: number) => {
     setOpenThreadIds((previous) => previous.filter((id) => id !== threadId));
@@ -455,7 +539,9 @@ export const CommunicationHub = () => {
       setActionKey(`open-thread-${normalizedThreadId}`);
       try {
         const response = await openCommunicationThreadRequest(username, { threadId: normalizedThreadId });
-        updateInbox(response.data);
+        if (!updateInbox(response.data)) {
+          return null;
+        }
         setMessagesByThreadId((previous) => ({
           ...previous,
           [normalizedThreadId]: response.data.selectedMessages ?? [],
@@ -485,7 +571,9 @@ export const CommunicationHub = () => {
       setActionKey(`open-user-${normalized.toLocaleLowerCase('cs-CZ')}`);
       try {
         const response = await openCommunicationThreadRequest(username, { targetUsername: normalized });
-        updateInbox(response.data);
+        if (!updateInbox(response.data)) {
+          return null;
+        }
         setMessagesByThreadId((previous) => ({
           ...previous,
           [response.result.threadId]: response.data.selectedMessages ?? [],
@@ -600,7 +688,9 @@ export const CommunicationHub = () => {
           payload,
         })
           .then((response) => {
-            updateInbox(response.data);
+            if (!updateInbox(response.data)) {
+              return;
+            }
             setMessagesByThreadId((previous) => ({
               ...previous,
               [threadId]: response.data.selectedMessages ?? previous[threadId] ?? [],
@@ -858,7 +948,9 @@ export const CommunicationHub = () => {
           body: normalizedBody,
           payload,
         });
-        updateInbox(response.data);
+        if (!updateInbox(response.data)) {
+          return;
+        }
         setMessagesByThreadId((previous) => ({
           ...previous,
           [threadId]: response.data.selectedMessages ?? previous[threadId] ?? [],
@@ -893,7 +985,9 @@ export const CommunicationHub = () => {
       setActionKey(`delete-message-${messageId}`);
       try {
         const response = await deleteCommunicationMessageRequest(username, messageId);
-        updateInbox(response.data);
+        if (!updateInbox(response.data)) {
+          return;
+        }
         const affectedThreadId = Number(response.result.threadId);
         if (Number.isFinite(affectedThreadId) && affectedThreadId > 0) {
           setMessagesByThreadId((previous) => ({
@@ -918,7 +1012,9 @@ export const CommunicationHub = () => {
       setActionKey(`archive-thread-${threadId}`);
       try {
         const response = await archiveCommunicationThreadRequest(username, threadId);
-        updateInbox(response.data);
+        if (!updateInbox(response.data)) {
+          return;
+        }
         closeThread(threadId);
       } catch (mutationError) {
         setError(mutationError instanceof Error ? mutationError.message : 'Konverzaci nelze archivovat.');
@@ -937,7 +1033,9 @@ export const CommunicationHub = () => {
       setActionKey(`friend-request-${requestId}-${action}`);
       try {
         const response = await respondCommunicationFriendRequest(username, requestId, action);
-        updateInbox(response.data);
+        if (!updateInbox(response.data)) {
+          return;
+        }
       } catch (mutationError) {
         setError(mutationError instanceof Error ? mutationError.message : 'Žádost nejde zpracovat.');
       } finally {
@@ -959,7 +1057,9 @@ export const CommunicationHub = () => {
       setActionKey(`friend-send-${normalized.toLocaleLowerCase('cs-CZ')}`);
       try {
         const response = await sendCommunicationFriendRequest(username, normalized);
-        updateInbox(response.data);
+        if (!updateInbox(response.data)) {
+          return;
+        }
       } catch (mutationError) {
         setError(mutationError instanceof Error ? mutationError.message : 'Žádost o přátelství nejde odeslat.');
       } finally {
@@ -981,7 +1081,9 @@ export const CommunicationHub = () => {
       setActionKey(`friend-remove-${normalized.toLocaleLowerCase('cs-CZ')}`);
       try {
         const response = await removeCommunicationFriend(username, normalized);
-        updateInbox(response.data);
+        if (!updateInbox(response.data)) {
+          return;
+        }
       } catch (mutationError) {
         setError(mutationError instanceof Error ? mutationError.message : 'Kontakt nejde odstranit.');
       } finally {
@@ -1003,7 +1105,9 @@ export const CommunicationHub = () => {
       setActionKey(`block-${normalized.toLocaleLowerCase('cs-CZ')}`);
       try {
         const response = await blockCommunicationPlayer(username, normalized);
-        updateInbox(response.data);
+        if (!updateInbox(response.data)) {
+          return;
+        }
       } catch (mutationError) {
         setError(mutationError instanceof Error ? mutationError.message : 'Hráče nelze zablokovat.');
       } finally {
@@ -1025,7 +1129,9 @@ export const CommunicationHub = () => {
       setActionKey(`unblock-${normalized.toLocaleLowerCase('cs-CZ')}`);
       try {
         const response = await unblockCommunicationPlayer(username, normalized);
-        updateInbox(response.data);
+        if (!updateInbox(response.data)) {
+          return;
+        }
       } catch (mutationError) {
         setError(mutationError instanceof Error ? mutationError.message : 'Hráče nelze odblokovat.');
       } finally {

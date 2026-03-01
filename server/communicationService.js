@@ -622,6 +622,17 @@ const selectThreadMembershipStmt = db.prepare(
    LIMIT 1`,
 );
 
+const selectThreadMetaByIdStmt = db.prepare(
+  `SELECT
+      id,
+      kind,
+      direct_low_player_id AS directLowPlayerId,
+      direct_high_player_id AS directHighPlayerId
+   FROM chat_threads
+   WHERE id = ?
+   LIMIT 1`,
+);
+
 const selectVisibleThreadMembershipsByPlayerStmt = db.prepare(
   `SELECT
       tm.thread_id AS threadId,
@@ -650,6 +661,29 @@ const selectOtherParticipantInThreadStmt = db.prepare(
    LEFT JOIN player_presence presence ON presence.player_id = p.id
    WHERE tm.thread_id = ?
      AND tm.player_id <> ?
+   LIMIT 1`,
+);
+
+const selectOtherParticipantInDirectThreadStmt = db.prepare(
+  `SELECT
+      p.id AS playerId,
+      p.username,
+      profile.avatar_url AS avatarUrl,
+      presence.last_active_at AS lastActiveAt
+   FROM chat_threads t
+   INNER JOIN players p
+      ON p.id = CASE
+        WHEN t.direct_low_player_id = ? THEN t.direct_high_player_id
+        ELSE t.direct_low_player_id
+      END
+   LEFT JOIN player_profiles profile ON profile.player_id = p.id
+   LEFT JOIN player_presence presence ON presence.player_id = p.id
+   WHERE t.id = ?
+     AND t.kind = 'direct'
+     AND (
+       t.direct_low_player_id = ?
+       OR t.direct_high_player_id = ?
+     )
    LIMIT 1`,
 );
 
@@ -1137,6 +1171,18 @@ const resolveThreadForPlayer = (playerId, threadIdRaw) => {
   if (!member) {
     throw new GameRuleError('Konverzace nebyla nalezena.', 404);
   }
+  const threadMeta = selectThreadMetaByIdStmt.get(threadId);
+  if (!threadMeta) {
+    throw new GameRuleError('Konverzace nebyla nalezena.', 404);
+  }
+  if (String(threadMeta.kind) === 'direct') {
+    const directLowPlayerId = Number(threadMeta.directLowPlayerId ?? 0);
+    const directHighPlayerId = Number(threadMeta.directHighPlayerId ?? 0);
+    const normalizedPlayerId = Number(playerId);
+    if (directLowPlayerId !== normalizedPlayerId && directHighPlayerId !== normalizedPlayerId) {
+      throw new GameRuleError('Konverzace nebyla nalezena.', 404);
+    }
+  }
   return {
     threadId,
     lastReadMessageId: Number(member.lastReadMessageId ?? 0),
@@ -1194,7 +1240,10 @@ const listThreadSummaries = (playerId, threadLimit = MAX_THREAD_COUNT, includeTh
 
   for (const membership of memberships) {
     const threadId = Number(membership.threadId);
-    const other = selectOtherParticipantInThreadStmt.get(threadId, Number(playerId));
+    const isDirectThread = String(membership.kind) === 'direct';
+    const other = isDirectThread
+      ? selectOtherParticipantInDirectThreadStmt.get(Number(playerId), threadId, Number(playerId), Number(playerId))
+      : selectOtherParticipantInThreadStmt.get(threadId, Number(playerId));
     if (!other) {
       continue;
     }
@@ -1349,7 +1398,11 @@ const sendMessageTransaction = db.transaction((usernameRaw, payload = {}) => {
     resolveThreadForPlayer(player.id, threadId);
   }
 
-  const otherParticipant = selectOtherParticipantInThreadStmt.get(threadId, player.id);
+  const threadMeta = selectThreadMetaByIdStmt.get(threadId);
+  const isDirectThread = String(threadMeta?.kind ?? '') === 'direct';
+  const otherParticipant = isDirectThread
+    ? selectOtherParticipantInDirectThreadStmt.get(Number(player.id), threadId, Number(player.id), Number(player.id))
+    : selectOtherParticipantInThreadStmt.get(threadId, player.id);
   if (!otherParticipant) {
     throw new GameRuleError('Konverzace nema ciloveho hrace.', 400);
   }
