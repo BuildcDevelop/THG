@@ -6,6 +6,10 @@ import { BUILDING_ORDER, UNIT_ORDER, getMaxBuildingLevel } from './gameConfig.js
 const configuredDataDir = String(process.env.TLD_DATA_DIR ?? process.env.THG_DATA_DIR ?? '').trim();
 const configuredSeedDbPath = String(process.env.TLD_SEED_DB_PATH ?? process.env.THG_SEED_DB_PATH ?? '').trim();
 const isNetlifyRuntime = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const appEnv = String(process.env.TLD_ENV ?? process.env.APP_ENV ?? process.env.NODE_ENV ?? '').trim().toLowerCase();
+const isProduction = appEnv === 'production';
+const allowServerlessSqlite =
+  String(process.env.TLD_ALLOW_SERVERLESS_SQLITE ?? '').trim().toLowerCase() === 'true';
 const localDataDir = path.join(process.cwd(), 'server', 'data');
 const localSeedDbPath = path.join(localDataDir, 'game.seed.sqlite.backup');
 const dataDir = configuredDataDir
@@ -15,6 +19,13 @@ const dataDir = configuredDataDir
     : localDataDir;
 const dbPath = path.join(dataDir, 'game.sqlite');
 const seedDbPath = configuredSeedDbPath ? path.resolve(configuredSeedDbPath) : localSeedDbPath;
+
+if (isProduction && isNetlifyRuntime && !allowServerlessSqlite) {
+  throw new Error(
+    '[db] Odmitam spustit SQLite v serverless produkci (ephemeral filesystem). ' +
+      'Pouzij self-host backend (Docker) s persistentnim volume pro TLD_DATA_DIR/THG_DATA_DIR.',
+  );
+}
 
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
@@ -127,6 +138,9 @@ CREATE TABLE IF NOT EXISTS players (
   is_bot INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_players_username_nocase
+  ON players(username COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS villages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -299,6 +313,196 @@ CREATE INDEX IF NOT EXISTS idx_kingdom_events_actor_created
 CREATE INDEX IF NOT EXISTS idx_kingdom_events_target_created
   ON kingdom_events(target_player_id, region, created_at DESC, id DESC);
 
+CREATE TABLE IF NOT EXISTS player_notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  player_id INTEGER NOT NULL,
+  region INTEGER NOT NULL DEFAULT 1,
+  category TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'info',
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  payload_json TEXT,
+  source_type TEXT,
+  source_id INTEGER,
+  created_at TEXT NOT NULL,
+  read_at TEXT,
+  archived_at TEXT,
+  deleted_at TEXT,
+  FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_notifications_player_created
+  ON player_notifications(player_id, region, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_player_notifications_visibility
+  ON player_notifications(player_id, region, deleted_at, archived_at, read_at, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_player_notifications_cleanup
+  ON player_notifications(region, archived_at, deleted_at, created_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_player_notifications_source_unique
+  ON player_notifications(player_id, source_type, source_id)
+  WHERE source_type IS NOT NULL AND source_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS player_profiles (
+  player_id INTEGER PRIMARY KEY,
+  avatar_url TEXT,
+  avatar_updated_at TEXT,
+  FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE TABLE IF NOT EXISTS player_presence (
+  player_id INTEGER PRIMARY KEY,
+  last_active_at TEXT NOT NULL,
+  FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE TABLE IF NOT EXISTS player_friendships (
+  player_low_id INTEGER NOT NULL,
+  player_high_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (player_low_id, player_high_id),
+  FOREIGN KEY (player_low_id) REFERENCES players(id),
+  FOREIGN KEY (player_high_id) REFERENCES players(id)
+);
+
+CREATE TABLE IF NOT EXISTS player_friend_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sender_player_id INTEGER NOT NULL,
+  receiver_player_id INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL,
+  responded_at TEXT,
+  FOREIGN KEY (sender_player_id) REFERENCES players(id),
+  FOREIGN KEY (receiver_player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_friend_requests_receiver_status
+  ON player_friend_requests(receiver_player_id, status, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_player_friend_requests_sender_status
+  ON player_friend_requests(sender_player_id, status, created_at DESC, id DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_player_friend_requests_unique_pending
+  ON player_friend_requests(sender_player_id, receiver_player_id)
+  WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS player_blocks (
+  blocker_player_id INTEGER NOT NULL,
+  blocked_player_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (blocker_player_id, blocked_player_id),
+  FOREIGN KEY (blocker_player_id) REFERENCES players(id),
+  FOREIGN KEY (blocked_player_id) REFERENCES players(id)
+);
+
+CREATE TABLE IF NOT EXISTS chat_threads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL DEFAULT 'direct',
+  created_by_player_id INTEGER NOT NULL,
+  direct_low_player_id INTEGER,
+  direct_high_player_id INTEGER,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (created_by_player_id) REFERENCES players(id),
+  FOREIGN KEY (direct_low_player_id) REFERENCES players(id),
+  FOREIGN KEY (direct_high_player_id) REFERENCES players(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_threads_direct_unique
+  ON chat_threads(kind, direct_low_player_id, direct_high_player_id)
+  WHERE kind = 'direct'
+    AND direct_low_player_id IS NOT NULL
+    AND direct_high_player_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS chat_thread_members (
+  thread_id INTEGER NOT NULL,
+  player_id INTEGER NOT NULL,
+  joined_at TEXT NOT NULL,
+  archived_at TEXT,
+  last_opened_at TEXT,
+  last_read_message_id INTEGER,
+  PRIMARY KEY (thread_id, player_id),
+  FOREIGN KEY (thread_id) REFERENCES chat_threads(id),
+  FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_thread_members_player_archived
+  ON chat_thread_members(player_id, archived_at, thread_id);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread_id INTEGER NOT NULL,
+  sender_player_id INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  payload_json TEXT,
+  created_at TEXT NOT NULL,
+  edited_at TEXT,
+  deleted_at TEXT,
+  FOREIGN KEY (thread_id) REFERENCES chat_threads(id),
+  FOREIGN KEY (sender_player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_created
+  ON chat_messages(thread_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_sender_created
+  ON chat_messages(sender_player_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_created
+  ON chat_messages(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_chat_threads_creator_created
+  ON chat_threads(created_by_player_id, created_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS chat_abuse_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  player_id INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_abuse_events_player_type_created
+  ON chat_abuse_events(player_id, event_type, created_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS player_ui_state (
+  player_id INTEGER PRIMARY KEY,
+  communication_json TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE TABLE IF NOT EXISTS notification_shares (
+  share_token TEXT PRIMARY KEY,
+  source_player_id INTEGER NOT NULL,
+  source_notification_id INTEGER NOT NULL,
+  source_region INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (source_player_id) REFERENCES players(id),
+  FOREIGN KEY (source_notification_id) REFERENCES player_notifications(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_shares_source
+  ON notification_shares(source_player_id, source_notification_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS player_sessions (
+  session_token_hash TEXT PRIMARY KEY,
+  player_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  user_agent TEXT,
+  ip_address TEXT,
+  FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_sessions_player_expires
+  ON player_sessions(player_id, expires_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_player_sessions_expires
+  ON player_sessions(expires_at);
+
 CREATE TABLE IF NOT EXISTS game_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   last_tick_at TEXT NOT NULL
@@ -441,6 +645,18 @@ DELETE FROM army_movements;
 DELETE FROM battle_reports;
 DELETE FROM kingdom_invites;
 DELETE FROM kingdom_events;
+DELETE FROM player_notifications;
+DELETE FROM chat_messages;
+DELETE FROM chat_thread_members;
+DELETE FROM chat_threads;
+DELETE FROM player_friend_requests;
+DELETE FROM player_friendships;
+DELETE FROM player_blocks;
+DELETE FROM chat_abuse_events;
+DELETE FROM player_presence;
+DELETE FROM player_profiles;
+DELETE FROM player_ui_state;
+DELETE FROM player_sessions;
 DELETE FROM units;
 DELETE FROM buildings;
 DELETE FROM resources;
@@ -969,6 +1185,104 @@ const ensureReferentialIntegrity = db.transaction(() => {
          )`,
     ),
     db.prepare(
+      `DELETE FROM player_notifications
+       WHERE NOT EXISTS (
+         SELECT 1
+         FROM players p
+         WHERE p.id = player_notifications.player_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM notification_shares
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = notification_shares.source_player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM player_notifications n WHERE n.id = notification_shares.source_notification_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM player_profiles
+       WHERE NOT EXISTS (
+         SELECT 1 FROM players p WHERE p.id = player_profiles.player_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM player_presence
+       WHERE NOT EXISTS (
+         SELECT 1 FROM players p WHERE p.id = player_presence.player_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM player_ui_state
+       WHERE NOT EXISTS (
+         SELECT 1 FROM players p WHERE p.id = player_ui_state.player_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM player_sessions
+       WHERE NOT EXISTS (
+         SELECT 1 FROM players p WHERE p.id = player_sessions.player_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM player_friendships
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = player_friendships.player_low_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = player_friendships.player_high_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM player_friend_requests
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = player_friend_requests.sender_player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = player_friend_requests.receiver_player_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM player_blocks
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = player_blocks.blocker_player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = player_blocks.blocked_player_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM chat_threads
+       WHERE NOT EXISTS (
+         SELECT 1 FROM players p WHERE p.id = chat_threads.created_by_player_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM chat_thread_members
+       WHERE NOT EXISTS (
+           SELECT 1 FROM chat_threads t WHERE t.id = chat_thread_members.thread_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = chat_thread_members.player_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM chat_messages
+       WHERE NOT EXISTS (
+           SELECT 1 FROM chat_threads t WHERE t.id = chat_messages.thread_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = chat_messages.sender_player_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM chat_abuse_events
+       WHERE NOT EXISTS (
+         SELECT 1 FROM players p WHERE p.id = chat_abuse_events.player_id
+       )`,
+    ),
+    db.prepare(
       `DELETE FROM army_movements
        WHERE NOT EXISTS (
            SELECT 1 FROM players p WHERE p.id = army_movements.player_id
@@ -1106,6 +1420,12 @@ createSchema();
 ensureCaseInsensitiveUsernameUniqueness();
 
 if (shouldReseedWorld()) {
+  if (isProduction) {
+    throw new Error(
+      '[db] Detekovana prazdna/poskozena DB (chybi zakladni ucty). ' +
+        'Auto-reseed je v produkci zakazan. Obnov DB ze zalohy.',
+    );
+  }
   clearWorld();
   seedWorld();
 }

@@ -57,6 +57,12 @@ Na serveru v rootu repa spust:
 docker compose up -d --build
 ```
 
+Bezpecnejsi varianta s automatickym backupem DB:
+
+```bash
+bash scripts/deploy-backend-safe.sh
+```
+
 Stack obsahuje:
 
 - `api` (Express + SQLite)
@@ -66,6 +72,8 @@ Data se ukladaji do SQLite souboru (volume mount):
 
 - host: `server/data/`
 - container: `/data/` (pres `THG_DATA_DIR=/data`)
+
+Pri prvnim startu (prazdny volume) se DB zbootstrappuje ze `server/data/game.seed.sqlite.backup`.
 
 ### Frontend napojeni na self-host backend
 
@@ -88,17 +96,12 @@ npm run build
 npm run preview
 ```
 
-## Convex databaze
-
-Convex cast je ponechana jen jako historicka reference. Aktivni backend rezim je `Express + SQLite` a pro self-host deployment se pouziva Docker (`compose.yaml`).
-
 ## Netlify deploy
 
-Projekt je pripraveny pro Netlify:
+Netlify slouzi jen jako frontend (SPA). Backend se ma provozovat self-host (Docker + SQLite).
 
-- frontend se builduje do `dist/`,
-- API je routovane pres Netlify Function (`netlify/functions/api.mjs`),
-- vsechny `'/api/*'` requesty jdou na funkci pres `netlify.toml`.
+- frontend se builduje do `dist/`
+- requesty na `'/api/*'` Netlify proxyuje na backend (viz `netlify.toml`)
 
 ### Netlify nastaveni
 
@@ -107,33 +110,19 @@ V Netlify UI nastav:
 - Build command: `npm run build`
 - Publish directory: `dist`
 
-Jednorazove propojeni projektu:
+Jednorazove propojeni projektu (volitelne):
 
 ```bash
 npx netlify link
 ```
 
-Environment variables:
-
-- `VITE_API_BASE` (napr. `https://api.tvoje-domena.cz`)
-- `TLD_VERSION_LABEL` (napr. `build-0.1.04`)
-- `TLD_BUILD_ID` (unikatni identifikator buildu, idealne commit SHA)
-- `TLD_UPDATE_STATUS` (`idle` / `building` / `deploying` / `maintenance`)
-
-Pozn.: pokud chces na Netlify pouzivat Netlify Functions (`/api/*`), nenechavej `VITE_API_BASE` nastavene na externi produkcni API. Jinak frontend obejde Netlify funkci a mutace pujdou primo na externi databazi.
-
-Volitelne:
-
-- `GAME_TICK_SCHEDULE` (hlavne pro lokalni server, v serverless full rezimu se cron nepouziva)
-- `THG_DATA_DIR` (custom cesta pro SQLite fallback)
+Pozn.: produkcni stav hry nesmi bezet na SQLite v serverless prostredi (ephemeral filesystem -> opakovane rollbacky dat). Pouzij Docker s persistentnim volume.
 
 ### Lokalni simulace Netlify
 
 ```bash
 npm run dev:netlify
 ```
-
-To spusti Vite + Netlify Functions lokalne pod jednim hostem.
 
 ### Deploy prikazy
 
@@ -148,15 +137,6 @@ Production deploy:
 ```bash
 npx netlify deploy --prod --build
 ```
-
-Poznamka pro deploy z Windows (native `better-sqlite3`):
-
-- pred deployem priprav Linux binarku:
-  - `npm_config_platform=linux npm_config_arch=x64 npm rebuild better-sqlite3 --build-from-source=false`
-- deploy spoustet s `--skip-functions-cache`, aby se prebundlovala funkce:
-  - `npx netlify deploy --prod --build --skip-functions-cache`
-- po deployi vrat lokalni Windows binarku:
-  - `npm rebuild better-sqlite3 --build-from-source=false`
 
 ## Prihlaseni (prototyp)
 

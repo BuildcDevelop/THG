@@ -3,10 +3,12 @@ import express from 'express';
 import cron from 'node-cron';
 import {
   acceptKingdomInvite,
+  archivePlayerNotification,
   cancelBuildingUpgrade,
   cancelRecruitment,
   createPlayerAccount,
   createKingdom,
+  deletePlayerNotification,
   GameRuleError,
   authenticatePlayer,
   createAbandonedVillages,
@@ -16,22 +18,55 @@ import {
   issueArmyCommand,
   kickKingdomMember,
   leaveKingdom,
+  listPlayerNotifications,
   listAdminPlayers,
   listBattleReports,
   listPlayerWorlds,
   listPlayerLeaderboard,
+  markAllPlayerNotificationsRead,
+  markPlayerNotificationRead,
   rejectKingdomInvite,
   recallKnight,
+  renameVillage,
   recruitUnits,
   restartVillageProgress,
   runGameTick,
   startBuildingUpgrade,
+  unarchivePlayerNotification,
 } from './gameService.js';
+import {
+  archiveCommunicationThread,
+  blockPlayer,
+  COMMUNICATION_AVATAR_PUBLIC_PATH,
+  COMMUNICATION_AVATAR_STORAGE_DIR,
+  createNotificationShare,
+  deleteCommunicationMessage,
+  getNotificationSharePreview,
+  listCommunicationInbox,
+  listCommunicationSummary,
+  listCommunicationTokenSuggestions,
+  openCommunicationThread,
+  removeFriend,
+  respondFriendRequest,
+  sendCommunicationMessage,
+  sendFriendRequest,
+  setCommunicationAvatar,
+  setCommunicationAvatarFromDataUrl,
+  setCommunicationUiState,
+  runCommunicationRetentionCleanup,
+  unblockPlayer,
+} from './communicationService.js';
+import {
+  SESSION_COOKIE_NAME,
+  clearSessionFromRequest,
+  createSessionForUsername,
+  resolveSessionFromRequest,
+} from './sessionService.js';
 
 const app = express();
 const port = Number(process.env.PORT ?? 3001);
 const tickSchedule = process.env.GAME_TICK_SCHEDULE ?? '*/5 * * * * *';
-const versionLabel = String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.06').trim() || 'build-0.1.06';
+const versionLabel = String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.08').trim() || 'build-0.1.08';
 const buildId =
   String(process.env.TLD_BUILD_ID ?? process.env.NETLIFY_COMMIT_REF ?? process.env.COMMIT_REF ?? versionLabel).trim() ||
   versionLabel;
@@ -44,6 +79,8 @@ const isUpdateInProgress = ['1', 'true', 'yes', 'on', 'building', 'deploying', '
 const isServerlessRuntime = Boolean(
   process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.LAMBDA_TASK_ROOT,
 );
+const runtimeEnv = String(process.env.TLD_ENV ?? process.env.NODE_ENV ?? '').trim().toLowerCase();
+const isProductionRuntime = runtimeEnv === 'production';
 const corsOriginRaw = String(process.env.CORS_ORIGIN ?? '').trim();
 const resolvedCorsOrigin =
   corsOriginRaw && corsOriginRaw !== '*'
@@ -52,6 +89,37 @@ const resolvedCorsOrigin =
         .map((entry) => entry.trim())
         .filter(Boolean)
     : null;
+const localCorsOrigins = new Set([
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+]);
+if (isProductionRuntime && !resolvedCorsOrigin) {
+  throw new Error("[backend] V produkci musi byt nastavene CORS_ORIGIN.");
+}
+const PUBLIC_AUTH_PATHS = new Set(['/auth/login', '/auth/register']);
+
+const resolveRequestIpAddress = (request) => {
+  const forwardedForHeader = request?.headers?.['x-forwarded-for'];
+  if (typeof forwardedForHeader === 'string' && forwardedForHeader.trim()) {
+    return forwardedForHeader.split(',')[0].trim();
+  }
+  if (Array.isArray(forwardedForHeader) && forwardedForHeader.length > 0) {
+    const first = String(forwardedForHeader[0] ?? '').trim();
+    if (first) {
+      return first;
+    }
+  }
+  return String(request?.ip ?? '').trim() || null;
+};
+
+const normalizeComparableUsername = (value) =>
+  String(value ?? '')
+    .trim()
+    .toLocaleLowerCase('cs-CZ');
 
 const executeWithReadOperation = async (operation) => operation();
 const executeWithWriteOperation = async (operation) => operation();
@@ -68,6 +136,17 @@ const parseOptionalSpawnDirection = (value) => {
     return 'center';
   }
   return ['center', 'north', 'east', 'south', 'west'].includes(normalized) ? normalized : 'center';
+};
+const parseOptionalPositiveNumber = (value) => {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) {
+    return null;
+  }
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
 };
 
 const toGameRuleError = (error) => {
@@ -106,11 +185,34 @@ app.use(
 
             callback(null, resolvedCorsOrigin.includes(origin));
           },
+          credentials: true,
         }
-      : undefined,
+      : {
+          origin: (origin, callback) => {
+            if (!origin) {
+              callback(null, true);
+              return;
+            }
+            callback(null, localCorsOrigins.has(origin));
+          },
+          credentials: true,
+        },
   ),
 );
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
+app.use(
+  COMMUNICATION_AVATAR_PUBLIC_PATH,
+  express.static(COMMUNICATION_AVATAR_STORAGE_DIR, {
+    etag: true,
+    immutable: true,
+    maxAge: isProductionRuntime ? '30d' : 0,
+    fallthrough: true,
+    setHeaders: (res) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', isProductionRuntime ? 'public, max-age=2592000, immutable' : 'no-cache');
+    },
+  }),
+);
 
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -136,6 +238,13 @@ app.post('/api/v1/auth/login', async (req, res, next) => {
     const username = String(req.body?.username ?? '').trim();
     const password = String(req.body?.password ?? '').trim();
     const data = await executeWithReadOperation(() => authenticatePlayer(username, password));
+    const session = await executeWithWriteOperation(() =>
+      createSessionForUsername(data.username, {
+        userAgent: req.headers['user-agent'],
+        ipAddress: resolveRequestIpAddress(req),
+      }),
+    );
+    res.cookie(SESSION_COOKIE_NAME, session.token, session.cookieOptions);
 
     res.json({
       ok: true,
@@ -151,6 +260,13 @@ app.post('/api/v1/auth/register', async (req, res, next) => {
     const username = String(req.body?.username ?? '').trim();
     const password = String(req.body?.password ?? '').trim();
     const data = await executeWithWriteOperation(() => createPlayerAccount(username, password));
+    const session = await executeWithWriteOperation(() =>
+      createSessionForUsername(data.username, {
+        userAgent: req.headers['user-agent'],
+        ipAddress: resolveRequestIpAddress(req),
+      }),
+    );
+    res.cookie(SESSION_COOKIE_NAME, session.token, session.cookieOptions);
 
     res.status(201).json({
       ok: true,
@@ -256,6 +372,529 @@ app.get('/api/v1/reports', async (req, res, next) => {
 
     res.json({
       ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/auth/logout', async (req, res, next) => {
+  try {
+    await executeWithWriteOperation(() => clearSessionFromRequest(req));
+    res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
+    res.status(201).json({
+      ok: true,
+      data: {
+        loggedOut: true,
+      },
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.use('/api/v1', (req, _res, next) => {
+  if (PUBLIC_AUTH_PATHS.has(String(req.path ?? '').trim())) {
+    next();
+    return;
+  }
+
+  const session = resolveSessionFromRequest(req);
+  if (!session) {
+    next(new GameRuleError('Neplatne prihlasovaci udaje.', 401));
+    return;
+  }
+
+  const bodyUsernameRaw =
+    req.body && typeof req.body === 'object' && 'username' in req.body ? req.body.username : null;
+  const queryUsernameRaw =
+    req.query && typeof req.query === 'object' && 'username' in req.query ? req.query.username : null;
+
+  const bodyUsername = String(bodyUsernameRaw ?? '').trim();
+  const queryUsername = String(queryUsernameRaw ?? '').trim();
+  const sessionComparable = normalizeComparableUsername(session.username);
+
+  if (bodyUsername && normalizeComparableUsername(bodyUsername) !== sessionComparable) {
+    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403));
+    return;
+  }
+
+  if (queryUsername && normalizeComparableUsername(queryUsername) !== sessionComparable) {
+    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403));
+    return;
+  }
+
+  if (req.query && typeof req.query === 'object') {
+    req.query.username = session.username;
+  }
+  if (req.body && typeof req.body === 'object') {
+    req.body.username = session.username;
+  }
+
+  req.authSession = session;
+  next();
+});
+
+app.get('/api/v1/activity', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.query.worldId);
+    const page = Number(req.query.page ?? 1);
+    const pageSize = Number(req.query.pageSize ?? 25);
+    const includeArchived = String(req.query.includeArchived ?? '').trim();
+    const data = await executeWithWriteOperation(() => {
+      runGameTick();
+      return listPlayerNotifications(
+        username,
+        {
+          page: Number.isFinite(page) ? page : 1,
+          pageSize: Number.isFinite(pageSize) ? pageSize : 25,
+          includeArchived,
+        },
+        worldId,
+      );
+    });
+
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/activity/read-all', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const result = await executeWithWriteOperation(() => markAllPlayerNotificationsRead(username, worldId));
+    res.status(201).json({
+      ok: true,
+      result,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/activity/:notificationId/read', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const notificationId = Number(String(req.params.notificationId ?? '').trim());
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const result = await executeWithWriteOperation(() =>
+      markPlayerNotificationRead(username, notificationId, worldId),
+    );
+    res.status(201).json({
+      ok: true,
+      result,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/activity/:notificationId/archive', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const notificationId = Number(String(req.params.notificationId ?? '').trim());
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const result = await executeWithWriteOperation(() =>
+      archivePlayerNotification(username, notificationId, worldId),
+    );
+    res.status(201).json({
+      ok: true,
+      result,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/activity/:notificationId/unarchive', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const notificationId = Number(String(req.params.notificationId ?? '').trim());
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const result = await executeWithWriteOperation(() =>
+      unarchivePlayerNotification(username, notificationId, worldId),
+    );
+    res.status(201).json({
+      ok: true,
+      result,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/activity/:notificationId/delete', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const notificationId = Number(String(req.params.notificationId ?? '').trim());
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const result = await executeWithWriteOperation(() =>
+      deletePlayerNotification(username, notificationId, worldId),
+    );
+    res.status(201).json({
+      ok: true,
+      result,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.get('/api/v1/communication', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError("Query parametr 'username' je povinny.", 400);
+    }
+    const threadId = parseOptionalPositiveNumber(req.query.threadId);
+    const beforeMessageId = parseOptionalPositiveNumber(req.query.beforeMessageId);
+    const threadLimit = parseOptionalPositiveNumber(req.query.threadLimit);
+    const messageLimit = parseOptionalPositiveNumber(req.query.messageLimit);
+    const search = String(req.query.search ?? '').trim();
+    const data = await executeWithWriteOperation(() => {
+      runGameTick();
+      return listCommunicationInbox(username, {
+        threadId,
+        beforeMessageId,
+        threadLimit,
+        messageLimit,
+        search,
+      });
+    });
+
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.get('/api/v1/communication/summary', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError("Query parametr 'username' je povinny.", 400);
+    }
+
+    const data = await executeWithReadOperation(() => listCommunicationSummary(username));
+    res.json({
+      ok: true,
+      data: {
+        serverTime: data.serverTime,
+        summary: data.summary,
+      },
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.get('/api/v1/communication/suggestions', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError("Query parametr 'username' je povinny.", 400);
+    }
+    const tokenType = String(req.query.tokenType ?? '').trim().toLowerCase();
+    const query = String(req.query.query ?? '').trim();
+    const limit = parseOptionalPositiveNumber(req.query.limit);
+    const data = await executeWithReadOperation(() =>
+      listCommunicationTokenSuggestions(username, {
+        tokenType,
+        query,
+        limit,
+      }),
+    );
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/communication/notification/share', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError("Pole 'username' je povinne.", 400);
+    }
+    const notificationId = Number(req.body?.notificationId ?? 0);
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const result = await executeWithWriteOperation(() =>
+      createNotificationShare(username, notificationId, worldId),
+    );
+    res.status(201).json({
+      ok: true,
+      result,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.get('/api/v1/communication/notification/share/:shareToken', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError("Query parametr 'username' je povinny.", 400);
+    }
+    const shareToken = String(req.params.shareToken ?? '').trim();
+    if (!shareToken) {
+      throw new GameRuleError("Parametr 'shareToken' je povinny.", 400);
+    }
+    const data = await executeWithReadOperation(() => getNotificationSharePreview(username, shareToken));
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/communication/thread/open', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError("Pole 'username' je povinne.", 400);
+    }
+    const payload = {
+      threadId: parseOptionalPositiveNumber(req.body?.threadId),
+      targetUsername: String(req.body?.targetUsername ?? '').trim() || null,
+    };
+    const result = await executeWithWriteOperation(() => openCommunicationThread(username, payload));
+    const data = await executeWithReadOperation(() =>
+      listCommunicationInbox(username, {
+        threadId: result.threadId,
+      }),
+    );
+
+    res.status(201).json({
+      ok: true,
+      result,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/communication/thread/message', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError("Pole 'username' je povinne.", 400);
+    }
+    const payload = {
+      threadId: parseOptionalPositiveNumber(req.body?.threadId),
+      targetUsername: String(req.body?.targetUsername ?? '').trim() || null,
+      body: String(req.body?.body ?? ''),
+      payload: req.body?.payload ?? null,
+    };
+    const result = await executeWithWriteOperation(() => sendCommunicationMessage(username, payload));
+    const data = await executeWithReadOperation(() =>
+      listCommunicationInbox(username, {
+        threadId: result.threadId,
+      }),
+    );
+
+    res.status(201).json({
+      ok: true,
+      result,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/communication/thread/:threadId/archive', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    const threadId = Number(req.params.threadId);
+    if (!username) {
+      throw new GameRuleError("Pole 'username' je povinne.", 400);
+    }
+    const result = await executeWithWriteOperation(() => archiveCommunicationThread(username, threadId));
+    const data = await executeWithReadOperation(() => listCommunicationInbox(username));
+    res.status(201).json({
+      ok: true,
+      result,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/communication/message/:messageId/delete', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    const messageId = Number(req.params.messageId);
+    if (!username) {
+      throw new GameRuleError("Pole 'username' je povinne.", 400);
+    }
+    const result = await executeWithWriteOperation(() => deleteCommunicationMessage(username, messageId));
+    const data = await executeWithReadOperation(() =>
+      listCommunicationInbox(username, {
+        threadId: result.threadId,
+      }),
+    );
+    res.status(201).json({
+      ok: true,
+      result,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/communication/friends/request', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    const targetUsername = String(req.body?.targetUsername ?? '').trim();
+    if (!username || !targetUsername) {
+      throw new GameRuleError("Pole 'username' a 'targetUsername' jsou povinne.", 400);
+    }
+    const result = await executeWithWriteOperation(() => sendFriendRequest(username, targetUsername));
+    const data = await executeWithReadOperation(() => listCommunicationInbox(username));
+    res.status(201).json({
+      ok: true,
+      result,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/communication/friends/request/:requestId/respond', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    const requestId = Number(req.params.requestId);
+    const action = String(req.body?.action ?? '').trim().toLowerCase();
+    if (!username) {
+      throw new GameRuleError("Pole 'username' je povinne.", 400);
+    }
+    const result = await executeWithWriteOperation(() => respondFriendRequest(username, requestId, action));
+    const data = await executeWithReadOperation(() => listCommunicationInbox(username));
+    res.status(201).json({
+      ok: true,
+      result,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/communication/friends/remove', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    const targetUsername = String(req.body?.targetUsername ?? '').trim();
+    if (!username || !targetUsername) {
+      throw new GameRuleError("Pole 'username' a 'targetUsername' jsou povinne.", 400);
+    }
+    const result = await executeWithWriteOperation(() => removeFriend(username, targetUsername));
+    const data = await executeWithReadOperation(() => listCommunicationInbox(username));
+    res.status(201).json({
+      ok: true,
+      result,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/communication/block', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    const targetUsername = String(req.body?.targetUsername ?? '').trim();
+    if (!username || !targetUsername) {
+      throw new GameRuleError("Pole 'username' a 'targetUsername' jsou povinne.", 400);
+    }
+    const result = await executeWithWriteOperation(() => blockPlayer(username, targetUsername));
+    const data = await executeWithReadOperation(() => listCommunicationInbox(username));
+    res.status(201).json({
+      ok: true,
+      result,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/communication/unblock', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    const targetUsername = String(req.body?.targetUsername ?? '').trim();
+    if (!username || !targetUsername) {
+      throw new GameRuleError("Pole 'username' a 'targetUsername' jsou povinne.", 400);
+    }
+    const result = await executeWithWriteOperation(() => unblockPlayer(username, targetUsername));
+    const data = await executeWithReadOperation(() => listCommunicationInbox(username));
+    res.status(201).json({
+      ok: true,
+      result,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/communication/avatar', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError("Pole 'username' je povinne.", 400);
+    }
+    const avatarDataUrl = req.body?.avatarDataUrl ?? null;
+    const avatarUrl = req.body?.avatarUrl ?? null;
+    const result = await executeWithWriteOperation(() => {
+      const normalizedAvatarDataUrl = String(avatarDataUrl ?? '').trim();
+      if (normalizedAvatarDataUrl) {
+        return setCommunicationAvatarFromDataUrl(username, normalizedAvatarDataUrl);
+      }
+      return setCommunicationAvatar(username, avatarUrl);
+    });
+    const data = await executeWithReadOperation(() => listCommunicationInbox(username));
+    res.status(201).json({
+      ok: true,
+      result,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/communication/ui-state', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError("Pole 'username' je povinne.", 400);
+    }
+    const state = req.body?.state ?? {};
+    const result = await executeWithWriteOperation(() => setCommunicationUiState(username, state));
+    const data = await executeWithReadOperation(() => listCommunicationInbox(username));
+    res.status(201).json({
+      ok: true,
+      result,
       data,
     });
   } catch (error) {
@@ -461,6 +1100,39 @@ app.post('/api/v1/villages/restart', async (req, res, next) => {
     next(toGameRuleError(error));
   }
 });
+
+const handleVillageRenameRequest = async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const name = String(req.body?.name ?? '').trim();
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId ?? req.params?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = renameVillage(username, name, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      return { result, state };
+    });
+
+    res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+};
+
+app.post('/api/v1/villages/rename', handleVillageRenameRequest);
+app.post('/api/v1/village/rename', handleVillageRenameRequest);
+app.post('/api/v1/villages/:villageId/rename', handleVillageRenameRequest);
+app.post('/api/v1/village/:villageId/rename', handleVillageRenameRequest);
 
 app.post('/api/v1/admin/abandoned-villages/create', async (req, res, next) => {
   try {
@@ -675,7 +1347,11 @@ app.post('/api/v1/kingdom/kick', async (req, res, next) => {
 
 app.post('/api/v1/tick', async (_req, res, next) => {
   try {
-    const tick = await executeWithWriteOperation(() => runGameTick());
+    const tick = await executeWithWriteOperation(() => {
+      const nextTick = runGameTick();
+      runCommunicationRetentionCleanup();
+      return nextTick;
+    });
     res.json({
       ok: true,
       tick,
@@ -686,6 +1362,22 @@ app.post('/api/v1/tick', async (_req, res, next) => {
 });
 
 app.use((error, _req, res, _next) => {
+  if (error?.type === 'entity.too.large') {
+    res.status(413).json({
+      ok: false,
+      error: 'Odeslany payload je prilis velky.',
+    });
+    return;
+  }
+
+  if (error instanceof SyntaxError && 'body' in error) {
+    res.status(400).json({
+      ok: false,
+      error: 'Neplatny JSON payload.',
+    });
+    return;
+  }
+
   if (error instanceof GameRuleError) {
     res.status(error.statusCode ?? 400).json({
       ok: false,
@@ -707,6 +1399,7 @@ if (!isServerlessRuntime) {
   cronTask = cron.schedule(tickSchedule, () => {
     try {
       runGameTick();
+      runCommunicationRetentionCleanup();
     } catch (error) {
       console.error('[backend] Tick failure:', error);
     }

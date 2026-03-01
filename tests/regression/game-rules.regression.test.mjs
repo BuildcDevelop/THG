@@ -72,6 +72,21 @@ test('mixed scout attacks are allowed and scout does not loot', () => {
   assert.equal(Number(result.totalLoot ?? 0), 20);
 });
 
+test('scouts can be combined with every unit in attack command', () => {
+  const result = runScenario('scout-combo-attack-matrix');
+  const combos = Array.isArray(result.combos) ? result.combos : [];
+  assert.equal(combos.length, 6);
+
+  for (const combo of combos) {
+    assert.equal(Boolean(combo.orderAccepted), true, `scout + ${combo.unitId} should be accepted`);
+    assert.equal(Number(combo.sentScout ?? 0), 5, `scout + ${combo.unitId} should send scouts`);
+    assert.equal(Number(combo.sentPartner ?? 0), 3, `scout + ${combo.unitId} should send partner unit`);
+  }
+
+  assert.equal(Boolean(result.scoutOnly?.isSpy), true);
+  assert.equal(Number(result.scoutOnly?.sentScout ?? 0), 7);
+});
+
 test('loot capacity includes non-scout non-ram units', () => {
   const result = runScenario('loot-capacity-all-units');
   assert.equal(Number(result.totalLoot ?? 0), 366);
@@ -82,6 +97,39 @@ test('attack defaults to balanced loot priority', () => {
   assert.equal(String(result.reportedLootPriority ?? ''), 'balanced');
   assert.equal(Number(result.totalLoot ?? 0), 40);
   assert.ok(Number(result.lootSpread ?? 999) <= 1);
+});
+
+test('caravans follow binary casualty rule based on combat survivors', () => {
+  const result = runScenario('caravan-binary-casualties');
+  const survivorCase = result.survivorCase ?? {};
+  const wipedCase = result.wipedCase ?? {};
+
+  assert.equal(Boolean(survivorCase.attackerWins), true);
+  assert.ok(Number(survivorCase.survivingCombatUnits ?? 0) > 0);
+  assert.equal(
+    Number(survivorCase.survivingCaravans ?? -1),
+    Number(survivorCase.sentCaravans ?? -2),
+  );
+
+  assert.ok(Number(wipedCase.survivingCombatUnits ?? 1) === 0);
+  assert.equal(Number(wipedCase.survivingCaravans ?? -1), 0);
+});
+
+test('scout-only attack vs defender without scouts has zero scout losses', () => {
+  const result = runScenario('scout-only-no-defender-scouts');
+  assert.equal(Boolean(result.isSpyReport), true);
+  assert.equal(Number(result.defenderScouts ?? -1), 0);
+  assert.equal(Number(result.scoutLosses ?? -1), 0);
+  assert.equal(Number(result.scoutSurvivors ?? -1), Number(result.scoutStart ?? -2));
+  assert.equal(Boolean(result.success), true);
+});
+
+test('loot capacity uses units that actually return after conquest', () => {
+  const result = runScenario('conquest-knight-loot-capacity');
+  assert.equal(Boolean(result.conquest?.conquered), true);
+  assert.equal(Boolean(result.conquest?.knightConsumed), true);
+  assert.equal(result.returnMovement, null);
+  assert.equal(Number(result.totalLoot ?? -1), 0);
 });
 
 test('village limit is enforced per world with cap 6', () => {

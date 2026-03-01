@@ -24,6 +24,9 @@ export type WorldSettlement = {
   note: string;
   visibility: 'full' | 'public';
   relation: 'self' | 'ally' | 'enemy';
+  protectionUntil?: string | null;
+  protectionRemainingSec?: number;
+  protectionRuleDays?: number;
 };
 
 export type WorldKingdomSummary = {
@@ -68,6 +71,8 @@ export type GameUnitState = {
 export type ArmyMovementState = {
   id: number;
   commandType: 'attack' | 'support' | 'move' | 'return';
+  commanderPlayerId?: number | null;
+  commanderUsername?: string | null;
   originVillageId: number;
   targetVillageId: number;
   homeVillageId: number;
@@ -89,6 +94,7 @@ export type ArmyMovementState = {
   distance: number;
   remainingSec: number;
   isRelatedToCurrentVillage: boolean;
+  isIncoming?: boolean;
   units: {
     unitId: string;
     amount: number;
@@ -277,6 +283,7 @@ export type GameStateResponse = {
   army: {
     activeMovements: ArmyMovementState[];
     stationedSupports: ArmyMovementState[];
+    incomingMovements: ArmyMovementState[];
   };
   activeOrders: string[];
   limits: {
@@ -478,6 +485,13 @@ export type BattleReportPayload = {
     targetVillageName?: string;
     knightConsumed?: boolean;
   };
+  sentArmy?: {
+    start?: Record<string, number>;
+    totalUnits?: number;
+    baseAttackPower?: number;
+    finalAttackPower?: number;
+    attackMultiplier?: number;
+  };
   battle?: {
     blockedByGate?: boolean;
     gateDamageLossRatio?: number;
@@ -523,6 +537,49 @@ export type BattleReportListResponse = {
   total: number;
   totalPages: number;
   items: BattleReportItem[];
+};
+
+export type GameActivitySeverity = 'info' | 'success' | 'warning' | 'critical';
+
+export type GameActivityItem = {
+  id: number;
+  playerId: number;
+  region: number;
+  category: string;
+  eventType: string;
+  severity: GameActivitySeverity;
+  title: string;
+  summary: string;
+  payload: Record<string, unknown>;
+  sourceType: string | null;
+  sourceId: number | null;
+  createdAt: string;
+  readAt: string | null;
+  archivedAt: string | null;
+};
+
+export type GameActivityListResponse = {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  includeArchived: boolean;
+  unreadTotal: number;
+  attentionTotal: number;
+  unreadFeed: GameActivityItem[];
+  items: GameActivityItem[];
+};
+
+export type GameActivityMutationResult = {
+  notificationId?: number;
+  action?: 'read' | 'archive' | 'unarchive' | 'delete';
+  actedAt: string;
+  changed?: number;
+  summary: {
+    unreadTotal: number;
+    attentionTotal: number;
+    unreadFeed: GameActivityItem[];
+  };
 };
 
 export type ArmyCommandType = 'attack' | 'support' | 'move' | 'return';
@@ -610,6 +667,291 @@ export type KingdomKickResult = {
   kickedAt: string;
 };
 
+export type CommunicationRelation = 'friend' | 'kingdom' | 'stranger';
+
+export type CommunicationInternalLinkPayload = {
+  kind: 'internal-link';
+  worldId: string;
+  path: string;
+  label: string;
+  createdAt?: string;
+};
+
+export type CommunicationNotificationSharePayload = {
+  kind: 'notification-share';
+  shareToken: string;
+  notificationId: number;
+  label: string;
+  createdAt?: string;
+};
+
+export type CommunicationMessagePayload =
+  | CommunicationInternalLinkPayload
+  | CommunicationNotificationSharePayload
+  | Record<string, unknown>;
+
+export type CommunicationMessage = {
+  id: number;
+  threadId: number;
+  senderPlayerId: number;
+  senderUsername: string;
+  senderAvatarUrl: string | null;
+  body: string;
+  payload: CommunicationMessagePayload | null;
+  createdAt: string;
+  deletedAt: string | null;
+};
+
+export type CommunicationThreadSummary = {
+  id: number;
+  kind: string;
+  createdByPlayerId: number;
+  createdAt: string;
+  relation: CommunicationRelation;
+  isFriend: boolean;
+  isMessageRequest: boolean;
+  unreadCount: number;
+  lastOpenedAt: string | null;
+  otherPlayer: {
+    id: number;
+    username: string;
+    avatarUrl: string | null;
+    isOnline: boolean;
+    lastActiveAt: string | null;
+  };
+  lastMessage: CommunicationMessage | null;
+  lastActivityAt: string;
+};
+
+export type CommunicationFriend = {
+  playerId: number;
+  username: string;
+  avatarUrl: string | null;
+  isOnline: boolean;
+  lastActiveAt: string | null;
+};
+
+export type CommunicationFriendRequestIncoming = {
+  id: number;
+  senderPlayerId: number;
+  senderUsername: string;
+  senderAvatarUrl: string | null;
+  createdAt: string;
+};
+
+export type CommunicationFriendRequestOutgoing = {
+  id: number;
+  receiverPlayerId: number;
+  receiverUsername: string;
+  receiverAvatarUrl: string | null;
+  createdAt: string;
+};
+
+export type CommunicationBlockedPlayer = {
+  playerId: number;
+  username: string;
+};
+
+export type CommunicationSuggestion = {
+  playerId: number;
+  username: string;
+  avatarUrl: string | null;
+  isOnline: boolean;
+  lastActiveAt: string | null;
+  isFriend: boolean;
+  isBlocked: boolean;
+  relation: CommunicationRelation;
+};
+
+export type CommunicationSummary = {
+  unreadMessages: number;
+  messageRequests: number;
+  friendRequests: number;
+  totalAttention: number;
+};
+
+export type CommunicationSummaryResponse = {
+  serverTime: string;
+  summary: CommunicationSummary;
+};
+
+export type CommunicationInboxResponse = {
+  serverTime: string;
+  me: {
+    playerId: number;
+    username: string;
+    avatarUrl: string | null;
+    avatarUpdatedAt: string | null;
+  };
+  uiState: {
+    communication: Record<string, unknown>;
+    updatedAt: string | null;
+  };
+  summary: CommunicationSummary;
+  threads: CommunicationThreadSummary[];
+  selectedThreadId: number | null;
+  selectedMessages: CommunicationMessage[];
+  friends: CommunicationFriend[];
+  friendRequests: {
+    incoming: CommunicationFriendRequestIncoming[];
+    outgoing: CommunicationFriendRequestOutgoing[];
+  };
+  blockedPlayers: CommunicationBlockedPlayer[];
+  suggestions: CommunicationSuggestion[];
+};
+
+export type OpenCommunicationThreadResult = {
+  threadId: number;
+  openedAt: string;
+  latestMessageId: number | null;
+};
+
+export type SendCommunicationMessageResult = {
+  threadId: number;
+  message: CommunicationMessage;
+};
+
+export type ArchiveCommunicationThreadResult = {
+  threadId: number;
+  archivedAt: string;
+};
+
+export type DeleteCommunicationMessageResult = {
+  messageId: number;
+  threadId: number;
+  deletedAt: string;
+};
+
+export type SendCommunicationFriendRequestResult =
+  | {
+      acceptedImmediately: true;
+      friendPlayerId: number;
+      friendUsername: string;
+      actedAt: string;
+    }
+  | {
+      requestId: number;
+      senderPlayerId: number;
+      senderUsername: string;
+      receiverPlayerId: number;
+      receiverUsername: string;
+      createdAt: string;
+    };
+
+export type RespondCommunicationFriendRequestResult = {
+  requestId: number;
+  action: 'accept' | 'reject';
+  actedAt: string;
+};
+
+export type RemoveCommunicationFriendResult = {
+  removedPlayerId: number;
+  removedUsername: string;
+};
+
+export type BlockCommunicationPlayerResult = {
+  blockedPlayerId: number;
+  blockedUsername: string;
+  blockedAt: string;
+};
+
+export type UnblockCommunicationPlayerResult = {
+  unblockedPlayerId: number;
+  unblockedUsername: string;
+  unblockedAt: string;
+};
+
+export type SetCommunicationAvatarResult = {
+  playerId: number;
+  avatarUrl: string | null;
+  updatedAt: string;
+};
+
+export type SetCommunicationUiStateResult = {
+  updatedAt: string;
+};
+
+export type CommunicationTokenSuggestion =
+  | {
+      kind: 'user';
+      label: string;
+      value: string;
+      playerId: number;
+      avatarUrl: string | null;
+      relation: CommunicationRelation;
+      isFriend: boolean;
+    }
+  | {
+      kind: 'kingdom';
+      label: string;
+      value: string;
+      villages: number;
+    }
+  | {
+      kind: 'village';
+      label: string;
+      value: string;
+      villageId: number;
+      villageName: string;
+      coordX: number;
+      coordY: number;
+      ownerUsername: string;
+      kingdom: string;
+    };
+
+export type CommunicationTokenSuggestionsResponse = {
+  tokenType: string;
+  query: string;
+  suggestions: CommunicationTokenSuggestion[];
+};
+
+export type CommunicationNotificationShareCreateResult = {
+  shareToken: string;
+  sharedAt: string;
+  notification: {
+    id: number;
+    region: number;
+    category: string;
+    eventType: string;
+    severity: string;
+    title: string;
+    summary: string;
+    payload: Record<string, unknown>;
+    createdAt: string;
+  };
+};
+
+export type CommunicationNotificationSharePreview = {
+  shareToken: string;
+  sharedAt: string;
+  sourcePlayerId: number;
+  sourceUsername: string;
+  sourceNotificationId: number;
+  available: boolean;
+  deleted: boolean;
+  battleReport?: BattleReportItem | null;
+  notification: {
+    id: number;
+    category: string;
+    eventType: string;
+    severity: string;
+    title: string;
+    summary: string;
+    payload: Record<string, unknown>;
+    createdAt: string;
+    readAt: string | null;
+    archivedAt: string | null;
+  } | null;
+};
+
+export type RenameVillageResult = {
+  villageId: number;
+  previousName: string;
+  newName: string;
+  renamed: boolean;
+  changedAt: string;
+};
+
 type ApiOk<T> = {
   ok: true;
   data: T;
@@ -620,12 +962,28 @@ type ApiError = {
   error: string;
 };
 
-const baseUrl = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/+$/, '') ?? '';
+const rawBaseUrl = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/+$/, '') ?? '';
 const allowRemoteApiFromLocalhost =
   String(import.meta.env.VITE_ALLOW_REMOTE_API_FROM_LOCALHOST ?? '')
     .trim()
     .toLowerCase() === 'true';
 const LOCALHOST_NAMES = new Set(['localhost', '127.0.0.1', '::1']);
+const shouldForceRelativeApiForRemoteHost = (() => {
+  if (typeof window === 'undefined' || !rawBaseUrl) {
+    return false;
+  }
+  const currentHost = String(window.location.hostname ?? '').trim().toLowerCase();
+  if (LOCALHOST_NAMES.has(currentHost)) {
+    return false;
+  }
+  try {
+    const targetUrl = new URL(rawBaseUrl);
+    return LOCALHOST_NAMES.has(String(targetUrl.hostname ?? '').trim().toLowerCase());
+  } catch {
+    return false;
+  }
+})();
+const baseUrl = shouldForceRelativeApiForRemoteHost ? '' : rawBaseUrl;
 
 const resolveUnsafeLocalhostRemoteApiMessage = (): string | null => {
   if (allowRemoteApiFromLocalhost || !baseUrl || typeof window === 'undefined') {
@@ -659,6 +1017,7 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   }
 
   const response = await fetch(`${baseUrl}${path}`, {
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       ...(init?.headers ?? {}),
@@ -691,6 +1050,11 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   return payload as T;
 };
 
+const isHttp404Error = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return message.includes('HTTP 404');
+};
+
 export const loginRequest = async (username: string, password: string): Promise<LoginResponse> => {
   const payload = await request<ApiOk<LoginResponse>>('/api/v1/auth/login', {
     method: 'POST',
@@ -707,6 +1071,13 @@ export const registerRequest = async (username: string, password: string): Promi
   });
 
   return payload.data;
+};
+
+export const logoutRequest = async (): Promise<void> => {
+  await request<ApiOk<{ loggedOut: boolean }>>('/api/v1/auth/logout', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
 };
 
 export const fetchWorlds = async (username: string): Promise<WorldsPortalResponse> => {
@@ -878,6 +1249,54 @@ export const restartVillageProgress = async (
   };
 };
 
+export const renameVillage = async (
+  username: string,
+  name: string,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: RenameVillageResult; data: GameStateResponse }> => {
+  const body = JSON.stringify({ username, name, villageId, worldId });
+  const candidatePaths = [
+    '/api/v1/villages/rename',
+    '/api/v1/villages/rename/',
+    villageId != null && Number.isFinite(Number(villageId))
+      ? `/api/v1/villages/${encodeURIComponent(String(villageId))}/rename`
+      : null,
+    villageId != null && Number.isFinite(Number(villageId))
+      ? `/api/v1/villages/${encodeURIComponent(String(villageId))}/rename/`
+      : null,
+    villageId != null && Number.isFinite(Number(villageId))
+      ? `/api/v1/village/${encodeURIComponent(String(villageId))}/rename`
+      : null,
+    '/api/v1/village/rename',
+    '/api/v1/village/rename/',
+  ].filter((path): path is string => path != null);
+
+  let lastError: unknown = null;
+  for (const path of candidatePaths) {
+    try {
+      const payload = await request<ApiOk<GameStateResponse> & { result: RenameVillageResult }>(path, {
+        method: 'POST',
+        body,
+      });
+      return {
+        result: payload.result,
+        data: payload.data,
+      };
+    } catch (error) {
+      lastError = error;
+      if (!isHttp404Error(error)) {
+        throw error;
+      }
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+  throw new Error('Přejmenování léna selhalo: endpoint nebyl nalezen.');
+};
+
 export const createAbandonedVillages = async (
   count = 1,
 ): Promise<CreateAbandonedVillagesResult> => {
@@ -937,6 +1356,392 @@ export const fetchBattleReports = async (
   }
   const payload = await request<ApiOk<BattleReportListResponse>>(`/api/v1/reports?${params.toString()}`);
   return payload.data;
+};
+
+export const fetchGameActivity = async (
+  username: string,
+  options?: {
+    page?: number;
+    pageSize?: number;
+    includeArchived?: boolean;
+    worldId?: string | null;
+  },
+): Promise<GameActivityListResponse> => {
+  const params = new URLSearchParams({
+    username,
+    page: String(options?.page ?? 1),
+    pageSize: String(options?.pageSize ?? 25),
+  });
+  if (options?.worldId != null && String(options.worldId).trim() !== '') {
+    params.set('worldId', String(options.worldId).trim());
+  }
+  if (options?.includeArchived) {
+    params.set('includeArchived', 'true');
+  }
+  const payload = await request<ApiOk<GameActivityListResponse>>(`/api/v1/activity?${params.toString()}`);
+  return payload.data;
+};
+
+export const markAllGameActivityRead = async (
+  username: string,
+  worldId?: string | null,
+): Promise<GameActivityMutationResult> => {
+  const payload = await request<{ ok: true; result: GameActivityMutationResult }>('/api/v1/activity/read-all', {
+    method: 'POST',
+    body: JSON.stringify({ username, worldId }),
+  });
+  return payload.result;
+};
+
+const mutateGameActivity = async (
+  username: string,
+  notificationId: number,
+  action: 'read' | 'archive' | 'unarchive' | 'delete',
+  worldId?: string | null,
+): Promise<GameActivityMutationResult> => {
+  const payload = await request<{ ok: true; result: GameActivityMutationResult }>(
+    `/api/v1/activity/${encodeURIComponent(String(notificationId))}/${action}`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, worldId }),
+    },
+  );
+  return payload.result;
+};
+
+export const markGameActivityRead = async (
+  username: string,
+  notificationId: number,
+  worldId?: string | null,
+): Promise<GameActivityMutationResult> => mutateGameActivity(username, notificationId, 'read', worldId);
+
+export const archiveGameActivity = async (
+  username: string,
+  notificationId: number,
+  worldId?: string | null,
+): Promise<GameActivityMutationResult> => mutateGameActivity(username, notificationId, 'archive', worldId);
+
+export const unarchiveGameActivity = async (
+  username: string,
+  notificationId: number,
+  worldId?: string | null,
+): Promise<GameActivityMutationResult> => mutateGameActivity(username, notificationId, 'unarchive', worldId);
+
+export const deleteGameActivity = async (
+  username: string,
+  notificationId: number,
+  worldId?: string | null,
+): Promise<GameActivityMutationResult> => mutateGameActivity(username, notificationId, 'delete', worldId);
+
+export const fetchCommunicationInbox = async (
+  username: string,
+  options?: {
+    threadId?: number | null;
+    beforeMessageId?: number | null;
+    threadLimit?: number | null;
+    messageLimit?: number | null;
+    search?: string | null;
+  },
+): Promise<CommunicationInboxResponse> => {
+  const params = new URLSearchParams({ username });
+  if (options?.threadId != null && Number.isFinite(options.threadId) && Number(options.threadId) > 0) {
+    params.set('threadId', String(Math.floor(Number(options.threadId))));
+  }
+  if (
+    options?.beforeMessageId != null &&
+    Number.isFinite(options.beforeMessageId) &&
+    Number(options.beforeMessageId) > 0
+  ) {
+    params.set('beforeMessageId', String(Math.floor(Number(options.beforeMessageId))));
+  }
+  if (options?.threadLimit != null && Number.isFinite(options.threadLimit) && Number(options.threadLimit) > 0) {
+    params.set('threadLimit', String(Math.floor(Number(options.threadLimit))));
+  }
+  if (options?.messageLimit != null && Number.isFinite(options.messageLimit) && Number(options.messageLimit) > 0) {
+    params.set('messageLimit', String(Math.floor(Number(options.messageLimit))));
+  }
+  if (options?.search != null && String(options.search).trim() !== '') {
+    params.set('search', String(options.search).trim());
+  }
+  const payload = await request<ApiOk<CommunicationInboxResponse>>(
+    `/api/v1/communication?${params.toString()}`,
+  );
+  return payload.data;
+};
+
+export const fetchCommunicationSummary = async (
+  username: string,
+): Promise<CommunicationSummaryResponse> => {
+  const params = new URLSearchParams({ username });
+  const payload = await request<ApiOk<CommunicationSummaryResponse>>(
+    `/api/v1/communication/summary?${params.toString()}`,
+  );
+  return payload.data;
+};
+
+export const openCommunicationThreadRequest = async (
+  username: string,
+  payload: {
+    threadId?: number | null;
+    targetUsername?: string | null;
+  },
+): Promise<{ result: OpenCommunicationThreadResult; data: CommunicationInboxResponse }> => {
+  const response = await request<ApiOk<CommunicationInboxResponse> & { result: OpenCommunicationThreadResult }>(
+    '/api/v1/communication/thread/open',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        threadId: payload.threadId,
+        targetUsername: payload.targetUsername,
+      }),
+    },
+  );
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
+export const sendCommunicationMessageRequest = async (
+  username: string,
+  payload: {
+    threadId?: number | null;
+    targetUsername?: string | null;
+    body?: string;
+    payload?: CommunicationMessagePayload | null;
+  },
+): Promise<{ result: SendCommunicationMessageResult; data: CommunicationInboxResponse }> => {
+  const response = await request<ApiOk<CommunicationInboxResponse> & { result: SendCommunicationMessageResult }>(
+    '/api/v1/communication/thread/message',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        threadId: payload.threadId,
+        targetUsername: payload.targetUsername,
+        body: payload.body ?? '',
+        payload: payload.payload ?? null,
+      }),
+    },
+  );
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
+export const archiveCommunicationThreadRequest = async (
+  username: string,
+  threadId: number,
+): Promise<{ result: ArchiveCommunicationThreadResult; data: CommunicationInboxResponse }> => {
+  const response = await request<ApiOk<CommunicationInboxResponse> & { result: ArchiveCommunicationThreadResult }>(
+    `/api/v1/communication/thread/${encodeURIComponent(String(threadId))}/archive`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ username }),
+    },
+  );
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
+export const deleteCommunicationMessageRequest = async (
+  username: string,
+  messageId: number,
+): Promise<{ result: DeleteCommunicationMessageResult; data: CommunicationInboxResponse }> => {
+  const response = await request<ApiOk<CommunicationInboxResponse> & { result: DeleteCommunicationMessageResult }>(
+    `/api/v1/communication/message/${encodeURIComponent(String(messageId))}/delete`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ username }),
+    },
+  );
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
+export const sendCommunicationFriendRequest = async (
+  username: string,
+  targetUsername: string,
+): Promise<{ result: SendCommunicationFriendRequestResult; data: CommunicationInboxResponse }> => {
+  const response = await request<ApiOk<CommunicationInboxResponse> & { result: SendCommunicationFriendRequestResult }>(
+    '/api/v1/communication/friends/request',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, targetUsername }),
+    },
+  );
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
+export const respondCommunicationFriendRequest = async (
+  username: string,
+  requestId: number,
+  action: 'accept' | 'reject',
+): Promise<{ result: RespondCommunicationFriendRequestResult; data: CommunicationInboxResponse }> => {
+  const response = await request<
+    ApiOk<CommunicationInboxResponse> & { result: RespondCommunicationFriendRequestResult }
+  >(`/api/v1/communication/friends/request/${encodeURIComponent(String(requestId))}/respond`, {
+    method: 'POST',
+    body: JSON.stringify({ username, action }),
+  });
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
+export const removeCommunicationFriend = async (
+  username: string,
+  targetUsername: string,
+): Promise<{ result: RemoveCommunicationFriendResult; data: CommunicationInboxResponse }> => {
+  const response = await request<ApiOk<CommunicationInboxResponse> & { result: RemoveCommunicationFriendResult }>(
+    '/api/v1/communication/friends/remove',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, targetUsername }),
+    },
+  );
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
+export const blockCommunicationPlayer = async (
+  username: string,
+  targetUsername: string,
+): Promise<{ result: BlockCommunicationPlayerResult; data: CommunicationInboxResponse }> => {
+  const response = await request<ApiOk<CommunicationInboxResponse> & { result: BlockCommunicationPlayerResult }>(
+    '/api/v1/communication/block',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, targetUsername }),
+    },
+  );
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
+export const unblockCommunicationPlayer = async (
+  username: string,
+  targetUsername: string,
+): Promise<{ result: UnblockCommunicationPlayerResult; data: CommunicationInboxResponse }> => {
+  const response = await request<ApiOk<CommunicationInboxResponse> & { result: UnblockCommunicationPlayerResult }>(
+    '/api/v1/communication/unblock',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, targetUsername }),
+    },
+  );
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
+export const setCommunicationAvatarRequest = async (
+  username: string,
+  avatarUrl: string | null,
+): Promise<{ result: SetCommunicationAvatarResult; data: CommunicationInboxResponse }> => {
+  const normalizedAvatar = avatarUrl == null ? null : String(avatarUrl);
+  const isDataAvatar = normalizedAvatar != null && normalizedAvatar.startsWith('data:image/');
+  const response = await request<ApiOk<CommunicationInboxResponse> & { result: SetCommunicationAvatarResult }>(
+    '/api/v1/communication/avatar',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        avatarUrl: isDataAvatar ? null : normalizedAvatar,
+        avatarDataUrl: isDataAvatar ? normalizedAvatar : null,
+      }),
+    },
+  );
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
+export const setCommunicationUiStateRequest = async (
+  username: string,
+  state: Record<string, unknown>,
+): Promise<{ result: SetCommunicationUiStateResult; data: CommunicationInboxResponse }> => {
+  const response = await request<ApiOk<CommunicationInboxResponse> & { result: SetCommunicationUiStateResult }>(
+    '/api/v1/communication/ui-state',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, state }),
+    },
+  );
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
+export const fetchCommunicationTokenSuggestions = async (
+  username: string,
+  payload: {
+    tokenType: 'user' | 'kingdom' | 'village';
+    query: string;
+    limit?: number;
+  },
+): Promise<CommunicationTokenSuggestionsResponse> => {
+  const params = new URLSearchParams({
+    username,
+    tokenType: payload.tokenType,
+    query: payload.query,
+  });
+  if (payload.limit != null && Number.isFinite(payload.limit) && payload.limit > 0) {
+    params.set('limit', String(Math.floor(payload.limit)));
+  }
+  const response = await request<ApiOk<CommunicationTokenSuggestionsResponse>>(
+    `/api/v1/communication/suggestions?${params.toString()}`,
+  );
+  return response.data;
+};
+
+export const createCommunicationNotificationShare = async (
+  username: string,
+  payload: {
+    notificationId: number;
+    worldId?: string | null;
+  },
+): Promise<CommunicationNotificationShareCreateResult> => {
+  const response = await request<{ ok: true; result: CommunicationNotificationShareCreateResult }>(
+    '/api/v1/communication/notification/share',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        notificationId: payload.notificationId,
+        worldId: payload.worldId ?? null,
+      }),
+    },
+  );
+  return response.result;
+};
+
+export const fetchCommunicationNotificationSharePreview = async (
+  username: string,
+  shareToken: string,
+): Promise<CommunicationNotificationSharePreview> => {
+  const params = new URLSearchParams({ username });
+  const response = await request<ApiOk<CommunicationNotificationSharePreview>>(
+    `/api/v1/communication/notification/share/${encodeURIComponent(shareToken)}?${params.toString()}`,
+  );
+  return response.data;
 };
 
 export const createKingdom = async (

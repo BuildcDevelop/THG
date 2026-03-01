@@ -1,31 +1,61 @@
 [build]
   command = "npm run build"
   publish = "dist"
-  functions = "netlify/functions"
 
 [build.environment]
   NODE_VERSION = "22"
 
-[context.production.environment]
-  VITE_API_BASE = "https://thg.89-167-89-109.sslip.io"
-  TLD_PRODUCTION_API_ORIGIN = "https://thg.89-167-89-109.sslip.io"
-
-[functions]
-  node_bundler = "esbuild"
-  external_node_modules = ["better-sqlite3"]
-  included_files = ["server/data/game.seed.sqlite.backup"]
-
-[[redirects]]
+# Production only: proxy API calls to the live self-hosted backend (Docker).
+# Keep this in sync with the backend domain/TLS (Caddy).
+[[context.production.redirects]]
   from = "/api"
-  to = "/.netlify/functions/api/api"
+  to = "https://thg.89-167-89-109.sslip.io/api"
   status = 200
+  force = true
 
-[[redirects]]
+[[context.production.redirects]]
   from = "/api/*"
-  to = "/.netlify/functions/api/api/:splat"
+  to = "https://thg.89-167-89-109.sslip.io/api/:splat"
+  status = 200
+  force = true
+
+[[context.production.redirects]]
+  from = "/*"
+  to = "/index.html"
   status = 200
 
-[[redirects]]
+# Deploy previews and branch deploys are isolated from production data.
+# They intentionally do not talk to the live backend unless this is changed.
+[[context.deploy-preview.redirects]]
+  from = "/api"
+  to = "/api-preview-disabled.json"
+  status = 200
+  force = true
+
+[[context.deploy-preview.redirects]]
+  from = "/api/*"
+  to = "/api-preview-disabled.json"
+  status = 200
+  force = true
+
+[[context.deploy-preview.redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[context.branch-deploy.redirects]]
+  from = "/api"
+  to = "/api-preview-disabled.json"
+  status = 200
+  force = true
+
+[[context.branch-deploy.redirects]]
+  from = "/api/*"
+  to = "/api-preview-disabled.json"
+  status = 200
+  force = true
+
+[[context.branch-deploy.redirects]]
   from = "/*"
   to = "/index.html"
   status = 200

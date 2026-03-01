@@ -83,6 +83,13 @@ const toCompleteSelection = (partialSelection = {}) => {
 };
 const sumSelection = (selection = {}) =>
   UNIT_ORDER.reduce((sum, unitId) => sum + Math.max(0, Math.floor(Number(selection[unitId] ?? 0))), 0);
+const sumSelectionWithoutCaravans = (selection = {}) =>
+  UNIT_ORDER.reduce((sum, unitId) => {
+    if (unitId === 'caravan') {
+      return sum;
+    }
+    return sum + Math.max(0, Math.floor(Number(selection[unitId] ?? 0)));
+  }, 0);
 const getPlayer = (username) => {
   const player = selectPlayerByUsernameStmt.get(String(username));
   if (!player) {
@@ -259,6 +266,76 @@ const runScenarioMixedScoutAttackAndLoot = () => {
   };
 };
 
+const runScenarioScoutComboAttackMatrix = () => {
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const defenderVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+  const defenderPlayer = getPlayer(DEFENDER_USERNAME);
+  const combos = ['militia', 'archer', 'cavalry', 'knight', 'ram', 'caravan'];
+  const comboResults = [];
+
+  for (const unitId of combos) {
+    clearTransientState();
+    updateVillageOwnerStmt.run(Number(defenderPlayer.id), KINGDOM_DEFENDER, Number(defenderVillage.villageId));
+    setVillageUnits(attackerVillage.villageId, { scout: 5, [unitId]: 3 });
+    setVillageUnits(defenderVillage.villageId, {});
+    setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+    setVillageResources(defenderVillage.villageId, { wood: 1200, stone: 1200, iron: 1200 });
+
+    try {
+      const { payload } = runAttackAndGetPayload({
+        username: ATTACKER_USERNAME,
+        originVillageId: attackerVillage.villageId,
+        targetVillageId: defenderVillage.villageId,
+        units: { scout: 5, [unitId]: 3 },
+        lootPriority: 'balanced',
+      });
+
+      const attackerStart = payload?.battle?.attacker?.start ?? {};
+      const attackerSurvivors = payload?.battle?.attacker?.survivors ?? {};
+      const lootTaken = payload?.lootTaken ?? { wood: 0, stone: 0, iron: 0 };
+      comboResults.push({
+        unitId,
+        orderAccepted: true,
+        sentScout: Number(attackerStart.scout ?? 0),
+        sentPartner: Number(attackerStart[unitId] ?? 0),
+        survivingScouts: Number(attackerSurvivors.scout ?? 0),
+        survivingPartner: Number(attackerSurvivors[unitId] ?? 0),
+        totalLoot: Number(lootTaken.wood ?? 0) + Number(lootTaken.stone ?? 0) + Number(lootTaken.iron ?? 0),
+      });
+    } catch (error) {
+      comboResults.push({
+        unitId,
+        orderAccepted: false,
+        error: String(error?.message ?? error),
+      });
+    }
+  }
+
+  clearTransientState();
+  updateVillageOwnerStmt.run(Number(defenderPlayer.id), KINGDOM_DEFENDER, Number(defenderVillage.villageId));
+  setVillageUnits(attackerVillage.villageId, { scout: 7 });
+  setVillageUnits(defenderVillage.villageId, { scout: 2 });
+  setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+
+  const { payload: scoutOnlyPayload } = runAttackAndGetPayload({
+    username: ATTACKER_USERNAME,
+    originVillageId: attackerVillage.villageId,
+    targetVillageId: defenderVillage.villageId,
+    units: { scout: 7 },
+    lootPriority: 'balanced',
+  });
+
+  return {
+    combos: comboResults,
+    scoutOnly: {
+      isSpy: Boolean(scoutOnlyPayload?.spy),
+      sentScout: Number(scoutOnlyPayload?.spy?.attackerScouts?.start ?? 0),
+      scoutLosses: Number(scoutOnlyPayload?.spy?.attackerScouts?.losses ?? 0),
+      scoutSurvivors: Number(scoutOnlyPayload?.spy?.attackerScouts?.survivors ?? 0),
+    },
+  };
+};
+
 const runScenarioLootCapacity = () => {
   clearTransientState();
   const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
@@ -319,6 +396,109 @@ const runScenarioDefaultBalancedLootPriority = () => {
     lootTaken,
     totalLoot: lootValues.reduce((sum, value) => sum + value, 0),
     lootSpread: maxLoot - minLoot,
+  };
+};
+
+const runScenarioCaravanBinaryCasualties = () => {
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const defenderVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+  const defender = getPlayer(DEFENDER_USERNAME);
+
+  clearTransientState();
+  updateVillageOwnerStmt.run(Number(defender.id), KINGDOM_DEFENDER, Number(defenderVillage.villageId));
+  setVillageUnits(attackerVillage.villageId, { militia: 60, caravan: 4 });
+  setVillageUnits(defenderVillage.villageId, { militia: 25 });
+  setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+  const { payload: survivorPayload } = runAttackAndGetPayload({
+    username: ATTACKER_USERNAME,
+    originVillageId: attackerVillage.villageId,
+    targetVillageId: defenderVillage.villageId,
+    units: { militia: 60, caravan: 4 },
+    lootPriority: 'balanced',
+  });
+
+  clearTransientState();
+  updateVillageOwnerStmt.run(Number(defender.id), KINGDOM_DEFENDER, Number(defenderVillage.villageId));
+  setVillageUnits(attackerVillage.villageId, { militia: 8, caravan: 4 });
+  setVillageUnits(defenderVillage.villageId, { militia: 180, archer: 80 });
+  setVillageBuildings(defenderVillage.villageId, { fortification: 3, gate: 0 });
+  const { payload: wipedPayload } = runAttackAndGetPayload({
+    username: ATTACKER_USERNAME,
+    originVillageId: attackerVillage.villageId,
+    targetVillageId: defenderVillage.villageId,
+    units: { militia: 8, caravan: 4 },
+    lootPriority: 'balanced',
+  });
+
+  const survivingArmy = survivorPayload?.battle?.attacker?.survivors ?? {};
+  const wipedArmy = wipedPayload?.battle?.attacker?.survivors ?? {};
+  return {
+    survivorCase: {
+      attackerWins: Boolean(survivorPayload?.battle?.attackerWins),
+      sentCaravans: Number(survivorPayload?.battle?.attacker?.start?.caravan ?? 0),
+      survivingCaravans: Number(survivingArmy.caravan ?? 0),
+      survivingCombatUnits: sumSelectionWithoutCaravans(survivingArmy),
+    },
+    wipedCase: {
+      attackerWins: Boolean(wipedPayload?.battle?.attackerWins),
+      sentCaravans: Number(wipedPayload?.battle?.attacker?.start?.caravan ?? 0),
+      survivingCaravans: Number(wipedArmy.caravan ?? 0),
+      survivingCombatUnits: sumSelectionWithoutCaravans(wipedArmy),
+    },
+  };
+};
+
+const runScenarioScoutOnlyNoDefenderScouts = () => {
+  clearTransientState();
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const defenderVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+
+  setVillageUnits(attackerVillage.villageId, { scout: 9 });
+  setVillageUnits(defenderVillage.villageId, { militia: 250, archer: 150, cavalry: 80 });
+  setVillageBuildings(defenderVillage.villageId, { fortification: 10, gate: 1 });
+
+  const { payload } = runAttackAndGetPayload({
+    username: ATTACKER_USERNAME,
+    originVillageId: attackerVillage.villageId,
+    targetVillageId: defenderVillage.villageId,
+    units: { scout: 9 },
+    lootPriority: 'balanced',
+  });
+
+  return {
+    isSpyReport: Boolean(payload?.spy),
+    scoutStart: Number(payload?.spy?.attackerScouts?.start ?? 0),
+    scoutLosses: Number(payload?.spy?.attackerScouts?.losses ?? 0),
+    scoutSurvivors: Number(payload?.spy?.attackerScouts?.survivors ?? 0),
+    defenderScouts: Number(payload?.spy?.defenderScouts ?? 0),
+    success: Boolean(payload?.spy?.success),
+  };
+};
+
+const runScenarioConquestKnightLootCapacity = () => {
+  clearTransientState();
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const defenderVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+
+  setVillageUnits(attackerVillage.villageId, { knight: 1 });
+  setVillageUnits(defenderVillage.villageId, {});
+  setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+  setVillageResources(defenderVillage.villageId, { wood: 300, stone: 300, iron: 300 });
+
+  const { payload } = runAttackAndGetPayload({
+    username: ATTACKER_USERNAME,
+    originVillageId: attackerVillage.villageId,
+    targetVillageId: defenderVillage.villageId,
+    units: { knight: 1 },
+    lootPriority: 'balanced',
+  });
+  const lootTaken = payload?.lootTaken ?? { wood: 0, stone: 0, iron: 0 };
+
+  return {
+    conquest: payload?.conquest ?? null,
+    returnMovement: payload?.returnMovement ?? null,
+    lootTaken,
+    totalLoot: Number(lootTaken.wood ?? 0) + Number(lootTaken.stone ?? 0) + Number(lootTaken.iron ?? 0),
   };
 };
 
@@ -421,8 +601,12 @@ const scenarioHandlers = new Map([
   ['empty-fortified-no-loss', runScenarioEmptyFortifiedNoLoss],
   ['ram-breaks-gate', runScenarioRamBreaksGate],
   ['mixed-scout-attack-loot', runScenarioMixedScoutAttackAndLoot],
+  ['scout-combo-attack-matrix', runScenarioScoutComboAttackMatrix],
   ['loot-capacity-all-units', runScenarioLootCapacity],
   ['default-balanced-loot-priority', runScenarioDefaultBalancedLootPriority],
+  ['caravan-binary-casualties', runScenarioCaravanBinaryCasualties],
+  ['scout-only-no-defender-scouts', runScenarioScoutOnlyNoDefenderScouts],
+  ['conquest-knight-loot-capacity', runScenarioConquestKnightLootCapacity],
   ['world-village-limit', runScenarioWorldVillageLimit],
   ['large-army-balance', runScenarioLargeArmyBalance],
 ]);
