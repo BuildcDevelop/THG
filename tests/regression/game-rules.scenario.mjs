@@ -1,6 +1,7 @@
-import { conquerVillage, getVillageSnapshot, issueArmyCommand, runGameTick } from '../../server/gameService.js';
+import { conquerVillage, getVillageSnapshot, issueArmyCommand, recruitUnits, runGameTick } from '../../server/gameService.js';
 import { db } from '../../server/db.js';
 import { MAX_PLAYER_VILLAGES, UNIT_ORDER } from '../../server/gameConfig.js';
+import { listCommunicationInbox, sendCommunicationMessage } from '../../server/communicationService.js';
 
 const ATTACKER_USERNAME = 'Hayato';
 const DEFENDER_USERNAME = 'Torreya';
@@ -596,6 +597,155 @@ const runScenarioLargeArmyBalance = () => {
   };
 };
 
+const runScenarioKnightDefenderEliminatedOnVictory = () => {
+  clearTransientState();
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const defenderVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+
+  setVillageUnits(attackerVillage.villageId, {
+    cavalry: 2311,
+    scout: 380,
+    knight: 1,
+    ram: 3,
+  });
+  setVillageUnits(defenderVillage.villageId, { knight: 1 });
+  setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+
+  const { payload } = runAttackAndGetPayload({
+    username: ATTACKER_USERNAME,
+    originVillageId: attackerVillage.villageId,
+    targetVillageId: defenderVillage.villageId,
+    units: {
+      cavalry: 2311,
+      scout: 380,
+      knight: 1,
+      ram: 3,
+    },
+    lootPriority: 'balanced',
+  });
+
+  const defenderSnapshotAfter = getVillageSnapshot(
+    DEFENDER_USERNAME,
+    Number(defenderVillage.villageId),
+    WORLD_PRIMARY,
+  );
+  const defenderKnightAfter = Math.max(
+    0,
+    Math.floor(
+      Number(
+        defenderSnapshotAfter?.units?.find((unit) => String(unit.id) === 'knight')?.amount ?? 0,
+      ),
+    ),
+  );
+
+  return {
+    attackerWins: Boolean(payload?.battle?.attackerWins),
+    reportDefenderKnightStart: Number(payload?.battle?.defender?.start?.knight ?? 0),
+    reportDefenderKnightLosses: Number(payload?.battle?.defender?.losses?.knight ?? 0),
+    reportDefenderKnightSurvivors: Number(payload?.battle?.defender?.survivors?.knight ?? 0),
+    defenderKnightAfter,
+  };
+};
+
+const runScenarioCommunicationThreadIsolation = () => {
+  clearTransientState();
+  const playerA = 'Player001';
+  const playerB = 'Player002';
+  const playerC = 'Player003';
+  const playerD = 'Player004';
+
+  getPlayer(playerA);
+  getPlayer(playerB);
+  getPlayer(playerC);
+  getPlayer(playerD);
+
+  sendCommunicationMessage(playerA, {
+    targetUsername: playerB,
+    body: 'private A->B',
+  });
+  sendCommunicationMessage(playerC, {
+    targetUsername: playerD,
+    body: 'private C->D',
+  });
+
+  const inboxA = listCommunicationInbox(playerA, {
+    threadLimit: 20,
+    messageLimit: 20,
+  });
+  const visibleOthers = (inboxA?.threads ?? [])
+    .map((thread) => String(thread?.otherPlayer?.username ?? ''))
+    .filter((username) => username.length > 0);
+  const leakedUsernames = visibleOthers.filter((username) => username === playerC || username === playerD);
+
+  const inboxC = listCommunicationInbox(playerC, {
+    threadLimit: 20,
+    messageLimit: 20,
+  });
+  const foreignThread = (inboxC?.threads ?? []).find(
+    (thread) => String(thread?.otherPlayer?.username ?? '') === playerD,
+  );
+
+  let blockedForeignThreadAccess = false;
+  let blockedMessage = null;
+  if (foreignThread) {
+    try {
+      listCommunicationInbox(playerA, {
+        threadId: Number(foreignThread.id),
+        messageLimit: 20,
+      });
+    } catch (error) {
+      blockedMessage = String(error?.message ?? error);
+      blockedForeignThreadAccess = blockedMessage
+        .toLocaleLowerCase('cs-CZ')
+        .includes('konverzace nebyla nalezena');
+    }
+  }
+
+  return {
+    visibleOthers,
+    leakedUsernames,
+    foreignThreadId: Number(foreignThread?.id ?? 0),
+    blockedForeignThreadAccess,
+    blockedMessage,
+  };
+};
+
+const runScenarioKnightSingleSlotPerVillage = () => {
+  clearTransientState();
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  setVillageResources(attackerVillage.villageId, { wood: 50000, stone: 50000, iron: 50000 });
+
+  setVillageUnits(attackerVillage.villageId, { knight: 1 });
+  let blockedWithExistingKnight = null;
+  try {
+    recruitUnits(ATTACKER_USERNAME, 'knight', 1, Number(attackerVillage.villageId), WORLD_PRIMARY);
+  } catch (error) {
+    blockedWithExistingKnight = String(error?.message ?? error);
+  }
+
+  setVillageUnits(attackerVillage.villageId, { knight: 0 });
+  const firstRecruitment = recruitUnits(
+    ATTACKER_USERNAME,
+    'knight',
+    1,
+    Number(attackerVillage.villageId),
+    WORLD_PRIMARY,
+  );
+
+  let blockedWithQueuedKnight = null;
+  try {
+    recruitUnits(ATTACKER_USERNAME, 'knight', 1, Number(attackerVillage.villageId), WORLD_PRIMARY);
+  } catch (error) {
+    blockedWithQueuedKnight = String(error?.message ?? error);
+  }
+
+  return {
+    firstRecruitmentOrderId: Number(firstRecruitment?.orderId ?? 0),
+    blockedWithExistingKnight,
+    blockedWithQueuedKnight,
+  };
+};
+
 const scenarioName = String(process.argv[2] ?? '').trim();
 const scenarioHandlers = new Map([
   ['empty-fortified-no-loss', runScenarioEmptyFortifiedNoLoss],
@@ -609,6 +759,9 @@ const scenarioHandlers = new Map([
   ['conquest-knight-loot-capacity', runScenarioConquestKnightLootCapacity],
   ['world-village-limit', runScenarioWorldVillageLimit],
   ['large-army-balance', runScenarioLargeArmyBalance],
+  ['knight-defender-eliminated-on-victory', runScenarioKnightDefenderEliminatedOnVictory],
+  ['communication-thread-isolation', runScenarioCommunicationThreadIsolation],
+  ['knight-single-slot-per-village', runScenarioKnightSingleSlotPerVillage],
 ]);
 
 const handler = scenarioHandlers.get(scenarioName);

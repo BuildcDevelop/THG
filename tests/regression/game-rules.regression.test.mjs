@@ -148,3 +148,27 @@ test('large attacking army is not excessively punished', () => {
   assert.ok(Number(result.attackerLossRatio ?? 1) < 0.2);
   assert.ok(Number(result.defenderLossRatio ?? 0) >= 0.8);
 });
+
+test('defender knight is removed from village when attacker wins battle', () => {
+  const result = runScenario('knight-defender-eliminated-on-victory');
+  assert.equal(Boolean(result.attackerWins), true);
+  assert.equal(Number(result.reportDefenderKnightStart ?? -1), 1);
+  assert.equal(Number(result.reportDefenderKnightLosses ?? -1), 1);
+  assert.equal(Number(result.reportDefenderKnightSurvivors ?? -1), 0);
+  assert.equal(Number(result.defenderKnightAfter ?? -1), 0);
+});
+
+test('communication inbox only exposes own direct threads', () => {
+  const result = runScenario('communication-thread-isolation');
+  assert.equal(Number(result.foreignThreadId ?? 0) > 0, true);
+  assert.deepEqual(Array.isArray(result.leakedUsernames) ? result.leakedUsernames : [], []);
+  assert.equal(Boolean(result.blockedForeignThreadAccess), true);
+  assert.match(String(result.blockedMessage ?? ''), /konverzace nebyla nalezena/i);
+});
+
+test('only one knight can exist or be queued per village at once', () => {
+  const result = runScenario('knight-single-slot-per-village');
+  assert.ok(Number(result.firstRecruitmentOrderId ?? 0) > 0);
+  assert.match(String(result.blockedWithExistingKnight ?? ''), /rytir.*ve vycviku|ryt[ií]r.*osad[ěe]/i);
+  assert.match(String(result.blockedWithQueuedKnight ?? ''), /rytir.*ve vycviku|ryt[ií]r.*osad[ěe]/i);
+});
