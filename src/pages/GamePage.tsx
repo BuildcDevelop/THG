@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router-dom';
 import { getSession, logout, setSelectedWorld } from '../auth';
 import {
   acceptKingdomInvite as acceptKingdomInviteRequest,
+  cancelArmyCommand as cancelArmyCommandRequest,
   cancelBuildingUpgrade as cancelBuildingUpgradeRequest,
   cancelRecruitment as cancelRecruitmentRequest,
   createCommunicationNotificationShare,
@@ -30,6 +31,8 @@ import {
   deleteGameActivity,
   invitePlayerToKingdom as invitePlayerToKingdomRequest,
   issueArmyCommand,
+  hireAcademics as hireAcademicsRequest,
+  hireMercenaryContract as hireMercenaryContractRequest,
   kickKingdomMember as kickKingdomMemberRequest,
   leaveKingdom as leaveKingdomRequest,
   rejectKingdomInvite as rejectKingdomInviteRequest,
@@ -37,8 +40,10 @@ import {
   recruitUnit,
   renameVillage as renameVillageRequest,
   restartVillageProgress as restartVillageProgressRequest,
+  sendMarketLogistics as sendMarketLogisticsRequest,
   sendCommunicationFriendRequest,
   sendCommunicationMessageRequest,
+  startResearchProject as startResearchProjectRequest,
   setCommunicationAvatarRequest,
   upgradeBuilding,
   type ArmyCommandType,
@@ -196,6 +201,7 @@ type Building = {
   category: string;
   workers: string;
   effect: string;
+  nextLevelPreview: GameBuildingState['nextLevelPreview'] | null;
   nextCostRaw: ResourceCost | null;
   nextCost: string;
   nextTime: string;
@@ -268,13 +274,6 @@ type CombatLeaderboardRow = {
 type PlayerProfileAvatarState = {
   avatarUrl: string | null;
   loaded: boolean;
-};
-
-type ResearchTask = {
-  name: string;
-  progress: number;
-  eta: string;
-  academics: number;
 };
 
 type DragState = {
@@ -517,10 +516,35 @@ const BUILDING_ART: Record<string, { icon: string; fallbackName: string; fallbac
     fallbackName: 'Železný důl',
     fallbackCategory: 'Produkce',
   },
+  'gold-mine': {
+    icon: getBuildingIconPath('townhall.png'),
+    fallbackName: 'Zlatý důl',
+    fallbackCategory: 'Produkce',
+  },
   warehouse: {
     icon: getBuildingIconPath('warehouse.png'),
     fallbackName: 'Sklad surovin',
     fallbackCategory: 'Podpora',
+  },
+  hideout: {
+    icon: getBuildingIconPath('warehouse.png'),
+    fallbackName: 'Skrýš',
+    fallbackCategory: 'Podpora',
+  },
+  mint: {
+    icon: getBuildingIconPath('townhall.png'),
+    fallbackName: 'Mincovna',
+    fallbackCategory: 'Administrativa',
+  },
+  vault: {
+    icon: getBuildingIconPath('fortification.png'),
+    fallbackName: 'Trezor',
+    fallbackCategory: 'Podpora',
+  },
+  market: {
+    icon: getBuildingIconPath('residential-quarter.png'),
+    fallbackName: 'Městský trh',
+    fallbackCategory: 'Ekonomika',
   },
   barracks: {
     icon: getBuildingIconPath('barracks.png'),
@@ -566,11 +590,16 @@ const BUILDING_ART: Record<string, { icon: string; fallbackName: string; fallbac
 const BUILDING_INTEL_ORDER = [
   'townhall',
   'warehouse',
+  'hideout',
+  'mint',
+  'vault',
+  'market',
   'residential-quarter',
   'university',
   'woodcutter',
   'quarry',
   'iron-mine',
+  'gold-mine',
   'barracks',
   'stable',
   'workshop',
@@ -613,6 +642,11 @@ const UNIT_META: Record<string, { fallbackName: string; fallbackRole: string; ic
     fallbackName: 'Karavany',
     fallbackRole: 'Převoz kořisti',
     icon: getUnitIconPath('caravan.svg'),
+  },
+  mercenary: {
+    fallbackName: 'Žoldáci',
+    fallbackRole: 'Dočasná elitní obrana',
+    icon: getUnitIconPath('militia.svg'),
   },
 };
 const getUnitMetaById = (unitId: string): { fallbackName: string; fallbackRole: string; icon: string } => {
@@ -779,6 +813,79 @@ const MovementArmyTooltip = ({
           );
         })}
       </ul>
+    </div>
+  );
+
+  if (cursorPosition && typeof document !== 'undefined') {
+    return createPortal(tooltipNode, document.body);
+  }
+
+  return tooltipNode;
+};
+
+const BuildingUpgradePreviewTooltip = ({
+  building,
+  cursorPosition,
+}: {
+  building: Building;
+  cursorPosition?: TooltipCursorPosition | null;
+}) => {
+  const preview = building.nextLevelPreview;
+  const deltaLines = preview?.deltas ?? [];
+  const unlockLines = preview?.unlocks ?? [];
+  if (!preview || (deltaLines.length <= 0 && unlockLines.length <= 0)) {
+    return null;
+  }
+
+  const resolvedCursorPosition = useMemo(() => {
+    if (!cursorPosition || typeof window === 'undefined') {
+      return null;
+    }
+    const estimatedTooltipWidth = Math.max(260, Math.min(430, Math.floor(window.innerWidth * 0.4)));
+    const estimatedTooltipHeight = 260;
+    return clampTooltipPosition(
+      cursorPosition,
+      estimatedTooltipWidth,
+      estimatedTooltipHeight,
+      window.innerWidth,
+      window.innerHeight,
+    );
+  }, [cursorPosition]);
+
+  const tooltipStyle: CSSProperties | undefined =
+    resolvedCursorPosition
+      ? {
+          left: `${resolvedCursorPosition.x}px`,
+          top: `${resolvedCursorPosition.y}px`,
+        }
+      : undefined;
+
+  const tooltipNode = (
+    <div
+      className={`commands-army-tooltip building-upgrade-tooltip${cursorPosition ? ' is-follow-cursor' : ''}`}
+      style={tooltipStyle}
+      role="tooltip"
+    >
+      <p>
+        Další úroveň {preview.fromLevel} → {preview.toLevel}
+      </p>
+      {deltaLines.length > 0 ? (
+        <ul className="building-upgrade-tooltip-list">
+          {deltaLines.map((line, index) => (
+            <li key={`${building.id}-delta-${index}`}>{line}</li>
+          ))}
+        </ul>
+      ) : null}
+      {unlockLines.length > 0 ? (
+        <>
+          <p className="building-upgrade-tooltip-subtitle">Co se odemkne</p>
+          <ul className="building-upgrade-tooltip-list">
+            {unlockLines.map((line, index) => (
+              <li key={`${building.id}-unlock-${index}`}>{line}</li>
+            ))}
+          </ul>
+        </>
+      ) : null}
     </div>
   );
 
@@ -969,12 +1076,8 @@ const FALLBACK_ACTIVE_ORDERS = [
   'Ekonomika běží na backend cron tiku.',
   'Nábor a upgrady zapisují změny do databáze.',
 ];
-
-const RESEARCH_TASKS: ResearchTask[] = [
-  { name: 'Střelba I', progress: 62, eta: '1d 6h', academics: 2 },
-  { name: 'Jezdectví I', progress: 24, eta: '3d 4h', academics: 1 },
-  { name: 'Logistika', progress: 91, eta: '4h 20m', academics: 1 },
-];
+const ACADEMIC_HIRE_COIN_COST = 250;
+const MERCENARY_CONTRACT_COIN_COST = 1500;
 
 const RANKING_FALLBACK: LeaderboardRow[] = [];
 const EMPTY_KINGDOM_AVAILABLE: KingdomAvailableSummary[] = [];
@@ -2636,6 +2739,10 @@ const CityPanel = ({
 }) => {
   const [renameDraft, setRenameDraft] = useState(() => extractVillageBaseName(villageLabel));
   const [renameNotice, setRenameNotice] = useState<string | null>(null);
+  const [hoveredBuildingId, setHoveredBuildingId] = useState<string | null>(null);
+  const [buildingTooltipCursorPosition, setBuildingTooltipCursorPosition] = useState<TooltipCursorPosition | null>(
+    null,
+  );
   const [hoveredArmyOrderKey, setHoveredArmyOrderKey] = useState<string | null>(null);
   const [armyOrderTooltipCursorPosition, setArmyOrderTooltipCursorPosition] = useState<TooltipCursorPosition | null>(
     null,
@@ -2812,7 +2919,7 @@ const CityPanel = ({
                       return (
                         <article
                           key={building.id}
-                          className={`city-building-card ${building.isInProgress ? 'is-progress' : ''} ${isUnbuilt ? 'is-unbuilt' : ''}`}
+                          className={`city-building-card has-army-tooltip ${building.isInProgress ? 'is-progress' : ''} ${isUnbuilt ? 'is-unbuilt' : ''} ${hoveredBuildingId === building.id ? 'is-tooltip-open' : ''}`}
                           role="button"
                           tabIndex={0}
                           title={
@@ -2830,6 +2937,23 @@ const CityPanel = ({
                           onContextMenu={(event) => {
                             event.preventDefault();
                             onOpenBuilding(building);
+                          }}
+                          onMouseEnter={(event) => {
+                            if (!building.nextLevelPreview) {
+                              return;
+                            }
+                            setHoveredBuildingId(building.id);
+                            setBuildingTooltipCursorPosition({ x: event.clientX, y: event.clientY });
+                          }}
+                          onMouseMove={(event) => {
+                            if (hoveredBuildingId !== building.id) {
+                              return;
+                            }
+                            setBuildingTooltipCursorPosition({ x: event.clientX, y: event.clientY });
+                          }}
+                          onMouseLeave={() => {
+                            setHoveredBuildingId((previous) => (previous === building.id ? null : previous));
+                            setBuildingTooltipCursorPosition(null);
                           }}
                           onKeyDown={(event) =>
                             handleActionOnEnter(event, () => {
@@ -2874,7 +2998,7 @@ const CityPanel = ({
                           </div>
                           <small className="row-help">{queueInfoLabel}</small>
                           <small className="city-building-hover-hint">
-                            Levým klikem postav/rozšiř budovu · pravým klikem zobraz detail budovy
+                            Levým klikem postav/rozšiř budovu · pravým klikem detail · najetím zobrazíš přínosy další úrovně
                           </small>
                           <div className="city-building-costs">
                             {building.nextCostRaw ? (
@@ -2901,6 +3025,12 @@ const CityPanel = ({
                             <p className={`city-building-notice ${isPositiveNotice ? 'success' : 'error'}`}>
                               {notice}
                             </p>
+                          ) : null}
+                          {hoveredBuildingId === building.id ? (
+                            <BuildingUpgradePreviewTooltip
+                              building={building}
+                              cursorPosition={buildingTooltipCursorPosition}
+                            />
                           ) : null}
                         </article>
                       );
@@ -3121,6 +3251,9 @@ const ArmyPanel = ({
   onUpgradeBuildingInVillage,
   onRecruitInVillage,
   onOpenSettlementByVillageId,
+  allowInstantActions,
+  instantActionEnabled,
+  onToggleInstantAction,
   recruitPendingUnitId,
   cancelRecruitmentPendingId,
   upgradePendingBuildingId,
@@ -3132,12 +3265,20 @@ const ArmyPanel = ({
   recruitQueueOrders: RecruitQueueOrder[];
   settlements: RegionSettlement[];
   currentUsername: string;
-  onRecruit: (unit: Unit, amount: number) => Promise<boolean>;
+  onRecruit: (unit: Unit, amount: number, options?: { instant?: boolean }) => Promise<boolean>;
   onCancelRecruitment: (order: RecruitQueueOrder) => void;
   onUpgradeBuilding: (building: Building) => void;
   onUpgradeBuildingInVillage: (villageId: number, buildingId: string) => Promise<string>;
-  onRecruitInVillage: (villageId: number, unitId: string, amount: number) => Promise<string>;
+  onRecruitInVillage: (
+    villageId: number,
+    unitId: string,
+    amount: number,
+    options?: { instant?: boolean },
+  ) => Promise<string>;
   onOpenSettlementByVillageId: (villageId: number) => void;
+  allowInstantActions: boolean;
+  instantActionEnabled: boolean;
+  onToggleInstantAction: (enabled: boolean) => void;
   recruitPendingUnitId: string | null;
   cancelRecruitmentPendingId: number | null;
   upgradePendingBuildingId: string | null;
@@ -3224,7 +3365,9 @@ const ArmyPanel = ({
         return;
       }
 
-      const wasRecruited = await onRecruit(unit, requestedAmount);
+      const wasRecruited = await onRecruit(unit, requestedAmount, {
+        instant: instantActionEnabled,
+      });
       if (!wasRecruited) {
         return;
       }
@@ -3238,7 +3381,7 @@ const ArmyPanel = ({
         return next;
       });
     },
-    [isRecruitMutationPending, onRecruit],
+    [instantActionEnabled, isRecruitMutationPending, onRecruit],
   );
 
   const ownSettlements = useMemo(
@@ -3296,13 +3439,21 @@ const ArmyPanel = ({
       setMultiVillagePendingById((previous) => ({ ...previous, [villageId]: true }));
       setMultiVillageNoticeById((previous) => ({ ...previous, [villageId]: '' }));
       try {
-        const result = await onRecruitInVillage(villageId, draftUnitId, draftAmount);
+        const result = await onRecruitInVillage(villageId, draftUnitId, draftAmount, {
+          instant: instantActionEnabled,
+        });
         setMultiVillageNoticeById((previous) => ({ ...previous, [villageId]: result }));
       } finally {
         setMultiVillagePendingById((previous) => ({ ...previous, [villageId]: false }));
       }
     },
-    [multiVillageAmountDraftById, multiVillageUnitDraftById, onRecruitInVillage, recruitTableUnits],
+    [
+      instantActionEnabled,
+      multiVillageAmountDraftById,
+      multiVillageUnitDraftById,
+      onRecruitInVillage,
+      recruitTableUnits,
+    ],
   );
 
   return (
@@ -3323,6 +3474,18 @@ const ArmyPanel = ({
           Správa všech lén
         </button>
       </section>
+      {allowInstantActions ? (
+        <section className="instant-actions-panel">
+          <label className="instant-actions-toggle">
+            <input
+              type="checkbox"
+              checked={instantActionEnabled}
+              onChange={(event) => onToggleInstantAction(event.target.checked)}
+            />
+            <span>Okamžité akce (localhost): nábor se vyhodnotí hned.</span>
+          </label>
+        </section>
+      ) : null}
 
       {armyViewMode === 'multiVillage' ? (
         <section className="army-panel-view is-enter">
@@ -3970,28 +4133,542 @@ const MilitaryPanel = ({
   );
 };
 
-const ResearchPanel = () => (
-  <div className="panel-stack">
-    <section>
-      <h3>Univerzita - úroveň 2</h3>
-      <p>Aktivní akademici: 3 / 4. Výzkum je účetní (platný pro celý účet).</p>
-      <div className="research-list">
-        {RESEARCH_TASKS.map((task) => (
-          <article key={task.name}>
-            <header>
-              <strong>{task.name}</strong>
-              <span>{task.eta}</span>
-            </header>
-            <div className="progress-track" role="progressbar" aria-valuenow={task.progress}>
-              <span style={{ width: `${task.progress}%` }} />
-            </div>
-            <p>{task.progress}% dokončeno · akademici: {task.academics}</p>
+const ResearchPanel = ({
+  research,
+  market,
+  mercenaries,
+  rules,
+  resources,
+  settlements,
+  currentVillageId,
+  notice,
+  researchActionPending,
+  mercenaryActionPending,
+  logisticsActionPending,
+  onHireAcademics,
+  onStartResearchProject,
+  onHireMercenaries,
+  onSendMarketLogistics,
+}: {
+  research: GameStateResponse['research'] | undefined;
+  market: GameStateResponse['market'] | undefined;
+  mercenaries: GameStateResponse['mercenaries'] | undefined;
+  rules: GameStateResponse['rules'] | undefined;
+  resources:
+    | Pick<GameStateResponse['resources'], 'coins' | 'gold' | 'productionPerHour' | 'protection'>
+    | undefined;
+  settlements: RegionSettlement[];
+  currentVillageId: number | null;
+  notice: string | null;
+  researchActionPending: boolean;
+  mercenaryActionPending: boolean;
+  logisticsActionPending: boolean;
+  onHireAcademics: (amount: number) => void;
+  onStartResearchProject: (researchId: string, academics: number) => void;
+  onHireMercenaries: () => void;
+  onSendMarketLogistics: (payload: { targetVillageId: number; wood: number; stone: number; iron: number }) => void;
+}) => {
+  const projects = research?.projects ?? [];
+  const marketLevel = Math.max(0, Math.floor(Number(market?.level ?? 0)));
+  const marketCapacity = Math.max(0, Math.floor(Number(market?.capacity ?? 0)));
+  const mercenaryCooldownRemainingSec = Math.max(0, Math.floor(Number(mercenaries?.cooldownRemainingSec ?? 0)));
+  const [hireAmountDraft, setHireAmountDraft] = useState('1');
+  const [projectAcademicDrafts, setProjectAcademicDrafts] = useState<Record<string, string>>({});
+  const [logisticsTargetVillageId, setLogisticsTargetVillageId] = useState<number | null>(null);
+  const [logisticsDraft, setLogisticsDraft] = useState<{ wood: string; stone: string; iron: string }>({
+    wood: '',
+    stone: '',
+    iron: '',
+  });
+
+  const activeProject = useMemo(
+    () => projects.find((project) => project.status === 'researching') ?? null,
+    [projects],
+  );
+  const availableProjects = useMemo(
+    () => projects.filter((project) => project.status === 'available'),
+    [projects],
+  );
+  const mercenaryResearch = useMemo(
+    () => projects.find((project) => project.id === 'verven-bank') ?? null,
+    [projects],
+  );
+  const mercenaryUnlocked = mercenaryResearch?.status === 'completed';
+  const sortedContracts = useMemo(
+    () => {
+      const statusPriority: Record<string, number> = {
+        active: 0,
+        ordered: 1,
+        in_transit: 2,
+        completed: 3,
+        expired: 4,
+        canceled: 5,
+      };
+      return [...(mercenaries?.contracts ?? [])].sort((left, right) => {
+        const leftPriority = statusPriority[String(left.status).toLocaleLowerCase('cs-CZ')] ?? 99;
+        const rightPriority = statusPriority[String(right.status).toLocaleLowerCase('cs-CZ')] ?? 99;
+        if (leftPriority !== rightPriority) {
+          return leftPriority - rightPriority;
+        }
+        const rightOrderedAtMs = Date.parse(String(right.orderedAt));
+        const leftOrderedAtMs = Date.parse(String(left.orderedAt));
+        const safeRight = Number.isFinite(rightOrderedAtMs) ? rightOrderedAtMs : 0;
+        const safeLeft = Number.isFinite(leftOrderedAtMs) ? leftOrderedAtMs : 0;
+        return safeRight - safeLeft;
+      });
+    },
+    [mercenaries?.contracts],
+  );
+  const logisticsTargets = useMemo(
+    () =>
+      settlements
+        .filter((settlement) => {
+          const villageId = Number(settlement.villageId ?? 0);
+          if (!Number.isFinite(villageId) || villageId <= 0) {
+            return false;
+          }
+          return currentVillageId == null || villageId !== Number(currentVillageId);
+        })
+        .sort((left, right) => left.name.localeCompare(right.name, 'cs-CZ')),
+    [currentVillageId, settlements],
+  );
+  const logisticsRoutes = useMemo(
+    () =>
+      [...(market?.logisticsRoutes ?? [])].sort(
+        (left, right) => left.remainingSec - right.remainingSec || left.id - right.id,
+      ),
+    [market?.logisticsRoutes],
+  );
+
+  useEffect(() => {
+    if (
+      logisticsTargetVillageId != null &&
+      logisticsTargets.some((settlement) => Number(settlement.villageId) === logisticsTargetVillageId)
+    ) {
+      return;
+    }
+    setLogisticsTargetVillageId(
+      logisticsTargets.length > 0 ? Number(logisticsTargets[0]?.villageId ?? null) : null,
+    );
+  }, [logisticsTargetVillageId, logisticsTargets]);
+
+  const parseDraftAmount = (value: string): number => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return 0;
+    }
+    return Math.max(0, Math.floor(parsed));
+  };
+
+  const logisticsWood = parseDraftAmount(logisticsDraft.wood);
+  const logisticsStone = parseDraftAmount(logisticsDraft.stone);
+  const logisticsIron = parseDraftAmount(logisticsDraft.iron);
+  const logisticsTotal = logisticsWood + logisticsStone + logisticsIron;
+  const hireAcademicAmount = Math.max(1, parseDraftAmount(hireAmountDraft));
+  const hireAcademicTotalCost = hireAcademicAmount * ACADEMIC_HIRE_COIN_COST;
+  const canHireAcademics =
+    Number(resources?.coins ?? 0) >= hireAcademicTotalCost && !researchActionPending;
+  const canSendLogistics =
+    marketLevel > 0 &&
+    marketCapacity > 0 &&
+    logisticsTargetVillageId != null &&
+    logisticsTotal > 0 &&
+    logisticsTotal <= marketCapacity &&
+    !logisticsActionPending;
+  const canHireMercenaries =
+    mercenaryUnlocked &&
+    mercenaryCooldownRemainingSec <= 0 &&
+    Number(resources?.coins ?? 0) >= MERCENARY_CONTRACT_COIN_COST &&
+    !mercenaryActionPending;
+
+  const resolveProjectStatusLabel = (status: string): string => {
+    if (status === 'locked') {
+      return 'Uzamčeno';
+    }
+    if (status === 'available') {
+      return 'Dostupné';
+    }
+    if (status === 'researching') {
+      return 'Probíhá';
+    }
+    return 'Dokončeno';
+  };
+
+  const resolveRouteStatusLabel = (statusRaw: string): string => {
+    const status = String(statusRaw ?? '').toLocaleLowerCase('cs-CZ');
+    if (status === 'ordered') {
+      return 'Objednáno';
+    }
+    if (status === 'active') {
+      return 'Aktivní';
+    }
+    if (status === 'expired') {
+      return 'Vypršelo';
+    }
+    if (status === 'in_transit') {
+      return 'Na cestě';
+    }
+    if (status === 'completed') {
+      return 'Doručeno';
+    }
+    if (status === 'canceled') {
+      return 'Zrušeno';
+    }
+    return statusRaw;
+  };
+
+  return (
+    <div className="panel-stack research-panel">
+      <section>
+        <h3>Univerzita a výzkum</h3>
+        <div className="commands-kpi-strip">
+          <article>
+            <span>Akademici</span>
+            <strong>
+              {Math.max(0, Math.floor(Number(research?.totalAcademics ?? 0))).toLocaleString('cs-CZ')} /{' '}
+              {Math.max(0, Math.floor(Number(research?.idleAcademics ?? 0))).toLocaleString('cs-CZ')} volných
+            </strong>
           </article>
-        ))}
-      </div>
-    </section>
-  </div>
-);
+          <article>
+            <span>Mince</span>
+            <strong>{Math.max(0, Math.floor(Number(resources?.coins ?? 0))).toLocaleString('cs-CZ')}</strong>
+          </article>
+          <article>
+            <span>Zlato</span>
+            <strong>{Math.max(0, Math.floor(Number(resources?.gold ?? 0))).toLocaleString('cs-CZ')}</strong>
+          </article>
+          <article className={activeProject ? '' : 'is-danger'}>
+            <span>Aktivní projekt</span>
+            <strong>{activeProject?.name ?? 'Žádný'}</strong>
+          </article>
+        </div>
+        <div className="research-panel-inline-actions">
+          <label>
+            Najmout akademiky
+            <input
+              className="recruit-amount-input"
+              type="number"
+              min={1}
+              max={100}
+              step={1}
+              value={hireAmountDraft}
+              onChange={(event) => setHireAmountDraft(event.target.value)}
+              disabled={researchActionPending}
+            />
+            <small className="row-help">
+              Cena: {ACADEMIC_HIRE_COIN_COST.toLocaleString('cs-CZ')} mincí / akademik · celkem{' '}
+              {hireAcademicTotalCost.toLocaleString('cs-CZ')} mincí.
+            </small>
+          </label>
+          <button
+            type="button"
+            className="secondary-action"
+            onClick={() => onHireAcademics(hireAcademicAmount)}
+            disabled={!canHireAcademics}
+          >
+            {researchActionPending ? 'Najímám...' : 'Najmout akademiky'}
+          </button>
+        </div>
+        <div className="research-list">
+          {projects.map((project) => {
+            const projectDraft = projectAcademicDrafts[project.id] ?? '1';
+            const canStartProject =
+              project.status === 'available' &&
+              !researchActionPending &&
+              Number(resources?.coins ?? 0) >= Number(project.coinCost ?? 0) &&
+              Math.max(0, Math.floor(Number(research?.idleAcademics ?? 0))) > 0;
+            return (
+              <article key={project.id}>
+                <header>
+                  <strong>{project.name}</strong>
+                  <span>{resolveProjectStatusLabel(project.status)}</span>
+                </header>
+                <div className="progress-track" role="progressbar" aria-valuenow={project.progressPercent}>
+                  <span style={{ width: `${Math.max(0, Math.min(100, project.progressPercent))}%` }} />
+                </div>
+                <p>
+                  {Math.round(project.progressPercent)} % · Body {Math.floor(project.progressPoints).toLocaleString('cs-CZ')} /{' '}
+                  {Math.floor(project.requiredPoints).toLocaleString('cs-CZ')}
+                </p>
+                <p className="row-help">{project.description}</p>
+                <p className="row-help">
+                  Odemkne: {project.unlocks} · Cena {Math.max(0, Math.floor(Number(project.coinCost))).toLocaleString('cs-CZ')} mincí
+                </p>
+                {project.requiredResearchIds.length > 0 ? (
+                  <p className="row-help">Vyžaduje: {project.requiredResearchIds.join(', ')}</p>
+                ) : null}
+                {project.status === 'researching' ? (
+                  <p className="row-help">
+                    Přiřazení akademici: {Math.max(0, Math.floor(Number(project.assignedAcademics ?? 0))).toLocaleString('cs-CZ')}
+                  </p>
+                ) : null}
+                {project.status === 'available' ? (
+                  <div className="research-project-actions">
+                    <label>
+                      Akademici
+                      <input
+                        className="recruit-amount-input"
+                        type="number"
+                        min={1}
+                        max={3}
+                        step={1}
+                        value={projectDraft}
+                        onChange={(event) =>
+                          setProjectAcademicDrafts((previous) => ({
+                            ...previous,
+                            [project.id]: event.target.value,
+                          }))
+                        }
+                        disabled={researchActionPending}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="secondary-action"
+                      onClick={() => onStartResearchProject(project.id, Math.max(1, parseDraftAmount(projectDraft)))}
+                      disabled={!canStartProject}
+                    >
+                      Spustit výzkum
+                    </button>
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
+          {projects.length === 0 ? <p>Výzkumný strom se načítá.</p> : null}
+          {projects.length > 0 && availableProjects.length === 0 && !activeProject ? (
+            <p className="row-help">Všechny dostupné projekty jsou hotové nebo uzamčené.</p>
+          ) : null}
+        </div>
+      </section>
+
+      <section>
+        <h3>Mincovna a žoldáci</h3>
+        <div className="commands-kpi-strip">
+          <article>
+            <span>Chráněné mince</span>
+            <strong>{Math.max(0, Math.floor(Number(resources?.protection.coins ?? 0))).toLocaleString('cs-CZ')}</strong>
+          </article>
+          <article>
+            <span>Ražba / h</span>
+            <strong>{Math.max(0, Number(resources?.productionPerHour.mintCoins ?? 0)).toLocaleString('cs-CZ')}</strong>
+          </article>
+          <article>
+            <span>Cooldown žoldáků</span>
+            <strong>{mercenaryCooldownRemainingSec > 0 ? formatDurationLabel(mercenaryCooldownRemainingSec) : 'Připraveno'}</strong>
+          </article>
+          <article className={mercenaryUnlocked ? '' : 'is-danger'}>
+            <span>Výzkum banky</span>
+            <strong>{mercenaryUnlocked ? 'Odemčeno' : 'Zamčeno'}</strong>
+          </article>
+        </div>
+        <div className="research-panel-inline-actions">
+          <button
+            type="button"
+            className="secondary-action"
+            onClick={onHireMercenaries}
+            disabled={!canHireMercenaries}
+          >
+            {mercenaryActionPending
+              ? 'Najímám žoldáky...'
+              : `Najmout žoldáky (${MERCENARY_CONTRACT_COIN_COST.toLocaleString('cs-CZ')} mincí)`}
+          </button>
+          <small className="row-help">Žoldáci brání pouze domovské léno a po 72 hodinách vyprší.</small>
+        </div>
+        {sortedContracts.length > 0 ? (
+          <ul className="commands-list">
+            {sortedContracts.map((contract) => (
+              <li key={`mercenary-contract-${contract.id}`} className="commands-item">
+                <div className="commands-item-line">
+                  <strong>Kontrakt #{contract.id}</strong>
+                  <span>
+                    {resolveRouteStatusLabel(contract.status)} · +{Math.max(0, Math.floor(Number(contract.unitAmount))).toLocaleString('cs-CZ')} žoldáků
+                  </span>
+                </div>
+                <small>
+                  Objednáno {formatDateTimeLabel(contract.orderedAt)} · Dorazí {formatDateTimeLabel(contract.arriveAt)} ·
+                  Expirace {formatDateTimeLabel(contract.expiresAt)}
+                </small>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>Zatím nemáš žádný žoldácký kontrakt.</p>
+        )}
+      </section>
+
+      <section>
+        <h3>Trh a logistika</h3>
+        <div className="commands-kpi-strip">
+          <article>
+            <span>Úroveň trhu</span>
+            <strong>{marketLevel.toLocaleString('cs-CZ')}</strong>
+          </article>
+          <article>
+            <span>Kapacita zásilky</span>
+            <strong>{marketCapacity.toLocaleString('cs-CZ')}</strong>
+          </article>
+          <article>
+            <span>Max. vzdálenost</span>
+            <strong>{Math.max(0, Number(market?.maxDistance ?? 0)).toLocaleString('cs-CZ')} polí</strong>
+          </article>
+          <article className={market?.guildUnlocked ? '' : 'is-danger'}>
+            <span>Cech obchodníků</span>
+            <strong>{market?.guildUnlocked ? '08:00 - 20:00' : 'Zamčeno'}</strong>
+          </article>
+        </div>
+        {marketLevel > 0 ? (
+          <div className="research-logistics-form">
+            <label>
+              Cílové léno
+              <select
+                value={logisticsTargetVillageId == null ? '' : String(logisticsTargetVillageId)}
+                onChange={(event) => setLogisticsTargetVillageId(Number(event.target.value))}
+                disabled={logisticsActionPending || logisticsTargets.length === 0}
+              >
+                {logisticsTargets.length === 0 ? <option value="">Žádný cíl</option> : null}
+                {logisticsTargets.map((settlement) => (
+                  <option key={`logistics-target-${settlement.id}`} value={settlement.villageId}>
+                    {settlement.name} ({settlement.globalX}|{settlement.globalY})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="research-logistics-grid">
+              <label>
+                Dřevo
+                <input
+                  type="number"
+                  min={0}
+                  step={100}
+                  value={logisticsDraft.wood}
+                  onChange={(event) =>
+                    setLogisticsDraft((previous) => ({
+                      ...previous,
+                      wood: event.target.value,
+                    }))
+                  }
+                  disabled={logisticsActionPending}
+                />
+              </label>
+              <label>
+                Kámen
+                <input
+                  type="number"
+                  min={0}
+                  step={100}
+                  value={logisticsDraft.stone}
+                  onChange={(event) =>
+                    setLogisticsDraft((previous) => ({
+                      ...previous,
+                      stone: event.target.value,
+                    }))
+                  }
+                  disabled={logisticsActionPending}
+                />
+              </label>
+              <label>
+                Železo
+                <input
+                  type="number"
+                  min={0}
+                  step={100}
+                  value={logisticsDraft.iron}
+                  onChange={(event) =>
+                    setLogisticsDraft((previous) => ({
+                      ...previous,
+                      iron: event.target.value,
+                    }))
+                  }
+                  disabled={logisticsActionPending}
+                />
+              </label>
+            </div>
+            <div className="research-panel-inline-actions">
+              <button
+                type="button"
+                className="secondary-action"
+                onClick={() =>
+                  onSendMarketLogistics({
+                    targetVillageId: logisticsTargetVillageId ?? 0,
+                    wood: logisticsWood,
+                    stone: logisticsStone,
+                    iron: logisticsIron,
+                  })
+                }
+                disabled={!canSendLogistics}
+              >
+                {logisticsActionPending ? 'Odesílám zásilku...' : 'Odeslat logistiku'}
+              </button>
+              <small className="row-help">
+                Součet zásilky {logisticsTotal.toLocaleString('cs-CZ')} / {marketCapacity.toLocaleString('cs-CZ')}
+              </small>
+            </div>
+          </div>
+        ) : (
+          <p>Postav Městský trh alespoň na úroveň 1 pro ruční logistiku.</p>
+        )}
+        {logisticsRoutes.length > 0 ? (
+          <ul className="commands-list">
+            {logisticsRoutes.map((route) => (
+              <li key={`logistics-route-${route.id}`} className="commands-item">
+                <div className="commands-item-line">
+                  <strong>
+                    {route.sourceVillageName} → {route.targetVillageName}
+                  </strong>
+                  <span>{resolveRouteStatusLabel(route.status)}</span>
+                </div>
+                <small>
+                  Zásilka {Math.max(0, Math.floor(Number(route.wood))).toLocaleString('cs-CZ')} dřeva ·{' '}
+                  {Math.max(0, Math.floor(Number(route.stone))).toLocaleString('cs-CZ')} kamene ·{' '}
+                  {Math.max(0, Math.floor(Number(route.iron))).toLocaleString('cs-CZ')} železa
+                </small>
+                <small>
+                  ETA {route.status === 'completed' ? 'doručeno' : formatDurationLabel(route.remainingSec)} · Start{' '}
+                  {formatDateTimeLabel(route.startedAt)}
+                </small>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>Žádné aktivní logistické zásilky.</p>
+        )}
+      </section>
+
+      <section>
+        <h3>Pravidla světa</h3>
+        <ul className="commands-list">
+          <li className="commands-item">
+            <div className="commands-item-line">
+              <strong>Noční režim</strong>
+              <span>{rules?.nightMode?.isActiveNow ? 'Aktivní' : 'Neaktivní'}</span>
+            </div>
+            <small>
+              Interval {String(rules?.nightMode?.startHourUtc ?? 0).padStart(2, '0')}:00 -{' '}
+              {String(rules?.nightMode?.endHourUtc ?? 0).padStart(2, '0')}:00 UTC · obrana +{Math.max(
+                0,
+                Math.floor(Number(rules?.nightMode?.defenseBonusPct ?? 0)),
+              ).toLocaleString('cs-CZ')}
+              %
+            </small>
+          </li>
+          <li className="commands-item">
+            <div className="commands-item-line">
+              <strong>Zrušení příkazu</strong>
+              <span>
+                Do{' '}
+                {Math.max(0, Math.round(Number(rules?.cancelCommandProgressLimit ?? 0) * 100)).toLocaleString('cs-CZ')}
+                % cesty
+              </span>
+            </div>
+            <small>Při zrušení se armáda vrací stejnou dobu, jakou byla na cestě.</small>
+          </li>
+        </ul>
+        {notice ? <p className="panel-feedback">{notice}</p> : null}
+      </section>
+    </div>
+  );
+};
 
 type BattleUnitSnapshot = {
   start?: Record<string, number>;
@@ -4856,7 +5533,11 @@ const CommandsPanel = ({
   commandHistory,
   quickSelection,
   onIssueArmyCommand,
+  onCancelArmyCommand,
   onReturnSupport,
+  allowInstantActions,
+  instantActionEnabled,
+  onToggleInstantAction,
   isArmyCommandPending,
   commandNotice,
   onOpenSettlementByVillageId,
@@ -4875,10 +5556,15 @@ const CommandsPanel = ({
   onIssueArmyCommand: (payload: {
     commandType: ArmyCommandType;
     targetVillageId: number;
+    instant?: boolean;
     lootPriority?: LootPriority;
     units: Record<string, number>;
   }) => void;
+  onCancelArmyCommand: (movementId: number) => void;
   onReturnSupport: (supportMovementId: number) => void;
+  allowInstantActions: boolean;
+  instantActionEnabled: boolean;
+  onToggleInstantAction: (enabled: boolean) => void;
   isArmyCommandPending: boolean;
   commandNotice: string | null;
   onOpenSettlementByVillageId: (villageId: number) => void;
@@ -5074,6 +5760,7 @@ const CommandsPanel = ({
     onIssueArmyCommand({
       commandType,
       targetVillageId: resolvedTargetVillageId,
+      instant: instantActionEnabled,
       lootPriority: commandType === 'attack' ? lootPriority : undefined,
       units: selectedUnitsPayload,
     });
@@ -5127,6 +5814,18 @@ const CommandsPanel = ({
 
       <section>
         <h3>Vydat armádní rozkaz</h3>
+        {allowInstantActions ? (
+          <div className="instant-actions-panel">
+            <label className="instant-actions-toggle">
+              <input
+                type="checkbox"
+                checked={instantActionEnabled}
+                onChange={(event) => onToggleInstantAction(event.target.checked)}
+              />
+              <span>Okamžité odeslání (localhost): příkaz dorazí hned.</span>
+            </label>
+          </div>
+        ) : null}
         <div className="army-command-controls">
           <label>
             Rozkaz
@@ -5395,6 +6094,21 @@ const CommandsPanel = ({
                   <small>
                     Jednotky: {unitsTotal.toLocaleString('cs-CZ')} · ETA {formatDurationLabel(movement.remainingSec)}
                   </small>
+                  {movement.commandType === 'attack' ||
+                  movement.commandType === 'support' ||
+                  movement.commandType === 'move' ? (
+                    <div className="activity-item-actions">
+                      <button
+                        type="button"
+                        className="inline-cancel-button"
+                        onClick={() => onCancelArmyCommand(movement.id)}
+                        disabled={isArmyCommandPending}
+                        title="Zrušit tento rozkaz (do 1/3 cesty)"
+                      >
+                        {isArmyCommandPending ? '…' : 'Zrušit rozkaz'}
+                      </button>
+                    </div>
+                  ) : null}
                   {hoveredMovementId === movement.id ? (
                     <MovementArmyTooltip movement={movement} cursorPosition={tooltipCursorPosition} />
                   ) : null}
@@ -9073,6 +9787,13 @@ export const GamePage = () => {
   const initialAutoStretchAppliedRef = useRef(false);
   const armyQuickSelectionRequestIdRef = useRef(0);
   const username = session?.username ?? 'Hayato';
+  const allowInstantActions = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+    const host = String(window.location.hostname ?? '').trim().toLocaleLowerCase('cs-CZ');
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  }, []);
   const selectedWorldId = session?.selectedWorldId ?? null;
   const selectedSpawnDirection = session?.selectedSpawnDirection ?? null;
   const selectedWorldName = selectedWorldId
@@ -9128,6 +9849,10 @@ export const GamePage = () => {
   const [armyNotice, setArmyNotice] = useState<string | null>(null);
   const [armyNoticeUnitId, setArmyNoticeUnitId] = useState<string | null>(null);
   const [armyCommandNotice, setArmyCommandNotice] = useState<string | null>(null);
+  const [researchNotice, setResearchNotice] = useState<string | null>(null);
+  const [researchActionPending, setResearchActionPending] = useState(false);
+  const [mercenaryActionPending, setMercenaryActionPending] = useState(false);
+  const [logisticsActionPending, setLogisticsActionPending] = useState(false);
   const [recruitPendingUnitId, setRecruitPendingUnitId] = useState<string | null>(null);
   const [cancelRecruitmentPendingId, setCancelRecruitmentPendingId] = useState<number | null>(null);
   const [armyCommandPending, setArmyCommandPending] = useState(false);
@@ -9212,6 +9937,7 @@ export const GamePage = () => {
     () => readStoredArmyTargetHistory(username),
   );
   const [armyQuickSelection, setArmyQuickSelection] = useState<ArmyQuickSelection | null>(null);
+  const [instantActionEnabled, setInstantActionEnabled] = useState<boolean>(allowInstantActions);
   const [protectionClockMs, setProtectionClockMs] = useState(() => Date.now());
 
   useEffect(() => {
@@ -9221,6 +9947,9 @@ export const GamePage = () => {
         upgradePendingBuildingId ||
         cancelUpgradePendingOrderId != null ||
         armyCommandPending ||
+        researchActionPending ||
+        mercenaryActionPending ||
+        logisticsActionPending ||
         kingdomActionPending ||
         restartVillagePending ||
         renameVillagePending ||
@@ -9232,9 +9961,12 @@ export const GamePage = () => {
     armyCommandPending,
     cancelRecruitmentPendingId,
     cancelUpgradePendingOrderId,
+    logisticsActionPending,
     kingdomActionPending,
+    mercenaryActionPending,
     recruitPendingUnitId,
     recallKnightPending,
+    researchActionPending,
     renameVillagePending,
     restartVillagePending,
     upgradePendingBuildingId,
@@ -9267,6 +9999,13 @@ export const GamePage = () => {
     }
     setIsPinColumnsHoldVisible(false);
   }, [isTouchDevice]);
+
+  useEffect(() => {
+    if (allowInstantActions) {
+      return;
+    }
+    setInstantActionEnabled(false);
+  }, [allowInstantActions]);
 
   useEffect(() => {
     if (shortcutSettingsLoadedForUser !== username) {
@@ -9384,6 +10123,7 @@ export const GamePage = () => {
         category: art?.fallbackCategory ?? building.category,
         workers: `${building.workersUsed}`,
         effect: building.effect,
+        nextLevelPreview: building.nextLevelPreview ?? null,
         nextCostRaw: building.nextCost,
         nextCost: formatCostLabel(building.nextCost),
         nextTime: isBuildingInProgress
@@ -9674,6 +10414,26 @@ export const GamePage = () => {
           ...resolveUpgradeMeta('iron-mine'),
         },
         {
+          name: 'Zlato',
+          amount: 0,
+          delta: '+0 / h',
+          boostLabel: null,
+          cap: 0,
+          buildingId: 'gold-mine',
+          ...resolveBuildingMeta('gold-mine'),
+          ...resolveUpgradeMeta('gold-mine'),
+        },
+        {
+          name: 'Mince',
+          amount: 0,
+          delta: '+0 / h',
+          boostLabel: null,
+          cap: 0,
+          buildingId: 'mint',
+          ...resolveBuildingMeta('mint'),
+          ...resolveUpgradeMeta('mint'),
+        },
+        {
           name: 'Populace',
           amount: 0,
           delta: 'kapacita 0',
@@ -9723,6 +10483,26 @@ export const GamePage = () => {
         ...resolveUpgradeMeta('iron-mine'),
       },
       {
+        name: 'Zlato',
+        amount: gameState.resources.gold,
+        delta: `+${gameState.resources.productionPerHour.gold.toLocaleString('cs-CZ')} / h`,
+        boostLabel: null,
+        cap: gameState.resources.goldCap,
+        buildingId: 'gold-mine',
+        ...resolveBuildingMeta('gold-mine'),
+        ...resolveUpgradeMeta('gold-mine'),
+      },
+      {
+        name: 'Mince',
+        amount: gameState.resources.coins,
+        delta: `+${gameState.resources.productionPerHour.mintCoins.toLocaleString('cs-CZ')} / h`,
+        boostLabel: null,
+        cap: gameState.resources.coinsCap,
+        buildingId: 'mint',
+        ...resolveBuildingMeta('mint'),
+        ...resolveUpgradeMeta('mint'),
+      },
+      {
         name: 'Populace',
         amount: gameState.population.used,
         delta: `kapacita ${gameState.population.cap.toLocaleString('cs-CZ')}`,
@@ -9735,8 +10515,11 @@ export const GamePage = () => {
     ];
   }, [buildingUpgradeQueueByBuilding, gameState]);
   const currentResearchTask = useMemo(
-    () => RESEARCH_TASKS.find((task) => task.progress < 100) ?? null,
-    [],
+    () =>
+      gameState?.research?.projects?.find((project) => project.status === 'researching') ??
+      gameState?.research?.projects?.find((project) => project.status === 'available') ??
+      null,
+    [gameState?.research?.projects],
   );
 
   const villageLabel = gameState
@@ -11184,13 +11967,8 @@ export const GamePage = () => {
   );
 
   const handleResearchSpotlightClick = useCallback(() => {
-    const universityBuilding = buildingsById.get('university');
-    if (universityBuilding) {
-      openBuildingPanel(universityBuilding);
-      return;
-    }
     openPanel('research');
-  }, [buildingsById, openBuildingPanel, openPanel]);
+  }, [openPanel]);
 
   const focusPanel = (id: string) => {
     setActivePanelId(id);
@@ -11563,7 +12341,7 @@ export const GamePage = () => {
   }, [buildingsById]);
 
   const handleRecruit = useCallback(
-    async (unit: Unit, amount: number): Promise<boolean> => {
+    async (unit: Unit, amount: number, options?: { instant?: boolean }): Promise<boolean> => {
       const normalizedAmount = Math.max(0, Math.floor(amount));
       if (normalizedAmount <= 0) {
         return false;
@@ -11580,6 +12358,7 @@ export const GamePage = () => {
           normalizedAmount,
           gameState?.village.id ?? activeVillageId,
           selectedWorldId,
+          options?.instant === true,
         );
         applyIncomingGameState(nextState);
         setArmyNotice(`${unit.name}: +${normalizedAmount.toLocaleString('cs-CZ')} jednotek`);
@@ -11605,7 +12384,12 @@ export const GamePage = () => {
   );
 
   const handleRecruitInVillage = useCallback(
-    async (villageIdRaw: number, unitIdRaw: string, amountRaw: number): Promise<string> => {
+    async (
+      villageIdRaw: number,
+      unitIdRaw: string,
+      amountRaw: number,
+      options?: { instant?: boolean },
+    ): Promise<string> => {
       const villageId = Math.max(0, Math.floor(Number(villageIdRaw)));
       const unitId = String(unitIdRaw ?? '').trim();
       const amount = Math.max(0, Math.floor(Number(amountRaw)));
@@ -11614,7 +12398,14 @@ export const GamePage = () => {
       }
 
       try {
-        const nextState = await recruitUnit(username, unitId, amount, villageId, selectedWorldId);
+        const nextState = await recruitUnit(
+          username,
+          unitId,
+          amount,
+          villageId,
+          selectedWorldId,
+          options?.instant === true,
+        );
         if ((gameState?.village.id ?? activeVillageId) === villageId) {
           applyIncomingGameState(nextState);
           void loadGameState(true, true);
@@ -11717,6 +12508,7 @@ export const GamePage = () => {
     async (payload: {
       commandType: ArmyCommandType;
       targetVillageId: number;
+      instant?: boolean;
       lootPriority?: LootPriority;
       units: Record<string, number>;
     }) => {
@@ -11729,6 +12521,7 @@ export const GamePage = () => {
           commandType: payload.commandType,
           villageId: originVillageId,
           worldId: selectedWorldId,
+          instant: payload.instant === true,
           targetVillageId: payload.targetVillageId,
           lootPriority: payload.lootPriority,
           units: payload.units,
@@ -11743,7 +12536,14 @@ export const GamePage = () => {
           rememberArmyCommandTarget(originVillageId, payload.commandType, payload.targetVillageId);
         }
         const etaLabel = formatDurationLabel(response.result.durationSec);
-        setArmyCommandNotice(`Rozkaz ${ARMY_COMMAND_LABELS[payload.commandType]} byl odeslán. ETA ${etaLabel}.`);
+        const nightWarning =
+          payload.commandType === 'attack' && response.result.arrivesDuringNightMode
+            ? ' Cíl je v nočním režimu (+100 % obrana).'
+            : '';
+        const instantInfo = response.result.instantApplied ? ' Okamžitý režim byl použit.' : '';
+        setArmyCommandNotice(
+          `Rozkaz ${ARMY_COMMAND_LABELS[payload.commandType]} byl odeslán. ETA ${etaLabel}.${nightWarning}${instantInfo}`,
+        );
         void loadGameState(true, true);
       } catch (error) {
         setArmyCommandNotice(getErrorMessage(error));
@@ -11792,6 +12592,141 @@ export const GamePage = () => {
       selectedWorldId,
       username,
     ],
+  );
+
+  const handleCancelArmyCommand = useCallback(
+    async (movementId: number) => {
+      if (!Number.isFinite(movementId) || movementId <= 0) {
+        return;
+      }
+      setArmyCommandPending(true);
+      setArmyCommandNotice(null);
+
+      try {
+        const response = await cancelArmyCommandRequest(
+          username,
+          movementId,
+          gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
+        );
+        applyIncomingGameState(response.data);
+        const etaLabel = response.result.returnDurationSec > 0
+          ? formatDurationLabel(response.result.returnDurationSec)
+          : 'okamžitě';
+        setArmyCommandNotice(`Rozkaz zrušen. Jednotky se vrací (${etaLabel}).`);
+        void loadGameState(true, true);
+      } catch (error) {
+        setArmyCommandNotice(getErrorMessage(error));
+      } finally {
+        setArmyCommandPending(false);
+      }
+    },
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
+  );
+
+  const handleHireAcademics = useCallback(
+    async (amount: number) => {
+      const normalizedAmount = Math.max(1, Math.floor(Number(amount ?? 1)));
+      setResearchActionPending(true);
+      setResearchNotice(null);
+      try {
+        const response = await hireAcademicsRequest(
+          username,
+          normalizedAmount,
+          gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
+        );
+        applyIncomingGameState(response.data);
+        setResearchNotice(
+          `Najato akademiků: ${response.result.hired.toLocaleString('cs-CZ')} (cena ${response.result.totalCoinCost.toLocaleString('cs-CZ')} mincí).`,
+        );
+        void loadGameState(true, true);
+      } catch (error) {
+        setResearchNotice(getErrorMessage(error));
+      } finally {
+        setResearchActionPending(false);
+      }
+    },
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
+  );
+
+  const handleStartResearchProject = useCallback(
+    async (researchId: string, academics: number) => {
+      const normalizedResearchId = String(researchId ?? '').trim();
+      if (!normalizedResearchId) {
+        return;
+      }
+      const normalizedAcademics = Math.max(1, Math.floor(Number(academics ?? 1)));
+      setResearchActionPending(true);
+      setResearchNotice(null);
+      try {
+        const response = await startResearchProjectRequest(
+          username,
+          normalizedResearchId,
+          normalizedAcademics,
+          gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
+        );
+        applyIncomingGameState(response.data);
+        setResearchNotice(
+          `Výzkum spuštěn: ${response.result.researchName} (akademici ${response.result.assignedAcademics}, cena ${response.result.coinCostPaid.toLocaleString('cs-CZ')} mincí).`,
+        );
+        void loadGameState(true, true);
+      } catch (error) {
+        setResearchNotice(getErrorMessage(error));
+      } finally {
+        setResearchActionPending(false);
+      }
+    },
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
+  );
+
+  const handleHireMercenaries = useCallback(async () => {
+    setMercenaryActionPending(true);
+    setResearchNotice(null);
+    try {
+      const response = await hireMercenaryContractRequest(
+        username,
+        gameState?.village.id ?? activeVillageId,
+        selectedWorldId,
+      );
+      applyIncomingGameState(response.data);
+      setResearchNotice(
+        `Žoldáci najati. Dorazí za 30 minut do ${new Date(response.result.arriveAt).toLocaleString('cs-CZ')}.`,
+      );
+      void loadGameState(true, true);
+    } catch (error) {
+      setResearchNotice(getErrorMessage(error));
+    } finally {
+      setMercenaryActionPending(false);
+    }
+  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username]);
+
+  const handleSendMarketLogistics = useCallback(
+    async (payload: { targetVillageId: number; wood: number; stone: number; iron: number }) => {
+      setLogisticsActionPending(true);
+      setResearchNotice(null);
+      try {
+        const response = await sendMarketLogisticsRequest(username, {
+          targetVillageId: payload.targetVillageId,
+          wood: payload.wood,
+          stone: payload.stone,
+          iron: payload.iron,
+          villageId: gameState?.village.id ?? activeVillageId,
+          worldId: selectedWorldId,
+        });
+        applyIncomingGameState(response.data);
+        setResearchNotice(
+          `Logistická zásilka #${response.result.routeId} odeslána. ETA ${formatDurationLabel(response.result.durationSec)}.`,
+        );
+        void loadGameState(true, true);
+      } catch (error) {
+        setResearchNotice(getErrorMessage(error));
+      } finally {
+        setLogisticsActionPending(false);
+      }
+    },
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
   const handleBuildingUpgrade = useCallback(
@@ -12724,6 +13659,9 @@ export const GamePage = () => {
             onUpgradeBuildingInVillage={handleUpgradeBuildingInVillage}
             onRecruitInVillage={handleRecruitInVillage}
             onOpenSettlementByVillageId={openSettlementByVillageId}
+            allowInstantActions={allowInstantActions}
+            instantActionEnabled={instantActionEnabled}
+            onToggleInstantAction={setInstantActionEnabled}
             recruitPendingUnitId={recruitPendingUnitId}
             cancelRecruitmentPendingId={cancelRecruitmentPendingId}
             upgradePendingBuildingId={upgradePendingBuildingId}
@@ -12756,14 +13694,36 @@ export const GamePage = () => {
             commandHistory={currentVillageCommandHistory}
             quickSelection={armyQuickSelection}
             onIssueArmyCommand={handleIssueArmyCommand}
+            onCancelArmyCommand={handleCancelArmyCommand}
             onReturnSupport={handleReturnSupport}
+            allowInstantActions={allowInstantActions}
+            instantActionEnabled={instantActionEnabled}
+            onToggleInstantAction={setInstantActionEnabled}
             isArmyCommandPending={armyCommandPending}
             commandNotice={armyCommandNotice}
             onOpenSettlementByVillageId={openSettlementByVillageId}
           />
         );
       case 'research':
-        return <ResearchPanel />;
+        return (
+          <ResearchPanel
+            research={gameState?.research}
+            market={gameState?.market}
+            mercenaries={gameState?.mercenaries}
+            rules={gameState?.rules}
+            resources={gameState?.resources}
+            settlements={mapSettlements}
+            currentVillageId={gameState?.village.id ?? activeVillageId}
+            notice={researchNotice}
+            researchActionPending={researchActionPending}
+            mercenaryActionPending={mercenaryActionPending}
+            logisticsActionPending={logisticsActionPending}
+            onHireAcademics={handleHireAcademics}
+            onStartResearchProject={handleStartResearchProject}
+            onHireMercenaries={handleHireMercenaries}
+            onSendMarketLogistics={handleSendMarketLogistics}
+          />
+        );
       case 'messages':
         return (
           <MessagesPanel
@@ -13180,10 +14140,21 @@ export const GamePage = () => {
             <p>Aktuální výzkum</p>
             <strong>{currentResearchTask.name}</strong>
             <span>
-              {Math.round(currentResearchTask.progress)} % · ETA {currentResearchTask.eta}
+              {Math.round(currentResearchTask.progressPercent)} % ·{' '}
+              {currentResearchTask.status === 'researching'
+                ? `akademici ${Math.max(0, Math.floor(Number(currentResearchTask.assignedAcademics ?? 0))).toLocaleString('cs-CZ')}`
+                : currentResearchTask.status === 'available'
+                  ? 'připraveno ke spuštění'
+                  : 'dokončeno'}
             </span>
-            <small>Klikni pro detail v Univerzitě</small>
-            <small className="research-preparing-note">Výzkum se do hry teprve připravuje.</small>
+            <small>Klikni pro detail v panelu Výzkum</small>
+            <small className="research-preparing-note">
+              {currentResearchTask.status === 'researching'
+                ? 'Projekt právě běží.'
+                : currentResearchTask.status === 'available'
+                  ? 'Čeká na přidělení akademiků.'
+                  : 'Projekt je dokončený.'}
+            </small>
           </button>
         ) : null}
       </section>

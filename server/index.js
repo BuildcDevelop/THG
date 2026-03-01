@@ -4,6 +4,7 @@ import cron from 'node-cron';
 import {
   acceptKingdomInvite,
   archivePlayerNotification,
+  cancelArmyCommand,
   cancelBuildingUpgrade,
   cancelRecruitment,
   createPlayerAccount,
@@ -16,6 +17,8 @@ import {
   getVillageSnapshot,
   invitePlayerToKingdom,
   issueArmyCommand,
+  hireAcademics,
+  hireMercenaryContract,
   kickKingdomMember,
   leaveKingdom,
   listPlayerNotifications,
@@ -31,6 +34,8 @@ import {
   recruitUnits,
   restartVillageProgress,
   runGameTick,
+  sendMarketLogistics,
+  startResearchProject,
   startBuildingUpgrade,
   unarchivePlayerNotification,
 } from './gameService.js';
@@ -66,7 +71,7 @@ import {
 const app = express();
 const port = Number(process.env.PORT ?? 3001);
 const tickSchedule = process.env.GAME_TICK_SCHEDULE ?? '*/5 * * * * *';
-const versionLabel = String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.08').trim() || 'build-0.1.08';
+const versionLabel = String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.09').trim() || 'build-0.1.09';
 const buildId =
   String(process.env.TLD_BUILD_ID ?? process.env.NETLIFY_COMMIT_REF ?? process.env.COMMIT_REF ?? versionLabel).trim() ||
   versionLabel;
@@ -114,6 +119,27 @@ const resolveRequestIpAddress = (request) => {
     }
   }
   return String(request?.ip ?? '').trim() || null;
+};
+
+const isLoopbackIpAddress = (ipRaw) => {
+  const ip = String(ipRaw ?? '').trim();
+  if (!ip) {
+    return false;
+  }
+  return (
+    ip === '::1' ||
+    ip === '::ffff:127.0.0.1' ||
+    ip === '127.0.0.1' ||
+    ip.startsWith('127.')
+  );
+};
+
+const isLocalhostInstantRequest = (request) => {
+  if (isProductionRuntime) {
+    return false;
+  }
+  const requestIp = resolveRequestIpAddress(request);
+  return isLoopbackIpAddress(requestIp);
 };
 
 const normalizeComparableUsername = (value) =>
@@ -970,9 +996,15 @@ app.post('/api/v1/units/:unitId/recruit', async (req, res, next) => {
         ? null
         : Number(String(villageIdRaw).trim());
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const instantRequested = req.body?.instant === true && isLocalhostInstantRequest(req);
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
-      const result = recruitUnits(username, unitId, amount, normalizedVillageId, worldId);
+      const result = recruitUnits(username, unitId, amount, normalizedVillageId, worldId, {
+        instant: instantRequested,
+      });
+      if (instantRequested) {
+        runGameTick();
+      }
       const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
@@ -1161,9 +1193,156 @@ app.post('/api/v1/army/command', async (req, res, next) => {
         ? null
         : Number(String(villageIdRaw).trim());
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const instantRequested = req.body?.instant === true && isLocalhostInstantRequest(req);
+    const commandPayload = {
+      ...(req.body ?? {}),
+      instant: instantRequested,
+    };
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
-      const result = issueArmyCommand(username, req.body ?? {}, normalizedVillageId, worldId);
+      const result = issueArmyCommand(username, commandPayload, normalizedVillageId, worldId);
+      if (instantRequested) {
+        runGameTick();
+      }
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      return { result, state };
+    });
+
+    res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/army/command/:movementId/cancel', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const movementId = Number(String(req.params.movementId ?? '').trim());
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = cancelArmyCommand(username, movementId, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      return { result, state };
+    });
+
+    res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/research/academics/hire', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const amount = Number(req.body?.amount ?? 1);
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = hireAcademics(username, amount, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      return { result, state };
+    });
+
+    res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/research/project/start', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const researchId = String(req.body?.researchId ?? '').trim();
+    const academics = Number(req.body?.academics ?? 1);
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = startResearchProject(username, researchId, academics, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      return { result, state };
+    });
+
+    res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/mercenaries/hire', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = hireMercenaryContract(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      return { result, state };
+    });
+
+    res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/market/logistics/send', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = sendMarketLogistics(username, req.body ?? {}, normalizedVillageId, worldId);
       const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
