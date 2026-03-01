@@ -7,13 +7,25 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+.env.development
+
 node_modules
 dist
 dist-ssr
 *.local
 server/data/*.sqlite
 server/data/*.sqlite-*
-convex/_generated
+server/data/*.sqlite.backup-wal
+server/data/*.sqlite.backup-shm
+server/data/*.sqlite.backup.pre-*
+
+# Local backups / consolidation output (should never ship)
+dir/
+
+# Local scratch / experiments (should never ship)
+tmp/
+tmp-*
+tmp*/
 
 # Editor directories and files
 .vscode/*
@@ -26,3 +38,5 @@ convex/_generated
 *.njsproj
 *.sln
 *.sw?
+# Runtime avatar files (stored outside game DB)
+server/storage/avatars/

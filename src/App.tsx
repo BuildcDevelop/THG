@@ -2,13 +2,14 @@ import { useEffect, useState, type ReactElement } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { hasSelectedWorld, isAdminAuthenticated, isAuthenticated } from './auth';
 import { fetchHealthStatus } from './api/gameApi';
+import { CommunicationHub } from './components/CommunicationHub';
 import { AdminPage } from './pages/AdminPage';
 import { GamePage } from './pages/GamePage';
 import { LoginPage } from './pages/LoginPage';
 import { WorldsPage } from './pages/WorldsPage';
 import './App.css';
 
-const GAME_VERSION_LABEL = (import.meta.env.VITE_GAME_VERSION as string | undefined)?.trim() || '0.1.06';
+const GAME_VERSION_LABEL = (import.meta.env.VITE_GAME_VERSION as string | undefined)?.trim() || '0.1.08';
 const CLIENT_BUILD_ID = (import.meta.env.VITE_BUILD_ID as string | undefined)?.trim() || null;
 const HEALTH_POLL_INTERVAL_MS = 15000;
 const ACTIVE_DEPLOYMENT_STATUSES = new Set(['building', 'deploying', 'updating', 'maintenance']);
@@ -137,6 +138,7 @@ function App() {
         />
         <Route path="*" element={<Navigate to={isAuthenticated() ? '/worlds' : '/login'} replace />} />
       </Routes>
+      {isAuthenticated() ? <CommunicationHub /> : null}
       {deploymentNotice ? (
         <div className="deployment-overlay" role="alertdialog" aria-live="assertive" aria-modal="true">
           <section className="deployment-dialog">

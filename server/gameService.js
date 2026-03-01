@@ -95,6 +95,17 @@ const KNIGHT_UNIT_ID = 'knight';
 const SCOUT_UNIT_ID = 'scout';
 const KNIGHT_RECALL_REFUND = { wood: 1000, stone: 1000, iron: 1000 };
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const PLAYER_NOTIFICATION_RETENTION_DAYS = 30;
+const PLAYER_NOTIFICATION_MAX_PAGE_SIZE = 100;
+const RELEASE_0107_NOTIFICATION = Object.freeze({
+  versionLabel: '0.1.07',
+  sourceType: 'developer_release',
+  sourceIdBase: 107000,
+  publishedAt: '2026-02-26T00:00:00.000Z',
+  title: 'The Last Dominion 0.1.07',
+  summary:
+    'Herni zaznamy a prikazy jsou aktivni. Zvedy lze vysilat i ve smisenych utocich a reporty zobrazuji slozeni utocici armady i jeji silu.',
+});
 // Add future global boosts as world-specific entries, never as cross-world shared state.
 const DOMINION_FIRE_RESOURCE_BOOST = Object.freeze({
   worldId: DOMINION_FIRE_WORLD_ID,
@@ -356,7 +367,7 @@ const deleteArmyMovementsByPlayerAndRegionStmt = db.prepare(
      )`,
 );
 const updateVillageToAbandonedOwnerStmt = db.prepare(
-  "UPDATE villages SET player_id = ?, name = ?, kingdom = 'Neutral', loyalty = 100, peace_until = NULL WHERE id = ?",
+  "UPDATE villages SET player_id = ?, name = ?, kingdom = 'Neutral', peace_until = NULL WHERE id = ?",
 );
 const selectResourcesByVillageStmt = db.prepare(
   'SELECT wood, stone, iron FROM resources WHERE village_id = ? LIMIT 1',
@@ -718,6 +729,42 @@ const selectActiveArmyMovementsByPlayerStmt = db.prepare(
    WHERE m.player_id = ? AND m.status = 'in_progress'
    ORDER BY m.arrive_at ASC, m.id ASC`,
 );
+const selectIncomingArmyMovementsByVillageOwnerStmt = db.prepare(
+  `SELECT
+      m.id,
+      m.command_type AS commandType,
+      m.player_id AS commanderPlayerId,
+      commander.username AS commanderUsername,
+      m.origin_village_id AS originVillageId,
+      m.target_village_id AS targetVillageId,
+      m.home_village_id AS homeVillageId,
+      m.loot_priority AS lootPriority,
+      m.carry_wood AS carryWood,
+      m.carry_stone AS carryStone,
+      m.carry_iron AS carryIron,
+      m.started_at AS startedAt,
+      m.arrive_at AS arriveAt,
+      ov.name AS originName,
+      ov.coord_x AS originCoordX,
+      ov.coord_y AS originCoordY,
+      tv.name AS targetName,
+      tv.coord_x AS targetCoordX,
+      tv.coord_y AS targetCoordY,
+      hv.name AS homeName,
+      hv.coord_x AS homeCoordX,
+      hv.coord_y AS homeCoordY
+   FROM army_movements m
+   INNER JOIN players commander ON commander.id = m.player_id
+   INNER JOIN villages ov ON ov.id = m.origin_village_id
+   INNER JOIN villages tv ON tv.id = m.target_village_id
+   INNER JOIN villages hv ON hv.id = m.home_village_id
+   WHERE m.status = 'in_progress'
+     AND m.command_type IN ('attack', 'support', 'move')
+     AND tv.player_id = ?
+     AND tv.region = ?
+     AND m.player_id != ?
+   ORDER BY m.arrive_at ASC, m.id ASC`,
+);
 const selectStationedSupportMovementsByPlayerStmt = db.prepare(
   `SELECT
       m.id,
@@ -861,6 +908,9 @@ const selectDistinctVillageKingdomsByPlayerStmt = db.prepare(
 const updateVillageOwnerForConquestStmt = db.prepare(
   'UPDATE villages SET player_id = ?, kingdom = ?, loyalty = 100 WHERE id = ?',
 );
+const updateVillageNameByOwnerAndRegionStmt = db.prepare(
+  'UPDATE villages SET name = ? WHERE id = ? AND player_id = ? AND region = ?',
+);
 const updateVillagesKingdomByPlayerStmt = db.prepare(
   'UPDATE villages SET kingdom = ?, loyalty = 100 WHERE player_id = ? AND region = ?',
 );
@@ -938,6 +988,169 @@ const selectBattleReportsForLeaderboardByRegionStmt = db.prepare(
    LEFT JOIN villages tv ON tv.id = br.target_village_id
    WHERE ov.region = ? OR tv.region = ?
    ORDER BY br.id ASC`,
+);
+const insertPlayerNotificationStmt = db.prepare(
+  `INSERT INTO player_notifications (
+      player_id,
+      region,
+      category,
+      event_type,
+      severity,
+      title,
+      summary,
+      payload_json,
+      source_type,
+      source_id,
+      created_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+);
+const selectPlayerNotificationCountStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM player_notifications
+   WHERE player_id = ?
+     AND region = ?
+     AND deleted_at IS NULL
+     AND archived_at IS NULL`,
+);
+const selectPlayerNotificationCountIncludingArchivedStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM player_notifications
+   WHERE player_id = ?
+     AND region = ?
+     AND deleted_at IS NULL`,
+);
+const selectPlayerNotificationUnreadCountStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM player_notifications
+   WHERE player_id = ?
+     AND region = ?
+     AND deleted_at IS NULL
+     AND read_at IS NULL`,
+);
+const selectPlayerNotificationAttentionCountStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM player_notifications
+   WHERE player_id = ?
+     AND region = ?
+     AND deleted_at IS NULL
+     AND read_at IS NULL
+     AND severity IN ('warning', 'critical')`,
+);
+const selectPlayerNotificationsStmt = db.prepare(
+  `SELECT
+      id,
+      player_id AS playerId,
+      region,
+      category,
+      event_type AS eventType,
+      severity,
+      title,
+      summary,
+      payload_json AS payloadJson,
+      source_type AS sourceType,
+      source_id AS sourceId,
+      created_at AS createdAt,
+      read_at AS readAt,
+      archived_at AS archivedAt
+   FROM player_notifications
+   WHERE player_id = ?
+     AND region = ?
+     AND deleted_at IS NULL
+     AND archived_at IS NULL
+   ORDER BY created_at DESC, id DESC
+   LIMIT ? OFFSET ?`,
+);
+const selectPlayerNotificationsIncludingArchivedStmt = db.prepare(
+  `SELECT
+      id,
+      player_id AS playerId,
+      region,
+      category,
+      event_type AS eventType,
+      severity,
+      title,
+      summary,
+      payload_json AS payloadJson,
+      source_type AS sourceType,
+      source_id AS sourceId,
+      created_at AS createdAt,
+      read_at AS readAt,
+      archived_at AS archivedAt
+   FROM player_notifications
+   WHERE player_id = ?
+     AND region = ?
+     AND deleted_at IS NULL
+   ORDER BY created_at DESC, id DESC
+   LIMIT ? OFFSET ?`,
+);
+const selectUnreadPlayerNotificationsFeedStmt = db.prepare(
+  `SELECT
+      id,
+      player_id AS playerId,
+      region,
+      category,
+      event_type AS eventType,
+      severity,
+      title,
+      summary,
+      payload_json AS payloadJson,
+      source_type AS sourceType,
+      source_id AS sourceId,
+      created_at AS createdAt,
+      read_at AS readAt,
+      archived_at AS archivedAt
+   FROM player_notifications
+   WHERE player_id = ?
+     AND region = ?
+     AND deleted_at IS NULL
+     AND read_at IS NULL
+   ORDER BY created_at DESC, id DESC
+   LIMIT ?`,
+);
+const markPlayerNotificationReadStmt = db.prepare(
+  `UPDATE player_notifications
+   SET read_at = COALESCE(read_at, ?)
+   WHERE id = ?
+     AND player_id = ?
+     AND region = ?
+     AND deleted_at IS NULL`,
+);
+const markAllPlayerNotificationsReadStmt = db.prepare(
+  `UPDATE player_notifications
+   SET read_at = COALESCE(read_at, ?)
+   WHERE player_id = ?
+     AND region = ?
+     AND deleted_at IS NULL`,
+);
+const archivePlayerNotificationStmt = db.prepare(
+  `UPDATE player_notifications
+   SET archived_at = COALESCE(archived_at, ?),
+       read_at = COALESCE(read_at, ?)
+   WHERE id = ?
+     AND player_id = ?
+     AND region = ?
+     AND deleted_at IS NULL`,
+);
+const unarchivePlayerNotificationStmt = db.prepare(
+  `UPDATE player_notifications
+   SET archived_at = NULL
+   WHERE id = ?
+     AND player_id = ?
+     AND region = ?
+     AND deleted_at IS NULL`,
+);
+const deletePlayerNotificationStmt = db.prepare(
+  `UPDATE player_notifications
+   SET deleted_at = ?
+   WHERE id = ?
+     AND player_id = ?
+     AND region = ?
+     AND deleted_at IS NULL`,
+);
+const pruneOldPlayerNotificationsStmt = db.prepare(
+  `DELETE FROM player_notifications
+   WHERE archived_at IS NULL
+     AND created_at <= ?`,
 );
 const selectPlayerCountByRegionStmt = db.prepare(
   `SELECT COUNT(DISTINCT v.player_id) AS total
@@ -1157,6 +1370,26 @@ const normalizeKingdomComparable = (value) =>
 
 const normalizeUsername = (value) => String(value ?? '').trim();
 const normalizeUsernameComparable = (value) => normalizeUsername(value).toLocaleLowerCase('cs-CZ');
+const normalizeVillageName = (value) => String(value ?? '').trim().replace(/\s+/g, ' ');
+const stripVillageCoordinateSuffix = (value) =>
+  String(value ?? '')
+    .trim()
+    .replace(/\s*\(?\d{1,4}\|\d{1,4}\)?\s*$/u, '')
+    .trim();
+
+const validateVillageName = (villageNameRaw) => {
+  const villageName = normalizeVillageName(stripVillageCoordinateSuffix(villageNameRaw));
+  if (!villageName) {
+    throw new GameRuleError("Pole 'name' je povinne.", 400);
+  }
+  if (villageName.length > 14) {
+    throw new GameRuleError('Nazev lena muze mit maximalne 14 znaku (bez souradnic).', 400);
+  }
+  if (!/^[\p{L}\p{N}\s_.!?-]+$/u.test(villageName)) {
+    throw new GameRuleError('Nazev lena obsahuje nepovolene znaky.', 400);
+  }
+  return villageName;
+};
 
 const resolveWorldById = (worldIdRaw) => {
   const worldId = String(worldIdRaw ?? '').trim();
@@ -1363,6 +1596,118 @@ const parseJsonSafe = (value, fallback = {}) => {
   } catch {
     return fallback;
   }
+};
+
+const isSqliteUniqueConstraintError = (error) => {
+  const message = error instanceof Error ? String(error.message ?? '') : String(error ?? '');
+  return message.includes('UNIQUE constraint failed');
+};
+
+const normalizeNotificationSeverity = (value) => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  if (normalized === 'success' || normalized === 'warning' || normalized === 'critical') {
+    return normalized;
+  }
+  return 'info';
+};
+
+const toNotificationItem = (row) => ({
+  id: Number(row.id),
+  playerId: Number(row.playerId),
+  region: Number(row.region),
+  category: String(row.category),
+  eventType: String(row.eventType),
+  severity: normalizeNotificationSeverity(row.severity),
+  title: String(row.title),
+  summary: String(row.summary),
+  payload: parseJsonSafe(row.payloadJson, {}),
+  sourceType: row.sourceType == null ? null : String(row.sourceType),
+  sourceId: row.sourceId == null ? null : Number(row.sourceId),
+  createdAt: String(row.createdAt),
+  readAt: row.readAt == null ? null : String(row.readAt),
+  archivedAt: row.archivedAt == null ? null : String(row.archivedAt),
+});
+
+const createPlayerNotification = ({
+  playerId,
+  region,
+  category,
+  eventType,
+  severity = 'info',
+  title,
+  summary,
+  payload = null,
+  sourceType = null,
+  sourceId = null,
+  createdAt = null,
+}) => {
+  const numericPlayerId = Number(playerId);
+  if (!Number.isFinite(numericPlayerId) || numericPlayerId <= 0) {
+    return null;
+  }
+  const numericRegion = Number(region);
+  if (!Number.isFinite(numericRegion) || numericRegion <= 0) {
+    return null;
+  }
+
+  try {
+    const result = insertPlayerNotificationStmt.run(
+      numericPlayerId,
+      numericRegion,
+      String(category ?? 'system'),
+      String(eventType ?? 'unknown'),
+      normalizeNotificationSeverity(severity),
+      String(title ?? '').trim() || 'Událost',
+      String(summary ?? '').trim() || 'Byla zaznamenána herní událost.',
+      payload == null ? null : JSON.stringify(payload),
+      sourceType == null ? null : String(sourceType),
+      sourceId == null ? null : Number(sourceId),
+      createdAt == null ? nowIso() : String(createdAt),
+    );
+    return Number(result.lastInsertRowid);
+  } catch (error) {
+    if (isSqliteUniqueConstraintError(error)) {
+      return null;
+    }
+    throw error;
+  }
+};
+
+const ensureRelease0107Notification = (playerId, region) => {
+  const numericPlayerId = Number(playerId);
+  const numericRegion = Number(region);
+  if (!Number.isFinite(numericPlayerId) || numericPlayerId <= 0) {
+    return;
+  }
+  if (!Number.isFinite(numericRegion) || numericRegion <= 0) {
+    return;
+  }
+
+  createPlayerNotification({
+    playerId: numericPlayerId,
+    region: numericRegion,
+    category: 'system',
+    eventType: 'developer_update',
+    severity: 'info',
+    title: RELEASE_0107_NOTIFICATION.title,
+    summary: RELEASE_0107_NOTIFICATION.summary,
+    payload: {
+      source: 'developer',
+      version: RELEASE_0107_NOTIFICATION.versionLabel,
+      kind: 'release-notes',
+    },
+    sourceType: RELEASE_0107_NOTIFICATION.sourceType,
+    sourceId: RELEASE_0107_NOTIFICATION.sourceIdBase + numericRegion,
+    createdAt: RELEASE_0107_NOTIFICATION.publishedAt,
+  });
+};
+
+const pruneOldPlayerNotifications = (nowMs = Date.now()) => {
+  const cutoffMs = nowMs - PLAYER_NOTIFICATION_RETENTION_DAYS * DAY_IN_MS;
+  const cutoffIso = new Date(cutoffMs).toISOString();
+  return Number(pruneOldPlayerNotificationsStmt.run(cutoffIso).changes ?? 0);
 };
 
 const createKingdomEvent = ({
@@ -1982,7 +2327,7 @@ const convertVillageToAbandoned = ({ villageId, serialAllocator, createdAtIso = 
   updateVillageToAbandonedOwnerStmt.run(botPlayerId, botVillageName, Number(villageId));
   deleteInProgressUpgradesByVillageStmt.run(Number(villageId));
   deleteInProgressRecruitmentsByVillageStmt.run(Number(villageId));
-  applyVillageTemplate(Number(villageId), ABANDONED_VILLAGE_TEMPLATE);
+  updateVillagePrestigeFromCurrentState(Number(villageId));
 
   return {
     villageId: Number(villageId),
@@ -2379,7 +2724,7 @@ const calculateBuildingEffect = (buildingId, level) => {
     return `Kapacita skladu: ${calculateResourceCap(level).toLocaleString('cs-CZ')}`;
   }
   if (buildingId === 'residential-quarter') {
-    return `Kapacita populace: ${calculatePopulationCap(level).toLocaleString('cs-CZ')}`;
+    return `Kapacita populace: ${calculatePopulationCap(level).toLocaleString('cs-CZ')} (obsluha budov je rezervována automaticky)`;
   }
   if (buildingId === 'townhall') {
     const reductionPct = Math.round(Math.min(15, Math.max(0, Number(level ?? 0)) * 15));
@@ -2484,6 +2829,10 @@ const sumSelectedCost = (selection) => {
 const LOOT_RESOURCE_ORDER = ['wood', 'stone', 'iron'];
 const LOOT_BALANCED_PRIORITY = 'balanced';
 const LOOT_PRIORITIES = [...LOOT_RESOURCE_ORDER, LOOT_BALANCED_PRIORITY];
+const CARAVAN_UNIT_ID = 'caravan';
+const COMBAT_ESCORT_UNIT_ORDER = UNIT_ORDER.filter((unitId) => unitId !== CARAVAN_UNIT_ID);
+const LOOT_PROTECTED_RESOURCE_CAPACITY_PER_LEVEL = 0;
+const LOOT_PROTECTED_BUILDING_ID = null;
 const UNIT_LOOT_CAPACITY = Object.freeze({
   militia: 20,
   archer: 16,
@@ -2636,6 +2985,23 @@ const buildLossesFromStartAndSurvivors = (startSelection, survivorsSelection) =>
   return losses;
 };
 
+const applyCaravanBinarySurvivalRule = (startSelection, survivorsSelection) => {
+  const normalizedStart = toCompleteUnitSelection(startSelection);
+  const normalizedSurvivors = toCompleteUnitSelection(survivorsSelection);
+  const survivingCombatUnits = COMBAT_ESCORT_UNIT_ORDER.reduce((sum, unitId) => {
+    const amount = Math.max(0, Math.floor(Number(normalizedSurvivors?.[unitId] ?? 0)));
+    return sum + amount;
+  }, 0);
+
+  if (survivingCombatUnits <= 0) {
+    normalizedSurvivors[CARAVAN_UNIT_ID] = 0;
+    return normalizedSurvivors;
+  }
+
+  normalizedSurvivors[CARAVAN_UNIT_ID] = Math.max(0, Math.floor(Number(normalizedStart?.[CARAVAN_UNIT_ID] ?? 0)));
+  return normalizedSurvivors;
+};
+
 const resolveArmyTacticalModifier = (selection, role) => {
   let totalCombatants = 0;
   for (const unitId of UNIT_ORDER) {
@@ -2772,6 +3138,15 @@ const resolveScoutCasualties = (attackerScoutCountRaw, defenderScoutCountRaw) =>
   }
 
   const defenderScoutsNeededForKill = Math.ceil(attackerScoutCount / 2);
+  if (defenderScoutCount <= 0) {
+    return {
+      losses: 0,
+      survivors: attackerScoutCount,
+      fullyDefended: false,
+      defenderScoutsNeededForKill,
+    };
+  }
+
   const fullyDefended = defenderScoutCount >= defenderScoutsNeededForKill;
   const losses = fullyDefended
     ? attackerScoutCount
@@ -3018,26 +3393,47 @@ const addResourcesWithoutCap = (villageId, delta) => {
   };
 };
 
-const subtractResources = (villageId, delta) => {
+const toNonNegativeResourcePocket = (rawResources) => ({
+  wood: Math.max(0, Math.floor(Number(rawResources?.wood ?? 0))),
+  stone: Math.max(0, Math.floor(Number(rawResources?.stone ?? 0))),
+  iron: Math.max(0, Math.floor(Number(rawResources?.iron ?? 0))),
+});
+
+const calculateLootProtectionPocket = (buildingLevels) => {
+  const protectedLevel =
+    LOOT_PROTECTED_BUILDING_ID == null
+      ? 0
+      : Math.max(0, Math.floor(Number(buildingLevels?.[LOOT_PROTECTED_BUILDING_ID] ?? 0)));
+  const protectedPerResource = Math.max(
+    0,
+    Math.floor(Number(LOOT_PROTECTED_RESOURCE_CAPACITY_PER_LEVEL) * protectedLevel),
+  );
+  return {
+    wood: protectedPerResource,
+    stone: protectedPerResource,
+    iron: protectedPerResource,
+  };
+};
+
+const calculateLootableResourcePocket = (resourcePocket, protectedPocket) => ({
+  wood: Math.max(0, Math.floor(Number(resourcePocket?.wood ?? 0)) - Math.floor(Number(protectedPocket?.wood ?? 0))),
+  stone: Math.max(0, Math.floor(Number(resourcePocket?.stone ?? 0)) - Math.floor(Number(protectedPocket?.stone ?? 0))),
+  iron: Math.max(0, Math.floor(Number(resourcePocket?.iron ?? 0)) - Math.floor(Number(protectedPocket?.iron ?? 0))),
+});
+
+const subtractResources = (villageId, delta, minimumRemaining = { wood: 0, stone: 0, iron: 0 }) => {
   const resourceRow = selectResourcesByVillageStmt.get(Number(villageId));
   if (!resourceRow) {
     return { taken: { wood: 0, stone: 0, iron: 0 }, next: null };
   }
 
-  const current = {
-    wood: Number(resourceRow.wood),
-    stone: Number(resourceRow.stone),
-    iron: Number(resourceRow.iron),
-  };
-  const requested = {
-    wood: Math.max(0, Math.floor(Number(delta.wood ?? 0))),
-    stone: Math.max(0, Math.floor(Number(delta.stone ?? 0))),
-    iron: Math.max(0, Math.floor(Number(delta.iron ?? 0))),
-  };
+  const current = toNonNegativeResourcePocket(resourceRow);
+  const requested = toNonNegativeResourcePocket(delta);
+  const floorPocket = toNonNegativeResourcePocket(minimumRemaining);
   const taken = {
-    wood: Math.min(current.wood, requested.wood),
-    stone: Math.min(current.stone, requested.stone),
-    iron: Math.min(current.iron, requested.iron),
+    wood: Math.min(Math.max(0, current.wood - floorPocket.wood), requested.wood),
+    stone: Math.min(Math.max(0, current.stone - floorPocket.stone), requested.stone),
+    iron: Math.min(Math.max(0, current.iron - floorPocket.iron), requested.iron),
   };
   const next = {
     wood: Math.max(0, current.wood - taken.wood),
@@ -3081,7 +3477,68 @@ const createBattleReport = ({
     JSON.stringify(payload ?? {}),
   );
 
-  return Number(result.lastInsertRowid);
+  const reportId = Number(result.lastInsertRowid);
+  const payloadRecord = payload && typeof payload === 'object' ? payload : {};
+  const perspective = String(payloadRecord.perspective ?? '')
+    .trim()
+    .toLowerCase();
+  const role = String(payloadRecord.role ?? '')
+    .trim()
+    .toLowerCase();
+  const outcome = String(payloadRecord.outcome ?? '')
+    .trim()
+    .toLowerCase();
+  let severity = 'info';
+  if (perspective === 'attacker' && outcome === 'attacker_victory') {
+    severity = 'success';
+  } else if (perspective === 'attacker' && outcome === 'defender_victory') {
+    severity = 'warning';
+  } else if (perspective === 'defender' && outcome === 'attacker_victory') {
+    severity = 'critical';
+  } else if (perspective === 'defender' && outcome === 'defender_victory') {
+    severity = 'success';
+  }
+  if (role === 'spy' && outcome === 'defender_victory' && perspective === 'attacker') {
+    severity = 'warning';
+  }
+  if (payloadRecord?.conquest?.conquered === true) {
+    severity = perspective === 'attacker' ? 'success' : 'critical';
+  }
+
+  const originVillage = originVillageId == null ? null : selectVillageByIdStmt.get(Number(originVillageId));
+  const targetVillage = targetVillageId == null ? null : selectVillageByIdStmt.get(Number(targetVillageId));
+  const fallbackVillage = selectVillageByPlayerStmt.get(Number(playerId));
+  const resolvedRegion = Number(
+    originVillage?.region ??
+      targetVillage?.region ??
+      fallbackVillage?.region ??
+      WORLD_CATALOG[0]?.region ??
+      1,
+  );
+
+  createPlayerNotification({
+    playerId: Number(playerId),
+    region: resolvedRegion,
+    category: role === 'spy' ? 'spy' : role === 'support' ? 'support' : 'combat',
+    eventType: role === 'spy' ? 'spy_report' : role === 'support' ? 'support_report' : 'battle_report',
+    severity,
+    title: String(title),
+    summary: String(summary),
+    payload: {
+      reportId,
+      battleAt,
+      perspective,
+      role: role || null,
+      outcome: outcome || null,
+      originVillageId: originVillageId == null ? null : Number(originVillageId),
+      targetVillageId: targetVillageId == null ? null : Number(targetVillageId),
+    },
+    sourceType: 'battle_report',
+    sourceId: reportId,
+    createdAt,
+  });
+
+  return reportId;
 };
 
 const simulateAttackBattle = ({
@@ -3136,7 +3593,7 @@ const simulateAttackBattle = ({
 
     const attackerAfterLoss =
       retreatLossRatio > 0 ? applyCasualties(attackerUnits, retreatLossRatio) : { survivors: toCompleteUnitSelection(attackerUnits) };
-    const attackerSurvivors = toCompleteUnitSelection(attackerAfterLoss.survivors);
+    const attackerSurvivors = applyCaravanBinarySurvivalRule(attackerStartUnits, attackerAfterLoss.survivors);
     const attackerLosses = buildLossesFromStartAndSurvivors(attackerStartUnits, attackerSurvivors);
     const defenderSurvivors = toCompleteUnitSelection(defenderStartUnits);
     const defenderLosses = buildLossesFromStartAndSurvivors(defenderStartUnits, defenderSurvivors);
@@ -3188,7 +3645,7 @@ const simulateAttackBattle = ({
 
   if (!defenderHasUnits) {
     bonuses.push('Osada byla prazdna - utocnik neutrpel bojove ztraty.');
-    const attackerSurvivors = toCompleteUnitSelection(attackerUnits);
+    const attackerSurvivors = applyCaravanBinarySurvivalRule(attackerStartUnits, attackerUnits);
     const attackerLosses = buildLossesFromStartAndSurvivors(attackerStartUnits, attackerSurvivors);
     const defenderSurvivors = toCompleteUnitSelection(defenderStartUnits);
     const defenderLosses = buildLossesFromStartAndSurvivors(defenderStartUnits, defenderSurvivors);
@@ -3334,8 +3791,16 @@ const simulateAttackBattle = ({
     defenderAfterLoss = applyCasualties(defenderUnits, defenderLossRatio);
   }
 
-  const attackerSurvivors = toCompleteUnitSelection(attackerAfterLoss.survivors);
-  const defenderSurvivors = toCompleteUnitSelection(defenderAfterLoss.survivors);
+  let attackerSurvivors = toCompleteUnitSelection(attackerAfterLoss.survivors);
+  let defenderSurvivors = toCompleteUnitSelection(defenderAfterLoss.survivors);
+  if (attackerWins) {
+    defenderSurvivors = toCompleteUnitSelection({});
+    defenderLossRatio = 1;
+  } else {
+    attackerSurvivors = toCompleteUnitSelection({});
+    attackerLossRatio = 1;
+  }
+  attackerSurvivors = applyCaravanBinarySurvivalRule(attackerStartUnits, attackerSurvivors);
   const attackerLosses = buildLossesFromStartAndSurvivors(attackerStartUnits, attackerSurvivors);
   const defenderLosses = buildLossesFromStartAndSurvivors(defenderStartUnits, defenderSurvivors);
   const attackerSurvivorsTotal = sumSelectedUnits(attackerSurvivors);
@@ -3392,6 +3857,10 @@ const toMovementWithUnits = (movementRow) => {
   return {
     id: Number(movementRow.id),
     commandType: movementRow.commandType,
+    commanderPlayerId:
+      movementRow.commanderPlayerId == null ? null : Number(movementRow.commanderPlayerId),
+    commanderUsername:
+      movementRow.commanderUsername == null ? null : String(movementRow.commanderUsername),
     originVillageId: Number(movementRow.originVillageId),
     targetVillageId: Number(movementRow.targetVillageId),
     homeVillageId: Number(movementRow.homeVillageId),
@@ -3514,6 +3983,8 @@ const normalizeSettlementKind = (isOwn, isRoyalSettlement, isAbandonedBot) => {
 
 const buildWorldSettlements = (viewerVillage, viewerUsername, world) => {
   const region = resolveWorldRegionDefinition(world);
+  const spawnConfig = resolveWorldSpawnConfig(world);
+  const villageProtectionRuleDays = Math.max(0, Number(spawnConfig.playerProtectionDays ?? 0));
   const villages = selectAllVillagesForWorldStmt.all(Number(world.region));
   const viewerKingdom = viewerVillage.kingdom;
 
@@ -3524,6 +3995,12 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, world) => {
     const isOwn = row.owner === viewerUsername;
     const isRoyalSettlement = row.kingdom === 'Neutral' && !isAbandonedBot;
     const sameKingdom = !isAbandonedBot && row.kingdom === viewerKingdom;
+    const protectionUntil = isAbandonedBot
+      ? null
+      : resolveVillageProtectionUntilIso(row, villageProtectionRuleDays);
+    const protectionRemainingSec = isAbandonedBot
+      ? 0
+      : getVillageProtectionRemainingSec(row, villageProtectionRuleDays);
 
     return {
       id: `vlg-${row.id}`,
@@ -3546,6 +4023,9 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, world) => {
           : 'Cizi leno - podrobnosti o budovach a jednotkach jsou skryte.',
       visibility: isOwn ? 'full' : 'public',
       relation: isOwn ? 'self' : isAbandonedBot ? 'enemy' : sameKingdom ? 'ally' : 'enemy',
+      protectionUntil,
+      protectionRemainingSec,
+      protectionRuleDays: villageProtectionRuleDays,
     };
   });
 };
@@ -3586,32 +4066,47 @@ const toHighestQueuedUpgradeLevelByBuildingMap = (rows) => {
   return highestByBuilding;
 };
 
-const buildArmyState = (playerId, currentVillageId) => {
+const buildArmyState = (playerId, currentVillageId, region) => {
+  const numericPlayerId = Number(playerId);
+  const numericCurrentVillageId = Number(currentVillageId);
+  const numericRegion = Number(region);
   const activeMovements = selectActiveArmyMovementsByPlayerStmt
-    .all(Number(playerId))
+    .all(numericPlayerId)
     .map((row) => toMovementWithUnits(row))
     .map((movement) => ({
       ...movement,
+      isIncoming: false,
       isRelatedToCurrentVillage:
-        movement.originVillageId === Number(currentVillageId) ||
-        movement.targetVillageId === Number(currentVillageId) ||
-        movement.homeVillageId === Number(currentVillageId),
+        movement.originVillageId === numericCurrentVillageId ||
+        movement.targetVillageId === numericCurrentVillageId ||
+        movement.homeVillageId === numericCurrentVillageId,
     }));
 
   const stationedSupports = selectStationedSupportMovementsByPlayerStmt
-    .all(Number(playerId))
+    .all(numericPlayerId)
     .map((row) => toMovementWithUnits(row))
     .map((movement) => ({
       ...movement,
+      isIncoming: false,
       isRelatedToCurrentVillage:
-        movement.originVillageId === Number(currentVillageId) ||
-        movement.targetVillageId === Number(currentVillageId) ||
-        movement.homeVillageId === Number(currentVillageId),
+        movement.originVillageId === numericCurrentVillageId ||
+        movement.targetVillageId === numericCurrentVillageId ||
+        movement.homeVillageId === numericCurrentVillageId,
+    }));
+
+  const incomingMovements = selectIncomingArmyMovementsByVillageOwnerStmt
+    .all(numericPlayerId, numericRegion, numericPlayerId)
+    .map((row) => toMovementWithUnits(row))
+    .map((movement) => ({
+      ...movement,
+      isIncoming: true,
+      isRelatedToCurrentVillage: movement.targetVillageId === numericCurrentVillageId,
     }));
 
   return {
     activeMovements,
     stationedSupports,
+    incomingMovements,
   };
 };
 
@@ -3797,6 +4292,177 @@ export const listBattleReports = (username, options = {}, worldId = null) => {
   };
 };
 
+const normalizeBooleanFlag = (value) => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+};
+
+const buildPlayerNotificationSummaryByPlayerId = (playerId, region, unreadFeedLimit = 8) => {
+  const numericPlayerId = Number(playerId);
+  const numericRegion = Number(region);
+  const feedLimit = clampNumber(Math.floor(Number(unreadFeedLimit) || 8), 1, 20);
+  const unreadTotal = Number(
+    selectPlayerNotificationUnreadCountStmt.get(numericPlayerId, numericRegion)?.total ?? 0,
+  );
+  const attentionTotal = Number(
+    selectPlayerNotificationAttentionCountStmt.get(numericPlayerId, numericRegion)?.total ?? 0,
+  );
+  const unreadFeed = selectUnreadPlayerNotificationsFeedStmt
+    .all(numericPlayerId, numericRegion, feedLimit)
+    .map((row) => toNotificationItem(row));
+  return {
+    unreadTotal,
+    attentionTotal,
+    unreadFeed,
+  };
+};
+
+export const listPlayerNotifications = (username, options = {}, worldId = null) => {
+  const player = selectPlayerByUsernameStmt.get(username);
+  if (!player) {
+    throw new GameRuleError(`Hrac '${username}' neexistuje.`, 404);
+  }
+  const world = resolveWorldById(worldId);
+  ensureRelease0107Notification(Number(player.id), Number(world.region));
+  const includeArchived = normalizeBooleanFlag(options.includeArchived);
+  const requestedPageSize = Number(options.pageSize ?? 25);
+  const requestedPage = Number(options.page ?? 1);
+  const pageSize = clampNumber(
+    Number.isInteger(requestedPageSize) ? requestedPageSize : 25,
+    5,
+    PLAYER_NOTIFICATION_MAX_PAGE_SIZE,
+  );
+  const total = Number(
+    includeArchived
+      ? selectPlayerNotificationCountIncludingArchivedStmt.get(Number(player.id), Number(world.region))?.total ?? 0
+      : selectPlayerNotificationCountStmt.get(Number(player.id), Number(world.region))?.total ?? 0,
+  );
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = clampNumber(Number.isInteger(requestedPage) ? requestedPage : 1, 1, totalPages);
+  const offset = (page - 1) * pageSize;
+  const rows = includeArchived
+    ? selectPlayerNotificationsIncludingArchivedStmt.all(
+        Number(player.id),
+        Number(world.region),
+        pageSize,
+        offset,
+      )
+    : selectPlayerNotificationsStmt.all(Number(player.id), Number(world.region), pageSize, offset);
+  const summary = buildPlayerNotificationSummaryByPlayerId(Number(player.id), Number(world.region));
+
+  return {
+    page,
+    pageSize,
+    total,
+    totalPages,
+    includeArchived,
+    unreadTotal: summary.unreadTotal,
+    attentionTotal: summary.attentionTotal,
+    unreadFeed: summary.unreadFeed,
+    items: rows.map((row) => toNotificationItem(row)),
+  };
+};
+
+const mutatePlayerNotificationTransaction = db.transaction(
+  (username, notificationIdRaw, action, worldId = null) => {
+    const player = selectPlayerByUsernameStmt.get(username);
+    if (!player) {
+      throw new GameRuleError(`Hrac '${username}' neexistuje.`, 404);
+    }
+    const world = resolveWorldById(worldId);
+    const notificationId = requirePositiveInteger(notificationIdRaw, 'notificationId');
+    const actedAt = nowIso();
+    let changes = 0;
+
+    if (action === 'read') {
+      changes = Number(
+        markPlayerNotificationReadStmt.run(
+          actedAt,
+          notificationId,
+          Number(player.id),
+          Number(world.region),
+        ).changes ?? 0,
+      );
+    } else if (action === 'archive') {
+      changes = Number(
+        archivePlayerNotificationStmt.run(
+          actedAt,
+          actedAt,
+          notificationId,
+          Number(player.id),
+          Number(world.region),
+        ).changes ?? 0,
+      );
+    } else if (action === 'unarchive') {
+      changes = Number(
+        unarchivePlayerNotificationStmt.run(
+          notificationId,
+          Number(player.id),
+          Number(world.region),
+        ).changes ?? 0,
+      );
+    } else if (action === 'delete') {
+      changes = Number(
+        deletePlayerNotificationStmt.run(
+          actedAt,
+          notificationId,
+          Number(player.id),
+          Number(world.region),
+        ).changes ?? 0,
+      );
+    } else {
+      throw new GameRuleError('Neznamy typ akce notifikace.', 400);
+    }
+
+    if (changes <= 0) {
+      throw new GameRuleError('Notifikace nebyla nalezena.', 404);
+    }
+
+    const summary = buildPlayerNotificationSummaryByPlayerId(Number(player.id), Number(world.region));
+    return {
+      notificationId,
+      action,
+      actedAt,
+      summary,
+    };
+  },
+);
+
+const markAllPlayerNotificationsReadTransaction = db.transaction((username, worldId = null) => {
+  const player = selectPlayerByUsernameStmt.get(username);
+  if (!player) {
+    throw new GameRuleError(`Hrac '${username}' neexistuje.`, 404);
+  }
+  const world = resolveWorldById(worldId);
+  const actedAt = nowIso();
+  const changed = Number(
+    markAllPlayerNotificationsReadStmt.run(actedAt, Number(player.id), Number(world.region)).changes ?? 0,
+  );
+  const summary = buildPlayerNotificationSummaryByPlayerId(Number(player.id), Number(world.region));
+  return {
+    changed,
+    actedAt,
+    summary,
+  };
+});
+
+export const markPlayerNotificationRead = (username, notificationId, worldId = null) =>
+  mutatePlayerNotificationTransaction(username, notificationId, 'read', worldId);
+
+export const archivePlayerNotification = (username, notificationId, worldId = null) =>
+  mutatePlayerNotificationTransaction(username, notificationId, 'archive', worldId);
+
+export const unarchivePlayerNotification = (username, notificationId, worldId = null) =>
+  mutatePlayerNotificationTransaction(username, notificationId, 'unarchive', worldId);
+
+export const deletePlayerNotification = (username, notificationId, worldId = null) =>
+  mutatePlayerNotificationTransaction(username, notificationId, 'delete', worldId);
+
+export const markAllPlayerNotificationsRead = (username, worldId = null) =>
+  markAllPlayerNotificationsReadTransaction(username, worldId);
+
 const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
   const state = selectGameStateStmt.get();
   const parsedLastTick = state?.lastTickAt ? Date.parse(state.lastTickAt) : Number.NaN;
@@ -3843,8 +4509,33 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
   for (const upgrade of dueUpgrades) {
     const maxLevel = getMaxBuildingLevel(upgrade.buildingId);
     const finalLevel = Math.min(maxLevel, Number(upgrade.toLevel));
-    updateBuildingLevelStmt.run(finalLevel, Number(upgrade.villageId), upgrade.buildingId);
+    const villageId = Number(upgrade.villageId);
+    updateBuildingLevelStmt.run(finalLevel, villageId, upgrade.buildingId);
     completeUpgradeStmt.run(tickTimeIso, Number(upgrade.id));
+    const villageRow = selectVillageWithOwnerByIdStmt.get(villageId);
+    if (villageRow && Number(villageRow.ownerIsBot ?? 0) !== 1) {
+      const buildingName = String(BUILDING_DEFS[upgrade.buildingId]?.name ?? upgrade.buildingId);
+      createPlayerNotification({
+        playerId: Number(villageRow.playerId),
+        region: Number(villageRow.region),
+        category: 'economy',
+        eventType: 'building_upgrade_completed',
+        severity: 'info',
+        title: `Dokoncena vystavba: ${buildingName}`,
+        summary: `${buildingName} v osade ${String(villageRow.name)} dosahla urovne ${finalLevel}.`,
+        payload: {
+          upgradeId: Number(upgrade.id),
+          villageId,
+          villageName: String(villageRow.name),
+          buildingId: String(upgrade.buildingId),
+          toLevel: finalLevel,
+          completedAt: tickTimeIso,
+        },
+        sourceType: 'building_upgrade',
+        sourceId: Number(upgrade.id),
+        createdAt: tickTimeIso,
+      });
+    }
   }
 
   const dueRecruitments = selectDueRecruitmentsStmt.all(tickTimeIso);
@@ -3860,6 +4551,36 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     }
 
     completeRecruitmentStmt.run(tickTimeIso, Number(recruitment.id));
+    const villageRow = selectVillageWithOwnerByIdStmt.get(villageId);
+    if (villageRow && Number(villageRow.ownerIsBot ?? 0) !== 1) {
+      const unitName = String(UNIT_DEFS[unitId]?.name ?? unitId);
+      const isKnightCompletion = unitId === KNIGHT_UNIT_ID;
+      createPlayerNotification({
+        playerId: Number(villageRow.playerId),
+        region: Number(villageRow.region),
+        category: 'units',
+        eventType: isKnightCompletion ? 'knight_completed' : 'recruitment_completed',
+        severity: isKnightCompletion ? 'success' : 'info',
+        title: isKnightCompletion
+          ? `Rytir pripraven: ${String(villageRow.name)}`
+          : `Dokoncen nabor: ${unitName}`,
+        summary: isKnightCompletion
+          ? `V osade ${String(villageRow.name)} byl dokonceny Rytir.`
+          : `V osade ${String(villageRow.name)} byl dokoncen nabor ${finalRecruitAmount}x ${unitName}.`,
+        payload: {
+          recruitmentId: Number(recruitment.id),
+          villageId,
+          villageName: String(villageRow.name),
+          unitId: String(unitId),
+          unitName,
+          amount: finalRecruitAmount,
+          completedAt: tickTimeIso,
+        },
+        sourceType: 'unit_recruitment',
+        sourceId: Number(recruitment.id),
+        createdAt: tickTimeIso,
+      });
+    }
   }
 
   const dueArmyMovements = selectDueArmyMovementsStmt.all(tickTimeIso);
@@ -3867,6 +4588,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
   let completedArmyMovements = 0;
   let spawnedReturnMovements = 0;
   let generatedBattleReports = 0;
+  let prunedNotifications = 0;
   const villagesToRecalculatePrestige = new Set();
   for (const movement of dueArmyMovements) {
     const movementId = Number(movement.id);
@@ -4126,17 +4848,85 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           targetVillageName: String(targetVillage.name ?? ''),
         };
       }
+      const autoReturnedSupports = [];
+      if (conquestPayload?.conquered) {
+        for (const supportResult of stationedSupportCasualties) {
+          if (Number(supportResult.survivorsTotal ?? 0) <= 0) {
+            continue;
+          }
+          const supportHomeVillage = selectVillageByIdStmt.get(Number(supportResult.homeVillageId));
+          if (!supportHomeVillage) {
+            updateArmyMovementStatusStmt.run('completed', tickTimeIso, Number(supportResult.id));
+            continue;
+          }
+
+          const returnUnits = toCompleteUnitSelection(supportResult.survivors);
+          const returnTotal = sumSelectedUnits(returnUnits);
+          if (returnTotal <= 0) {
+            updateArmyMovementStatusStmt.run('completed', tickTimeIso, Number(supportResult.id));
+            continue;
+          }
+
+          const distanceTiles = calculateTileDistance(targetVillage, supportHomeVillage);
+          const durationSec = calculateArmyTravelDurationSec(returnUnits, distanceTiles);
+          if (!Number.isFinite(durationSec) || durationSec <= 0) {
+            updateArmyMovementStatusStmt.run('completed', tickTimeIso, Number(supportResult.id));
+            continue;
+          }
+
+          const arriveAtIso = new Date(Date.parse(tickTimeIso) + durationSec * 1000).toISOString();
+          const insertedSupportReturn = insertArmyMovementStmt.run(
+            Number(supportResult.playerId),
+            'return',
+            Number(targetVillage.id),
+            Number(supportHomeVillage.id),
+            Number(supportHomeVillage.id),
+            null,
+            0,
+            0,
+            0,
+            tickTimeIso,
+            arriveAtIso,
+            'in_progress',
+          );
+          const supportReturnMovementId = Number(insertedSupportReturn.lastInsertRowid);
+          for (const unitId of UNIT_ORDER) {
+            const amount = Number(returnUnits[unitId] ?? 0);
+            if (amount <= 0) {
+              continue;
+            }
+            insertArmyMovementUnitStmt.run(supportReturnMovementId, unitId, amount);
+          }
+
+          updateArmyMovementStatusStmt.run('completed', tickTimeIso, Number(supportResult.id));
+          autoReturnedSupports.push({
+            supportMovementId: Number(supportResult.id),
+            returnMovementId: supportReturnMovementId,
+            totalUnits: returnTotal,
+            homeVillageId: Number(supportHomeVillage.id),
+          });
+          spawnedReturnMovements += 1;
+        }
+      }
 
       const lootPriority = normalizeLootPriority(movement.lootPriority);
+      const returnUnits = toCompleteUnitSelection(battle.attacker.survivors);
+      if (conquestPayload?.conquered && Number(returnUnits[KNIGHT_UNIT_ID] ?? 0) > 0) {
+        returnUnits[KNIGHT_UNIT_ID] = Math.max(0, Number(returnUnits[KNIGHT_UNIT_ID] ?? 0) - 1);
+        conquestPayload.knightConsumed = true;
+      }
+      const attackerSurvivorsAfterConquestTotal = sumSelectedUnits(returnUnits);
       let lootTaken = { wood: 0, stone: 0, iron: 0 };
-      if (battle.attackerWins && Number(battle.attacker.survivorsTotal) > 0) {
-        const carryingCapacity = calculateLootCapacityFromSelection(battle.attacker.survivors);
+      if (battle.attackerWins && attackerSurvivorsAfterConquestTotal > 0) {
+        const carryingCapacity = calculateLootCapacityFromSelection(returnUnits);
         if (carryingCapacity > 0) {
           const defenderResources = selectResourcesByVillageStmt.get(Number(targetVillage.id));
           if (defenderResources) {
-            const requestedLoot = calculateLootDistribution(defenderResources, lootPriority, carryingCapacity);
+            const protectedPocket = calculateLootProtectionPocket(defenderBuildingLevels);
+            const lootableResourcePocket = calculateLootableResourcePocket(defenderResources, protectedPocket);
+            const requestedLoot = calculateLootDistribution(lootableResourcePocket, lootPriority, carryingCapacity);
             if (requestedLoot.total > 0) {
-              const subtraction = subtractResources(Number(targetVillage.id), requestedLoot.loot);
+              const subtraction = subtractResources(Number(targetVillage.id), requestedLoot.loot, protectedPocket);
               lootTaken = {
                 wood: Math.max(0, Math.floor(Number(subtraction.taken.wood ?? 0))),
                 stone: Math.max(0, Math.floor(Number(subtraction.taken.stone ?? 0))),
@@ -4148,12 +4938,6 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       }
 
       let returnMovementPayload = null;
-      const returnUnits = toCompleteUnitSelection(battle.attacker.survivors);
-      if (conquestPayload?.conquered && Number(returnUnits[KNIGHT_UNIT_ID] ?? 0) > 0) {
-        returnUnits[KNIGHT_UNIT_ID] = Math.max(0, Number(returnUnits[KNIGHT_UNIT_ID] ?? 0) - 1);
-        conquestPayload.knightConsumed = true;
-      }
-      const attackerSurvivorsAfterConquestTotal = sumSelectedUnits(returnUnits);
       const shouldSpawnReturnMovement = attackerSurvivorsAfterConquestTotal > 0;
       if (shouldSpawnReturnMovement) {
         const distanceTiles = calculateTileDistance(targetVillage, homeVillage);
@@ -4252,6 +5036,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             returnMovement: returnMovementPayload ?? undefined,
             battle,
             conquest: conquestPayload ?? undefined,
+            autoReturnedSupports: autoReturnedSupports.length > 0 ? autoReturnedSupports : undefined,
           };
           reportId = createBattleReport({
             playerId: Number(attackerPlayer.id),
@@ -4285,6 +5070,14 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
               outcome: 'defender_victory',
               gateBlocked: blockedByGate,
               armyDestroyed: true,
+              battle,
+              sentArmy: {
+                start: battle.attacker.start,
+                totalUnits: totalSentUnits,
+                baseAttackPower: battle.baseAttackPower,
+                finalAttackPower: battle.finalAttackPower,
+                attackMultiplier: battle.attackMultiplier,
+              },
             },
           });
         }
@@ -4327,6 +5120,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           lootTaken,
           returnMovement: returnMovementPayload ?? undefined,
           conquest: conquestPayload ?? undefined,
+          autoReturnedSupports: autoReturnedSupports.length > 0 ? autoReturnedSupports : undefined,
           battle,
         };
         const reportId = createBattleReport({
@@ -4377,6 +5171,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             outcome: battle.attackerWins ? 'attacker_victory' : 'defender_victory',
             returnMovement: returnMovementPayload ?? undefined,
             conquest: conquestPayload ?? undefined,
+            autoReturnedSupports: autoReturnedSupports.length > 0 ? autoReturnedSupports : undefined,
             support: {
               start: supportResult.start,
               losses: supportResult.losses,
@@ -4483,20 +5278,37 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
 
     if (movement.commandType === 'return') {
       const targetVillageId = Number(movement.targetVillageId);
+      const targetPopulation = getVillagePopulationStatus(targetVillageId);
+      let remainingPopulationCapacity = Number(targetPopulation.availablePopulation);
+      const overflowSelection = toCompleteUnitSelection({});
+      let acceptedUnitsTotal = 0;
       for (const unitRow of movementUnits) {
         const unitId = unitRow.unitId;
         const amount = Number(unitRow.amount);
         if (amount <= 0) {
           continue;
         }
-        const currentAmountRow = selectUnitAmountByVillageAndUnitStmt.get(targetVillageId, unitId);
-        const currentAmount = Number(currentAmountRow?.amount ?? 0);
-        const finalAmount = amount;
-        if (finalAmount > 0) {
-          updateUnitAmountStmt.run(currentAmount + finalAmount, targetVillageId, unitId);
+        const unitPopulationCost = getUnitPopulationCost(unitId);
+        const acceptedAmount = Math.min(
+          amount,
+          Math.max(0, Math.floor(remainingPopulationCapacity / unitPopulationCost)),
+        );
+        const overflowAmount = Math.max(0, amount - acceptedAmount);
+
+        if (acceptedAmount > 0) {
+          const currentAmountRow = selectUnitAmountByVillageAndUnitStmt.get(targetVillageId, unitId);
+          const currentAmount = Number(currentAmountRow?.amount ?? 0);
+          updateUnitAmountStmt.run(currentAmount + acceptedAmount, targetVillageId, unitId);
+          remainingPopulationCapacity -= acceptedAmount * unitPopulationCost;
+          acceptedUnitsTotal += acceptedAmount;
+        }
+        if (overflowAmount > 0) {
+          overflowSelection[unitId] = overflowAmount;
         }
       }
-      villagesToRecalculatePrestige.add(targetVillageId);
+      if (acceptedUnitsTotal > 0) {
+        villagesToRecalculatePrestige.add(targetVillageId);
+      }
       const carry = {
         wood: Math.max(0, Math.floor(Number(movement.carryWood ?? 0))),
         stone: Math.max(0, Math.floor(Number(movement.carryStone ?? 0))),
@@ -4505,6 +5317,33 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       if (carry.wood > 0 || carry.stone > 0 || carry.iron > 0) {
         applyResourceDeltaWithCap(targetVillageId, carry);
       }
+
+      const dissolvedTotal = sumSelectedUnits(overflowSelection);
+      if (dissolvedTotal > 0) {
+        const targetVillage = selectVillageByIdStmt.get(targetVillageId);
+        if (targetVillage) {
+          createPlayerNotification({
+            playerId: Number(targetVillage.playerId),
+            region: Number(targetVillage.region),
+            category: 'military',
+            eventType: 'return_population_overflow',
+            severity: 'warning',
+            title: `Návrat armády do ${String(targetVillage.name)}`,
+            summary: `Část vracejících se jednotek (${dissolvedTotal.toLocaleString('cs-CZ')}) se rozpustila kvůli limitu populace.`,
+            payload: {
+              movementId,
+              targetVillageId,
+              dissolvedTotal,
+              dissolvedUnits: overflowSelection,
+              acceptedUnitsTotal,
+            },
+            sourceType: 'army_overflow',
+            sourceId: movementId,
+            createdAt: tickTimeIso,
+          });
+        }
+      }
+
       updateArmyMovementStatusStmt.run('completed', tickTimeIso, movementId);
       completedArmyMovements += 1;
       continue;
@@ -4519,6 +5358,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
   }
 
   updateGameStateTickStmt.run(tickTimeIso);
+  prunedNotifications = pruneOldPlayerNotifications(tickTimeMs);
 
   return {
     elapsedSec,
@@ -4529,6 +5369,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     stationedSupports,
     spawnedReturnMovements,
     generatedBattleReports,
+    prunedNotifications,
     tickedAt: tickTimeIso,
   };
 });
@@ -4672,11 +5513,12 @@ export const getVillageSnapshot = (
   const activeUpgradeByBuilding = toActiveUpgradeByBuildingMap(activeUpgrades);
   const highestQueuedUpgradeLevelByBuilding = toHighestQueuedUpgradeLevelByBuildingMap(activeUpgrades);
   const activeRecruitments = selectActiveRecruitmentsByVillageStmt.all(village.id);
-  const armyState = buildArmyState(player.id, village.id);
+  const armyState = buildArmyState(player.id, village.id, world.region);
   const relevantArmyMovements = armyState.activeMovements.filter((movement) => movement.isRelatedToCurrentVillage);
   const relevantStationedSupports = armyState.stationedSupports.filter(
     (movement) => movement.isRelatedToCurrentVillage,
   );
+  const relevantIncomingMovements = armyState.incomingMovements.filter((movement) => movement.isRelatedToCurrentVillage);
   const activeRecruitmentCountByUnit = {};
   for (const recruitment of activeRecruitments) {
     const unitId = recruitment.unitId;
@@ -4853,6 +5695,26 @@ export const getVillageSnapshot = (
     }
   } else {
     activeOrders.push('Armada: zadny aktivni presun');
+  }
+
+  if (relevantIncomingMovements.length > 0) {
+    for (const movement of relevantIncomingMovements) {
+      const commanderName = String(movement.commanderUsername ?? 'Neznamy velitel');
+      const unitsTotal = movement.units.reduce((sum, unit) => sum + Number(unit.amount), 0);
+      const incomingLabel =
+        movement.commandType === 'attack'
+          ? 'Prichozi utok'
+          : movement.commandType === 'support'
+            ? 'Prichozi podpora'
+            : 'Prichozi presun';
+      activeOrders.push(
+        `Hrozba: ${incomingLabel} od ${commanderName} na ${movement.targetName} (${unitsTotal} jednotek, ETA ${formatRemaining(
+          movement.remainingSec,
+        )})`,
+      );
+    }
+  } else {
+    activeOrders.push('Hrozby: zadny prichozi pohyb na tve osady');
   }
 
   if (relevantStationedSupports.length > 0) {
@@ -5205,6 +6067,63 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
     insertArmyMovementUnitStmt.run(movementId, unitId, amount);
   }
 
+  const commandLabel =
+    commandType === 'attack' ? 'Útok' : commandType === 'support' ? 'Podpora' : commandType === 'move' ? 'Přesun' : 'Rozkaz';
+  createPlayerNotification({
+    playerId: Number(player.id),
+    region: Number(village.region),
+    category: 'command',
+    eventType: 'army_command_sent',
+    severity: 'info',
+    title: `${commandLabel} odeslán`,
+    summary: `${commandLabel} z osady ${String(village.name)} na ${String(targetVillage.name)} dorazí za ${formatRemaining(durationSec)}.`,
+    payload: {
+      movementId,
+      commandType,
+      originVillageId: Number(village.id),
+      originVillageName: String(village.name),
+      targetVillageId: Number(targetVillage.id),
+      targetVillageName: String(targetVillage.name),
+      totalUnits,
+      arriveAt: arriveAtIso,
+    },
+    sourceType: 'army_movement',
+    sourceId: movementId,
+    createdAt: issuedAtIso,
+  });
+  if (Number(targetVillage.playerId) !== Number(player.id) && Number(targetVillage.ownerIsBot ?? 0) !== 1) {
+    const incomingSeverity = commandType === 'attack' ? 'critical' : 'warning';
+    const incomingTitle =
+      commandType === 'attack'
+        ? `Příchozí útok na ${String(targetVillage.name)}`
+        : commandType === 'support'
+          ? `Příchozí podpora na ${String(targetVillage.name)}`
+          : `Příchozí přesun na ${String(targetVillage.name)}`;
+    createPlayerNotification({
+      playerId: Number(targetVillage.playerId),
+      region: Number(targetVillage.region),
+      category: commandType === 'attack' ? 'combat' : 'command',
+      eventType: commandType === 'attack' ? 'incoming_attack' : 'incoming_command',
+      severity: incomingSeverity,
+      title: incomingTitle,
+      summary: `${player.username} vyslal ${commandLabel.toLowerCase()} z ${String(village.name)}. ETA ${formatRemaining(durationSec)}.`,
+      payload: {
+        movementId,
+        commandType,
+        commanderUsername: String(player.username),
+        originVillageId: Number(village.id),
+        originVillageName: String(village.name),
+        targetVillageId: Number(targetVillage.id),
+        targetVillageName: String(targetVillage.name),
+        totalUnits,
+        arriveAt: arriveAtIso,
+      },
+      sourceType: 'army_movement',
+      sourceId: movementId,
+      createdAt: issuedAtIso,
+    });
+  }
+
   return {
     orderId: movementId,
     commandType,
@@ -5402,6 +6321,26 @@ const conquerVillageTransaction = db.transaction((username, villageIdRaw, reques
 
 export const conquerVillage = (username, villageId, requestedVillageId = null, worldId = null) =>
   conquerVillageTransaction(username, villageId, requestedVillageId, worldId);
+const renameVillageTransaction = db.transaction((username, nameRaw, requestedVillageId = null, worldId = null) => {
+  const { player, village, world } = requireVillageForUser(username, requestedVillageId, worldId);
+  const villageName = validateVillageName(nameRaw);
+  const villageId = Number(village.id);
+  const ownerId = Number(player.id);
+  const region = Number(world.region);
+  const previousName = String(village.name ?? '');
+  const changed = Number(updateVillageNameByOwnerAndRegionStmt.run(villageName, villageId, ownerId, region).changes ?? 0);
+  const resolvedVillage = selectVillageByIdStmt.get(villageId);
+  const currentName = String(resolvedVillage?.name ?? previousName);
+  return {
+    villageId,
+    previousName,
+    newName: currentName,
+    renamed: changed > 0,
+    changedAt: nowIso(),
+  };
+});
+export const renameVillage = (username, name, requestedVillageId = null, worldId = null) =>
+  renameVillageTransaction(username, name, requestedVillageId, worldId);
 export const restartVillageProgress = (username, requestedVillageId = null, worldId = null) =>
   restartVillageProgressTransaction(username, requestedVillageId, worldId);
 export const createAbandonedVillages = (count = 1) => createAbandonedVillagesTransaction(count);
@@ -5465,6 +6404,19 @@ const createKingdomTransaction = db.transaction((username, kingdomNameRaw, reque
     actorPlayerId: Number(player.id),
     payload: { founderUsername: player.username },
   });
+  createPlayerNotification({
+    playerId: Number(player.id),
+    region: worldRegion,
+    category: 'kingdom',
+    eventType: 'kingdom_created',
+    severity: 'success',
+    title: `Království založeno: ${kingdomName}`,
+    summary: `Tvé království ${kingdomName} bylo úspěšně založeno.`,
+    payload: { kingdom: kingdomName, founderUsername: player.username },
+    sourceType: 'kingdom_event',
+    sourceId: null,
+    createdAt: respondedAt,
+  });
 
   return {
     kingdom: kingdomName,
@@ -5520,6 +6472,32 @@ const invitePlayerToKingdomTransaction = db.transaction(
       targetPlayerId: Number(targetPlayer.id),
       payload: { inviteId },
     });
+    createPlayerNotification({
+      playerId: Number(player.id),
+      region: worldRegion,
+      category: 'kingdom',
+      eventType: 'kingdom_invite_sent',
+      severity: 'info',
+      title: `Pozvánka odeslána: ${targetPlayer.username}`,
+      summary: `Do království ${inviterKingdom} byla odeslána pozvánka hráči ${targetPlayer.username}.`,
+      payload: { inviteId, kingdom: inviterKingdom, targetUsername: String(targetPlayer.username) },
+      sourceType: 'kingdom_invite',
+      sourceId: inviteId,
+      createdAt,
+    });
+    createPlayerNotification({
+      playerId: Number(targetPlayer.id),
+      region: worldRegion,
+      category: 'kingdom',
+      eventType: 'kingdom_invite_received',
+      severity: 'warning',
+      title: `Pozvánka do království ${inviterKingdom}`,
+      summary: `${player.username} tě pozval do království ${inviterKingdom}.`,
+      payload: { inviteId, kingdom: inviterKingdom, inviterUsername: player.username },
+      sourceType: 'kingdom_invite',
+      sourceId: inviteId,
+      createdAt,
+    });
 
     return {
       inviteId,
@@ -5563,6 +6541,32 @@ const acceptKingdomInviteTransaction = db.transaction((username, inviteIdRaw, re
     targetPlayerId: Number(invite.inviterPlayerId),
     payload: { inviteId },
   });
+  createPlayerNotification({
+    playerId: Number(player.id),
+    region: worldRegion,
+    category: 'kingdom',
+    eventType: 'kingdom_invite_accepted',
+    severity: 'success',
+    title: `Vstup do království ${targetKingdom}`,
+    summary: `Přijal jsi pozvánku do království ${targetKingdom}.`,
+    payload: { inviteId, kingdom: targetKingdom, inviterUsername: String(invite.inviterUsername) },
+    sourceType: 'kingdom_invite',
+    sourceId: inviteId,
+    createdAt: respondedAt,
+  });
+  createPlayerNotification({
+    playerId: Number(invite.inviterPlayerId),
+    region: worldRegion,
+    category: 'kingdom',
+    eventType: 'kingdom_invite_target_joined',
+    severity: 'success',
+    title: `Pozvánka přijata: ${player.username}`,
+    summary: `${player.username} přijal pozvánku do království ${targetKingdom}.`,
+    payload: { inviteId, kingdom: targetKingdom, actorUsername: player.username },
+    sourceType: 'kingdom_invite',
+    sourceId: inviteId,
+    createdAt: respondedAt,
+  });
 
   return {
     inviteId,
@@ -5591,6 +6595,32 @@ const rejectKingdomInviteTransaction = db.transaction((username, inviteIdRaw, re
     targetPlayerId: Number(invite.inviterPlayerId),
     payload: { inviteId },
   });
+  createPlayerNotification({
+    playerId: Number(player.id),
+    region: worldRegion,
+    category: 'kingdom',
+    eventType: 'kingdom_invite_rejected',
+    severity: 'info',
+    title: `Pozvánka odmítnuta: ${String(invite.kingdom)}`,
+    summary: `Odmítl jsi pozvánku do království ${String(invite.kingdom)}.`,
+    payload: { inviteId, kingdom: String(invite.kingdom) },
+    sourceType: 'kingdom_invite',
+    sourceId: inviteId,
+    createdAt: respondedAt,
+  });
+  createPlayerNotification({
+    playerId: Number(invite.inviterPlayerId),
+    region: worldRegion,
+    category: 'kingdom',
+    eventType: 'kingdom_invite_declined_by_target',
+    severity: 'warning',
+    title: `Pozvánka odmítnuta: ${player.username}`,
+    summary: `${player.username} odmítl pozvánku do království ${String(invite.kingdom)}.`,
+    payload: { inviteId, kingdom: String(invite.kingdom), actorUsername: player.username },
+    sourceType: 'kingdom_invite',
+    sourceId: inviteId,
+    createdAt: respondedAt,
+  });
   return {
     inviteId,
     kingdom: String(invite.kingdom),
@@ -5614,6 +6644,19 @@ const leaveKingdomTransaction = db.transaction((username, requestedVillageId = n
     kingdom: currentKingdom,
     eventType: 'member_left',
     actorPlayerId: Number(player.id),
+  });
+  createPlayerNotification({
+    playerId: Number(player.id),
+    region: worldRegion,
+    category: 'kingdom',
+    eventType: 'kingdom_member_left',
+    severity: 'warning',
+    title: `Opuštěné království: ${currentKingdom}`,
+    summary: `Opustil jsi království ${currentKingdom}.`,
+    payload: { kingdom: currentKingdom },
+    sourceType: 'kingdom_event',
+    sourceId: null,
+    createdAt: respondedAt,
   });
 
   return {
@@ -5657,6 +6700,32 @@ const kickKingdomMemberTransaction = db.transaction((username, targetUsernameRaw
     eventType: 'member_kicked',
     actorPlayerId: Number(player.id),
     targetPlayerId: Number(targetPlayer.id),
+  });
+  createPlayerNotification({
+    playerId: Number(player.id),
+    region: worldRegion,
+    category: 'kingdom',
+    eventType: 'kingdom_member_kicked',
+    severity: 'warning',
+    title: `Člen odstraněn: ${String(targetPlayer.username)}`,
+    summary: `Hráč ${String(targetPlayer.username)} byl odebrán z království ${managerKingdom}.`,
+    payload: { kingdom: managerKingdom, targetUsername: String(targetPlayer.username) },
+    sourceType: 'kingdom_event',
+    sourceId: null,
+    createdAt: respondedAt,
+  });
+  createPlayerNotification({
+    playerId: Number(targetPlayer.id),
+    region: worldRegion,
+    category: 'kingdom',
+    eventType: 'kingdom_removed_by_leader',
+    severity: 'critical',
+    title: `Byl jsi vyhozen z království ${managerKingdom}`,
+    summary: `${player.username} tě vyřadil z království ${managerKingdom}.`,
+    payload: { kingdom: managerKingdom, actorUsername: player.username },
+    sourceType: 'kingdom_event',
+    sourceId: null,
+    createdAt: respondedAt,
   });
 
   return {

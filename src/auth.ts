@@ -1,4 +1,4 @@
-import { loginRequest, registerRequest } from './api/gameApi';
+import { loginRequest, logoutRequest, registerRequest } from './api/gameApi';
 
 const AUTH_STORAGE_KEY = 'tld_session';
 const LEGACY_AUTH_STORAGE_KEY = 'thg_session';
@@ -86,6 +86,7 @@ export const setSelectedWorld = (worldId: string, spawnDirection?: string | null
 };
 
 export const logout = (): void => {
+  void logoutRequest().catch(() => undefined);
   localStorage.removeItem(AUTH_STORAGE_KEY);
   localStorage.removeItem(LEGACY_AUTH_STORAGE_KEY);
 };

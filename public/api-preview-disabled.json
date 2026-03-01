@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "error": "preview_api_disabled",
+  "message": "This Netlify preview is isolated from production API/data. Configure a staging backend for interactive gameplay."
+}
