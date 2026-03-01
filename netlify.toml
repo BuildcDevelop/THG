@@ -5,57 +5,21 @@
 [build.environment]
   NODE_VERSION = "22"
 
-# Production only: proxy API calls to the live self-hosted backend (Docker).
+# Proxy API calls to the live self-hosted backend (Docker).
 # Keep this in sync with the backend domain/TLS (Caddy).
-[[context.production.redirects]]
+[[redirects]]
   from = "/api"
   to = "https://thg.89-167-89-109.sslip.io/api"
   status = 200
   force = true
 
-[[context.production.redirects]]
+[[redirects]]
   from = "/api/*"
   to = "https://thg.89-167-89-109.sslip.io/api/:splat"
   status = 200
   force = true
 
-[[context.production.redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
-
-# Deploy previews and branch deploys are isolated from production data.
-# They intentionally do not talk to the live backend unless this is changed.
-[[context.deploy-preview.redirects]]
-  from = "/api"
-  to = "/api-preview-disabled.json"
-  status = 200
-  force = true
-
-[[context.deploy-preview.redirects]]
-  from = "/api/*"
-  to = "/api-preview-disabled.json"
-  status = 200
-  force = true
-
-[[context.deploy-preview.redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
-
-[[context.branch-deploy.redirects]]
-  from = "/api"
-  to = "/api-preview-disabled.json"
-  status = 200
-  force = true
-
-[[context.branch-deploy.redirects]]
-  from = "/api/*"
-  to = "/api-preview-disabled.json"
-  status = 200
-  force = true
-
-[[context.branch-deploy.redirects]]
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
