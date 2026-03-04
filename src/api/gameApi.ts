@@ -107,6 +107,14 @@ export type ArmyMovementState = {
   }[];
 };
 
+export type RecentAttackTargetState = {
+  targetVillageId: number;
+  targetName: string;
+  targetCoordX: number;
+  targetCoordY: number;
+  lastIssuedAt: string;
+};
+
 export type LeaderboardRow = {
   rank: number;
   playerId: number;
@@ -198,6 +206,17 @@ export type ResearchProjectState = {
   requiredPoints: number;
   progressPercent: number;
   assignedAcademics: number;
+  progressPerHour?: number;
+  remainingSec?: number | null;
+  estimatedCompletionAt?: string | null;
+  assignedVillageBreakdown?: {
+    villageId: number;
+    villageName: string;
+    coordX: number;
+    coordY: number;
+    universityLevel: number;
+    assignedAcademics: number;
+  }[];
   startedAt: string | null;
   completedAt: string | null;
 };
@@ -349,10 +368,14 @@ export type GameStateResponse = {
     activeMovements: ArmyMovementState[];
     stationedSupports: ArmyMovementState[];
     incomingMovements: ArmyMovementState[];
+    recentAttackTargets?: RecentAttackTargetState[];
   };
   research?: {
     totalAcademics: number;
     idleAcademics: number;
+    villageAcademics?: number;
+    villageAcademicCapacity?: number;
+    villageAcademicAvailableSlots?: number;
     activeProjectId: string | null;
     projects: ResearchProjectState[];
   };
@@ -679,8 +702,9 @@ export type IssueArmyCommandPayload = {
   commandType: ArmyCommandType;
   villageId?: number | null;
   worldId?: string | null;
-  instant?: boolean;
   targetVillageId?: number;
+  manualTargetCoordX?: number;
+  manualTargetCoordY?: number;
   supportMovementId?: number;
   lootPriority?: LootPriority;
   units?: Partial<Record<'militia' | 'archer' | 'cavalry' | 'scout' | 'knight' | 'ram' | 'caravan', number>>;
@@ -695,7 +719,6 @@ export type IssueArmyCommandResult = {
   distanceTiles: number;
   durationSec: number;
   arriveAt: string;
-  instantApplied?: boolean;
   arrivesDuringNightMode?: boolean;
   totalCost?: ResourceCost;
   lootPriority?: LootPriority | null;
@@ -745,6 +768,14 @@ export type StartResearchProjectResult = {
   assignedAcademics: number;
   coinCostPaid: number;
   startedAt: string;
+};
+
+export type AdjustResearchProjectAcademicsResult = {
+  researchId: string;
+  researchName: string;
+  deltaApplied: number;
+  assignedAcademics: number;
+  updatedAt: string;
 };
 
 export type HireMercenaryContractResult = {
@@ -808,6 +839,13 @@ export type KingdomKickResult = {
   kickedUsername: string;
   kingdom: string;
   kickedAt: string;
+};
+
+export type KingdomTransferLeadershipResult = {
+  kingdom: string;
+  previousLeaderUsername: string;
+  newLeaderUsername: string;
+  transferredAt: string;
 };
 
 export type CommunicationRelation = 'friend' | 'kingdom' | 'stranger';
@@ -1282,13 +1320,12 @@ export const recruitUnit = async (
   amount: number,
   villageId?: number | null,
   worldId?: string | null,
-  instant?: boolean,
 ): Promise<GameStateResponse> => {
   const payload = await request<ApiOk<GameStateResponse>>(
     `/api/v1/units/${encodeURIComponent(unitId)}/recruit`,
     {
       method: 'POST',
-      body: JSON.stringify({ username, amount, villageId, instant, worldId }),
+      body: JSON.stringify({ username, amount, villageId, worldId }),
     },
   );
 
@@ -1463,9 +1500,10 @@ export const issueArmyCommand = async (
     username,
     villageId: payload.villageId,
     worldId: payload.worldId,
-    instant: payload.instant === true,
     commandType: payload.commandType,
     targetVillageId: payload.targetVillageId,
+    manualTargetCoordX: payload.manualTargetCoordX,
+    manualTargetCoordY: payload.manualTargetCoordY,
     supportMovementId: payload.supportMovementId,
     lootPriority: payload.lootPriority,
     units: payload.units,
@@ -1535,6 +1573,26 @@ export const startResearchProject = async (
     {
       method: 'POST',
       body: JSON.stringify({ username, researchId, academics, villageId, worldId }),
+    },
+  );
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
+export const adjustResearchProjectAcademics = async (
+  username: string,
+  researchId: string,
+  delta: number,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: AdjustResearchProjectAcademicsResult; data: GameStateResponse }> => {
+  const response = await request<ApiOk<GameStateResponse> & { result: AdjustResearchProjectAcademicsResult }>(
+    '/api/v1/research/project/academics/adjust',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, researchId, delta, villageId, worldId }),
     },
   );
   return {
@@ -2104,6 +2162,26 @@ export const kickKingdomMember = async (
 ): Promise<{ result: KingdomKickResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: KingdomKickResult }>(
     '/api/v1/kingdom/kick',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, targetUsername, villageId, worldId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const transferKingdomLeadership = async (
+  username: string,
+  targetUsername: string,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: KingdomTransferLeadershipResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: KingdomTransferLeadershipResult }>(
+    '/api/v1/kingdom/transfer-leadership',
     {
       method: 'POST',
       body: JSON.stringify({ username, targetUsername, villageId, worldId }),

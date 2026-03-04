@@ -2,6 +2,7 @@ import cors from 'cors';
 import express from 'express';
 import cron from 'node-cron';
 import {
+  adjustResearchProjectAcademics,
   acceptKingdomInvite,
   archivePlayerNotification,
   cancelArmyCommand,
@@ -37,6 +38,7 @@ import {
   sendMarketLogistics,
   startResearchProject,
   startBuildingUpgrade,
+  transferKingdomLeadership,
   unarchivePlayerNotification,
 } from './gameService.js';
 import {
@@ -119,27 +121,6 @@ const resolveRequestIpAddress = (request) => {
     }
   }
   return String(request?.ip ?? '').trim() || null;
-};
-
-const isLoopbackIpAddress = (ipRaw) => {
-  const ip = String(ipRaw ?? '').trim();
-  if (!ip) {
-    return false;
-  }
-  return (
-    ip === '::1' ||
-    ip === '::ffff:127.0.0.1' ||
-    ip === '127.0.0.1' ||
-    ip.startsWith('127.')
-  );
-};
-
-const isLocalhostInstantRequest = (request) => {
-  if (isProductionRuntime) {
-    return false;
-  }
-  const requestIp = resolveRequestIpAddress(request);
-  return isLoopbackIpAddress(requestIp);
 };
 
 const normalizeComparableUsername = (value) =>
@@ -996,15 +977,9 @@ app.post('/api/v1/units/:unitId/recruit', async (req, res, next) => {
         ? null
         : Number(String(villageIdRaw).trim());
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
-    const instantRequested = req.body?.instant === true && isLocalhostInstantRequest(req);
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
-      const result = recruitUnits(username, unitId, amount, normalizedVillageId, worldId, {
-        instant: instantRequested,
-      });
-      if (instantRequested) {
-        runGameTick();
-      }
+      const result = recruitUnits(username, unitId, amount, normalizedVillageId, worldId);
       const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
@@ -1193,17 +1168,9 @@ app.post('/api/v1/army/command', async (req, res, next) => {
         ? null
         : Number(String(villageIdRaw).trim());
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
-    const instantRequested = req.body?.instant === true && isLocalhostInstantRequest(req);
-    const commandPayload = {
-      ...(req.body ?? {}),
-      instant: instantRequested,
-    };
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
-      const result = issueArmyCommand(username, commandPayload, normalizedVillageId, worldId);
-      if (instantRequested) {
-        runGameTick();
-      }
+      const result = issueArmyCommand(username, req.body ?? {}, normalizedVillageId, worldId);
       const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
@@ -1289,6 +1256,41 @@ app.post('/api/v1/research/project/start', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = startResearchProject(username, researchId, academics, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      return { result, state };
+    });
+
+    res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/research/project/academics/adjust', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const researchId = String(req.body?.researchId ?? '').trim();
+    const delta = Number(req.body?.delta ?? 0);
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = adjustResearchProjectAcademics(
+        username,
+        researchId,
+        delta,
+        normalizedVillageId,
+        worldId,
+      );
       const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });
@@ -1510,6 +1512,34 @@ app.post('/api/v1/kingdom/kick', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = kickKingdomMember(username, targetUsername, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      return { result, state };
+    });
+
+    res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/kingdom/transfer-leadership', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const targetUsername = String(req.body?.targetUsername ?? '').trim();
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = transferKingdomLeadership(username, targetUsername, normalizedVillageId, worldId);
       const state = getVillageSnapshot(username, normalizedVillageId, worldId);
       return { result, state };
     });

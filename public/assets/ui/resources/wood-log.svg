@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="woodBody" x1="6" y1="10" x2="58" y2="54" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#9B6A3D"/>
+      <stop offset="1" stop-color="#5E3A1D"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="18" width="48" height="28" rx="9" fill="url(#woodBody)" stroke="#3E2412" stroke-width="2"/>
+  <circle cx="18" cy="32" r="9" fill="#C28A57" stroke="#4D2E17" stroke-width="2"/>
+  <circle cx="18" cy="32" r="5.4" fill="none" stroke="#6A3D1F" stroke-width="1.6"/>
+  <circle cx="18" cy="32" r="2.5" fill="#7C4723"/>
+  <path d="M29 25H52M27 32H50M30 39H53" stroke="#D7A56B" stroke-opacity=".65" stroke-width="1.8" stroke-linecap="round"/>
+</svg>

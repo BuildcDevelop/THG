@@ -1,7 +1,7 @@
 ﻿import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { hasSelectedWorld, isAuthenticated, login, register } from '../auth';
+import { getSession, hasSelectedWorld, isAuthenticated, login, logout, register } from '../auth';
 
 type AuthMode = 'login' | 'register';
 type ProjectUpdateStatus = 'live' | 'in-progress' | 'planned';
@@ -142,6 +142,8 @@ const formatUpdateDate = (dateValue: string) => {
 
 export const LoginPage = () => {
   const navigate = useNavigate();
+  const session = getSession();
+  const authenticated = isAuthenticated();
   const [mode, setMode] = useState<AuthMode>('login');
   const [isTimelineOpen, setTimelineOpen] = useState(false);
   const [projectUpdates, setProjectUpdates] = useState<ProjectUpdate[]>(PROJECT_UPDATES_FALLBACK);
@@ -151,14 +153,6 @@ export const LoginPage = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  useEffect(() => {
-    if (!isAuthenticated()) {
-      return;
-    }
-
-    navigate(hasSelectedWorld() ? '/game' : '/worlds', { replace: true });
-  }, [navigate]);
 
   useEffect(() => {
     let isCanceled = false;
@@ -331,6 +325,31 @@ export const LoginPage = () => {
         </section>
 
         <section className="auth-panel">
+          {authenticated ? (
+            <section className="auth-quick-entry">
+              <h3>Jsi přihlášen jako {session?.username ?? 'hráč'}</h3>
+              <div className="auth-quick-entry-actions">
+                {hasSelectedWorld() ? (
+                  <button type="button" className="auth-submit" onClick={() => navigate('/game', { replace: true })}>
+                    Pokračovat do hraného světa
+                  </button>
+                ) : null}
+                <button type="button" className="secondary-action" onClick={() => navigate('/worlds', { replace: true })}>
+                  Přesunout se do Portálu světů
+                </button>
+                <button
+                  type="button"
+                  className="secondary-action"
+                  onClick={() => {
+                    logout();
+                    navigate('/login', { replace: true });
+                  }}
+                >
+                  Odhlásit
+                </button>
+              </div>
+            </section>
+          ) : null}
           <div className="auth-mode-switch" role="tablist" aria-label="Režim autentizace">
             <button
               type="button"

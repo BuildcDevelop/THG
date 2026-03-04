@@ -28,8 +28,6 @@ const runtimeEnv = String(process.env.TLD_ENV ?? process.env.APP_ENV ?? process.
   .trim()
   .toLowerCase();
 const isProductionRuntime = runtimeEnv === 'production';
-const INSTANT_ACTION_MIN_DURATION_SEC = 0;
-const canUseInstantActions = !isProductionRuntime;
 
 const WORLD_REGIONS = Object.freeze({
   dominion1: {
@@ -227,50 +225,50 @@ const FIRE_WORLD_STARTING_UNITS = {
 const RESEARCH_DEFS = Object.freeze([
   {
     id: 'linen-ropes',
-    name: 'Lnene motouzy',
-    description: 'Zpusob vyroby tetiv a kompozitnich ramen luku.',
+    name: 'Lněné motouzy',
+    description: 'Způsob výroby tětiv a kompozitních ramen luku.',
     coinCost: 1000,
-    unlocks: 'Odemkne Lucistniky (Kasarna L3).',
+    unlocks: 'Odemkne Lučištníky (Kasárna L3).',
     requiredResearchIds: [],
   },
   {
     id: 'stirrups-spurs',
-    name: 'Trmeny a ostruhy',
-    description: 'Moderni jezdecke vybaveni pro lehkou jizdu.',
+    name: 'Třmeny a ostruhy',
+    description: 'Moderní jezdecké vybavení pro lehkou jízdu.',
     coinCost: 1500,
-    unlocks: 'Odemkne lehkou jizdu.',
+    unlocks: 'Odemkne lehkou jízdu.',
     requiredResearchIds: ['linen-ropes'],
   },
   {
     id: 'tactics',
     name: 'Taktika',
-    description: 'Koordinovane prulomy opevnenych bran.',
+    description: 'Koordinované průlomy opevněných bran.',
     coinCost: 2000,
     unlocks: 'Odemkne beranidla.',
     requiredResearchIds: ['stirrups-spurs'],
   },
   {
     id: 'city-defense',
-    name: 'Mestska obrana',
-    description: 'Vycvik posadky hradeb a obrannych rot.',
+    name: 'Městská obrana',
+    description: 'Výcvik posádky hradeb a obranných rot.',
     coinCost: 3000,
-    unlocks: 'Odemkne hradby a branu.',
+    unlocks: 'Odemkne hradby a bránu.',
     requiredResearchIds: ['tactics'],
   },
   {
     id: 'guild-influence',
-    name: 'Vliv cechu',
-    description: 'Jednani s cechy a standardizace obchodnich zmluv.',
+    name: 'Vliv cechů',
+    description: 'Jednání s cechy a standardizace obchodních smluv.',
     coinCost: 4000,
-    unlocks: 'Odemkne cech obchodniku.',
+    unlocks: 'Odemkne cech obchodníků.',
     requiredResearchIds: ['city-defense'],
   },
   {
     id: 'verven-bank',
-    name: 'Vervenska zlata banka',
-    description: 'Dluhove upisy, ktere umoznuji najem zoldaku.',
+    name: 'Vervenská zlatá banka',
+    description: 'Dluhové úpisy, které umožňují nájem žoldáků.',
     coinCost: 5000,
-    unlocks: 'Odemkne zoldaky.',
+    unlocks: 'Odemkne žoldáky.',
     requiredResearchIds: ['guild-influence'],
   },
 ]);
@@ -733,6 +731,26 @@ const selectVillageByIdStmt = db.prepare(
    WHERE id = ?
    LIMIT 1`,
 );
+const selectVillageWithOwnerByCoordsAndRegionStmt = db.prepare(
+  `SELECT
+      v.id,
+      v.player_id AS playerId,
+      v.name,
+      v.kingdom,
+      v.prestige,
+      v.loyalty,
+      v.coord_x AS coordX,
+      v.coord_y AS coordY,
+      v.region,
+      v.created_at AS createdAt,
+      v.peace_until AS peaceUntil,
+      p.username AS ownerUsername,
+      p.is_bot AS ownerIsBot
+   FROM villages v
+   INNER JOIN players p ON p.id = v.player_id
+   WHERE v.coord_x = ? AND v.coord_y = ? AND v.region = ?
+   LIMIT 1`,
+);
 const selectVillageWithOwnerByIdStmt = db.prepare(
   `SELECT
       v.id,
@@ -867,6 +885,23 @@ const selectIncomingArmyMovementsByVillageOwnerStmt = db.prepare(
      AND tv.region = ?
      AND m.player_id != ?
    ORDER BY m.arrive_at ASC, m.id ASC`,
+);
+const selectRecentAttackTargetsByPlayerRegionStmt = db.prepare(
+  `SELECT
+      m.target_village_id AS targetVillageId,
+      MAX(m.started_at) AS lastIssuedAt,
+      tv.name AS targetName,
+      tv.coord_x AS targetCoordX,
+      tv.coord_y AS targetCoordY
+   FROM army_movements m
+   INNER JOIN villages tv ON tv.id = m.target_village_id
+   WHERE m.player_id = ?
+     AND m.command_type = 'attack'
+     AND tv.region = ?
+     AND julianday(m.started_at) >= julianday('now', '-7 days')
+   GROUP BY m.target_village_id, tv.name, tv.coord_x, tv.coord_y
+   ORDER BY lastIssuedAt DESC, m.target_village_id DESC
+   LIMIT 24`,
 );
 const selectStationedSupportMovementsByPlayerStmt = db.prepare(
   `SELECT
@@ -1141,6 +1176,39 @@ const updateAcademicAssignmentByPlayerRegionStmt = db.prepare(
      ORDER BY id ASC
      LIMIT ?
    )`,
+);
+const releaseAcademicAssignmentByResearchForPlayerRegionStmt = db.prepare(
+  `UPDATE academics
+   SET status = 'idle',
+       assigned_research_id = NULL
+   WHERE id IN (
+     SELECT id
+     FROM academics
+     WHERE player_id = ?
+       AND region = ?
+       AND status = 'assigned'
+       AND assigned_research_id = ?
+     ORDER BY id DESC
+     LIMIT ?
+   )`,
+);
+const selectAssignedResearchAcademicsByVillageForPlayerRegionStmt = db.prepare(
+  `SELECT
+      a.village_id AS villageId,
+      v.name AS villageName,
+      v.coord_x AS coordX,
+      v.coord_y AS coordY,
+      COALESCE(ub.level, 0) AS universityLevel,
+      COUNT(*) AS assignedAcademics
+   FROM academics a
+   INNER JOIN villages v ON v.id = a.village_id
+   LEFT JOIN buildings ub ON ub.village_id = v.id AND ub.building_id = 'university'
+   WHERE a.player_id = ?
+     AND a.region = ?
+     AND a.status = 'assigned'
+     AND a.assigned_research_id = ?
+   GROUP BY a.village_id, v.name, v.coord_x, v.coord_y, ub.level
+   ORDER BY assignedAcademics DESC, a.village_id ASC`,
 );
 const clearResearchAssignmentsByPlayerRegionStmt = db.prepare(
   `UPDATE academics
@@ -1746,6 +1814,16 @@ const selectKingdomEventsByKingdomStmt = db.prepare(
    ORDER BY ke.created_at DESC, ke.id DESC
    LIMIT ?`,
 );
+const selectLatestKingdomLeadershipTransferStmt = db.prepare(
+  `SELECT
+      ke.payload_json AS payloadJson
+   FROM kingdom_events ke
+   WHERE ke.region = ?
+     AND ke.kingdom = ?
+     AND ke.event_type = 'leadership_transferred'
+   ORDER BY ke.created_at DESC, ke.id DESC
+   LIMIT 1`,
+);
 const selectKingdomEventsByPlayerStmt = db.prepare(
   `SELECT
       ke.id,
@@ -1989,7 +2067,21 @@ const ensureResolvedResearchProgressForPlayerRegion = (playerId, region, updated
     const row = byId.get(String(definition.id)) ?? null;
     const nextStatus = resolveResearchStatusForDefinition(definition, row, completedIds);
     const progress = Math.max(0, Number(row?.progress ?? 0));
-    const assignedAcademics = nextStatus === 'researching' ? Math.max(0, Number(row?.assignedAcademics ?? 0)) : 0;
+    const assignedAcademics =
+      nextStatus === 'researching'
+        ? Math.max(
+            0,
+            Math.floor(
+              Number(
+                countAssignedAcademicsForResearchByPlayerRegionStmt.get(
+                  Number(playerId),
+                  Number(region),
+                  String(definition.id),
+                )?.total ?? 0,
+              ),
+            ),
+          )
+        : 0;
     const startedAt = nextStatus === 'researching' ? String(row?.startedAt ?? updatedAtIso) : row?.startedAt ?? null;
     const completedAt = nextStatus === 'completed' ? String(row?.completedAt ?? updatedAtIso) : row?.completedAt ?? null;
 
@@ -2016,7 +2108,17 @@ const ensureResolvedResearchProgressForPlayerRegion = (playerId, region, updated
   return selectResearchProgressByPlayerRegionStmt.all(Number(playerId), Number(region));
 };
 
-const buildResearchViewModel = (researchRows) => {
+const buildResearchViewModel = (researchRows, options = {}) => {
+  const playerId = Number(options?.playerId ?? 0);
+  const region = Number(options?.region ?? 0);
+  const snapshotIso = String(options?.snapshotIso ?? nowIso());
+  const hasRuntimeContext = Number.isFinite(playerId) && playerId > 0 && Number.isFinite(region) && region > 0;
+  const maxUniversityLevel = hasRuntimeContext
+    ? Math.max(
+        0,
+        Math.floor(Number(selectMaxUniversityLevelByPlayerAndRegionStmt.get(Number(playerId), Number(region))?.maxLevel ?? 0)),
+      )
+    : 0;
   const rowsById = new Map((Array.isArray(researchRows) ? researchRows : []).map((row) => [String(row.researchId), row]));
   const completedIds = buildCompletedResearchSet(researchRows);
 
@@ -2026,6 +2128,48 @@ const buildResearchViewModel = (researchRows) => {
     const progressPoints = Math.max(0, Number(row?.progress ?? 0));
     const requiredPoints = getResearchProgressPointsRequired(definition);
     const percent = requiredPoints <= 0 ? 100 : Math.max(0, Math.min(100, (progressPoints / requiredPoints) * 100));
+    const assignedAcademics =
+      status === 'researching' && hasRuntimeContext
+        ? Math.max(
+            0,
+            Math.floor(
+              Number(
+                countAssignedAcademicsForResearchByPlayerRegionStmt.get(
+                  Number(playerId),
+                  Number(region),
+                  String(definition.id),
+                )?.total ?? 0,
+              ),
+            ),
+          )
+        : status === 'researching'
+          ? Math.max(0, Math.floor(Number(row?.assignedAcademics ?? 0)))
+          : 0;
+    const speedMultiplier =
+      status === 'researching' ? calculateResearchSpeedMultiplier(assignedAcademics, maxUniversityLevel) : 0;
+    const progressPerHour = speedMultiplier > 0 ? Number((120 * speedMultiplier).toFixed(2)) : 0;
+    const remainingPoints = Math.max(0, requiredPoints - progressPoints);
+    const remainingSec =
+      status === 'researching' && progressPerHour > 0
+        ? Math.max(0, Math.ceil((remainingPoints / progressPerHour) * 3600))
+        : null;
+    const estimatedCompletionAt =
+      remainingSec == null
+        ? null
+        : new Date(Date.parse(snapshotIso) + Math.max(0, remainingSec) * 1000).toISOString();
+    const assignedVillageBreakdown =
+      status === 'researching' && hasRuntimeContext
+        ? selectAssignedResearchAcademicsByVillageForPlayerRegionStmt
+            .all(Number(playerId), Number(region), String(definition.id))
+            .map((entry) => ({
+              villageId: Number(entry.villageId),
+              villageName: String(entry.villageName ?? ''),
+              coordX: Number(entry.coordX),
+              coordY: Number(entry.coordY),
+              universityLevel: Math.max(0, Math.floor(Number(entry.universityLevel ?? 0))),
+              assignedAcademics: Math.max(0, Math.floor(Number(entry.assignedAcademics ?? 0))),
+            }))
+        : [];
     return {
       id: String(definition.id),
       name: String(definition.name),
@@ -2037,7 +2181,11 @@ const buildResearchViewModel = (researchRows) => {
       progressPoints: Number(progressPoints.toFixed(2)),
       requiredPoints,
       progressPercent: Number(percent.toFixed(2)),
-      assignedAcademics: Math.max(0, Math.floor(Number(row?.assignedAcademics ?? 0))),
+      assignedAcademics,
+      progressPerHour,
+      remainingSec,
+      estimatedCompletionAt,
+      assignedVillageBreakdown,
       startedAt: row?.startedAt ? String(row.startedAt) : null,
       completedAt: row?.completedAt ? String(row.completedAt) : null,
     };
@@ -2330,6 +2478,8 @@ const buildKingdomAuditLog = (playerId, region, kingdomName) => {
       message = `${actorUsername} opustil království ${eventKingdom ?? 'bez názvu'}.`;
     } else if (row.eventType === 'member_kicked') {
       message = `${actorUsername} vyhodil hráče ${targetUsername} z království.`;
+    } else if (row.eventType === 'leadership_transferred') {
+      message = `${actorUsername} předal titul Krále hráči ${targetUsername}.`;
     } else if (typeof payload.message === 'string' && payload.message.trim()) {
       message = payload.message.trim();
     }
@@ -2354,6 +2504,23 @@ const resolvePrimaryKingdomByPlayerId = (playerId, region) => {
 const resolveKingdomLeader = (kingdomName, region) => {
   if (isNeutralKingdom(kingdomName)) {
     return null;
+  }
+  const transferRow = selectLatestKingdomLeadershipTransferStmt.get(Number(region), String(kingdomName));
+  if (transferRow?.payloadJson) {
+    const transferPayload = parseJsonSafe(transferRow.payloadJson, {});
+    const transferredLeaderPlayerId = Number(transferPayload?.newLeaderPlayerId ?? 0);
+    if (Number.isFinite(transferredLeaderPlayerId) && transferredLeaderPlayerId > 0) {
+      const transferredLeaderKingdom = resolvePrimaryKingdomByPlayerId(transferredLeaderPlayerId, Number(region));
+      if (normalizeKingdomComparable(transferredLeaderKingdom) === normalizeKingdomComparable(kingdomName)) {
+        const transferredLeader = selectPlayerByIdStmt.get(transferredLeaderPlayerId);
+        if (transferredLeader?.username) {
+          return {
+            playerId: transferredLeaderPlayerId,
+            username: String(transferredLeader.username),
+          };
+        }
+      }
+    }
   }
   const row = selectKingdomLeaderByKingdomStmt.get(String(kingdomName), Number(region));
   if (!row) {
@@ -3286,8 +3453,6 @@ const calculateVillagePrestige = (buildingLevels, unitCounts) => {
 
 const calculateRecruitmentSpeedReduction = (level) =>
   Math.max(0, 1 - Math.pow(0.96, Math.max(0, Math.floor(Number(level ?? 0)))));
-
-const isInstantActionRequested = (valueRaw) => canUseInstantActions && valueRaw === true;
 
 const calculateBuildingEffect = (buildingId, level) => {
   if (buildingId === 'woodcutter') {
@@ -5119,11 +5284,22 @@ const buildArmyState = (playerId, currentVillageId, region) => {
       isIncoming: true,
       isRelatedToCurrentVillage: movement.targetVillageId === numericCurrentVillageId,
     }));
+  const recentAttackTargets = selectRecentAttackTargetsByPlayerRegionStmt
+    .all(numericPlayerId, numericRegion)
+    .map((row) => ({
+      targetVillageId: Number(row.targetVillageId),
+      targetName: String(row.targetName ?? ''),
+      targetCoordX: Number(row.targetCoordX),
+      targetCoordY: Number(row.targetCoordY),
+      lastIssuedAt: String(row.lastIssuedAt ?? nowIso()),
+    }))
+    .filter((item) => Number.isFinite(item.targetVillageId) && item.targetVillageId > 0);
 
   return {
     activeMovements,
     stationedSupports,
     incomingMovements,
+    recentAttackTargets,
   };
 };
 
@@ -6834,12 +7010,18 @@ export const getVillageSnapshot = (
     populationUsed,
     reservedPopulationForRecruitment,
   );
+  const villageAcademicCapacity = getVillageUniversityCapacity(buildingLevels);
+  const villageAcademicAvailableSlots = Math.max(0, villageAcademicCapacity - academicCountInVillage);
   const knightCapacity = getPlayerKnightCapacity(Number(player.id), Number(world.region));
   const playerKnightTotal = getPlayerKnightTotalInWorld(Number(player.id), Number(world.region));
   const remainingKnightCapacity = Math.max(0, knightCapacity - playerKnightTotal);
   const researchRows = ensureResolvedResearchProgressForPlayerRegion(Number(player.id), Number(world.region));
   const completedResearchIds = buildCompletedResearchSet(researchRows);
-  const researchView = buildResearchViewModel(researchRows);
+  const researchView = buildResearchViewModel(researchRows, {
+    playerId: Number(player.id),
+    region: Number(world.region),
+    snapshotIso: nowIso(),
+  });
   const totalAcademicsInRegion = Math.max(
     0,
     Math.floor(Number(countActiveAcademicsByPlayerRegionStmt.get(Number(player.id), Number(world.region))?.total ?? 0)),
@@ -7270,6 +7452,9 @@ export const getVillageSnapshot = (
     research: {
       totalAcademics: totalAcademicsInRegion,
       idleAcademics: idleAcademicsInRegion,
+      villageAcademics: academicCountInVillage,
+      villageAcademicCapacity,
+      villageAcademicAvailableSlots,
       activeProjectId: activeResearchRow ? String(activeResearchRow.researchId) : null,
       projects: researchView,
     },
@@ -7327,7 +7512,6 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
   const commandType = String(payload?.commandType ?? '')
     .trim()
     .toLowerCase();
-  const instantAction = isInstantActionRequested(payload?.instant);
 
   if (!ARMY_COMMAND_TYPES.has(commandType)) {
     throw new GameRuleError('Neznamy typ armadniho rozkazu.');
@@ -7361,9 +7545,7 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
       Math.abs(Number(support.homeCoordY) - Number(support.targetCoordY)),
     );
     const durationSec = calculateArmyTravelDurationSec(unitSelection, distanceTiles);
-    const effectiveDurationSec = instantAction
-      ? INSTANT_ACTION_MIN_DURATION_SEC
-      : Math.max(1, Math.floor(Number(durationSec ?? 0)));
+    const effectiveDurationSec = Math.max(1, Math.floor(Number(durationSec ?? 0)));
     const arriveAtIso = new Date(Date.parse(issuedAtIso) + effectiveDurationSec * 1000).toISOString();
     const inserted = insertArmyMovementStmt.run(
       Number(player.id),
@@ -7399,13 +7581,35 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
       distanceTiles,
       durationSec: effectiveDurationSec,
       arriveAt: arriveAtIso,
-      instantApplied: instantAction,
       arrivesDuringNightMode: false,
     };
   }
 
-  const targetVillageId = requirePositiveInteger(payload?.targetVillageId, 'targetVillageId');
-  const targetVillage = selectVillageWithOwnerByIdStmt.get(targetVillageId);
+  let targetVillage = null;
+  if (commandType === 'attack' && payload?.manualTargetCoordX != null && payload?.manualTargetCoordY != null) {
+    const manualCoordX = Number(payload?.manualTargetCoordX);
+    const manualCoordY = Number(payload?.manualTargetCoordY);
+    if (
+      Number.isFinite(manualCoordX) &&
+      Number.isFinite(manualCoordY) &&
+      Number.isInteger(manualCoordX) &&
+      Number.isInteger(manualCoordY)
+    ) {
+      targetVillage = selectVillageWithOwnerByCoordsAndRegionStmt.get(
+        Math.floor(manualCoordX),
+        Math.floor(manualCoordY),
+        Number(village.region),
+      );
+      if (!targetVillage) {
+        throw new GameRuleError('Rucne zadane souradnice neodpovidaji zadnemu lenu v tomto svete.', 404);
+      }
+    }
+  }
+
+  if (!targetVillage) {
+    const targetVillageId = requirePositiveInteger(payload?.targetVillageId, 'targetVillageId');
+    targetVillage = selectVillageWithOwnerByIdStmt.get(targetVillageId);
+  }
   if (!targetVillage) {
     throw new GameRuleError('Cilove leno neexistuje.', 404);
   }
@@ -7489,9 +7693,7 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
   if (durationSec <= 0) {
     throw new GameRuleError('Nelze vypocitat dobu presunu armady.');
   }
-  const effectiveDurationSec = instantAction
-    ? INSTANT_ACTION_MIN_DURATION_SEC
-    : Math.max(1, Math.floor(Number(durationSec ?? 0)));
+  const effectiveDurationSec = Math.max(1, Math.floor(Number(durationSec ?? 0)));
   const arriveAtIso = new Date(Date.parse(issuedAtIso) + effectiveDurationSec * 1000).toISOString();
 
   for (const unitId of UNIT_ORDER) {
@@ -7594,7 +7796,6 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
     distanceTiles,
     durationSec: effectiveDurationSec,
     arriveAt: arriveAtIso,
-    instantApplied: instantAction,
     arrivesDuringNightMode: commandType === 'attack' ? isNightModeAtTime(arriveAtIso) : false,
     lootPriority,
   };
@@ -8328,6 +8529,81 @@ const kickKingdomMemberTransaction = db.transaction((username, targetUsernameRaw
   };
 });
 
+const transferKingdomLeadershipTransaction = db.transaction(
+  (username, targetUsernameRaw, requestedVillageId = null, worldId = null) => {
+    const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
+    const worldRegion = Number(village.region);
+    const kingdomName = normalizeKingdomValue(village.kingdom) || 'Neutral';
+    requireKingdomLeadership(player, kingdomName, worldRegion);
+
+    const targetUsername = normalizeUsername(targetUsernameRaw);
+    if (!targetUsername) {
+      throw new GameRuleError("Pole 'targetUsername' je povinne.");
+    }
+
+    const targetPlayer = selectNonBotPlayerByUsernameStmt.get(targetUsername);
+    if (!targetPlayer) {
+      throw new GameRuleError(`Hrac '${targetUsername}' neexistuje.`, 404);
+    }
+    if (Number(targetPlayer.id) === Number(player.id)) {
+      throw new GameRuleError('Kralovstvi uz vedes ty.', 400);
+    }
+
+    const targetKingdom = resolvePrimaryKingdomByPlayerId(Number(targetPlayer.id), worldRegion);
+    if (normalizeKingdomComparable(targetKingdom) !== normalizeKingdomComparable(kingdomName)) {
+      throw new GameRuleError('Cilovy hrac neni clenem tveho kralovstvi.', 400);
+    }
+
+    const transferredAt = nowIso();
+    createKingdomEvent({
+      region: worldRegion,
+      kingdom: kingdomName,
+      eventType: 'leadership_transferred',
+      actorPlayerId: Number(player.id),
+      targetPlayerId: Number(targetPlayer.id),
+      payload: {
+        previousLeaderPlayerId: Number(player.id),
+        previousLeaderUsername: String(player.username),
+        newLeaderPlayerId: Number(targetPlayer.id),
+        newLeaderUsername: String(targetPlayer.username),
+      },
+    });
+    createPlayerNotification({
+      playerId: Number(player.id),
+      region: worldRegion,
+      category: 'kingdom',
+      eventType: 'kingdom_leadership_transferred_out',
+      severity: 'warning',
+      title: 'Predal jsi titul Krale',
+      summary: `Titul Krale v kralovstvi ${kingdomName} byl predan hraci ${String(targetPlayer.username)}.`,
+      payload: { kingdom: kingdomName, targetUsername: String(targetPlayer.username) },
+      sourceType: 'kingdom_event',
+      sourceId: null,
+      createdAt: transferredAt,
+    });
+    createPlayerNotification({
+      playerId: Number(targetPlayer.id),
+      region: worldRegion,
+      category: 'kingdom',
+      eventType: 'kingdom_leadership_transferred_in',
+      severity: 'success',
+      title: 'Byl ti predan titul Krale',
+      summary: `${player.username} ti predal titul Krale v kralovstvi ${kingdomName}.`,
+      payload: { kingdom: kingdomName, actorUsername: player.username },
+      sourceType: 'kingdom_event',
+      sourceId: null,
+      createdAt: transferredAt,
+    });
+
+    return {
+      kingdom: kingdomName,
+      previousLeaderUsername: String(player.username),
+      newLeaderUsername: String(targetPlayer.username),
+      transferredAt,
+    };
+  },
+);
+
 export const createKingdom = (username, kingdomName, requestedVillageId = null, worldId = null) =>
   createKingdomTransaction(username, kingdomName, requestedVillageId, worldId);
 
@@ -8346,9 +8622,11 @@ export const leaveKingdom = (username, requestedVillageId = null, worldId = null
 export const kickKingdomMember = (username, targetUsername, requestedVillageId = null, worldId = null) =>
   kickKingdomMemberTransaction(username, targetUsername, requestedVillageId, worldId);
 
-const recruitTransaction = db.transaction((username, unitId, amount, requestedVillageId, worldId = null, options = null) => {
+export const transferKingdomLeadership = (username, targetUsername, requestedVillageId = null, worldId = null) =>
+  transferKingdomLeadershipTransaction(username, targetUsername, requestedVillageId, worldId);
+
+const recruitTransaction = db.transaction((username, unitId, amount, requestedVillageId, worldId = null) => {
   const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
-  const instantAction = isInstantActionRequested(options?.instant);
   const unitDef = UNIT_DEFS[unitId];
   if (!unitDef) {
     throw new GameRuleError('Neznama jednotka.');
@@ -8467,9 +8745,7 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
   );
   const startedAtIso = nowIso();
   const calculatedDurationSec = calculateRecruitDurationSec(unitId, recruitAmount, currentBuildingLevel);
-  const durationSec = instantAction
-    ? INSTANT_ACTION_MIN_DURATION_SEC
-    : Math.max(1, Math.floor(Number(calculatedDurationSec ?? 0)));
+  const durationSec = Math.max(1, Math.floor(Number(calculatedDurationSec ?? 0)));
   const finishAtIso = new Date(Date.parse(startedAtIso) + durationSec * 1000).toISOString();
 
   const insertion = insertRecruitmentStmt.run(
@@ -8492,7 +8768,6 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
     totalCost,
     durationSec,
     finishAt: finishAtIso,
-    instantApplied: instantAction,
   };
 });
 
@@ -8740,12 +9015,123 @@ const startResearchProjectTransaction = db.transaction(
   },
 );
 
+const adjustResearchProjectAcademicsTransaction = db.transaction(
+  (username, researchIdRaw, deltaRaw, requestedVillageId, worldId = null) => {
+    const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
+    const researchId = String(researchIdRaw ?? '').trim();
+    const definition = getResearchDefinition(researchId);
+    if (!definition) {
+      throw new GameRuleError('Neznamy vyzkumny projekt.', 404);
+    }
+
+    const nowTimeIso = nowIso();
+    ensureResolvedResearchProgressForPlayerRegion(Number(player.id), Number(village.region), nowTimeIso);
+    const activeResearch = selectActiveResearchByPlayerRegionStmt.get(Number(player.id), Number(village.region));
+    if (!activeResearch || String(activeResearch.researchId ?? '') !== researchId) {
+      throw new GameRuleError('Akademiky lze upravit pouze u aktivne zkoumaneho projektu.', 400);
+    }
+
+    const currentRow =
+      selectResearchProgressByPlayerRegionAndResearchStmt.get(Number(player.id), Number(village.region), researchId) ?? null;
+    if (!currentRow || String(currentRow.status ?? '') !== 'researching') {
+      throw new GameRuleError('Vybrany projekt momentalne neni ve stavu vyzkumu.', 400);
+    }
+
+    const requestedDelta = Math.trunc(Number(deltaRaw ?? 0));
+    if (!Number.isFinite(requestedDelta) || requestedDelta === 0) {
+      throw new GameRuleError('Pole delta musi byt cele cislo ruzne od nuly.', 400);
+    }
+
+    const currentAssignedAcademics = Math.max(
+      0,
+      Math.floor(
+        Number(
+          countAssignedAcademicsForResearchByPlayerRegionStmt.get(
+            Number(player.id),
+            Number(village.region),
+            researchId,
+          )?.total ?? 0,
+        ),
+      ),
+    );
+
+    let deltaApplied = 0;
+    if (requestedDelta > 0) {
+      const idleAcademics = Math.max(
+        0,
+        Math.floor(Number(countIdleAcademicsByPlayerRegionStmt.get(Number(player.id), Number(village.region))?.total ?? 0)),
+      );
+      const freeProjectSlots = Math.max(0, MAX_ACADEMICS_PER_RESEARCH - currentAssignedAcademics);
+      const assignable = Math.max(0, Math.min(requestedDelta, idleAcademics, freeProjectSlots));
+      if (assignable <= 0) {
+        if (currentAssignedAcademics >= MAX_ACADEMICS_PER_RESEARCH) {
+          throw new GameRuleError('Projekt uz dosahl maximalniho poctu akademiku.', 400);
+        }
+        throw new GameRuleError('V regionu nejsou dostupni volni akademici.', 400);
+      }
+      updateAcademicAssignmentByPlayerRegionStmt.run(
+        'assigned',
+        researchId,
+        Number(player.id),
+        Number(village.region),
+        assignable,
+      );
+      deltaApplied = assignable;
+    } else {
+      const releasable = Math.max(0, Math.min(Math.abs(requestedDelta), currentAssignedAcademics));
+      if (releasable <= 0) {
+        throw new GameRuleError('V projektu nejsou zadni akademici k odebrani.', 400);
+      }
+      releaseAcademicAssignmentByResearchForPlayerRegionStmt.run(
+        Number(player.id),
+        Number(village.region),
+        researchId,
+        releasable,
+      );
+      deltaApplied = -releasable;
+    }
+
+    const updatedAssignedAcademics = Math.max(
+      0,
+      Math.floor(
+        Number(
+          countAssignedAcademicsForResearchByPlayerRegionStmt.get(
+            Number(player.id),
+            Number(village.region),
+            researchId,
+          )?.total ?? 0,
+        ),
+      ),
+    );
+    const startedAtIso = currentRow?.startedAt ? String(currentRow.startedAt) : nowTimeIso;
+    upsertResearchProgressStmt.run(
+      Number(player.id),
+      Number(village.region),
+      researchId,
+      'researching',
+      Math.max(0, Number(currentRow?.progress ?? 0)),
+      updatedAssignedAcademics,
+      startedAtIso,
+      null,
+      nowTimeIso,
+    );
+
+    return {
+      researchId,
+      researchName: String(definition.name),
+      deltaApplied,
+      assignedAcademics: updatedAssignedAcademics,
+      updatedAt: nowTimeIso,
+    };
+  },
+);
+
 const hireMercenaryContractTransaction = db.transaction((username, requestedVillageId, worldId = null) => {
   const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
   const nowTimeIso = nowIso();
   const researchRows = ensureResolvedResearchProgressForPlayerRegion(Number(player.id), Number(village.region), nowTimeIso);
   if (!isResearchCompleted(researchRows, 'verven-bank')) {
-    throw new GameRuleError("Pro najem zoldaku je potreba vyzkum 'Vervenska zlata banka'.", 400);
+    throw new GameRuleError("Pro nájem žoldáků je potřeba výzkum 'Vervenská zlatá banka'.", 400);
   }
 
   const latestContract = selectLatestMercenaryContractByPlayerRegionStmt.get(Number(player.id), Number(village.region));
@@ -8884,8 +9270,8 @@ const sendMarketLogisticsTransaction = db.transaction((username, payload, reques
   };
 });
 
-export const recruitUnits = (username, unitId, amount, requestedVillageId = null, worldId = null, options = null) =>
-  recruitTransaction(username, unitId, amount, requestedVillageId, worldId, options);
+export const recruitUnits = (username, unitId, amount, requestedVillageId = null, worldId = null) =>
+  recruitTransaction(username, unitId, amount, requestedVillageId, worldId);
 
 export const cancelRecruitment = (username, recruitmentId, requestedVillageId = null, worldId = null) =>
   cancelRecruitmentTransaction(username, recruitmentId, requestedVillageId, worldId);
@@ -8904,6 +9290,14 @@ export const hireAcademics = (username, amount, requestedVillageId = null, world
 
 export const startResearchProject = (username, researchId, assignedAcademics = 1, requestedVillageId = null, worldId = null) =>
   startResearchProjectTransaction(username, researchId, assignedAcademics, requestedVillageId, worldId);
+
+export const adjustResearchProjectAcademics = (
+  username,
+  researchId,
+  delta,
+  requestedVillageId = null,
+  worldId = null,
+) => adjustResearchProjectAcademicsTransaction(username, researchId, delta, requestedVillageId, worldId);
 
 export const hireMercenaryContract = (username, requestedVillageId = null, worldId = null) =>
   hireMercenaryContractTransaction(username, requestedVillageId, worldId);
