@@ -1740,12 +1740,14 @@ html {
 
 .city-unit-header .unit-name-with-icon > span:last-child {
   color: #d7e7f6;
-  font-size: 1.02rem;
+  font-size: 1.42rem;
+  line-height: 1.06;
   font-weight: 700;
 }
 
 .city-unit-amount {
-  font-size: 1.08rem;
+  font-size: 1.42rem;
+  line-height: 1.06;
   color: #f5cb7e;
   font-weight: 800;
 }
@@ -3779,6 +3781,10 @@ html {
 }
 
 .research-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.36s ease;
   background:
     linear-gradient(90deg, rgba(255, 212, 144, 0.92), rgba(196, 134, 66, 0.95)),
     linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0));
@@ -5261,6 +5267,31 @@ html {
 .map-settlement-protection {
   color: #f7cf8f;
   font-size: 0.74rem;
+}
+
+.map-settlement-balance-warning {
+  border: 1px solid rgba(160, 189, 220, 0.24);
+  border-radius: 9px;
+  padding: 0.34rem 0.4rem;
+  background: rgba(10, 19, 29, 0.62);
+  font-size: 0.72rem;
+  line-height: 1.34;
+}
+
+.map-settlement-balance-warning strong {
+  color: #f0e2c1;
+}
+
+.map-settlement-balance-warning.is-blocked {
+  border-color: rgba(209, 102, 95, 0.54);
+  background: rgba(53, 18, 18, 0.68);
+  color: #f6c8c3;
+}
+
+.map-settlement-balance-warning.is-unlocked {
+  border-color: rgba(126, 197, 133, 0.52);
+  background: rgba(17, 44, 26, 0.66);
+  color: #c7f0cd;
 }
 
 .map-settlement-link {
@@ -10559,14 +10590,40 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
 }
 
 .game-page .top-navigation {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
   align-items: start;
+  column-gap: 0.4rem;
+  row-gap: 0.35rem;
+}
+
+.game-page .top-navigation .world-indicator-wrap {
+  min-width: max-content;
+}
+
+.game-page .top-navigation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'world nav session';
+  align-items: start;
+  column-gap: 0.5rem;
+  row-gap: 0.35rem;
+}
+
+.game-page .top-navigation .world-indicator-wrap {
+  grid-area: world;
+  min-width: max-content;
 }
 
 .game-page .top-navigation nav {
-  align-items: start;
+  grid-area: nav;
+  align-items: stretch;
+  justify-content: center;
   gap: 0.24rem;
   row-gap: 0.34rem;
   flex-wrap: nowrap;
+  min-width: 0;
+  width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -10583,9 +10640,9 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
   display: grid;
   grid-template-rows: minmax(2.72rem, auto) minmax(2.06rem, auto);
   align-items: stretch;
-  width: max-content;
-  min-width: max-content;
-  flex: 0 0 auto;
+  width: auto;
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
 .nav-action-stack .menu-button-base.nav-action {
@@ -10626,9 +10683,15 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
 }
 
 .game-page .session-actions {
+  grid-area: session;
   align-self: start;
+  justify-self: end;
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
   min-height: 2.72rem;
   gap: 0.24rem;
+  min-width: max-content;
 }
 
 .game-page .session-actions .menu-button-base.quick-session-action {
@@ -10638,15 +10701,45 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
   align-items: center;
 }
 
+@media (max-width: 1180px) {
+  .game-page .top-navigation {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'world'
+      'nav'
+      'session';
+  }
+
+  .game-page .top-navigation nav {
+    justify-content: flex-start;
+  }
+
+  .game-page .top-navigation .session-actions {
+    justify-self: start;
+    justify-content: flex-start;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .game-page .top-navigation .session-actions::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+}
+
 @media (max-width: 1660px) {
   .nav-action-stack {
-    width: max-content;
+    width: auto;
   }
 }
 
 @media (max-width: 1440px) {
   .nav-action-stack {
-    width: max-content;
+    width: auto;
   }
 
   .nav-action-meta {
@@ -10657,7 +10750,7 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
 
 @media (max-width: 1200px) {
   .nav-action-stack {
-    width: max-content;
+    width: auto;
   }
 
   .nav-action-meta {
@@ -10665,6 +10758,173 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
   }
 }
 
+@media (max-width: 980px) {
+  .nav-action-stack {
+    grid-template-rows: minmax(2.52rem, auto) auto;
+  }
+
+  .nav-action-stack .menu-button-base.nav-action {
+    min-height: 2.52rem;
+    padding-inline: 0.56rem;
+  }
+
+  .nav-action-meta {
+    margin-top: 0.12rem;
+    font-size: 0.64rem;
+    padding: 0.14rem 0.2rem;
+  }
+}
+
 .village-hotkey-selected-note {
   color: #f3cb83 !important;
+}
+
+/* Targeted layout fixes for game/world screens */
+.game-page .window-body .city-upgrade-board > .city-upgrade-column {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.game-page .window-body .city-upgrade-board > .city-upgrade-column > header {
+  border-bottom: 0 !important;
+  padding: 0 0 0.08rem !important;
+}
+
+.game-page .city-upgrade-column {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.game-page .city-upgrade-column > header {
+  border-bottom: 0 !important;
+  padding: 0 0 0.08rem !important;
+}
+
+.game-page .map-settlement-info-card.is-hover {
+  pointer-events: none;
+}
+
+.game-page .army-draft-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 280px));
+  justify-content: start;
+  gap: 0.48rem 0.62rem;
+}
+
+.game-page .army-draft-grid label {
+  align-content: start;
+}
+
+.game-page .army-draft-input-row {
+  gap: 0.26rem;
+}
+
+.game-page .army-draft-input-row input {
+  max-width: 72px;
+}
+
+.game-page .army-draft-unit-fill-button {
+  max-width: 108px;
+  font-size: 0.68rem;
+  padding: 0.3rem 0.4rem;
+}
+
+.game-page .commands-panel .army-draft-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: flex-start;
+  gap: 0.28rem 0.36rem;
+}
+
+.game-page .commands-panel .army-draft-grid > label {
+  min-width: 0;
+  max-width: none;
+}
+
+.game-page .commands-panel .army-draft-input-row {
+  gap: 0.16rem;
+}
+
+.game-page .commands-panel .army-draft-input-row input {
+  max-width: 58px;
+}
+
+.game-page .commands-panel .army-draft-unit-fill-button {
+  max-width: 88px;
+  font-size: 0.64rem;
+  line-height: 1.08;
+  padding: 0.24rem 0.3rem;
+}
+
+@media (max-width: 1240px) {
+  .game-page .commands-panel .army-draft-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .game-page .commands-panel .army-draft-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.research-project-card-head {
+  flex-wrap: wrap;
+}
+
+.research-project-title-wrap {
+  min-width: 0;
+  flex: 1 1 190px;
+}
+
+.research-project-status {
+  margin-left: auto;
+  align-self: flex-start;
+}
+
+.pin-column {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.pin-column.right {
+  width: 188px;
+}
+
+:root[data-game-font-scale] .pin-column.right {
+  width: 172px;
+}
+
+@media (max-width: 1240px) {
+  :root[data-game-font-scale] .pin-column.right {
+    width: 152px;
+  }
+}
+
+.pin-feed-open {
+  width: 100%;
+  min-width: 0;
+  white-space: normal;
+  line-height: 1.2;
+}
+
+.worlds-page .worlds-header {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.worlds-page .worlds-achievements-grid {
+  grid-template-columns: repeat(auto-fill, minmax(250px, 330px));
+  justify-content: start;
+}
+
+.city-unit-header .unit-name-with-icon > span:last-child,
+.city-unit-amount {
+  font-size: 1.42rem;
+  line-height: 1.06;
 }

@@ -111,6 +111,7 @@ type MapSettlementKind =
 type RegionSettlement = {
   id: string;
   villageId?: number;
+  playerId?: number | null;
   name: string;
   kind: SettlementKind;
   owner: string;
@@ -128,6 +129,12 @@ type RegionSettlement = {
   protectionUntil?: string | null;
   protectionRemainingSec?: number;
   protectionRuleDays?: number;
+  viewerPrestige?: number;
+  ownerTotalPrestige?: number;
+  prestigeAttackMinimumForViewer?: number;
+  prestigeAttackBlockedForViewer?: boolean;
+  retaliationUnlockedForViewer?: boolean;
+  retaliationUnlockedAt?: string | null;
 };
 
 type GridPosition = {
@@ -1047,7 +1054,7 @@ const ResearchCollaborationTooltip = ({
         {collaborations.map((entry) => (
           <li key={`research-collaboration-${project.id}-${entry.villageId}`}>
             <span>
-              {entry.villageName} ({entry.coordX}|{entry.coordY}) · Uni L{entry.universityLevel}
+              {entry.villageName} ({entry.coordX}|{entry.coordY}) · Univerzita L{entry.universityLevel}
             </span>
             <strong>{entry.assignedAcademics.toLocaleString('cs-CZ')}</strong>
           </li>
@@ -1272,6 +1279,7 @@ const MAP_PREVIEW_CARD_SAFE_EDGE_PX = 12;
 const MAP_PREVIEW_CARD_SAFE_TOP_PX = 80;
 const MAP_PREVIEW_CARD_HOVER_HEIGHT_PX = 430;
 const MAP_PREVIEW_CARD_PINNED_HEIGHT_PX = 500;
+const MAP_HOVER_CLEAR_DELAY_MS = 110;
 const MAP_WINDOW_SIZE_STORAGE_KEY = 'tld_map_window_size';
 const LEGACY_MAP_WINDOW_SIZE_STORAGE_KEY = 'thg_map_window_size';
 const PANEL_LAYOUT_STORAGE_KEY_PREFIX = 'tld_panel_layout';
@@ -1985,7 +1993,10 @@ const canTargetSettlementForArmyCommand = ({
   currentVillageId,
   currentUsername,
 }: {
-  settlement: Pick<RegionSettlement, 'villageId' | 'owner' | 'relation' | 'protectionRemainingSec'>;
+  settlement: Pick<
+    RegionSettlement,
+    'villageId' | 'owner' | 'relation' | 'protectionRemainingSec' | 'prestigeAttackBlockedForViewer'
+  >;
   commandType: ArmyCommandSelectableType;
   currentVillageId: number | null;
   currentUsername: string;
@@ -2017,6 +2028,9 @@ const canTargetSettlementForArmyCommand = ({
 
   const targetProtectionRemainingSec = Math.max(0, Number(settlement.protectionRemainingSec ?? 0));
   if (targetProtectionRemainingSec > 0) {
+    return false;
+  }
+  if (settlement.prestigeAttackBlockedForViewer === true) {
     return false;
   }
 
@@ -4643,7 +4657,8 @@ const ResearchPanel = ({
           </button>
           <small className="row-help research-hire-cost-note">
             Cena: {ACADEMIC_HIRE_COIN_COST.toLocaleString('cs-CZ')} mincí · kapacita léna{' '}
-            {villageAcademics.toLocaleString('cs-CZ')} / {villageAcademicCapacity.toLocaleString('cs-CZ')}
+            {villageAcademics.toLocaleString('cs-CZ')} / {villageAcademicCapacity.toLocaleString('cs-CZ')} ·
+            Univerzita: 1 úroveň = 1 akademik (max 3)
           </small>
           {isVillageAcademicLimitReached ? (
             <p className="research-hire-limit-warning">Limit akademiků překročen</p>
@@ -4753,10 +4768,6 @@ const ResearchPanel = ({
 
                 {estimatedFinishLabel ? (
                   <p className="row-help research-finish-label">Dokončení: {estimatedFinishLabel}</p>
-                ) : null}
-
-                {project.requiredResearchIds.length > 0 ? (
-                  <p className="row-help research-required-chain">Vyžaduje: {project.requiredResearchIds.join(', ')}</p>
                 ) : null}
 
                 {project.status === 'researching' ? (
@@ -4904,6 +4915,23 @@ const ResearchPanel = ({
                 Math.floor(Number(rules?.nightMode?.defenseBonusPct ?? 0)),
               ).toLocaleString('cs-CZ')}
               %
+            </small>
+          </li>
+          <li className="commands-item">
+            <div className="commands-item-line">
+              <strong>Balanc prestiže</strong>
+              <span>
+                Min. cíl {Math.max(0, Math.round(Number(rules?.prestigeBalance?.minAttackablePrestigeRatio ?? 0) * 100)).toLocaleString('cs-CZ')} %
+              </span>
+            </div>
+            <small>
+              Kořist minimum{' '}
+              {Math.max(0, Math.round(Number(rules?.prestigeBalance?.minLootModifier ?? 0.1) * 100)).toLocaleString(
+                'cs-CZ',
+              )}
+              % ·{' '}
+              {rules?.prestigeBalance?.retaliationRule ??
+                'Když slabší zaútočí jako první, silnější může útok vrátit i přes ochranu.'}
             </small>
           </li>
           <li className="commands-item">
@@ -5208,6 +5236,15 @@ const BattleReportPanel = ({ report }: { report: BattleReportItem | null }) => {
     battle?.baseDefensePower != null ||
     battle?.finalAttackPower != null ||
     battle?.finalDefensePower != null;
+  const prestigeBalance = battle?.prestigeBalance;
+  const hasPrestigeBalanceIntel =
+    prestigeBalance != null &&
+    (prestigeBalance.attackerPrestige != null ||
+      prestigeBalance.defenderPrestige != null ||
+      prestigeBalance.attackModifier != null ||
+      prestigeBalance.defenseBonus != null ||
+      prestigeBalance.lootModifier != null ||
+      prestigeBalance.retaliationOverrideApplied === true);
   const debugRows: Array<{ label: string; value: string }> = [];
   if (payload.movementId != null) {
     debugRows.push({ label: 'Movement ID', value: String(payload.movementId) });
@@ -5238,6 +5275,27 @@ const BattleReportPanel = ({ report }: { report: BattleReportItem | null }) => {
       label: 'Multipliers (A/D)',
       value: `${formatBattleMultiplier(battle?.attackMultiplier)} / ${formatBattleMultiplier(battle?.defenseMultiplier)}`,
     });
+  }
+  if (prestigeBalance) {
+    debugRows.push({
+      label: 'Prestize (A/D)',
+      value: `${Math.max(0, Number(prestigeBalance.attackerPrestige ?? 0)).toLocaleString('cs-CZ')} / ${Math.max(
+        0,
+        Number(prestigeBalance.defenderPrestige ?? 0),
+      ).toLocaleString('cs-CZ')}`,
+    });
+    debugRows.push({
+      label: 'Prestizni modifikatory',
+      value: `Utok x${Number(prestigeBalance.attackModifier ?? 1).toFixed(2)}, obrana +${Math.round(
+        Number(prestigeBalance.defenseBonus ?? 0) * 100,
+      )} %, korist x${Number(prestigeBalance.lootModifier ?? 1).toFixed(2)}`,
+    });
+    if (prestigeBalance.retaliationOverrideApplied) {
+      debugRows.push({
+        label: 'Retaliace',
+        value: 'aktivni (cil uz predtim zautocil)',
+      });
+    }
   }
   if (battle?.attackerLossRatio != null || battle?.defenderLossRatio != null) {
     debugRows.push({
@@ -5442,7 +5500,7 @@ const BattleReportPanel = ({ report }: { report: BattleReportItem | null }) => {
 
           <section>
             <h3>Bojová síla a bonusy</h3>
-            {hasPowerIntel ? (
+            {hasPowerIntel || hasPrestigeBalanceIntel ? (
               <div className="battle-power-grid">
                 <article>
                   <span>Základ útok/obrana</span>
@@ -5471,6 +5529,21 @@ const BattleReportPanel = ({ report }: { report: BattleReportItem | null }) => {
                     Poměr: {formatBattlePercent(battle?.attackerLossRatio)} / {formatBattlePercent(battle?.defenderLossRatio)}
                   </small>
                 </article>
+                {hasPrestigeBalanceIntel ? (
+                  <article>
+                    <span>Balanc prestiže</span>
+                    <strong>
+                      A/D {Math.max(0, Number(prestigeBalance?.attackerPrestige ?? 0)).toLocaleString('cs-CZ')} /{' '}
+                      {Math.max(0, Number(prestigeBalance?.defenderPrestige ?? 0)).toLocaleString('cs-CZ')}
+                    </strong>
+                    <small>
+                      Útok x{Number(prestigeBalance?.attackModifier ?? 1).toFixed(2)} · obrana +
+                      {Math.round(Number(prestigeBalance?.defenseBonus ?? 0) * 100)} % · kořist x
+                      {Number(prestigeBalance?.lootModifier ?? 1).toFixed(2)}
+                      {prestigeBalance?.retaliationOverrideApplied ? ' · odvetný útok aktivní' : ''}
+                    </small>
+                  </article>
+                ) : null}
               </div>
             ) : (
               <p>Není dostupný kompletní rozklad síly střetu.</p>
@@ -6034,16 +6107,22 @@ const CommandsPanel = ({
     () => (commandType === 'attack' ? parseCoordinateDraft(manualAttackTargetDraft) : null),
     [commandType, manualAttackTargetDraft],
   );
-  const manualAttackTargetSettlement = useMemo(() => {
+  const manualAttackTargetSettlementByCoords = useMemo(() => {
     if (!manualAttackTargetCoordinates) {
       return null;
     }
-    const settlement =
+    return (
       settlements.find(
         (candidate) =>
           Number(candidate.globalX) === Number(manualAttackTargetCoordinates.x) &&
           Number(candidate.globalY) === Number(manualAttackTargetCoordinates.y),
-      ) ?? null;
+      ) ?? null
+    );
+  }, [manualAttackTargetCoordinates, settlements]);
+  const manualAttackTargetBlockedByPrestige =
+    manualAttackTargetSettlementByCoords?.prestigeAttackBlockedForViewer === true;
+  const manualAttackTargetSettlement = useMemo(() => {
+    const settlement = manualAttackTargetSettlementByCoords;
     if (!settlement) {
       return null;
     }
@@ -6054,7 +6133,7 @@ const CommandsPanel = ({
       currentUsername,
     });
     return isAllowed ? settlement : null;
-  }, [currentUsername, currentVillageId, manualAttackTargetCoordinates, settlements]);
+  }, [currentUsername, currentVillageId, manualAttackTargetSettlementByCoords]);
   const effectiveTargetSettlement =
     commandType === 'attack' && manualAttackTargetSettlement ? manualAttackTargetSettlement : selectedTargetSettlement;
   const manualAttackHasInput = commandType === 'attack' && manualAttackTargetDraft.trim().length > 0;
@@ -6065,11 +6144,23 @@ const CommandsPanel = ({
     if (!manualAttackTargetCoordinates) {
       return 'Neplatný formát. Použij X|Y.';
     }
+    if (!manualAttackTargetSettlementByCoords) {
+      return 'Na zadaných souřadnicích není platný cíl útoku v tomto světě.';
+    }
+    if (manualAttackTargetBlockedByPrestige) {
+      return 'Cíl je pod ochranou prestiže. Pokud tě tento hráč napadne, ochrana se zruší a útok můžeš vrátit.';
+    }
     if (!manualAttackTargetSettlement) {
       return 'Na zadaných souřadnicích není platný cíl útoku v tomto světě.';
     }
     return null;
-  }, [manualAttackHasInput, manualAttackTargetCoordinates, manualAttackTargetSettlement]);
+  }, [
+    manualAttackHasInput,
+    manualAttackTargetBlockedByPrestige,
+    manualAttackTargetCoordinates,
+    manualAttackTargetSettlement,
+    manualAttackTargetSettlementByCoords,
+  ]);
   const effectiveTargetVillageId =
     effectiveTargetSettlement == null ? null : Number(effectiveTargetSettlement.villageId ?? null);
   const selectedTargetDistanceTiles = useMemo(() => {
@@ -6102,6 +6193,14 @@ const CommandsPanel = ({
     }
     return duration == null ? '-' : formatDurationLabel(duration);
   }, [selectedCommandUnits, selectedTargetDistanceTiles]);
+  const selectedTargetPrestigeBlocked =
+    commandType === 'attack' && effectiveTargetSettlement?.prestigeAttackBlockedForViewer === true;
+  const selectedTargetRetaliationUnlocked =
+    commandType === 'attack' && effectiveTargetSettlement?.retaliationUnlockedForViewer === true;
+  const selectedTargetRetaliationAtLabel =
+    selectedTargetRetaliationUnlocked && effectiveTargetSettlement?.retaliationUnlockedAt
+      ? formatDateTimeLabel(effectiveTargetSettlement.retaliationUnlockedAt)
+      : null;
   const hasAvailableCommandUnits = useMemo(
     () =>
       units.some((unit) => {
@@ -6513,6 +6612,18 @@ const CommandsPanel = ({
             {' · '}
             ETA: <strong>{selectedTargetEtaLabel}</strong>
           </p>
+          {selectedTargetPrestigeBlocked ? (
+            <p className="panel-feedback is-danger">
+              Ochrana prestiže je aktivní: tento cíl je zatím mimo rozsah útoku. Jakmile tě tento hráč napadne,
+              ochrana padá a útok můžeš vrátit.
+            </p>
+          ) : null}
+          {selectedTargetRetaliationUnlocked ? (
+            <p className="panel-feedback">
+              Retaliace je aktivní: tento hráč už na tebe zaútočil
+              {selectedTargetRetaliationAtLabel ? ` (${selectedTargetRetaliationAtLabel})` : ''} a útok můžeš vrátit.
+            </p>
+          ) : null}
           <p>
             Vybráno jednotek: <strong>{selectedCommandUnitCount.toLocaleString('cs-CZ')}</strong>
           </p>
@@ -8568,20 +8679,52 @@ const ProfilePanel = ({
   defenderRank: number | null;
   supporterRank: number | null;
 }) => (
-  <div className="panel-stack">
-    <section>
-      <h3>Profil velitele</h3>
-      <ul>
-        <li>Jméno: {username}</li>
-        <li>Království: {kingdom}</li>
-        <li>Počet měst: {villageCount}</li>
-        <li>Celková prestiž: {prestige.toLocaleString('cs-CZ')}</li>
-        <li>Pořadí v žebříčku: {rank ? `#${rank}` : 'N/A'}</li>
-        <li>Pořadí útočník: {attackerRank ? `#${attackerRank}` : 'N/A'}</li>
-        <li>Pořadí obránce: {defenderRank ? `#${defenderRank}` : 'N/A'}</li>
-        <li>Pořadí podporovatel: {supporterRank ? `#${supporterRank}` : 'N/A'}</li>
-        <li>Poslední aktivita: ekonomický tick backendu</li>
-      </ul>
+  <div className="panel-stack player-profile-panel">
+    <section className="player-profile-hero-card">
+      <div className="player-profile-header">
+        <div className="player-profile-avatar-frame" aria-hidden="true">
+          <span>{username.slice(0, 1)}</span>
+        </div>
+        <div className="player-profile-header-main">
+          <h3 className="player-profile-name">Profil</h3>
+          <p className="player-profile-subline">
+            <span className="player-profile-kingdom-pill">{kingdom || 'Bez království'}</span>
+            <span>{villageCount.toLocaleString('cs-CZ')} měst</span>
+          </p>
+        </div>
+      </div>
+
+      <div className="player-profile-main-stats">
+        <article className="player-profile-stat-card player-profile-stat-card-main">
+          <span>Velitel</span>
+          <strong>{username}</strong>
+        </article>
+        <article className="player-profile-stat-card player-profile-stat-card-main">
+          <span>Globální pořadí</span>
+          <strong>{rank ? `#${rank}` : 'N/A'}</strong>
+        </article>
+        <article className="player-profile-stat-card player-profile-stat-card-main">
+          <span>Prestiž</span>
+          <strong>{prestige.toLocaleString('cs-CZ')}</strong>
+        </article>
+      </div>
+
+      <div className="player-profile-combat-stats">
+        <article className="player-profile-stat-card player-profile-stat-card-compact">
+          <span>Útočník</span>
+          <strong>{attackerRank ? `#${attackerRank}` : 'N/A'}</strong>
+        </article>
+        <article className="player-profile-stat-card player-profile-stat-card-compact">
+          <span>Obránce</span>
+          <strong>{defenderRank ? `#${defenderRank}` : 'N/A'}</strong>
+        </article>
+        <article className="player-profile-stat-card player-profile-stat-card-compact">
+          <span>Podporovatel</span>
+          <strong>{supporterRank ? `#${supporterRank}` : 'N/A'}</strong>
+        </article>
+      </div>
+
+      <p className="player-profile-protection-strip">Poslední aktivita: ekonomický tick backendu</p>
     </section>
   </div>
 );
@@ -9116,12 +9259,38 @@ const MapPanel = memo(({
   const wheelAnchorRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const zoomPercentRef = useRef(zoomPercent);
   const dragSuppressClickUntilRef = useRef(0);
+  const hoverClearTimeoutRef = useRef<number | null>(null);
   const [gridViewportState, setGridViewportState] = useState({
     scrollLeft: 0,
     scrollTop: 0,
     clientWidth: 0,
     clientHeight: 0,
   });
+
+  const clearHoverTimeout = useCallback(() => {
+    if (hoverClearTimeoutRef.current != null) {
+      window.clearTimeout(hoverClearTimeoutRef.current);
+      hoverClearTimeoutRef.current = null;
+    }
+  }, []);
+
+  const scheduleHoveredSettlementClear = useCallback(
+    (settlementId: string) => {
+      clearHoverTimeout();
+      hoverClearTimeoutRef.current = window.setTimeout(() => {
+        hoverClearTimeoutRef.current = null;
+        setHoveredId((previous) => (previous === settlementId ? null : previous));
+      }, MAP_HOVER_CLEAR_DELAY_MS);
+    },
+    [clearHoverTimeout],
+  );
+
+  useEffect(
+    () => () => {
+      clearHoverTimeout();
+    },
+    [clearHoverTimeout],
+  );
 
   useEffect(() => {
     zoomPercentRef.current = zoomPercent;
@@ -9325,6 +9494,14 @@ const MapPanel = memo(({
     : null;
   const previewTargetUnderProtection =
     previewSettlement != null && Math.max(0, Number(previewSettlement.protectionRemainingSec ?? 0)) > 0;
+  const previewTargetPrestigeBlocked =
+    previewSettlement != null && previewSettlement.prestigeAttackBlockedForViewer === true;
+  const previewRetaliationUnlocked =
+    previewSettlement != null && previewSettlement.retaliationUnlockedForViewer === true;
+  const previewRetaliationUnlockedAtLabel =
+    previewRetaliationUnlocked && previewSettlement?.retaliationUnlockedAt
+      ? formatDateTimeLabel(previewSettlement.retaliationUnlockedAt)
+      : null;
   const isPreviewAbandoned = previewSettlementKind === 'abandoned';
   const isPreviewPlayerSettlement =
     previewSettlementKind === 'opponent' ||
@@ -9772,6 +9949,7 @@ const MapPanel = memo(({
     if (event.button !== 0) {
       return;
     }
+    clearHoverTimeout();
 
     const target = event.target as HTMLElement;
     if (target.closest('.map-settlement-info-card')) {
@@ -9895,22 +10073,27 @@ const MapPanel = memo(({
               gridColumnStart: localX,
               gridRowStart: localY,
             }}
-            onMouseEnter={() =>
-              setHoveredId((previous) => (previous === settlement.id ? previous : settlement.id))
-            }
-            onMouseLeave={() =>
-              setHoveredId((previous) => (previous === settlement.id ? null : previous))
-            }
-            onFocus={() =>
-              setHoveredId((previous) => (previous === settlement.id ? previous : settlement.id))
-            }
-            onBlur={() => setHoveredId((previous) => (previous === settlement.id ? null : previous))}
+            onMouseEnter={() => {
+              clearHoverTimeout();
+              setHoveredId((previous) => (previous === settlement.id ? previous : settlement.id));
+            }}
+            onMouseLeave={() => {
+              scheduleHoveredSettlementClear(settlement.id);
+            }}
+            onFocus={() => {
+              clearHoverTimeout();
+              setHoveredId((previous) => (previous === settlement.id ? previous : settlement.id));
+            }}
+            onBlur={() => {
+              scheduleHoveredSettlementClear(settlement.id);
+            }}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
               if (Date.now() < dragSuppressClickUntilRef.current) {
                 return;
               }
+              clearHoverTimeout();
               setPinnedSettlementId(settlement.id);
               setHoveredId(settlement.id);
             }}
@@ -9972,10 +10155,12 @@ const MapPanel = memo(({
       }),
     [
       activeVillageId,
+      clearHoverTimeout,
       focusedSettlementId,
       mapDisplaySettlements,
       orderMarkersByVillageId,
       safeHoveredId,
+      scheduleHoveredSettlementClear,
     ],
   );
 
@@ -10147,6 +10332,31 @@ const MapPanel = memo(({
                       {previewTargetUnderProtection ? (
                         <p className="map-settlement-protection">
                           Nováčkovská ochrana: {formatDurationLabel(Number(previewSettlement?.protectionRemainingSec ?? 0))}
+                        </p>
+                      ) : null}
+                      {previewTargetPrestigeBlocked ? (
+                        <p className="map-settlement-balance-warning is-blocked">
+                          Ochrana prestiže: na toto léno teď útočit nemůžeš. Hráč má{' '}
+                          <strong>{Math.max(0, Math.floor(Number(previewSettlement?.ownerTotalPrestige ?? 0))).toLocaleString('cs-CZ')}</strong>{' '}
+                          prestiže a pro útok potřebuje alespoň{' '}
+                          <strong>
+                            {Math.max(
+                              1,
+                              Math.floor(Number(previewSettlement?.prestigeAttackMinimumForViewer ?? 1)),
+                            ).toLocaleString('cs-CZ')}
+                          </strong>
+                          . Pokud tě napadne jako první, ochrana se zruší a můžeš útok vrátit.
+                        </p>
+                      ) : null}
+                      {previewRetaliationUnlocked ? (
+                        <p className="map-settlement-balance-warning is-unlocked">
+                          Retaliace aktivní: tento hráč už na tebe útočil, můžeš útok vrátit bez prestižní blokace.
+                          {previewRetaliationUnlockedAtLabel ? (
+                            <>
+                              {' '}
+                              Poslední agrese: <strong>{previewRetaliationUnlockedAtLabel}</strong>.
+                            </>
+                          ) : null}
                         </p>
                       ) : null}
                     </div>
@@ -15266,7 +15476,7 @@ export const GamePage = () => {
                   glyph={button.glyph}
                   text={button.text}
                 />
-                <small className={`nav-action-meta ${infoText ? '' : 'is-empty'}`}>{infoText ?? '·'}</small>
+                {infoText ? <small className="nav-action-meta">{infoText}</small> : null}
               </div>
             );
           })}

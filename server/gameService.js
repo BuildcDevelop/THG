@@ -4,7 +4,6 @@ import {
   BUILDING_ORDER,
   getGlobalMaxBuildingLevel,
   getMaxBuildingLevel,
-  MAX_PLAYER_VILLAGES,
   UNIT_DEFS,
   UNIT_ORDER,
   calculatePopulationCap,
@@ -23,6 +22,15 @@ import {
   calculateArmyTravelDurationSec,
   canAfford,
 } from './gameConfig.js';
+import {
+  calculateAttackModifier,
+  calculateDefenseBonus,
+  calculateLootModifier,
+  isAttackAllowed,
+  MIN_ATTACKABLE_PRESTIGE_RATIO,
+  MIN_LOOT_MODIFIER,
+  resolveCombatBalance,
+} from './combatBalance.js';
 
 const runtimeEnv = String(process.env.TLD_ENV ?? process.env.APP_ENV ?? process.env.NODE_ENV ?? '')
   .trim()
@@ -237,7 +245,7 @@ const RESEARCH_DEFS = Object.freeze([
     description: 'Moderní jezdecké vybavení pro lehkou jízdu.',
     coinCost: 1500,
     unlocks: 'Odemkne lehkou jízdu.',
-    requiredResearchIds: ['linen-ropes'],
+    requiredResearchIds: [],
   },
   {
     id: 'tactics',
@@ -245,7 +253,7 @@ const RESEARCH_DEFS = Object.freeze([
     description: 'Koordinované průlomy opevněných bran.',
     coinCost: 2000,
     unlocks: 'Odemkne beranidla.',
-    requiredResearchIds: ['stirrups-spurs'],
+    requiredResearchIds: [],
   },
   {
     id: 'city-defense',
@@ -253,7 +261,7 @@ const RESEARCH_DEFS = Object.freeze([
     description: 'Výcvik posádky hradeb a obranných rot.',
     coinCost: 3000,
     unlocks: 'Odemkne hradby a bránu.',
-    requiredResearchIds: ['tactics'],
+    requiredResearchIds: [],
   },
   {
     id: 'guild-influence',
@@ -261,7 +269,7 @@ const RESEARCH_DEFS = Object.freeze([
     description: 'Jednání s cechy a standardizace obchodních smluv.',
     coinCost: 4000,
     unlocks: 'Odemkne cech obchodníků.',
-    requiredResearchIds: ['city-defense'],
+    requiredResearchIds: [],
   },
   {
     id: 'verven-bank',
@@ -269,7 +277,7 @@ const RESEARCH_DEFS = Object.freeze([
     description: 'Dluhové úpisy, které umožňují nájem žoldáků.',
     coinCost: 5000,
     unlocks: 'Odemkne žoldáky.',
-    requiredResearchIds: ['guild-influence'],
+    requiredResearchIds: [],
   },
 ]);
 const RESEARCH_DEF_BY_ID = new Map(RESEARCH_DEFS.map((definition) => [definition.id, definition]));
@@ -560,6 +568,7 @@ const selectAllVillageIdsStmt = db.prepare('SELECT id, region, player_id AS play
 const selectAllVillagesForWorldStmt = db.prepare(
   `SELECT
       v.id,
+      v.player_id AS playerId,
       v.name,
       v.coord_x AS coordX,
       v.coord_y AS coordY,
@@ -997,6 +1006,46 @@ const selectVillageCountByPlayerAndRegionStmt = db.prepare(
   `SELECT COUNT(*) AS total
    FROM villages
    WHERE player_id = ? AND region = ?`,
+);
+const selectVillagePrestigeByPlayerAndRegionStmt = db.prepare(
+  `SELECT COALESCE(SUM(prestige), 0) AS total
+   FROM villages
+   WHERE player_id = ? AND region = ?`,
+);
+const upsertCombatRetaliationFlagStmt = db.prepare(
+  `INSERT INTO combat_retaliation_flags (
+      aggressor_player_id,
+      defender_player_id,
+      region,
+      first_attacked_at,
+      last_attacked_at
+   ) VALUES (?, ?, ?, ?, ?)
+   ON CONFLICT(aggressor_player_id, defender_player_id, region) DO UPDATE SET
+     last_attacked_at = excluded.last_attacked_at`,
+);
+const selectCombatRetaliationFlagByPlayersStmt = db.prepare(
+  `SELECT
+      aggressor_player_id AS aggressorPlayerId,
+      defender_player_id AS defenderPlayerId,
+      region,
+      first_attacked_at AS firstAttackedAt,
+      last_attacked_at AS lastAttackedAt
+   FROM combat_retaliation_flags
+   WHERE aggressor_player_id = ?
+     AND defender_player_id = ?
+     AND region = ?
+   LIMIT 1`,
+);
+const selectCombatRetaliationFlagsByDefenderStmt = db.prepare(
+  `SELECT
+      aggressor_player_id AS aggressorPlayerId,
+      defender_player_id AS defenderPlayerId,
+      region,
+      first_attacked_at AS firstAttackedAt,
+      last_attacked_at AS lastAttackedAt
+   FROM combat_retaliation_flags
+   WHERE defender_player_id = ?
+     AND region = ?`,
 );
 const selectMaxUniversityLevelByPlayerAndRegionStmt = db.prepare(
   `SELECT COALESCE(MAX(b.level), 0) AS maxLevel
@@ -2030,7 +2079,7 @@ const isResearchCompleted = (researchRows, researchId) =>
   buildCompletedResearchSet(researchRows).has(String(researchId ?? ''));
 
 const getVillageUniversityCapacity = (buildingLevels) =>
-  Math.max(0, Math.floor(Number(buildingLevels?.university ?? 0)));
+  Math.max(0, Math.min(3, Math.floor(Number(buildingLevels?.university ?? 0))));
 
 const getMercenaryCooldownRemainingSec = (contractRow, referenceIso = nowIso()) => {
   if (!contractRow?.orderedAt) {
@@ -3374,8 +3423,75 @@ const getPlayerVillageCount = (playerId, region = null) =>
     ),
   );
 
+const getPlayerPrestigeInRegion = (playerId, region) =>
+  Math.max(
+    0,
+    Math.floor(Number(selectVillagePrestigeByPlayerAndRegionStmt.get(Number(playerId), Number(region))?.total ?? 0)),
+  );
+
+const getCombatRetaliationFlag = (aggressorPlayerId, defenderPlayerId, region) =>
+  selectCombatRetaliationFlagByPlayersStmt.get(
+    Number(aggressorPlayerId),
+    Number(defenderPlayerId),
+    Number(region),
+  ) ?? null;
+
+const hasCombatRetaliationFlag = (aggressorPlayerId, defenderPlayerId, region) =>
+  getCombatRetaliationFlag(aggressorPlayerId, defenderPlayerId, region) != null;
+
+const registerCombatRetaliationFlag = ({
+  aggressorPlayerId,
+  defenderPlayerId,
+  region,
+  attackedAtIso = nowIso(),
+}) => {
+  upsertCombatRetaliationFlagStmt.run(
+    Number(aggressorPlayerId),
+    Number(defenderPlayerId),
+    Number(region),
+    String(attackedAtIso),
+    String(attackedAtIso),
+  );
+};
+
+const evaluatePrestigeAttackLock = ({
+  attackerPrestige,
+  defenderPrestige,
+  attackerPlayerId,
+  defenderPlayerId,
+  region,
+}) => {
+  const blockedByPrestige = !isAttackAllowed(attackerPrestige, defenderPrestige);
+  if (!blockedByPrestige) {
+    return {
+      blockedByPrestige: false,
+      retaliationUnlocked: false,
+      canAttack: true,
+      retaliationFlag: null,
+      minimumDefenderPrestige: Math.max(
+        1,
+        Math.ceil(Math.max(0, Number(attackerPrestige ?? 0)) * MIN_ATTACKABLE_PRESTIGE_RATIO),
+      ),
+    };
+  }
+
+  const retaliationFlag = getCombatRetaliationFlag(defenderPlayerId, attackerPlayerId, region);
+  const retaliationUnlocked = retaliationFlag != null;
+
+  return {
+    blockedByPrestige,
+    retaliationUnlocked,
+    canAttack: retaliationUnlocked,
+    retaliationFlag,
+    minimumDefenderPrestige: Math.max(
+      1,
+      Math.ceil(Math.max(0, Number(attackerPrestige ?? 0)) * MIN_ATTACKABLE_PRESTIGE_RATIO),
+    ),
+  };
+};
+
 const getPlayerKnightCapacity = (playerId, region = null) =>
-  Math.max(0, Math.min(MAX_PLAYER_VILLAGES, getPlayerVillageCount(Number(playerId), region)));
+  Math.max(0, getPlayerVillageCount(Number(playerId), region));
 
 const getPlayerKnightTotalInWorld = (playerId, region = null) => {
   const owned = Math.max(
@@ -3515,7 +3631,11 @@ const calculateBuildingEffect = (buildingId, level) => {
   }
   if (buildingId === 'university') {
     const researchBonusPct = Math.round(Math.max(0, Number(level ?? 0)) * 20);
-    return researchBonusPct > 0 ? `Vyzkum: +${researchBonusPct} % rychlost` : 'Vyzkum bez bonusu';
+    const academicSlots = getVillageUniversityCapacity({ university: level });
+    const academicLabel = `Sloty akademiku: ${academicSlots.toLocaleString('cs-CZ')} / 3`;
+    return researchBonusPct > 0
+      ? `Vyzkum: +${researchBonusPct} % rychlost · ${academicLabel}`
+      : `Vyzkum bez bonusu · ${academicLabel}`;
   }
   if (buildingId === 'barracks') {
     const reductionPct = Math.round(calculateRecruitmentSpeedReduction(level) * 100);
@@ -3690,14 +3810,16 @@ const buildBuildingNextLevelPreview = ({
       `Priklad (Drevorubec L1->2): ${formatRemaining(sampleCurrent)} -> ${formatRemaining(sampleNext)}.`,
     );
   } else if (buildingId === 'university') {
-    const currentAcademics = Math.max(0, currentLevel);
-    const nextAcademics = Math.max(0, nextLevel);
     const currentSpeedBonus = Math.round(currentLevel * 5);
     const nextSpeedBonus = Math.round(nextLevel * 5);
-    deltas.push(
-      `Sloty akademiku: ${currentAcademics.toLocaleString('cs-CZ')} -> ${nextAcademics.toLocaleString('cs-CZ')} (${formatSignedInteger(nextAcademics, currentAcademics)}).`,
-    );
     deltas.push(`Rychlost vyzkumu akademiku: +${currentSpeedBonus}% -> +${nextSpeedBonus}%.`);
+    const currentAcademicSlots = getVillageUniversityCapacity({ university: currentLevel });
+    const nextAcademicSlots = getVillageUniversityCapacity({ university: nextLevel });
+    deltas.push(
+      `Sloty akademiku: ${currentAcademicSlots.toLocaleString('cs-CZ')} -> ${nextAcademicSlots.toLocaleString(
+        'cs-CZ',
+      )} (${formatSignedInteger(nextAcademicSlots, currentAcademicSlots)}).`,
+    );
   } else if (buildingId === 'barracks') {
     const currentReduction = Math.round(calculateRecruitmentSpeedReduction(currentLevel) * 100);
     const nextReduction = Math.round(calculateRecruitmentSpeedReduction(nextLevel) * 100);
@@ -4717,6 +4839,9 @@ const simulateAttackBattle = ({
   attackerUnitsRaw,
   defenderUnitsRaw,
   defenderBuildingLevels,
+  attackerPrestige = 0,
+  defenderPrestige = 0,
+  retaliationOverrideApplied = false,
   battleTimeIso = nowIso(),
 }) => {
   const attackerStartUnits = toCompleteUnitSelection(attackerUnitsRaw);
@@ -4734,6 +4859,31 @@ const simulateAttackBattle = ({
   let ramsConsumedOnGate = 0;
 
   const bonuses = [];
+  const prestigeAttackModifier = calculateAttackModifier(attackerPrestige, defenderPrestige);
+  const prestigeDefenseBonus = calculateDefenseBonus(attackerPrestige, defenderPrestige);
+  const prestigeLootModifier = calculateLootModifier(attackerPrestige, defenderPrestige);
+  const resolvedPrestigeBalance = resolveCombatBalance(attackerPrestige, defenderPrestige);
+  const prestigeBalance = {
+    ...resolvedPrestigeBalance,
+    attackAllowed: Boolean(resolvedPrestigeBalance.attackAllowed || retaliationOverrideApplied),
+    retaliationOverrideApplied: Boolean(retaliationOverrideApplied),
+    attackModifier: Number(prestigeAttackModifier.toFixed(4)),
+    defenseBonus: Number(prestigeDefenseBonus.toFixed(4)),
+    defenseMultiplier: Number((1 + prestigeDefenseBonus).toFixed(4)),
+    lootModifier: Number(prestigeLootModifier.toFixed(4)),
+  };
+  if (prestigeAttackModifier < 1) {
+    bonuses.push(`Balanc prestize: utok x${prestigeAttackModifier.toFixed(2)}.`);
+  }
+  if (prestigeDefenseBonus > 0) {
+    bonuses.push(`Balanc prestize: obrana +${Math.round(prestigeDefenseBonus * 100)} %.`);
+  }
+  if (prestigeLootModifier < 1) {
+    bonuses.push(`Balanc prestize: korist x${prestigeLootModifier.toFixed(2)}.`);
+  }
+  if (retaliationOverrideApplied) {
+    bonuses.push('Balanc prestize: odvetny utok byl povolen po predchozi agresi cile.');
+  }
   const isNightDefenseWindow = isNightModeAtTime(battleTimeIso);
 
   if (gateLevel > 0) {
@@ -4780,6 +4930,8 @@ const simulateAttackBattle = ({
 
     const baseAttackPower = sumCombatPower(attackerUnits, 'attack');
     const baseDefensePower = sumCombatPower(defenderUnits, 'defense');
+    const effectiveAttackPower = baseAttackPower * prestigeAttackModifier;
+    const effectiveDefensePower = baseDefensePower * (1 + prestigeDefenseBonus);
     return {
       attackerWins: false,
       attackerRetreated: attackerSurvivorsTotal > 0,
@@ -4788,11 +4940,12 @@ const simulateAttackBattle = ({
       gateDamageLossRatio: Number(retreatLossRatio.toFixed(4)),
       baseAttackPower: Number(baseAttackPower.toFixed(2)),
       baseDefensePower: Number(baseDefensePower.toFixed(2)),
-      finalAttackPower: Number(baseAttackPower.toFixed(2)),
-      finalDefensePower: Number(baseDefensePower.toFixed(2)),
-      attackMultiplier: 1,
-      defenseMultiplier: 1,
+      finalAttackPower: Number(effectiveAttackPower.toFixed(2)),
+      finalDefensePower: Number(effectiveDefensePower.toFixed(2)),
+      attackMultiplier: Number(prestigeAttackModifier.toFixed(3)),
+      defenseMultiplier: Number((1 + prestigeDefenseBonus).toFixed(3)),
       bonuses,
+      prestigeBalance,
       attackerLossRatio: Number((attackerStartTotal > 0 ? attackerLossesTotal / attackerStartTotal : 0).toFixed(4)),
       defenderLossRatio: Number((defenderStartTotal > 0 ? defenderLossesTotal / defenderStartTotal : 0).toFixed(4)),
       gate: {
@@ -4830,6 +4983,8 @@ const simulateAttackBattle = ({
     const defenderLossesTotal = sumSelectedUnits(defenderLosses);
     const baseAttackPower = sumCombatPower(attackerUnits, 'attack');
     const baseDefensePower = sumCombatPower(defenderUnits, 'defense');
+    const effectiveAttackPower = baseAttackPower * prestigeAttackModifier;
+    const effectiveDefensePower = baseDefensePower * (1 + prestigeDefenseBonus);
 
     return {
       attackerWins: true,
@@ -4839,11 +4994,12 @@ const simulateAttackBattle = ({
       gateDamageLossRatio: 0,
       baseAttackPower: Number(baseAttackPower.toFixed(2)),
       baseDefensePower: Number(baseDefensePower.toFixed(2)),
-      finalAttackPower: Number(baseAttackPower.toFixed(2)),
-      finalDefensePower: Number(baseDefensePower.toFixed(2)),
-      attackMultiplier: 1,
-      defenseMultiplier: 1,
+      finalAttackPower: Number(effectiveAttackPower.toFixed(2)),
+      finalDefensePower: Number(effectiveDefensePower.toFixed(2)),
+      attackMultiplier: Number(prestigeAttackModifier.toFixed(3)),
+      defenseMultiplier: Number((1 + prestigeDefenseBonus).toFixed(3)),
       bonuses,
+      prestigeBalance,
       attackerLossRatio: Number((attackerStartTotal > 0 ? attackerLossesTotal / attackerStartTotal : 0).toFixed(4)),
       defenderLossRatio: Number((defenderStartTotal > 0 ? defenderLossesTotal / defenderStartTotal : 0).toFixed(4)),
       gate: {
@@ -4869,8 +5025,8 @@ const simulateAttackBattle = ({
     };
   }
 
-  let attackMultiplier = 1;
-  let defenseMultiplier = 1;
+  let attackMultiplier = prestigeAttackModifier;
+  let defenseMultiplier = 1 + prestigeDefenseBonus;
   const attackerTactical = resolveArmyTacticalModifier(attackerUnits, 'attack');
   const defenderTactical = resolveArmyTacticalModifier(defenderUnits, 'defense');
   attackMultiplier *= attackerTactical.multiplier;
@@ -5000,6 +5156,7 @@ const simulateAttackBattle = ({
     attackMultiplier: Number(attackMultiplier.toFixed(3)),
     defenseMultiplier: Number(defenseMultiplier.toFixed(3)),
     bonuses,
+    prestigeBalance,
     attackerLossRatio: Number(attackerLossRatio.toFixed(4)),
     defenderLossRatio: Number(defenderLossRatio.toFixed(4)),
     gate: {
@@ -5163,16 +5320,49 @@ const normalizeSettlementKind = (isOwn, isRoyalSettlement, isAbandonedBot) => {
   return isRoyalSettlement ? 'bot' : 'player';
 };
 
-const buildWorldSettlements = (viewerVillage, viewerUsername, world) => {
+const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, world) => {
   const region = resolveWorldRegionDefinition(world);
   const spawnConfig = resolveWorldSpawnConfig(world);
   const villageProtectionRuleDays = Math.max(0, Number(spawnConfig.playerProtectionDays ?? 0));
   const villages = selectAllVillagesForWorldStmt.all(Number(world.region));
   const viewerKingdom = viewerVillage.kingdom;
+  const numericViewerPlayerId = Number(viewerPlayerId);
+  const playerPrestigeByPlayerId = new Map();
+
+  for (const row of villages) {
+    const playerId = Number(row.playerId);
+    if (!Number.isFinite(playerId) || playerId <= 0) {
+      continue;
+    }
+    const nextTotal =
+      Math.max(0, Number(playerPrestigeByPlayerId.get(playerId) ?? 0)) +
+      Math.max(0, Math.floor(Number(row.prestige ?? 0)));
+    playerPrestigeByPlayerId.set(playerId, nextTotal);
+  }
+
+  const viewerPrestige = Math.max(
+    0,
+    Math.floor(Number(playerPrestigeByPlayerId.get(numericViewerPlayerId) ?? 0)),
+  );
+  const retaliationRows =
+    Number.isFinite(numericViewerPlayerId) && numericViewerPlayerId > 0
+      ? selectCombatRetaliationFlagsByDefenderStmt.all(numericViewerPlayerId, Number(world.region))
+      : [];
+  const retaliationByAggressorId = new Map(
+    retaliationRows
+      .map((row) => ({
+        aggressorPlayerId: Number(row.aggressorPlayerId),
+        firstAttackedAt: row.firstAttackedAt ? String(row.firstAttackedAt) : null,
+        lastAttackedAt: row.lastAttackedAt ? String(row.lastAttackedAt) : null,
+      }))
+      .filter((row) => Number.isFinite(row.aggressorPlayerId) && row.aggressorPlayerId > 0)
+      .map((row) => [row.aggressorPlayerId, row]),
+  );
 
   return villages.map((row) => {
     const coordX = Number(row.coordX);
     const coordY = Number(row.coordY);
+    const playerId = Number(row.playerId);
     const isAbandonedBot = Number(row.isBot) === 1;
     const isOwn = row.owner === viewerUsername;
     const isRoyalSettlement = row.kingdom === 'Neutral' && !isAbandonedBot;
@@ -5183,10 +5373,40 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, world) => {
     const protectionRemainingSec = isAbandonedBot
       ? 0
       : getVillageProtectionRemainingSec(row, villageProtectionRuleDays);
+    const ownerTotalPrestige = Math.max(
+      0,
+      Math.floor(Number(playerPrestigeByPlayerId.get(playerId) ?? row.prestige ?? 0)),
+    );
+    const prestigeCheckRelevant =
+      !isAbandonedBot && !isOwn && !sameKingdom && Number.isFinite(playerId) && playerId > 0;
+    const blockedByPrestige =
+      prestigeCheckRelevant && viewerPrestige > 0
+        ? !isAttackAllowed(viewerPrestige, ownerTotalPrestige)
+        : false;
+    const retaliationFlag = prestigeCheckRelevant ? retaliationByAggressorId.get(playerId) ?? null : null;
+    const retaliationUnlocked = blockedByPrestige && retaliationFlag != null;
+    const prestigeAttackBlockedForViewer = blockedByPrestige && !retaliationUnlocked;
+    const minimumRequiredPrestige =
+      viewerPrestige > 0 ? Math.max(1, Math.ceil(viewerPrestige * MIN_ATTACKABLE_PRESTIGE_RATIO)) : 0;
+    let balanceHint = '';
+    if (prestigeAttackBlockedForViewer) {
+      balanceHint = ` Ochrana prestiže: tento hráč má ${ownerTotalPrestige.toLocaleString(
+        'cs-CZ',
+      )} prestiže, pro útok potřebuje alespoň ${minimumRequiredPrestige.toLocaleString('cs-CZ')}.`;
+    } else if (retaliationUnlocked) {
+      balanceHint =
+        ' Ochrana prestiže je prolomena: tento hráč už na tebe zaútočil, útok můžeš vrátit.';
+    }
+    const baseNote = isOwn
+      ? 'Tvoje hlavni vesnice. Mas plny pristup ke statistikam.'
+      : isAbandonedBot
+        ? 'Opustene leno s AI obranou. Podrobnosti o budovach a jednotkach jsou skryte.'
+        : 'Cizi leno - podrobnosti o budovach a jednotkach jsou skryte.';
 
     return {
       id: `vlg-${row.id}`,
       villageId: Number(row.id),
+      playerId: Number.isFinite(playerId) && playerId > 0 ? playerId : null,
       name: row.name,
       kind: normalizeSettlementKind(isOwn, isRoyalSettlement, isAbandonedBot),
       owner: row.owner,
@@ -5198,16 +5418,18 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, world) => {
       globalY: coordY,
       prestige: Number(row.prestige),
       loyalty: isOwn ? Number(row.loyalty) : 0,
-      note: isOwn
-        ? 'Tvoje hlavni vesnice. Mas plny pristup ke statistikam.'
-        : isAbandonedBot
-          ? 'Opustene leno s AI obranou. Podrobnosti o budovach a jednotkach jsou skryte.'
-          : 'Cizi leno - podrobnosti o budovach a jednotkach jsou skryte.',
+      note: `${baseNote}${balanceHint}`,
       visibility: isOwn ? 'full' : 'public',
       relation: isOwn ? 'self' : isAbandonedBot ? 'enemy' : sameKingdom ? 'ally' : 'enemy',
       protectionUntil,
       protectionRemainingSec,
       protectionRuleDays: villageProtectionRuleDays,
+      viewerPrestige,
+      ownerTotalPrestige,
+      prestigeAttackMinimumForViewer: minimumRequiredPrestige,
+      prestigeAttackBlockedForViewer,
+      retaliationUnlockedForViewer: retaliationUnlocked,
+      retaliationUnlockedAt: retaliationFlag?.lastAttackedAt ?? null,
     };
   });
 };
@@ -5831,6 +6053,20 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       const targetVillage = selectVillageWithOwnerByIdStmt.get(Number(movement.targetVillageId));
       const homeVillage = selectVillageByIdStmt.get(Number(movement.homeVillageId));
       const attackerPlayer = selectPlayerByIdStmt.get(Number(movement.playerId));
+      const attackerPrestige = targetVillage
+        ? getPlayerPrestigeInRegion(Number(movement.playerId), Number(targetVillage.region))
+        : 0;
+      const defenderPrestige = targetVillage
+        ? getPlayerPrestigeInRegion(Number(targetVillage.playerId), Number(targetVillage.region))
+        : 0;
+      const retaliationOverrideApplied =
+        targetVillage &&
+        !isAttackAllowed(attackerPrestige, defenderPrestige) &&
+        hasCombatRetaliationFlag(
+          Number(targetVillage.playerId),
+          Number(movement.playerId),
+          Number(targetVillage.region),
+        );
       const totalSentUnits = sumSelectedUnits(unitSelection);
       if (!targetVillage || !homeVillage || totalSentUnits <= 0) {
         updateArmyMovementStatusStmt.run('completed', tickTimeIso, movementId);
@@ -5979,6 +6215,9 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         attackerUnitsRaw: unitSelection,
         defenderUnitsRaw: defenderUnitsBefore,
         defenderBuildingLevels,
+        attackerPrestige,
+        defenderPrestige,
+        retaliationOverrideApplied,
         battleTimeIso: tickTimeIso,
       });
       const gateStartLevel = Math.max(0, Math.floor(Number(battle?.gate?.startLevel ?? defenderBuildingLevels.gate ?? 0)));
@@ -6057,10 +6296,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         defenderVillageSurvivorsTotal <= 0 &&
         stationedSupportSurvivorsTotal <= 0 &&
         Number(targetVillage.playerId) !== Number(movement.playerId);
-      const attackerVillageCount = getPlayerVillageCount(Number(movement.playerId), Number(targetVillage.region));
-      const canConquerAnotherVillage = attackerVillageCount < MAX_PLAYER_VILLAGES;
       let conquestPayload = null;
-      if (canCaptureWithKnight && canConquerAnotherVillage) {
+      if (canCaptureWithKnight) {
         const kingdomRow = selectPrimaryKingdomByPlayerAndRegionStmt.get(
           Number(movement.playerId),
           Number(targetVillage.region),
@@ -6072,20 +6309,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         villagesToRecalculatePrestige.add(Number(targetVillage.id));
         conquestPayload = {
           conquered: true,
-          blockedByVillageLimit: false,
-          villageLimit: MAX_PLAYER_VILLAGES,
           previousOwner: String(targetVillage.ownerUsername ?? ''),
           newOwner: String(attackerPlayer?.username ?? ''),
-          targetVillageId: Number(targetVillage.id),
-          targetVillageName: String(targetVillage.name ?? ''),
-        };
-      } else if (canCaptureWithKnight && !canConquerAnotherVillage) {
-        conquestPayload = {
-          conquered: false,
-          blockedByVillageLimit: true,
-          villageLimit: MAX_PLAYER_VILLAGES,
-          previousOwner: String(targetVillage.ownerUsername ?? ''),
-          newOwner: String(targetVillage.ownerUsername ?? ''),
           targetVillageId: Number(targetVillage.id),
           targetVillageName: String(targetVillage.name ?? ''),
         };
@@ -6161,12 +6386,14 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       let lootTaken = { wood: 0, stone: 0, iron: 0 };
       if (battle.attackerWins && attackerSurvivorsAfterConquestTotal > 0) {
         const carryingCapacity = calculateLootCapacityFromSelection(returnUnits);
-        if (carryingCapacity > 0) {
+        const prestigeLootModifier = calculateLootModifier(attackerPrestige, defenderPrestige);
+        const effectiveCarryingCapacity = Math.max(0, Math.floor(carryingCapacity * prestigeLootModifier));
+        if (effectiveCarryingCapacity > 0) {
           const defenderResources = selectResourcesByVillageStmt.get(Number(targetVillage.id));
           if (defenderResources) {
             const protectedPocket = calculateLootProtectionPocket(defenderBuildingLevels);
             const lootableResourcePocket = calculateLootableResourcePocket(defenderResources, protectedPocket);
-            const requestedLoot = calculateLootDistribution(lootableResourcePocket, lootPriority, carryingCapacity);
+            const requestedLoot = calculateLootDistribution(lootableResourcePocket, lootPriority, effectiveCarryingCapacity);
             if (requestedLoot.total > 0) {
               const subtraction = subtractResources(Number(targetVillage.id), requestedLoot.loot, protectedPocket);
               lootTaken = {
@@ -6241,6 +6468,17 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         : battle.attackerWins
           ? 'Prohra'
           : 'Vitezstvi';
+      const prestigeBalance = battle?.prestigeBalance ?? null;
+      const hasPrestigeImpact =
+        prestigeBalance != null &&
+        (Number(prestigeBalance.attackModifier ?? 1) < 0.999 ||
+          Number(prestigeBalance.defenseBonus ?? 0) > 0.0001 ||
+          Number(prestigeBalance.lootModifier ?? 1) < 0.999);
+      const prestigeSummarySuffix = hasPrestigeImpact
+        ? ` Balanc prestize: utok x${Number(prestigeBalance?.attackModifier ?? 1).toFixed(2)}, obrana +${Math.round(
+            Number(prestigeBalance?.defenseBonus ?? 0) * 100,
+          )} %, korist x${Number(prestigeBalance?.lootModifier ?? 1).toFixed(2)}.`
+        : '';
       let attackTitle = blockedByGate
         ? `Utok odrazen branou: ${attackerName} -> ${targetVillage.name}`
         : `Bitva: ${attackerName} -> ${targetVillage.name}`;
@@ -6255,8 +6493,9 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         if (conquestPayload.knightConsumed) {
           attackSummary += ' Rytir osadu obsadil a po dobyti zmizel.';
         }
-      } else if (conquestPayload?.blockedByVillageLimit) {
-        attackSummary += ` Dobytí se neprovedlo: dosažen limit ${MAX_PLAYER_VILLAGES} osad v tomto svete.`;
+      }
+      if (prestigeSummarySuffix) {
+        attackSummary += prestigeSummarySuffix;
       }
       if (attackerPlayer && Number(attackerPlayer.isBot ?? 0) !== 1) {
         let reportId = null;
@@ -6343,8 +6582,9 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         if (conquestPayload?.conquered) {
           defenseTitle = `Dobytí léna: ${targetVillage.name}`;
           defenseSummary = `Leno ${targetVillage.name} bylo dobyto hracem ${attackerName}.`;
-        } else if (conquestPayload?.blockedByVillageLimit) {
-          defenseSummary += ` Utocnik dosahl limitu ${MAX_PLAYER_VILLAGES} osad v tomto svete, dobytí se neprovedlo.`;
+        }
+        if (prestigeSummarySuffix) {
+          defenseSummary += prestigeSummarySuffix;
         }
         const defenderPayload = {
           perspective: 'defender',
@@ -7280,7 +7520,7 @@ export const getVillageSnapshot = (
   }
 
   const activeUpgrade = activeUpgrades.length > 0 ? activeUpgrades[0] : null;
-  const settlements = buildWorldSettlements(village, player.username, world);
+  const settlements = buildWorldSettlements(village, player.username, Number(player.id), world);
   const leaderboard = listPlayerLeaderboard(world.id);
   const kingdomHub = buildKingdomHubState(player, village);
   const recentLogisticsRoutes = selectRecentLogisticsByVillageStmt
@@ -7487,6 +7727,12 @@ export const getVillageSnapshot = (
         isActiveNow: isNightModeAtTime(nowIso()),
         defenseBonusPct: 100,
       },
+      prestigeBalance: {
+        minAttackablePrestigeRatio: MIN_ATTACKABLE_PRESTIGE_RATIO,
+        minLootModifier: MIN_LOOT_MODIFIER,
+        retaliationRule:
+          'Pokud slabsi hrac zautoci na silnejsiho, ztraci ochranu prestize vuci tomuto hraci a muze dostat odvetny utok.',
+      },
       cancelCommandProgressLimit: COMMAND_CANCEL_MAX_PROGRESS,
     },
     activeOrders,
@@ -7651,6 +7897,29 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
         );
       }
     }
+
+    const isTargetNonBotPlayer = Number(targetVillage.ownerIsBot ?? 0) !== 1;
+    if (isTargetNonBotPlayer) {
+      const attackerPrestige = getPlayerPrestigeInRegion(Number(player.id), Number(village.region));
+      const defenderPrestige = getPlayerPrestigeInRegion(Number(targetVillage.playerId), Number(targetVillage.region));
+      const prestigeLock = evaluatePrestigeAttackLock({
+        attackerPrestige,
+        defenderPrestige,
+        attackerPlayerId: Number(player.id),
+        defenderPlayerId: Number(targetVillage.playerId),
+        region: Number(village.region),
+      });
+      if (!prestigeLock.canAttack) {
+        throw new GameRuleError(
+          `Balanc prestize blokuje utok: cil ma ${Math.floor(defenderPrestige).toLocaleString(
+            'cs-CZ',
+          )} prestize, potrebuje alespon ${prestigeLock.minimumDefenderPrestige.toLocaleString(
+            'cs-CZ',
+          )}. Ochrana se zrusi, pokud te cilovy hrac napadne jako prvni.`,
+          403,
+        );
+      }
+    }
   }
 
   const selectedUnits = parseArmyUnitSelection(payload?.units);
@@ -7727,6 +7996,15 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
       continue;
     }
     insertArmyMovementUnitStmt.run(movementId, unitId, amount);
+  }
+
+  if (commandType === 'attack' && Number(targetVillage.ownerIsBot ?? 0) !== 1) {
+    registerCombatRetaliationFlag({
+      aggressorPlayerId: Number(player.id),
+      defenderPlayerId: Number(targetVillage.playerId),
+      region: Number(village.region),
+      attackedAtIso: issuedAtIso,
+    });
   }
 
   const commandLabel =
@@ -8090,11 +8368,6 @@ const conquerVillageTransaction = db.transaction((username, villageIdRaw, reques
       newOwner: player.username,
       renamed: false,
     };
-  }
-
-  const playerVillageCount = getPlayerVillageCount(Number(player.id), Number(world.region));
-  if (playerVillageCount >= MAX_PLAYER_VILLAGES) {
-    throw new GameRuleError(`Byl dosazen limit ${MAX_PLAYER_VILLAGES} osad v tomto svete.`, 400);
   }
 
   const kingdomRow = selectPrimaryKingdomByPlayerAndRegionStmt.get(Number(player.id), Number(world.region));
@@ -8906,20 +9179,11 @@ const startResearchProjectTransaction = db.transaction(
       Number(village.region),
       nowTimeIso,
     );
-    const completedIds = buildCompletedResearchSet(researchRows);
     const currentRow =
       selectResearchProgressByPlayerRegionAndResearchStmt.get(Number(player.id), Number(village.region), researchId) ??
       null;
     if (String(currentRow?.status ?? '') === 'completed') {
       throw new GameRuleError('Tento vyzkum uz byl dokoncen.', 400);
-    }
-
-    const missingPrerequisite = definition.requiredResearchIds.find(
-      (requiredResearchId) => !completedIds.has(String(requiredResearchId)),
-    );
-    if (missingPrerequisite) {
-      const missingName = getResearchDefinition(missingPrerequisite)?.name ?? missingPrerequisite;
-      throw new GameRuleError(`Nejprve dokonci vyzkum '${missingName}'.`, 400);
     }
 
     const requestedAcademics = Math.max(

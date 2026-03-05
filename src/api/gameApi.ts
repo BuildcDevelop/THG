@@ -10,6 +10,7 @@ export type SpawnDirection = 'center' | 'north' | 'east' | 'south' | 'west';
 export type WorldSettlement = {
   id: string;
   villageId: number;
+  playerId?: number | null;
   name: string;
   kind: 'own' | 'player' | 'bot' | 'abandoned';
   owner: string;
@@ -27,6 +28,12 @@ export type WorldSettlement = {
   protectionUntil?: string | null;
   protectionRemainingSec?: number;
   protectionRuleDays?: number;
+  viewerPrestige?: number;
+  ownerTotalPrestige?: number;
+  prestigeAttackMinimumForViewer?: number;
+  prestigeAttackBlockedForViewer?: boolean;
+  retaliationUnlockedForViewer?: boolean;
+  retaliationUnlockedAt?: string | null;
 };
 
 export type WorldKingdomSummary = {
@@ -397,6 +404,11 @@ export type GameStateResponse = {
       isActiveNow: boolean;
       defenseBonusPct: number;
     };
+    prestigeBalance?: {
+      minAttackablePrestigeRatio: number;
+      minLootModifier: number;
+      retaliationRule?: string;
+    };
     cancelCommandProgressLimit: number;
   };
   activeOrders: string[];
@@ -615,6 +627,17 @@ export type BattleReportPayload = {
     finalDefensePower?: number;
     attackMultiplier?: number;
     defenseMultiplier?: number;
+    prestigeBalance?: {
+      attackerPrestige?: number;
+      defenderPrestige?: number;
+      powerRatio?: number;
+      attackAllowed?: boolean;
+      retaliationOverrideApplied?: boolean;
+      attackModifier?: number;
+      defenseBonus?: number;
+      defenseMultiplier?: number;
+      lootModifier?: number;
+    };
     bonuses?: string[];
     attackerLossRatio?: number;
     defenderLossRatio?: number;

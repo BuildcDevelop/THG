@@ -1,6 +1,6 @@
 import { conquerVillage, getVillageSnapshot, issueArmyCommand, recruitUnits, runGameTick } from '../../server/gameService.js';
 import { db } from '../../server/db.js';
-import { MAX_PLAYER_VILLAGES, UNIT_ORDER } from '../../server/gameConfig.js';
+import { UNIT_ORDER } from '../../server/gameConfig.js';
 import { listCommunicationInbox, sendCommunicationMessage } from '../../server/communicationService.js';
 
 const ATTACKER_USERNAME = 'Hayato';
@@ -73,6 +73,12 @@ const updateMovementArrivalStmt = db.prepare(
    SET arrive_at = ?
    WHERE id = ?`,
 );
+const updateVillagePrestigeByPlayerRegionStmt = db.prepare(
+  `UPDATE villages
+   SET prestige = ?
+   WHERE player_id = ?
+     AND region = ?`,
+);
 
 const emptySelection = () => Object.fromEntries(UNIT_ORDER.map((unitId) => [unitId, 0]));
 const toCompleteSelection = (partialSelection = {}) => {
@@ -111,6 +117,7 @@ const clearTransientState = () => {
     DELETE FROM army_movement_units;
     DELETE FROM army_movements;
     DELETE FROM battle_reports;
+    DELETE FROM combat_retaliation_flags;
     DELETE FROM unit_recruitments;
     DELETE FROM building_upgrades;
   `);
@@ -550,9 +557,11 @@ const runScenarioWorldVillageLimit = () => {
     throw new Error('No target village available for blocked fire-world conquest attempt.');
   }
 
+  const fireCountBeforeBlockedAttempt = getVillageCountInRegion(attacker.id, REGION_FIRE);
+  let secondConquest = null;
   let blockedError = null;
   try {
-    conquerVillage(
+    secondConquest = conquerVillage(
       ATTACKER_USERNAME,
       Number(fireTargetForBlocked),
       Number(attackerFire.villageId),
@@ -563,11 +572,12 @@ const runScenarioWorldVillageLimit = () => {
   }
 
   return {
-    maxPlayerVillages: MAX_PLAYER_VILLAGES,
     primaryCount: getVillageCountInRegion(attacker.id, REGION_PRIMARY),
     fireCountAfterSuccess,
-    fireCountBeforeBlockedAttempt: getVillageCountInRegion(attacker.id, REGION_FIRE),
+    fireCountBeforeBlockedAttempt,
+    fireCountAfterSecondAttempt: getVillageCountInRegion(attacker.id, REGION_FIRE),
     firstConquest,
+    secondConquest,
     blockedError,
   };
 };
@@ -746,6 +756,66 @@ const runScenarioKnightSingleSlotPerVillage = () => {
   };
 };
 
+const runScenarioPrestigeRetaliationUnlock = () => {
+  clearTransientState();
+  const attacker = getPlayer(ATTACKER_USERNAME);
+  const defender = getPlayer(DEFENDER_USERNAME);
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const defenderVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+
+  updateVillagePrestigeByPlayerRegionStmt.run(50000, Number(attacker.id), REGION_PRIMARY);
+  updateVillagePrestigeByPlayerRegionStmt.run(100, Number(defender.id), REGION_PRIMARY);
+
+  setVillageUnits(attackerVillage.villageId, { militia: 20 });
+  setVillageUnits(defenderVillage.villageId, { militia: 20 });
+  setVillageBuildings(attackerVillage.villageId, { fortification: 0, gate: 0 });
+  setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+
+  let blockedBeforeRetaliation = null;
+  try {
+    issueArmyCommand(
+      ATTACKER_USERNAME,
+      {
+        commandType: 'attack',
+        targetVillageId: Number(defenderVillage.villageId),
+        units: { militia: 1 },
+      },
+      Number(attackerVillage.villageId),
+      WORLD_PRIMARY,
+    );
+  } catch (error) {
+    blockedBeforeRetaliation = String(error?.message ?? error);
+  }
+
+  const smallerAttack = issueArmyCommand(
+    DEFENDER_USERNAME,
+    {
+      commandType: 'attack',
+      targetVillageId: Number(attackerVillage.villageId),
+      units: { militia: 1 },
+    },
+    Number(defenderVillage.villageId),
+    WORLD_PRIMARY,
+  );
+
+  const retaliationAttack = issueArmyCommand(
+    ATTACKER_USERNAME,
+    {
+      commandType: 'attack',
+      targetVillageId: Number(defenderVillage.villageId),
+      units: { militia: 1 },
+    },
+    Number(attackerVillage.villageId),
+    WORLD_PRIMARY,
+  );
+
+  return {
+    blockedBeforeRetaliation,
+    smallerAttackOrderId: Number(smallerAttack?.orderId ?? 0),
+    retaliationAttackOrderId: Number(retaliationAttack?.orderId ?? 0),
+  };
+};
+
 const scenarioName = String(process.argv[2] ?? '').trim();
 const scenarioHandlers = new Map([
   ['empty-fortified-no-loss', runScenarioEmptyFortifiedNoLoss],
@@ -762,6 +832,7 @@ const scenarioHandlers = new Map([
   ['knight-defender-eliminated-on-victory', runScenarioKnightDefenderEliminatedOnVictory],
   ['communication-thread-isolation', runScenarioCommunicationThreadIsolation],
   ['knight-single-slot-per-village', runScenarioKnightSingleSlotPerVillage],
+  ['prestige-retaliation-unlock', runScenarioPrestigeRetaliationUnlock],
 ]);
 
 const handler = scenarioHandlers.get(scenarioName);

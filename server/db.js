@@ -273,6 +273,20 @@ CREATE TABLE IF NOT EXISTS army_movement_units (
   FOREIGN KEY (movement_id) REFERENCES army_movements(id)
 );
 
+CREATE TABLE IF NOT EXISTS combat_retaliation_flags (
+  aggressor_player_id INTEGER NOT NULL,
+  defender_player_id INTEGER NOT NULL,
+  region INTEGER NOT NULL DEFAULT 1,
+  first_attacked_at TEXT NOT NULL,
+  last_attacked_at TEXT NOT NULL,
+  PRIMARY KEY (aggressor_player_id, defender_player_id, region),
+  FOREIGN KEY (aggressor_player_id) REFERENCES players(id),
+  FOREIGN KEY (defender_player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_combat_retaliation_defender_region
+  ON combat_retaliation_flags(defender_player_id, region, last_attacked_at DESC);
+
 CREATE TABLE IF NOT EXISTS battle_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   player_id INTEGER NOT NULL,
@@ -773,6 +787,7 @@ DELETE FROM unit_recruitments;
 DELETE FROM army_movement_units;
 DELETE FROM army_movements;
 DELETE FROM battle_reports;
+DELETE FROM combat_retaliation_flags;
 DELETE FROM kingdom_invites;
 DELETE FROM kingdom_events;
 DELETE FROM player_notifications;
@@ -1462,6 +1477,15 @@ const ensureReferentialIntegrity = db.transaction(() => {
          )
           OR NOT EXISTS (
            SELECT 1 FROM players p WHERE p.id = kingdom_invites.target_player_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM combat_retaliation_flags
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = combat_retaliation_flags.aggressor_player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = combat_retaliation_flags.defender_player_id
          )`,
     ),
     db.prepare(
