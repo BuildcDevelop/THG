@@ -491,21 +491,6 @@ const NAV_BUTTONS: { type: StaticPanelType; text: string; glyph: string }[] = [
   { type: 'settings', text: 'Nastavení', glyph: '⚙︎' },
 ];
 
-const PANEL_HOTKEYS: Record<string, StaticPanelType> = {
-  l: 'city',
-  m: 'map',
-  s: 'army',
-  a: 'military',
-  p: 'commands',
-  v: 'research',
-  k: 'messages',
-  h: 'activity',
-  ž: 'rankings',
-  z: 'rankings',
-  u: 'profile',
-  n: 'settings',
-};
-
 type MenuButtonProps = {
   text: string;
   title: string;
@@ -1121,7 +1106,18 @@ type ShortcutActionId =
   | 'pinActivePanelRight'
   | 'switchActivePanelSide'
   | 'closeActivePanel'
-  | 'openVillageSwitchMode';
+  | 'openVillageSwitchMode'
+  | 'openCityPanel'
+  | 'openMapPanel'
+  | 'openArmyPanel'
+  | 'openMilitaryPanel'
+  | 'openCommandsPanel'
+  | 'openResearchPanel'
+  | 'openMessagesPanel'
+  | 'openActivityPanel'
+  | 'openRankingsPanel'
+  | 'openProfilePanel'
+  | 'openSettingsPanel';
 type ShortcutBinding = {
   key: string;
   ctrl: boolean;
@@ -1368,7 +1364,91 @@ const SHORTCUT_ACTIONS: Array<{
     label: 'Rychlá změna léna (TAB režim)',
     defaultBinding: { key: 'tab', ctrl: false, alt: false, shift: false, meta: false },
   },
+  {
+    id: 'openCityPanel',
+    label: 'Přehled léna',
+    defaultBinding: { key: 'l', ctrl: false, alt: false, shift: false, meta: false },
+  },
+  {
+    id: 'openMapPanel',
+    label: 'Mapa',
+    defaultBinding: { key: 'm', ctrl: false, alt: false, shift: false, meta: false },
+  },
+  {
+    id: 'openArmyPanel',
+    label: 'Správa lén',
+    defaultBinding: { key: 's', ctrl: false, alt: false, shift: false, meta: false },
+  },
+  {
+    id: 'openMilitaryPanel',
+    label: 'Armáda',
+    defaultBinding: { key: 'a', ctrl: false, alt: false, shift: false, meta: false },
+  },
+  {
+    id: 'openCommandsPanel',
+    label: 'Příkazy',
+    defaultBinding: { key: 'p', ctrl: false, alt: false, shift: false, meta: false },
+  },
+  {
+    id: 'openResearchPanel',
+    label: 'Výzkum',
+    defaultBinding: { key: 'v', ctrl: false, alt: false, shift: false, meta: false },
+  },
+  {
+    id: 'openMessagesPanel',
+    label: 'Komunikace',
+    defaultBinding: { key: 'k', ctrl: false, alt: false, shift: false, meta: false },
+  },
+  {
+    id: 'openActivityPanel',
+    label: 'Herní záznamy',
+    defaultBinding: { key: 'h', ctrl: false, alt: false, shift: false, meta: false },
+  },
+  {
+    id: 'openRankingsPanel',
+    label: 'Žebříček',
+    defaultBinding: { key: 'ž', ctrl: false, alt: false, shift: false, meta: false },
+  },
+  {
+    id: 'openProfilePanel',
+    label: 'Profil',
+    defaultBinding: { key: 'u', ctrl: false, alt: false, shift: false, meta: false },
+  },
+  {
+    id: 'openSettingsPanel',
+    label: 'Nastavení',
+    defaultBinding: { key: 'n', ctrl: false, alt: false, shift: false, meta: false },
+  },
 ];
+const PANEL_SHORTCUT_ACTION_TO_PANEL_TYPE: Record<
+  | 'openCityPanel'
+  | 'openMapPanel'
+  | 'openArmyPanel'
+  | 'openMilitaryPanel'
+  | 'openCommandsPanel'
+  | 'openResearchPanel'
+  | 'openMessagesPanel'
+  | 'openActivityPanel'
+  | 'openRankingsPanel'
+  | 'openProfilePanel'
+  | 'openSettingsPanel',
+  StaticPanelType
+> = {
+  openCityPanel: 'city',
+  openMapPanel: 'map',
+  openArmyPanel: 'army',
+  openMilitaryPanel: 'military',
+  openCommandsPanel: 'commands',
+  openResearchPanel: 'research',
+  openMessagesPanel: 'messages',
+  openActivityPanel: 'activity',
+  openRankingsPanel: 'rankings',
+  openProfilePanel: 'profile',
+  openSettingsPanel: 'settings',
+};
+const PANEL_SHORTCUT_ACTION_IDS = Object.keys(PANEL_SHORTCUT_ACTION_TO_PANEL_TYPE) as Array<
+  keyof typeof PANEL_SHORTCUT_ACTION_TO_PANEL_TYPE
+>;
 const DEFAULT_SHORTCUT_BINDINGS: Record<ShortcutActionId, ShortcutBinding> = Object.fromEntries(
   SHORTCUT_ACTIONS.map((item) => [item.id, item.defaultBinding]),
 ) as Record<ShortcutActionId, ShortcutBinding>;
@@ -6440,11 +6520,22 @@ const CommandsPanel = ({
         </div>
       </section>
 
-      <section>
-        <h3>Vydat armádní rozkaz</h3>
-        <div className="army-command-controls">
-          <label>
-            Rozkaz
+      <section className="army-order-workbench">
+        <header className="army-order-workbench-header">
+          <div>
+            <h3>Vydat armádní rozkaz</h3>
+            <p className="army-order-subtitle">Nastav cíl, připrav složení výpravy a potvrď rozkaz z velitelské mapy.</p>
+          </div>
+          <span className={`army-order-type-pill ${commandType}`}>
+            <span className="army-order-type-symbol" aria-hidden="true">
+              {getArmyCommandSymbol(commandType)}
+            </span>
+            <span>{ARMY_COMMAND_LABELS[commandType]}</span>
+          </span>
+        </header>
+        <div className="army-command-controls army-order-control-grid">
+          <label className="army-order-field">
+            <span className="army-order-field-label">Rozkaz</span>
             <select
               className={`army-command-type-select ${commandType}`}
               value={commandType}
@@ -6456,8 +6547,8 @@ const CommandsPanel = ({
               <option value="move">{ARMY_COMMAND_LABELS.move}</option>
             </select>
           </label>
-          <label>
-            Cílové léno
+          <label className="army-order-field">
+            <span className="army-order-field-label">Cílové léno</span>
             <select
               value={resolvedTargetVillageId == null ? '' : String(resolvedTargetVillageId)}
               onChange={(event) => {
@@ -6475,8 +6566,8 @@ const CommandsPanel = ({
             </select>
           </label>
           {commandType === 'attack' ? (
-            <label>
-              Ruční cíl (X|Y)
+            <label className="army-order-field">
+              <span className="army-order-field-label">Ruční cíl (X|Y)</span>
               <input
                 type="text"
                 className="army-command-manual-target-input"
@@ -6488,8 +6579,8 @@ const CommandsPanel = ({
             </label>
           ) : null}
           {commandType === 'attack' ? (
-            <label>
-              Priorita drancování
+            <label className="army-order-field">
+              <span className="army-order-field-label">Priorita drancování</span>
               <select
                 value={lootPriority}
                 onChange={(event) => setLootPriority(event.target.value as LootPriority)}
@@ -6505,7 +6596,7 @@ const CommandsPanel = ({
         </div>
         {manualAttackTargetError ? <p className="panel-feedback is-danger">{manualAttackTargetError}</p> : null}
         {historyItems.length > 0 ? (
-          <div className="army-command-history">
+          <div className="army-command-history army-order-history">
             <h4>Rychlá historie cílů</h4>
             <p className="row-help">Levé kliknutí nastaví cíl. Pravé kliknutí otevře profil léna.</p>
             <div className="army-command-history-list">
@@ -6543,72 +6634,92 @@ const CommandsPanel = ({
             </div>
           </div>
         ) : null}
-        <div className="army-draft-actions">
-          <button
-            type="button"
-            className="secondary-action"
-            onClick={handleSelectAllCommandUnits}
-            disabled={isArmyCommandPending || !hasAvailableCommandUnits}
-            title={selectAllCommandUnitsTooltip}
-          >
-            Přidat všechny
-          </button>
-        </div>
-        <div className="army-draft-grid">
-          {units.map((unit) => (
-            <label key={`command-draft-${unit.id}`}>
-              <span className="unit-draft-label">
-                <span className="unit-name-with-icon unit-name-with-icon-strong">
-                  <span className="unit-icon-shell tiny" aria-hidden="true">
-                    <img src={getUnitMetaById(unit.id).icon} alt="" className="unit-icon-image" loading="lazy" />
-                  </span>
-                  <span>{unit.name}</span>
-                </span>{' '}
-                <small className="row-help inline">k dispozici: {unit.amount.toLocaleString('cs-CZ')}</small>
-              </span>
-              <div className="army-draft-input-row">
-                <input
-                  type="number"
-                  min={0}
-                  max={unit.amount}
-                  step={1}
-                  value={draftUnitAmounts[unit.id] ?? ''}
-                  onChange={(event) => handleDraftAmountChange(unit.id, event.target.value)}
-                  onWheel={(event) =>
-                    adjustNumericInputByWheel(event, (nextValue) => {
-                      handleDraftAmountChange(unit.id, nextValue);
-                    })
-                  }
-                  onKeyDown={(event) => {
-                    handleActionOnEnter(event, () => {
-                      handleSendCommand();
-                    });
-                  }}
-                  disabled={isArmyCommandPending || (commandType === 'support' && unit.id === 'caravan')}
-                />
-                <button
-                  type="button"
-                  className="secondary-action compact army-draft-unit-fill-button"
-                  onClick={() => handleFillSingleCommandUnit(unit.id, unit.amount)}
-                  disabled={
-                    isArmyCommandPending ||
-                    unit.amount <= 0 ||
-                    (commandType === 'support' && unit.id === 'caravan')
-                  }
-                  title="Vložit všechny dostupné jednotky tohoto typu"
+        <div className="army-order-unit-board">
+          <div className="army-draft-actions army-order-draft-toolbar">
+            <div>
+              <p className="army-order-toolbar-title">Složení výpravy</p>
+              <p className="row-help">Použij MAX pro rychlé nasazení konkrétního typu jednotky.</p>
+            </div>
+            <button
+              type="button"
+              className="secondary-action"
+              onClick={handleSelectAllCommandUnits}
+              disabled={isArmyCommandPending || !hasAvailableCommandUnits}
+              title={selectAllCommandUnitsTooltip}
+            >
+              Přidat všechny
+            </button>
+          </div>
+          <div className="army-draft-grid army-order-unit-grid">
+            {units.map((unit) => {
+              const isSupportCaravanBlocked = commandType === 'support' && unit.id === 'caravan';
+              const draftInputId = `command-draft-${commandType}-${unit.id}`;
+              return (
+                <article
+                  key={`command-draft-${unit.id}`}
+                  className={`army-order-unit-card ${isSupportCaravanBlocked ? 'is-locked' : ''}`}
                 >
-                  Všechny k dispozici
-                </button>
-              </div>
-              {commandType === 'support' && unit.id === 'caravan' ? (
-                <small className="row-help">Karavany nelze posílat jako podporu.</small>
-              ) : null}
-            </label>
-          ))}
+                  <header className="army-order-unit-head">
+                    <span className="unit-name-with-icon unit-name-with-icon-strong">
+                      <span className="unit-icon-shell tiny" aria-hidden="true">
+                        <img src={getUnitMetaById(unit.id).icon} alt="" className="unit-icon-image" loading="lazy" />
+                      </span>
+                      <span>{unit.name}</span>
+                    </span>
+                    <small className="row-help">k dispozici: {unit.amount.toLocaleString('cs-CZ')}</small>
+                  </header>
+                  <div className="army-order-unit-controls">
+                    <label htmlFor={draftInputId} className="army-order-unit-label">
+                      Nasadit
+                    </label>
+                    <div className="army-draft-input-row">
+                      <input
+                        id={draftInputId}
+                        type="number"
+                        min={0}
+                        max={unit.amount}
+                        step={1}
+                        value={draftUnitAmounts[unit.id] ?? ''}
+                        onChange={(event) => handleDraftAmountChange(unit.id, event.target.value)}
+                        onWheel={(event) =>
+                          adjustNumericInputByWheel(event, (nextValue) => {
+                            handleDraftAmountChange(unit.id, nextValue);
+                          })
+                        }
+                        onKeyDown={(event) => {
+                          handleActionOnEnter(event, () => {
+                            handleSendCommand();
+                          });
+                        }}
+                        disabled={isArmyCommandPending || isSupportCaravanBlocked}
+                      />
+                      <button
+                        type="button"
+                        className="secondary-action compact army-draft-unit-fill-button"
+                        onClick={() => handleFillSingleCommandUnit(unit.id, unit.amount)}
+                        disabled={isArmyCommandPending || unit.amount <= 0 || isSupportCaravanBlocked}
+                        title="Vložit všechny dostupné jednotky tohoto typu"
+                      >
+                        MAX
+                      </button>
+                    </div>
+                  </div>
+                  {isSupportCaravanBlocked ? (
+                    <small className="row-help army-order-unit-warning">Karavany nelze posílat jako podporu.</small>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
         </div>
-        <div className="army-command-preview">
+        <div className="army-command-preview army-order-preview">
           <p className="army-command-preview-target">
-            Cíl: <strong>{effectiveTargetSettlement ? `${effectiveTargetSettlement.name} (${effectiveTargetSettlement.globalX}|${effectiveTargetSettlement.globalY})` : '-'}</strong>
+            Cíl:{' '}
+            <strong>
+              {effectiveTargetSettlement
+                ? `${effectiveTargetSettlement.name} (${effectiveTargetSettlement.globalX}|${effectiveTargetSettlement.globalY})`
+                : '-'}
+            </strong>
             {' · '}
             ETA: <strong>{selectedTargetEtaLabel}</strong>
           </p>
@@ -6624,28 +6735,34 @@ const CommandsPanel = ({
               {selectedTargetRetaliationAtLabel ? ` (${selectedTargetRetaliationAtLabel})` : ''} a útok můžeš vrátit.
             </p>
           ) : null}
-          <p>
-            Vybráno jednotek: <strong>{selectedCommandUnitCount.toLocaleString('cs-CZ')}</strong>
-          </p>
-          {commandType === 'attack' ? (
-            <>
-              <p>
-                Síla útoku: <strong>{attackPowerWithBonuses.toLocaleString('cs-CZ')}</strong>{' '}
-                {hasRamAttackBonus ? <span>(včetně +10 % bonusu beranidel bez brány)</span> : null}
-              </p>
-              <p>
-                Kapacita kořisti (bez zvědů a beranidel):{' '}
-                <strong>{lootCapacity.toLocaleString('cs-CZ')} surovin</strong>
-              </p>
-            </>
-          ) : (
-            <p>
-              Síla obrany vybraných jednotek: <strong>{baseDefensePower.toLocaleString('cs-CZ')}</strong>
-            </p>
-          )}
+          <div className="army-order-preview-metrics">
+            <article>
+              <span>Vybráno jednotek</span>
+              <strong>{selectedCommandUnitCount.toLocaleString('cs-CZ')}</strong>
+            </article>
+            {commandType === 'attack' ? (
+              <>
+                <article>
+                  <span>Síla útoku</span>
+                  <strong>{attackPowerWithBonuses.toLocaleString('cs-CZ')}</strong>
+                  {hasRamAttackBonus ? <small>včetně +10 % bonusu beranidel bez brány</small> : null}
+                </article>
+                <article>
+                  <span>Kapacita kořisti</span>
+                  <strong>{lootCapacity.toLocaleString('cs-CZ')} surovin</strong>
+                  <small>bez zvědů a beranidel</small>
+                </article>
+              </>
+            ) : (
+              <article>
+                <span>Síla obrany výpravy</span>
+                <strong>{baseDefensePower.toLocaleString('cs-CZ')}</strong>
+              </article>
+            )}
+          </div>
         </div>
         <button
-          className="secondary-action"
+          className="secondary-action army-order-submit"
           onClick={handleSendCommand}
           disabled={isArmyCommandPending || effectiveTargetVillageId == null || selectedCommandUnitCount <= 0}
         >
@@ -13524,14 +13641,13 @@ export const GamePage = () => {
         return;
       }
 
-      const normalizedKey = normalizeShortcutKey(event.key);
-      if (!event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
-        const targetPanelType = PANEL_HOTKEYS[normalizedKey];
-        if (targetPanelType) {
-          event.preventDefault();
-          openPanel(targetPanelType);
-          return;
-        }
+      const matchedPanelShortcutActionId = PANEL_SHORTCUT_ACTION_IDS.find((actionId) =>
+        doesShortcutMatchEvent(event, shortcutBindings[actionId]),
+      );
+      if (matchedPanelShortcutActionId) {
+        event.preventDefault();
+        openPanel(PANEL_SHORTCUT_ACTION_TO_PANEL_TYPE[matchedPanelShortcutActionId]);
+        return;
       }
 
       if (doesShortcutMatchEvent(event, shortcutBindings.openVillageSwitchMode)) {

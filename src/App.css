@@ -7274,6 +7274,331 @@ html {
   line-height: 1.25;
 }
 
+.commands-panel .army-order-workbench {
+  position: relative;
+  border: 1px solid rgba(188, 148, 81, 0.46);
+  border-radius: 0.86rem;
+  padding: 0.92rem;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(178, 42, 31, 0.18), transparent 42%),
+    radial-gradient(circle at 100% 100%, rgba(41, 91, 176, 0.16), transparent 48%),
+    linear-gradient(150deg, rgba(10, 15, 24, 0.95), rgba(8, 12, 20, 0.95));
+  box-shadow:
+    inset 0 0 0 1px rgba(235, 197, 131, 0.08),
+    0 20px 34px rgba(0, 0, 0, 0.26);
+  overflow: hidden;
+}
+
+.commands-panel .army-order-workbench::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    126deg,
+    rgba(226, 176, 93, 0.06) 0%,
+    rgba(226, 176, 93, 0) 35%,
+    rgba(126, 181, 250, 0.05) 64%,
+    rgba(126, 181, 250, 0) 100%
+  );
+}
+
+.commands-panel .army-order-workbench > * {
+  position: relative;
+  z-index: 1;
+}
+
+.commands-panel .army-order-workbench-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 0.68rem;
+}
+
+.commands-panel .army-order-workbench-header h3 {
+  margin: 0;
+}
+
+.commands-panel .army-order-subtitle {
+  margin: 0.22rem 0 0;
+  max-width: 48rem;
+  color: rgba(206, 222, 244, 0.86);
+  font-size: 0.83rem;
+  line-height: 1.44;
+}
+
+.commands-panel .army-order-type-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  border-radius: 999px;
+  border: 1px solid rgba(196, 159, 97, 0.56);
+  padding: 0.36rem 0.65rem;
+  background: rgba(12, 19, 31, 0.84);
+  color: #ffe7c4;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.commands-panel .army-order-type-symbol {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.commands-panel .army-order-type-pill.attack {
+  border-color: rgba(255, 112, 102, 0.58);
+  background: linear-gradient(180deg, rgba(90, 27, 30, 0.94), rgba(69, 21, 25, 0.94));
+  color: #ffd8d2;
+}
+
+.commands-panel .army-order-type-pill.support {
+  border-color: rgba(124, 181, 255, 0.58);
+  background: linear-gradient(180deg, rgba(23, 47, 80, 0.94), rgba(17, 38, 66, 0.94));
+  color: #d6e8ff;
+}
+
+.commands-panel .army-order-type-pill.move {
+  border-color: rgba(231, 190, 100, 0.58);
+  background: linear-gradient(180deg, rgba(87, 62, 20, 0.94), rgba(70, 50, 17, 0.94));
+  color: #ffe6ba;
+}
+
+.commands-panel .army-order-control-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.56rem 0.64rem;
+}
+
+.commands-panel .army-order-field {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.commands-panel .army-order-field-label {
+  font-size: 0.71rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(208, 221, 244, 0.77);
+}
+
+.commands-panel .army-order-field :is(select, input) {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid rgba(137, 171, 216, 0.38);
+  background: rgba(7, 13, 22, 0.9);
+  color: #ebf1fb;
+  font-size: 0.84rem;
+  padding: 0.43rem 0.55rem;
+}
+
+.commands-panel .army-order-field :is(select, input):focus-visible {
+  outline: 2px solid rgba(227, 176, 90, 0.66);
+  outline-offset: 1px;
+}
+
+.commands-panel .army-order-history {
+  margin-top: 0.66rem;
+  border-color: rgba(198, 163, 102, 0.34);
+  background:
+    radial-gradient(circle at 12% 0%, rgba(186, 50, 37, 0.14), transparent 46%),
+    rgba(8, 15, 26, 0.9);
+  padding: 0.56rem 0.62rem;
+}
+
+.commands-panel .army-order-history .row-help {
+  margin: 0.24rem 0 0;
+}
+
+.commands-panel .army-order-history .army-command-history-list {
+  margin-top: 0.44rem;
+  gap: 0.4rem;
+}
+
+.commands-panel .army-order-unit-board {
+  margin-top: 0.74rem;
+  display: grid;
+  gap: 0.62rem;
+}
+
+.commands-panel .army-order-draft-toolbar {
+  margin: 0;
+  border: 1px solid rgba(139, 168, 207, 0.33);
+  border-radius: 0.68rem;
+  background: rgba(8, 13, 21, 0.84);
+  padding: 0.56rem 0.64rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.commands-panel .army-order-toolbar-title {
+  margin: 0;
+  font-size: 0.84rem;
+  color: #f1deba;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.commands-panel .army-order-draft-toolbar .row-help {
+  margin: 0.16rem 0 0;
+  font-size: 0.73rem;
+  color: rgba(189, 205, 231, 0.85);
+}
+
+.commands-panel .army-order-unit-grid {
+  align-items: stretch;
+}
+
+.commands-panel .army-order-unit-card {
+  border: 1px solid rgba(136, 166, 212, 0.34);
+  border-radius: 0.72rem;
+  background:
+    radial-gradient(circle at 88% 10%, rgba(211, 165, 88, 0.1), transparent 44%),
+    rgba(8, 14, 23, 0.86);
+  padding: 0.58rem 0.62rem;
+  display: grid;
+  gap: 0.44rem;
+  min-width: 0;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.commands-panel .army-order-unit-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(214, 174, 100, 0.5);
+  box-shadow: 0 12px 20px rgba(0, 0, 0, 0.24);
+}
+
+.commands-panel .army-order-unit-card.is-locked {
+  opacity: 0.78;
+  border-style: dashed;
+}
+
+.commands-panel .army-order-unit-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.commands-panel .army-order-unit-head .row-help {
+  white-space: nowrap;
+  font-size: 0.72rem;
+}
+
+.commands-panel .army-order-unit-controls {
+  display: grid;
+  gap: 0.26rem;
+}
+
+.commands-panel .army-order-unit-label {
+  font-size: 0.69rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(191, 205, 229, 0.76);
+}
+
+.commands-panel .army-order-unit-grid .army-draft-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.36rem;
+}
+
+.commands-panel .army-order-unit-grid .army-draft-input-row input {
+  width: 100%;
+  max-width: none;
+}
+
+.commands-panel .army-order-unit-grid .army-draft-unit-fill-button {
+  min-width: 56px;
+  max-width: none;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.67rem;
+  padding: 0.34rem 0.52rem;
+}
+
+.commands-panel .army-order-unit-warning {
+  color: rgba(237, 176, 166, 0.94);
+}
+
+.commands-panel .army-order-preview {
+  margin-top: 0.68rem;
+  border-color: rgba(170, 203, 235, 0.34);
+  border-radius: 0.76rem;
+  padding: 0.64rem 0.72rem;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(54, 108, 180, 0.14), transparent 44%),
+    rgba(7, 14, 24, 0.88);
+  gap: 0.5rem;
+}
+
+.commands-panel .army-order-preview .army-command-preview-target {
+  font-size: 0.9rem;
+}
+
+.commands-panel .army-order-preview-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.48rem;
+}
+
+.commands-panel .army-order-preview-metrics article {
+  border: 1px solid rgba(128, 162, 211, 0.32);
+  border-radius: 0.58rem;
+  background: rgba(8, 16, 27, 0.84);
+  padding: 0.44rem 0.5rem;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.commands-panel .army-order-preview-metrics span {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(192, 207, 230, 0.8);
+}
+
+.commands-panel .army-order-preview-metrics strong {
+  font-size: 0.96rem;
+  color: #ffe1af;
+  line-height: 1.2;
+}
+
+.commands-panel .army-order-preview-metrics small {
+  color: rgba(192, 208, 234, 0.84);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.commands-panel .army-order-submit {
+  margin-top: 0.64rem;
+  width: 100%;
+  min-height: 2.46rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+
+@media (max-width: 980px) {
+  .commands-panel .army-order-workbench-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .commands-panel .army-order-draft-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .commands-panel .army-order-draft-toolbar .secondary-action {
+    width: 100%;
+  }
+}
+
 .commands-kpi-strip span,
 .commands-kpi-strip strong {
   display: block;
@@ -10834,29 +11159,29 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
 
 .game-page .commands-panel .army-draft-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
   align-items: flex-start;
-  gap: 0.28rem 0.36rem;
+  gap: 0.58rem 0.62rem;
 }
 
-.game-page .commands-panel .army-draft-grid > label {
+.game-page .commands-panel .army-draft-grid > :is(label, article) {
   min-width: 0;
   max-width: none;
 }
 
 .game-page .commands-panel .army-draft-input-row {
-  gap: 0.16rem;
+  gap: 0.34rem;
 }
 
 .game-page .commands-panel .army-draft-input-row input {
-  max-width: 58px;
+  max-width: none;
 }
 
 .game-page .commands-panel .army-draft-unit-fill-button {
-  max-width: 88px;
-  font-size: 0.64rem;
-  line-height: 1.08;
-  padding: 0.24rem 0.3rem;
+  max-width: none;
+  font-size: 0.67rem;
+  line-height: 1.12;
+  padding: 0.32rem 0.46rem;
 }
 
 @media (max-width: 1240px) {
@@ -10865,7 +11190,7 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 860px) {
   .game-page .commands-panel .army-draft-grid {
     grid-template-columns: 1fr;
   }
