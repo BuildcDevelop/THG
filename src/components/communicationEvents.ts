@@ -4,6 +4,7 @@ export type CommunicationSummaryEventDetail = {
   friendRequests: number;
   totalAttention: number;
   newSinceLastOpen: number;
+  hubOpen?: boolean;
 };
 
 export type CommunicationOpenThreadEventDetail = {

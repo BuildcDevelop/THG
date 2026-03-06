@@ -19,7 +19,7 @@ export const AdminPage = () => {
         const data = await fetchAdminPlayers();
         setPlayers(data);
       } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : 'Nacteni seznamu hracu se nepodarilo.');
+        setError(loadError instanceof Error ? loadError.message : 'Načtení seznamu hráčů se nepodařilo.');
       } finally {
         setIsLoading(false);
       }
@@ -49,17 +49,17 @@ export const AdminPage = () => {
   };
 
   return (
-    <div className="login-page">
+    <div className="login-page admin-page">
       <div className="login-bg-layer" />
       <div className="login-noise-layer" />
 
       <main className="admin-shell">
         <header>
           <p className="intro-eyebrow">Admin panel</p>
-          <h1>Prepnuti mezi ucty pro interni spravu</h1>
+          <h1>Přepnutí mezi účty pro interní správu</h1>
           <p>
-            Klikni na hrace a okamzite se prepnes do hry pod jeho uctem. Panel je urceny jen pro
-            interni testovani mapy, ekonomiky a bojovych flow.
+            Klikni na hráče a okamžitě se přepneš do hry pod jeho účtem. Panel je určený jen pro
+            interní testování mapy, ekonomiky a bojových flow.
           </p>
         </header>
 
@@ -68,14 +68,14 @@ export const AdminPage = () => {
             <input
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
-              placeholder="Filtruj podle jmena, kralovstvi nebo lena"
+              placeholder="Filtruj podle jména, království nebo léna"
             />
             <button className="secondary-action" onClick={() => navigate('/worlds')}>
-              Zpet na portal svetu
+              Zpět na portál světů
             </button>
           </div>
 
-          {isLoading ? <p>Nacitam seznam hracu...</p> : null}
+          {isLoading ? <p>Načítám seznam hráčů...</p> : null}
           {error ? <p className="auth-error">{error}</p> : null}
 
           {!isLoading && !error ? (
@@ -83,11 +83,11 @@ export const AdminPage = () => {
               <table className="admin-table">
                 <thead>
                   <tr>
-                    <th>Ucet</th>
+                    <th>Účet</th>
                     <th>Vesnice</th>
-                    <th>Pocet len</th>
-                    <th>Kralovstvi</th>
-                    <th>Prestiz</th>
+                    <th>Počet lén</th>
+                    <th>Království</th>
+                    <th>Prestiž</th>
                     <th>Poloha</th>
                     <th>Akce</th>
                   </tr>
@@ -105,7 +105,7 @@ export const AdminPage = () => {
                       </td>
                       <td>
                         <button className="secondary-action" onClick={() => handlePlayAs(player.username)}>
-                          Hrat jako
+                          Hrát jako
                         </button>
                       </td>
                     </tr>

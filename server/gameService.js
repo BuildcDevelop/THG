@@ -4,7 +4,6 @@ import {
   BUILDING_ORDER,
   getGlobalMaxBuildingLevel,
   getMaxBuildingLevel,
-  MAX_PLAYER_VILLAGES,
   UNIT_DEFS,
   UNIT_ORDER,
   calculatePopulationCap,
@@ -12,12 +11,31 @@ import {
   calculateProductionPerHour,
   calculateResourceNodeProductionPerHour,
   calculateResourceCap,
+  calculateMintCoinStorageCap,
+  calculateMintGoldStorageCap,
+  calculateMintThroughputPerHour,
+  calculateHideoutProtectedAmount,
+  calculateVaultProtection,
   calculateUpgradeCost,
   calculateUpgradeDurationSec,
   calculateRecruitDurationSec,
   calculateArmyTravelDurationSec,
   canAfford,
 } from './gameConfig.js';
+import {
+  calculateAttackModifier,
+  calculateDefenseBonus,
+  calculateLootModifier,
+  isAttackAllowed,
+  MIN_ATTACKABLE_PRESTIGE_RATIO,
+  MIN_LOOT_MODIFIER,
+  resolveCombatBalance,
+} from './combatBalance.js';
+
+const runtimeEnv = String(process.env.TLD_ENV ?? process.env.APP_ENV ?? process.env.NODE_ENV ?? '')
+  .trim()
+  .toLowerCase();
+const isProductionRuntime = runtimeEnv === 'production';
 
 const WORLD_REGIONS = Object.freeze({
   dominion1: {
@@ -93,7 +111,23 @@ const DEFAULT_WORLD_ID = WORLD_CATALOG[0]?.id ?? 'dominion-1';
 const WORLD_REGION_BY_ID = new Map(Object.values(WORLD_REGIONS).map((region) => [Number(region.id), region]));
 const KNIGHT_UNIT_ID = 'knight';
 const SCOUT_UNIT_ID = 'scout';
+const MERCENARY_UNIT_ID = 'mercenary';
 const KNIGHT_RECALL_REFUND = { wood: 1000, stone: 1000, iron: 1000 };
+const COMMAND_CANCEL_MAX_PROGRESS = 1 / 3;
+const NIGHT_MODE_START_HOUR = 0;
+const NIGHT_MODE_END_HOUR = 8;
+const MERCENARY_CONTRACT_COST_COINS = 1500;
+const MERCENARY_CONTRACT_UNIT_AMOUNT = 1000;
+const MERCENARY_CONTRACT_COOLDOWN_HOURS = 72;
+const MERCENARY_DELIVERY_DELAY_MINUTES = 30;
+const MERCENARY_DURATION_HOURS = 72;
+const ACADEMIC_COST_COINS = 250;
+const ACADEMIC_POPULATION_COST = 1;
+const MAX_ACADEMICS_PER_RESEARCH = 3;
+const MARKET_MAX_DISTANCE_TILES = 50;
+const LOGISTICS_MINUTES_BASE = 10;
+const LOGISTICS_MINUTES_PER_TILE = 2;
+const MARKET_CAPACITY_BY_LEVEL = [0, 5000, 30000, 150000, 300000];
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const PLAYER_NOTIFICATION_RETENTION_DAYS = 30;
 const PLAYER_NOTIFICATION_MAX_PAGE_SIZE = 100;
@@ -144,6 +178,8 @@ const STARTING_RESOURCES = {
   wood: 1000,
   stone: 1000,
   iron: 1000,
+  gold: 0,
+  coins: 0,
 };
 const STARTING_PLAYER_BUILDING_LEVELS = {
   townhall: 1,
@@ -153,6 +189,11 @@ const STARTING_PLAYER_BUILDING_LEVELS = {
   woodcutter: 1,
   quarry: 1,
   'iron-mine': 1,
+  'gold-mine': 0,
+  hideout: 0,
+  mint: 0,
+  vault: 0,
+  market: 0,
   barracks: 0,
   stable: 0,
   workshop: 0,
@@ -163,6 +204,7 @@ const STARTING_ABANDONED_BUILDING_LEVELS = {
   woodcutter: 5,
   quarry: 5,
   'iron-mine': 5,
+  'gold-mine': 0,
   warehouse: 1,
 };
 const FIRE_WORLD_STARTING_BUILDING_LEVELS = {
@@ -170,7 +212,12 @@ const FIRE_WORLD_STARTING_BUILDING_LEVELS = {
   woodcutter: 1,
   quarry: 1,
   'iron-mine': 1,
+  'gold-mine': 0,
   warehouse: 1,
+  hideout: 0,
+  mint: 0,
+  vault: 0,
+  market: 0,
   'residential-quarter': 1,
   barracks: 1,
 };
@@ -183,6 +230,66 @@ const STARTING_ABANDONED_UNITS = {
 const FIRE_WORLD_STARTING_UNITS = {
   militia: 5,
 };
+const RESEARCH_DEFS = Object.freeze([
+  {
+    id: 'linen-ropes',
+    name: 'Lněné motouzy',
+    description: 'Způsob výroby tětiv a kompozitních ramen luku.',
+    coinCost: 1000,
+    unlocks: 'Odemkne Lučištníky (Kasárna L3).',
+    requiredResearchIds: [],
+  },
+  {
+    id: 'stirrups-spurs',
+    name: 'Třmeny a ostruhy',
+    description: 'Moderní jezdecké vybavení pro lehkou jízdu.',
+    coinCost: 1500,
+    unlocks: 'Odemkne lehkou jízdu.',
+    requiredResearchIds: [],
+  },
+  {
+    id: 'tactics',
+    name: 'Taktika',
+    description: 'Koordinované průlomy opevněných bran.',
+    coinCost: 2000,
+    unlocks: 'Odemkne beranidla.',
+    requiredResearchIds: [],
+  },
+  {
+    id: 'city-defense',
+    name: 'Městská obrana',
+    description: 'Výcvik posádky hradeb a obranných rot.',
+    coinCost: 3000,
+    unlocks: 'Odemkne hradby a bránu.',
+    requiredResearchIds: [],
+  },
+  {
+    id: 'guild-influence',
+    name: 'Vliv cechů',
+    description: 'Jednání s cechy a standardizace obchodních smluv.',
+    coinCost: 4000,
+    unlocks: 'Odemkne cech obchodníků.',
+    requiredResearchIds: [],
+  },
+  {
+    id: 'verven-bank',
+    name: 'Vervenská zlatá banka',
+    description: 'Dluhové úpisy, které umožňují nájem žoldáků.',
+    coinCost: 5000,
+    unlocks: 'Odemkne žoldáky.',
+    requiredResearchIds: [],
+  },
+]);
+const RESEARCH_DEF_BY_ID = new Map(RESEARCH_DEFS.map((definition) => [definition.id, definition]));
+const UNIT_RESEARCH_REQUIREMENTS = Object.freeze({
+  archer: 'linen-ropes',
+  cavalry: 'stirrups-spurs',
+  ram: 'tactics',
+});
+const BUILDING_RESEARCH_REQUIREMENTS = Object.freeze({
+  fortification: 'city-defense',
+  gate: 'city-defense',
+});
 
 class GameRuleError extends Error {
   constructor(message, statusCode = 400) {
@@ -322,12 +429,14 @@ const insertVillageForPlayerStmt = db.prepare(
    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 const upsertVillageResourcesStmt = db.prepare(
-  `INSERT INTO resources (village_id, wood, stone, iron)
-   VALUES (?, ?, ?, ?)
+  `INSERT INTO resources (village_id, wood, stone, iron, gold, coins)
+   VALUES (?, ?, ?, ?, ?, ?)
    ON CONFLICT(village_id) DO UPDATE SET
      wood = excluded.wood,
      stone = excluded.stone,
-     iron = excluded.iron`,
+     iron = excluded.iron,
+     gold = excluded.gold,
+     coins = excluded.coins`,
 );
 const upsertVillageBuildingLevelStmt = db.prepare(
   `INSERT INTO buildings (village_id, building_id, level)
@@ -370,7 +479,7 @@ const updateVillageToAbandonedOwnerStmt = db.prepare(
   "UPDATE villages SET player_id = ?, name = ?, kingdom = 'Neutral', peace_until = NULL WHERE id = ?",
 );
 const selectResourcesByVillageStmt = db.prepare(
-  'SELECT wood, stone, iron FROM resources WHERE village_id = ? LIMIT 1',
+  'SELECT wood, stone, iron, gold, coins FROM resources WHERE village_id = ? LIMIT 1',
 );
 const selectBuildingsByVillageStmt = db.prepare(
   `SELECT building_id AS buildingId, level
@@ -455,10 +564,11 @@ const selectActiveRecruitmentByIdForVillageStmt = db.prepare(
    WHERE id = ? AND village_id = ? AND status = 'in_progress'
    LIMIT 1`,
 );
-const selectAllVillageIdsStmt = db.prepare('SELECT id, region FROM villages');
+const selectAllVillageIdsStmt = db.prepare('SELECT id, region, player_id AS playerId FROM villages');
 const selectAllVillagesForWorldStmt = db.prepare(
   `SELECT
       v.id,
+      v.player_id AS playerId,
       v.name,
       v.coord_x AS coordX,
       v.coord_y AS coordY,
@@ -546,7 +656,7 @@ const selectLeaderboardByRegionStmt = db.prepare(
 const selectGameStateStmt = db.prepare('SELECT last_tick_at AS lastTickAt FROM game_state WHERE id = 1');
 const updateGameStateTickStmt = db.prepare('UPDATE game_state SET last_tick_at = ? WHERE id = 1');
 const updateResourcesStmt = db.prepare(
-  'UPDATE resources SET wood = ?, stone = ?, iron = ? WHERE village_id = ?',
+  'UPDATE resources SET wood = ?, stone = ?, iron = ?, gold = ?, coins = ? WHERE village_id = ?',
 );
 const updateVillagePrestigeStmt = db.prepare('UPDATE villages SET prestige = ? WHERE id = ?');
 const selectDueUpgradesStmt = db.prepare(
@@ -579,7 +689,7 @@ const insertUpgradeStmt = db.prepare(
    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress')`,
 );
 const updateResourcesAfterSpendStmt = db.prepare(
-  'UPDATE resources SET wood = ?, stone = ?, iron = ? WHERE village_id = ?',
+  'UPDATE resources SET wood = ?, stone = ?, iron = ?, gold = ?, coins = ? WHERE village_id = ?',
 );
 const updateUnitAmountStmt = db.prepare(
   `INSERT INTO units (amount, village_id, unit_id)
@@ -628,6 +738,26 @@ const selectVillageByIdStmt = db.prepare(
       peace_until AS peaceUntil
    FROM villages
    WHERE id = ?
+   LIMIT 1`,
+);
+const selectVillageWithOwnerByCoordsAndRegionStmt = db.prepare(
+  `SELECT
+      v.id,
+      v.player_id AS playerId,
+      v.name,
+      v.kingdom,
+      v.prestige,
+      v.loyalty,
+      v.coord_x AS coordX,
+      v.coord_y AS coordY,
+      v.region,
+      v.created_at AS createdAt,
+      v.peace_until AS peaceUntil,
+      p.username AS ownerUsername,
+      p.is_bot AS ownerIsBot
+   FROM villages v
+   INNER JOIN players p ON p.id = v.player_id
+   WHERE v.coord_x = ? AND v.coord_y = ? AND v.region = ?
    LIMIT 1`,
 );
 const selectVillageWithOwnerByIdStmt = db.prepare(
@@ -765,6 +895,23 @@ const selectIncomingArmyMovementsByVillageOwnerStmt = db.prepare(
      AND m.player_id != ?
    ORDER BY m.arrive_at ASC, m.id ASC`,
 );
+const selectRecentAttackTargetsByPlayerRegionStmt = db.prepare(
+  `SELECT
+      m.target_village_id AS targetVillageId,
+      MAX(m.started_at) AS lastIssuedAt,
+      tv.name AS targetName,
+      tv.coord_x AS targetCoordX,
+      tv.coord_y AS targetCoordY
+   FROM army_movements m
+   INNER JOIN villages tv ON tv.id = m.target_village_id
+   WHERE m.player_id = ?
+     AND m.command_type = 'attack'
+     AND tv.region = ?
+     AND julianday(m.started_at) >= julianday('now', '-7 days')
+   GROUP BY m.target_village_id, tv.name, tv.coord_x, tv.coord_y
+   ORDER BY lastIssuedAt DESC, m.target_village_id DESC
+   LIMIT 24`,
+);
 const selectStationedSupportMovementsByPlayerStmt = db.prepare(
   `SELECT
       m.id,
@@ -860,6 +1007,54 @@ const selectVillageCountByPlayerAndRegionStmt = db.prepare(
    FROM villages
    WHERE player_id = ? AND region = ?`,
 );
+const selectVillagePrestigeByPlayerAndRegionStmt = db.prepare(
+  `SELECT COALESCE(SUM(prestige), 0) AS total
+   FROM villages
+   WHERE player_id = ? AND region = ?`,
+);
+const upsertCombatRetaliationFlagStmt = db.prepare(
+  `INSERT INTO combat_retaliation_flags (
+      aggressor_player_id,
+      defender_player_id,
+      region,
+      first_attacked_at,
+      last_attacked_at
+   ) VALUES (?, ?, ?, ?, ?)
+   ON CONFLICT(aggressor_player_id, defender_player_id, region) DO UPDATE SET
+     last_attacked_at = excluded.last_attacked_at`,
+);
+const selectCombatRetaliationFlagByPlayersStmt = db.prepare(
+  `SELECT
+      aggressor_player_id AS aggressorPlayerId,
+      defender_player_id AS defenderPlayerId,
+      region,
+      first_attacked_at AS firstAttackedAt,
+      last_attacked_at AS lastAttackedAt
+   FROM combat_retaliation_flags
+   WHERE aggressor_player_id = ?
+     AND defender_player_id = ?
+     AND region = ?
+   LIMIT 1`,
+);
+const selectCombatRetaliationFlagsByDefenderStmt = db.prepare(
+  `SELECT
+      aggressor_player_id AS aggressorPlayerId,
+      defender_player_id AS defenderPlayerId,
+      region,
+      first_attacked_at AS firstAttackedAt,
+      last_attacked_at AS lastAttackedAt
+   FROM combat_retaliation_flags
+   WHERE defender_player_id = ?
+     AND region = ?`,
+);
+const selectMaxUniversityLevelByPlayerAndRegionStmt = db.prepare(
+  `SELECT COALESCE(MAX(b.level), 0) AS maxLevel
+   FROM villages v
+   INNER JOIN buildings b ON b.village_id = v.id
+   WHERE v.player_id = ?
+     AND v.region = ?
+     AND b.building_id = 'university'`,
+);
 const selectTotalPlayerUnitAmountStmt = db.prepare(
   `SELECT COALESCE(SUM(u.amount), 0) AS total
    FROM units u
@@ -899,6 +1094,345 @@ const selectTotalPlayerMovementUnitAmountByRegionStmt = db.prepare(
      AND mu.unit_id = ?
      AND m.status IN ('in_progress', 'stationed')
      AND hv.region = ?`,
+);
+const selectInProgressMovementByIdForPlayerStmt = db.prepare(
+  `SELECT
+      m.id,
+      m.player_id AS playerId,
+      m.command_type AS commandType,
+      m.origin_village_id AS originVillageId,
+      m.target_village_id AS targetVillageId,
+      m.home_village_id AS homeVillageId,
+      m.started_at AS startedAt,
+      m.arrive_at AS arriveAt,
+      m.status
+   FROM army_movements m
+   INNER JOIN villages hv ON hv.id = m.home_village_id
+   WHERE m.id = ?
+     AND m.player_id = ?
+     AND hv.region = ?
+     AND m.status = 'in_progress'
+   LIMIT 1`,
+);
+const insertLogisticsRouteStmt = db.prepare(
+  `INSERT INTO logistics_routes (
+      owner_player_id,
+      source_village_id,
+      target_village_id,
+      region,
+      mode,
+      wood,
+      stone,
+      iron,
+      status,
+      started_at,
+      arrive_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?)`,
+);
+const selectDueLogisticsRoutesStmt = db.prepare(
+  `SELECT
+      id,
+      owner_player_id AS ownerPlayerId,
+      source_village_id AS sourceVillageId,
+      target_village_id AS targetVillageId,
+      region,
+      mode,
+      wood,
+      stone,
+      iron,
+      started_at AS startedAt,
+      arrive_at AS arriveAt
+   FROM logistics_routes
+   WHERE status = 'in_progress' AND arrive_at <= ?
+   ORDER BY arrive_at ASC, id ASC`,
+);
+const completeLogisticsRouteStmt = db.prepare(
+  "UPDATE logistics_routes SET status = 'completed', completed_at = ? WHERE id = ?",
+);
+const selectRecentLogisticsByVillageStmt = db.prepare(
+  `SELECT
+      lr.id,
+      lr.owner_player_id AS ownerPlayerId,
+      lr.source_village_id AS sourceVillageId,
+      lr.target_village_id AS targetVillageId,
+      lr.region,
+      lr.mode,
+      lr.wood,
+      lr.stone,
+      lr.iron,
+      lr.status,
+      lr.started_at AS startedAt,
+      lr.arrive_at AS arriveAt,
+      lr.completed_at AS completedAt,
+      sv.name AS sourceVillageName,
+      tv.name AS targetVillageName
+   FROM logistics_routes lr
+   INNER JOIN villages sv ON sv.id = lr.source_village_id
+   INNER JOIN villages tv ON tv.id = lr.target_village_id
+   WHERE (lr.source_village_id = ? OR lr.target_village_id = ?)
+     AND lr.region = ?
+   ORDER BY lr.id DESC
+   LIMIT 40`,
+);
+const insertAcademicStmt = db.prepare(
+  `INSERT INTO academics (
+      player_id,
+      village_id,
+      region,
+      status,
+      assigned_research_id,
+      created_at
+   ) VALUES (?, ?, ?, 'idle', NULL, ?)`,
+);
+const countActiveAcademicsByVillageStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM academics
+   WHERE village_id = ?
+     AND status != 'removed'`,
+);
+const countActiveAcademicsByPlayerRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM academics
+   WHERE player_id = ?
+     AND region = ?
+     AND status != 'removed'`,
+);
+const countIdleAcademicsByPlayerRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM academics
+   WHERE player_id = ?
+     AND region = ?
+     AND status = 'idle'`,
+);
+const countAssignedAcademicsForResearchByPlayerRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM academics
+   WHERE player_id = ?
+     AND region = ?
+     AND status = 'assigned'
+     AND assigned_research_id = ?`,
+);
+const updateAcademicAssignmentByPlayerRegionStmt = db.prepare(
+  `UPDATE academics
+   SET status = ?,
+       assigned_research_id = ?
+   WHERE id IN (
+     SELECT id
+     FROM academics
+     WHERE player_id = ?
+       AND region = ?
+       AND status = 'idle'
+     ORDER BY id ASC
+     LIMIT ?
+   )`,
+);
+const releaseAcademicAssignmentByResearchForPlayerRegionStmt = db.prepare(
+  `UPDATE academics
+   SET status = 'idle',
+       assigned_research_id = NULL
+   WHERE id IN (
+     SELECT id
+     FROM academics
+     WHERE player_id = ?
+       AND region = ?
+       AND status = 'assigned'
+       AND assigned_research_id = ?
+     ORDER BY id DESC
+     LIMIT ?
+   )`,
+);
+const selectAssignedResearchAcademicsByVillageForPlayerRegionStmt = db.prepare(
+  `SELECT
+      a.village_id AS villageId,
+      v.name AS villageName,
+      v.coord_x AS coordX,
+      v.coord_y AS coordY,
+      COALESCE(ub.level, 0) AS universityLevel,
+      COUNT(*) AS assignedAcademics
+   FROM academics a
+   INNER JOIN villages v ON v.id = a.village_id
+   LEFT JOIN buildings ub ON ub.village_id = v.id AND ub.building_id = 'university'
+   WHERE a.player_id = ?
+     AND a.region = ?
+     AND a.status = 'assigned'
+     AND a.assigned_research_id = ?
+   GROUP BY a.village_id, v.name, v.coord_x, v.coord_y, ub.level
+   ORDER BY assignedAcademics DESC, a.village_id ASC`,
+);
+const clearResearchAssignmentsByPlayerRegionStmt = db.prepare(
+  `UPDATE academics
+   SET status = 'idle',
+       assigned_research_id = NULL
+   WHERE player_id = ?
+     AND region = ?
+     AND status = 'assigned'`,
+);
+const clearResearchAssignmentsByVillageStmt = db.prepare(
+  `UPDATE academics
+   SET status = 'idle',
+       assigned_research_id = NULL
+   WHERE village_id = ?
+     AND status = 'assigned'`,
+);
+const removeAcademicsByVillageStmt = db.prepare(
+  `UPDATE academics
+   SET status = 'removed',
+       assigned_research_id = NULL,
+       removed_at = ?
+   WHERE village_id = ?
+     AND status != 'removed'`,
+);
+const selectResearchProgressByPlayerRegionStmt = db.prepare(
+  `SELECT
+      id,
+      player_id AS playerId,
+      region,
+      research_id AS researchId,
+      status,
+      progress,
+      assigned_academics AS assignedAcademics,
+      started_at AS startedAt,
+      completed_at AS completedAt,
+      updated_at AS updatedAt
+   FROM research_progress
+   WHERE player_id = ?
+     AND region = ?
+   ORDER BY id ASC`,
+);
+const selectResearchProgressByPlayerRegionAndResearchStmt = db.prepare(
+  `SELECT
+      id,
+      player_id AS playerId,
+      region,
+      research_id AS researchId,
+      status,
+      progress,
+      assigned_academics AS assignedAcademics,
+      started_at AS startedAt,
+      completed_at AS completedAt,
+      updated_at AS updatedAt
+   FROM research_progress
+   WHERE player_id = ?
+     AND region = ?
+     AND research_id = ?
+   LIMIT 1`,
+);
+const upsertResearchProgressStmt = db.prepare(
+  `INSERT INTO research_progress (
+      player_id,
+      region,
+      research_id,
+      status,
+      progress,
+      assigned_academics,
+      started_at,
+      completed_at,
+      updated_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(player_id, region, research_id) DO UPDATE SET
+     status = excluded.status,
+     progress = excluded.progress,
+     assigned_academics = excluded.assigned_academics,
+     started_at = excluded.started_at,
+     completed_at = excluded.completed_at,
+     updated_at = excluded.updated_at`,
+);
+const selectActiveResearchByPlayerRegionStmt = db.prepare(
+  `SELECT
+      research_id AS researchId,
+      progress,
+      assigned_academics AS assignedAcademics,
+      started_at AS startedAt
+   FROM research_progress
+   WHERE player_id = ?
+     AND region = ?
+     AND status = 'researching'
+   ORDER BY updated_at DESC, id DESC
+   LIMIT 1`,
+);
+const selectLatestMercenaryContractByPlayerRegionStmt = db.prepare(
+  `SELECT
+      id,
+      status,
+      ordered_at AS orderedAt,
+      arrive_at AS arriveAt,
+      expires_at AS expiresAt,
+      delivered_at AS deliveredAt,
+      finished_at AS finishedAt,
+      village_id AS villageId
+   FROM mercenary_contracts
+   WHERE player_id = ?
+     AND region = ?
+   ORDER BY id DESC
+   LIMIT 1`,
+);
+const insertMercenaryContractStmt = db.prepare(
+  `INSERT INTO mercenary_contracts (
+      player_id,
+      village_id,
+      region,
+      status,
+      ordered_at,
+      arrive_at,
+      expires_at,
+      delivered_at,
+      finished_at,
+      unit_amount
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+);
+const selectDueMercenaryArrivalsStmt = db.prepare(
+  `SELECT
+      id,
+      player_id AS playerId,
+      village_id AS villageId,
+      region,
+      unit_amount AS unitAmount,
+      arrive_at AS arriveAt,
+      expires_at AS expiresAt
+   FROM mercenary_contracts
+   WHERE status = 'en_route'
+     AND arrive_at <= ?
+   ORDER BY arrive_at ASC, id ASC`,
+);
+const markMercenaryDeliveredStmt = db.prepare(
+  `UPDATE mercenary_contracts
+   SET status = 'active',
+       delivered_at = ?,
+       finished_at = NULL
+   WHERE id = ?`,
+);
+const selectDueMercenaryExpirationsStmt = db.prepare(
+  `SELECT
+      id,
+      player_id AS playerId,
+      village_id AS villageId,
+      region,
+      unit_amount AS unitAmount,
+      expires_at AS expiresAt
+   FROM mercenary_contracts
+   WHERE status = 'active'
+     AND expires_at <= ?
+   ORDER BY expires_at ASC, id ASC`,
+);
+const markMercenaryExpiredStmt = db.prepare(
+  `UPDATE mercenary_contracts
+   SET status = 'expired',
+       finished_at = ?
+   WHERE id = ?`,
+);
+const selectMercenaryContractsByVillageStmt = db.prepare(
+  `SELECT
+      id,
+      status,
+      ordered_at AS orderedAt,
+      arrive_at AS arriveAt,
+      expires_at AS expiresAt,
+      delivered_at AS deliveredAt,
+      finished_at AS finishedAt,
+      unit_amount AS unitAmount
+   FROM mercenary_contracts
+   WHERE village_id = ?
+   ORDER BY id DESC`,
 );
 const selectDistinctVillageKingdomsByPlayerStmt = db.prepare(
   `SELECT DISTINCT kingdom
@@ -1329,6 +1863,16 @@ const selectKingdomEventsByKingdomStmt = db.prepare(
    ORDER BY ke.created_at DESC, ke.id DESC
    LIMIT ?`,
 );
+const selectLatestKingdomLeadershipTransferStmt = db.prepare(
+  `SELECT
+      ke.payload_json AS payloadJson
+   FROM kingdom_events ke
+   WHERE ke.region = ?
+     AND ke.kingdom = ?
+     AND ke.event_type = 'leadership_transferred'
+   ORDER BY ke.created_at DESC, ke.id DESC
+   LIMIT 1`,
+);
 const selectKingdomEventsByPlayerStmt = db.prepare(
   `SELECT
       ke.id,
@@ -1480,7 +2024,236 @@ const applyProductionMultiplier = (production, multiplierRaw = 1) => {
     wood: Number(production.wood) * multiplier,
     stone: Number(production.stone) * multiplier,
     iron: Number(production.iron) * multiplier,
+    gold: Number(production.gold ?? 0) * multiplier,
   };
+};
+
+const isNightModeAtTime = (timeIso) => {
+  const timestamp = Date.parse(String(timeIso ?? ''));
+  if (!Number.isFinite(timestamp)) {
+    return false;
+  }
+  const date = new Date(timestamp);
+  const hour = date.getUTCHours();
+  return hour >= NIGHT_MODE_START_HOUR && hour < NIGHT_MODE_END_HOUR;
+};
+
+const getResearchDefinition = (researchId) => RESEARCH_DEF_BY_ID.get(String(researchId ?? '')) ?? null;
+
+const getResearchProgressPointsRequired = (researchDef) =>
+  Math.max(1, Math.floor(Number(researchDef?.coinCost ?? 0)) * 6);
+
+const ensureResearchRowsForPlayerRegion = (playerId, region, updatedAtIso = nowIso()) => {
+  for (const definition of RESEARCH_DEFS) {
+    const existing = selectResearchProgressByPlayerRegionAndResearchStmt.get(
+      Number(playerId),
+      Number(region),
+      String(definition.id),
+    );
+    if (existing) {
+      continue;
+    }
+    upsertResearchProgressStmt.run(
+      Number(playerId),
+      Number(region),
+      String(definition.id),
+      'locked',
+      0,
+      0,
+      null,
+      null,
+      String(updatedAtIso),
+    );
+  }
+};
+
+const buildCompletedResearchSet = (researchRows) =>
+  new Set(
+    (Array.isArray(researchRows) ? researchRows : [])
+      .filter((row) => String(row?.status ?? '') === 'completed')
+      .map((row) => String(row?.researchId ?? ''))
+      .filter((researchId) => researchId.length > 0),
+  );
+
+const isResearchCompleted = (researchRows, researchId) =>
+  buildCompletedResearchSet(researchRows).has(String(researchId ?? ''));
+
+const getVillageUniversityCapacity = (buildingLevels) =>
+  Math.max(0, Math.min(3, Math.floor(Number(buildingLevels?.university ?? 0))));
+
+const getMercenaryCooldownRemainingSec = (contractRow, referenceIso = nowIso()) => {
+  if (!contractRow?.orderedAt) {
+    return 0;
+  }
+  const orderedAtMs = Date.parse(String(contractRow.orderedAt));
+  const referenceMs = Date.parse(String(referenceIso));
+  if (!Number.isFinite(orderedAtMs) || !Number.isFinite(referenceMs)) {
+    return 0;
+  }
+  const cooldownMs = MERCENARY_CONTRACT_COOLDOWN_HOURS * 60 * 60 * 1000;
+  return Math.max(0, Math.ceil((orderedAtMs + cooldownMs - referenceMs) / 1000));
+};
+
+const resolveResearchStatusForDefinition = (definition, progressRow, completedIds) => {
+  const rowStatus = String(progressRow?.status ?? '');
+  if (rowStatus === 'completed') {
+    return 'completed';
+  }
+  if (rowStatus === 'researching') {
+    return 'researching';
+  }
+  const prerequisitesMet = definition.requiredResearchIds.every((researchId) => completedIds.has(String(researchId)));
+  return prerequisitesMet ? 'available' : 'locked';
+};
+
+const ensureResolvedResearchProgressForPlayerRegion = (playerId, region, updatedAtIso = nowIso()) => {
+  ensureResearchRowsForPlayerRegion(playerId, region, updatedAtIso);
+  const rows = selectResearchProgressByPlayerRegionStmt.all(Number(playerId), Number(region));
+  const byId = new Map(rows.map((row) => [String(row.researchId), row]));
+  const completedIds = buildCompletedResearchSet(rows);
+
+  for (const definition of RESEARCH_DEFS) {
+    const row = byId.get(String(definition.id)) ?? null;
+    const nextStatus = resolveResearchStatusForDefinition(definition, row, completedIds);
+    const progress = Math.max(0, Number(row?.progress ?? 0));
+    const assignedAcademics =
+      nextStatus === 'researching'
+        ? Math.max(
+            0,
+            Math.floor(
+              Number(
+                countAssignedAcademicsForResearchByPlayerRegionStmt.get(
+                  Number(playerId),
+                  Number(region),
+                  String(definition.id),
+                )?.total ?? 0,
+              ),
+            ),
+          )
+        : 0;
+    const startedAt = nextStatus === 'researching' ? String(row?.startedAt ?? updatedAtIso) : row?.startedAt ?? null;
+    const completedAt = nextStatus === 'completed' ? String(row?.completedAt ?? updatedAtIso) : row?.completedAt ?? null;
+
+    if (
+      row == null ||
+      String(row.status) !== nextStatus ||
+      Number(row.assignedAcademics ?? 0) !== assignedAcademics ||
+      String(row.updatedAt ?? '') !== String(updatedAtIso)
+    ) {
+      upsertResearchProgressStmt.run(
+        Number(playerId),
+        Number(region),
+        String(definition.id),
+        nextStatus,
+        progress,
+        assignedAcademics,
+        startedAt,
+        completedAt,
+        String(updatedAtIso),
+      );
+    }
+  }
+
+  return selectResearchProgressByPlayerRegionStmt.all(Number(playerId), Number(region));
+};
+
+const buildResearchViewModel = (researchRows, options = {}) => {
+  const playerId = Number(options?.playerId ?? 0);
+  const region = Number(options?.region ?? 0);
+  const snapshotIso = String(options?.snapshotIso ?? nowIso());
+  const hasRuntimeContext = Number.isFinite(playerId) && playerId > 0 && Number.isFinite(region) && region > 0;
+  const maxUniversityLevel = hasRuntimeContext
+    ? Math.max(
+        0,
+        Math.floor(Number(selectMaxUniversityLevelByPlayerAndRegionStmt.get(Number(playerId), Number(region))?.maxLevel ?? 0)),
+      )
+    : 0;
+  const rowsById = new Map((Array.isArray(researchRows) ? researchRows : []).map((row) => [String(row.researchId), row]));
+  const completedIds = buildCompletedResearchSet(researchRows);
+
+  return RESEARCH_DEFS.map((definition) => {
+    const row = rowsById.get(String(definition.id)) ?? null;
+    const status = resolveResearchStatusForDefinition(definition, row, completedIds);
+    const progressPoints = Math.max(0, Number(row?.progress ?? 0));
+    const requiredPoints = getResearchProgressPointsRequired(definition);
+    const percent = requiredPoints <= 0 ? 100 : Math.max(0, Math.min(100, (progressPoints / requiredPoints) * 100));
+    const assignedAcademics =
+      status === 'researching' && hasRuntimeContext
+        ? Math.max(
+            0,
+            Math.floor(
+              Number(
+                countAssignedAcademicsForResearchByPlayerRegionStmt.get(
+                  Number(playerId),
+                  Number(region),
+                  String(definition.id),
+                )?.total ?? 0,
+              ),
+            ),
+          )
+        : status === 'researching'
+          ? Math.max(0, Math.floor(Number(row?.assignedAcademics ?? 0)))
+          : 0;
+    const speedMultiplier =
+      status === 'researching' ? calculateResearchSpeedMultiplier(assignedAcademics, maxUniversityLevel) : 0;
+    const progressPerHour = speedMultiplier > 0 ? Number((120 * speedMultiplier).toFixed(2)) : 0;
+    const remainingPoints = Math.max(0, requiredPoints - progressPoints);
+    const remainingSec =
+      status === 'researching' && progressPerHour > 0
+        ? Math.max(0, Math.ceil((remainingPoints / progressPerHour) * 3600))
+        : null;
+    const estimatedCompletionAt =
+      remainingSec == null
+        ? null
+        : new Date(Date.parse(snapshotIso) + Math.max(0, remainingSec) * 1000).toISOString();
+    const assignedVillageBreakdown =
+      status === 'researching' && hasRuntimeContext
+        ? selectAssignedResearchAcademicsByVillageForPlayerRegionStmt
+            .all(Number(playerId), Number(region), String(definition.id))
+            .map((entry) => ({
+              villageId: Number(entry.villageId),
+              villageName: String(entry.villageName ?? ''),
+              coordX: Number(entry.coordX),
+              coordY: Number(entry.coordY),
+              universityLevel: Math.max(0, Math.floor(Number(entry.universityLevel ?? 0))),
+              assignedAcademics: Math.max(0, Math.floor(Number(entry.assignedAcademics ?? 0))),
+            }))
+        : [];
+    return {
+      id: String(definition.id),
+      name: String(definition.name),
+      description: String(definition.description),
+      coinCost: Math.max(0, Number(definition.coinCost ?? 0)),
+      unlocks: String(definition.unlocks ?? ''),
+      requiredResearchIds: [...definition.requiredResearchIds],
+      status,
+      progressPoints: Number(progressPoints.toFixed(2)),
+      requiredPoints,
+      progressPercent: Number(percent.toFixed(2)),
+      assignedAcademics,
+      progressPerHour,
+      remainingSec,
+      estimatedCompletionAt,
+      assignedVillageBreakdown,
+      startedAt: row?.startedAt ? String(row.startedAt) : null,
+      completedAt: row?.completedAt ? String(row.completedAt) : null,
+    };
+  });
+};
+
+const calculateResearchSpeedMultiplier = (assignedAcademicsRaw, universityLevelRaw) => {
+  const assignedAcademics = Math.max(0, Math.floor(Number(assignedAcademicsRaw ?? 0)));
+  if (assignedAcademics <= 0) {
+    return 0;
+  }
+  const baseMultiplier =
+    assignedAcademics >= 3
+      ? 3.3
+      : assignedAcademics === 2
+        ? 2.1
+        : 1;
+  const universityLevel = Math.max(0, Math.floor(Number(universityLevelRaw ?? 0)));
+  return baseMultiplier * (1 + universityLevel * 0.05);
 };
 
 const randomIntInclusive = (minRaw, maxRaw) => {
@@ -1754,6 +2527,8 @@ const buildKingdomAuditLog = (playerId, region, kingdomName) => {
       message = `${actorUsername} opustil království ${eventKingdom ?? 'bez názvu'}.`;
     } else if (row.eventType === 'member_kicked') {
       message = `${actorUsername} vyhodil hráče ${targetUsername} z království.`;
+    } else if (row.eventType === 'leadership_transferred') {
+      message = `${actorUsername} předal titul Krále hráči ${targetUsername}.`;
     } else if (typeof payload.message === 'string' && payload.message.trim()) {
       message = payload.message.trim();
     }
@@ -1778,6 +2553,23 @@ const resolvePrimaryKingdomByPlayerId = (playerId, region) => {
 const resolveKingdomLeader = (kingdomName, region) => {
   if (isNeutralKingdom(kingdomName)) {
     return null;
+  }
+  const transferRow = selectLatestKingdomLeadershipTransferStmt.get(Number(region), String(kingdomName));
+  if (transferRow?.payloadJson) {
+    const transferPayload = parseJsonSafe(transferRow.payloadJson, {});
+    const transferredLeaderPlayerId = Number(transferPayload?.newLeaderPlayerId ?? 0);
+    if (Number.isFinite(transferredLeaderPlayerId) && transferredLeaderPlayerId > 0) {
+      const transferredLeaderKingdom = resolvePrimaryKingdomByPlayerId(transferredLeaderPlayerId, Number(region));
+      if (normalizeKingdomComparable(transferredLeaderKingdom) === normalizeKingdomComparable(kingdomName)) {
+        const transferredLeader = selectPlayerByIdStmt.get(transferredLeaderPlayerId);
+        if (transferredLeader?.username) {
+          return {
+            playerId: transferredLeaderPlayerId,
+            username: String(transferredLeader.username),
+          };
+        }
+      }
+    }
   }
   const row = selectKingdomLeaderByKingdomStmt.get(String(kingdomName), Number(region));
   if (!row) {
@@ -2205,6 +2997,8 @@ const applyVillageTemplate = (villageId, template) => {
     roundResource(Number(resourceTemplate.wood ?? STARTING_RESOURCES.wood)),
     roundResource(Number(resourceTemplate.stone ?? STARTING_RESOURCES.stone)),
     roundResource(Number(resourceTemplate.iron ?? STARTING_RESOURCES.iron)),
+    roundResource(Number(resourceTemplate.gold ?? STARTING_RESOURCES.gold)),
+    roundResource(Number(resourceTemplate.coins ?? STARTING_RESOURCES.coins)),
   );
 
   const buildingTemplate = template?.buildings ?? {};
@@ -2583,7 +3377,7 @@ const toUnitCountMap = (rows) => {
 };
 
 const getUnitPopulationCost = (unitId) =>
-  Math.max(1, Math.floor(Number(UNIT_DEFS[unitId]?.populationCost ?? 1)));
+  Math.max(0, Math.floor(Number(UNIT_DEFS[unitId]?.populationCost ?? 1)));
 
 const calculateSelectionPopulationCost = (selection) =>
   UNIT_ORDER.reduce((sum, unitId) => {
@@ -2629,8 +3423,75 @@ const getPlayerVillageCount = (playerId, region = null) =>
     ),
   );
 
+const getPlayerPrestigeInRegion = (playerId, region) =>
+  Math.max(
+    0,
+    Math.floor(Number(selectVillagePrestigeByPlayerAndRegionStmt.get(Number(playerId), Number(region))?.total ?? 0)),
+  );
+
+const getCombatRetaliationFlag = (aggressorPlayerId, defenderPlayerId, region) =>
+  selectCombatRetaliationFlagByPlayersStmt.get(
+    Number(aggressorPlayerId),
+    Number(defenderPlayerId),
+    Number(region),
+  ) ?? null;
+
+const hasCombatRetaliationFlag = (aggressorPlayerId, defenderPlayerId, region) =>
+  getCombatRetaliationFlag(aggressorPlayerId, defenderPlayerId, region) != null;
+
+const registerCombatRetaliationFlag = ({
+  aggressorPlayerId,
+  defenderPlayerId,
+  region,
+  attackedAtIso = nowIso(),
+}) => {
+  upsertCombatRetaliationFlagStmt.run(
+    Number(aggressorPlayerId),
+    Number(defenderPlayerId),
+    Number(region),
+    String(attackedAtIso),
+    String(attackedAtIso),
+  );
+};
+
+const evaluatePrestigeAttackLock = ({
+  attackerPrestige,
+  defenderPrestige,
+  attackerPlayerId,
+  defenderPlayerId,
+  region,
+}) => {
+  const blockedByPrestige = !isAttackAllowed(attackerPrestige, defenderPrestige);
+  if (!blockedByPrestige) {
+    return {
+      blockedByPrestige: false,
+      retaliationUnlocked: false,
+      canAttack: true,
+      retaliationFlag: null,
+      minimumDefenderPrestige: Math.max(
+        1,
+        Math.ceil(Math.max(0, Number(attackerPrestige ?? 0)) * MIN_ATTACKABLE_PRESTIGE_RATIO),
+      ),
+    };
+  }
+
+  const retaliationFlag = getCombatRetaliationFlag(defenderPlayerId, attackerPlayerId, region);
+  const retaliationUnlocked = retaliationFlag != null;
+
+  return {
+    blockedByPrestige,
+    retaliationUnlocked,
+    canAttack: retaliationUnlocked,
+    retaliationFlag,
+    minimumDefenderPrestige: Math.max(
+      1,
+      Math.ceil(Math.max(0, Number(attackerPrestige ?? 0)) * MIN_ATTACKABLE_PRESTIGE_RATIO),
+    ),
+  };
+};
+
 const getPlayerKnightCapacity = (playerId, region = null) =>
-  Math.max(0, Math.min(MAX_PLAYER_VILLAGES, getPlayerVillageCount(Number(playerId), region)));
+  Math.max(0, getPlayerVillageCount(Number(playerId), region));
 
 const getPlayerKnightTotalInWorld = (playerId, region = null) => {
   const owned = Math.max(
@@ -2697,15 +3558,17 @@ const calculateVillagePrestige = (buildingLevels, unitCounts) => {
   unitScore += (unitCounts.militia ?? 0) * 2;
   unitScore += (unitCounts.archer ?? 0) * 3;
   unitScore += (unitCounts.cavalry ?? 0) * 4;
+  unitScore += (unitCounts.scout ?? 0) * 2;
   unitScore += (unitCounts.knight ?? 0) * 140;
   unitScore += (unitCounts.ram ?? 0) * 5;
   unitScore += (unitCounts.caravan ?? 0) * 2;
+  unitScore += (unitCounts.mercenary ?? 0) * 2;
 
   return Math.max(0, Math.round(buildingScore + unitScore));
 };
 
 const calculateRecruitmentSpeedReduction = (level) =>
-  Math.min(0.55, Math.max(0, Math.max(0, Number(level ?? 0)) * 0.012 + Math.log2(Number(level ?? 0) + 1) * 0.04));
+  Math.max(0, 1 - Math.pow(0.96, Math.max(0, Math.floor(Number(level ?? 0)))));
 
 const calculateBuildingEffect = (buildingId, level) => {
   if (buildingId === 'woodcutter') {
@@ -2720,21 +3583,59 @@ const calculateBuildingEffect = (buildingId, level) => {
     const value = calculateResourceNodeProductionPerHour('iron-mine', level);
     return `+${Math.round(value)} zeleza / h`;
   }
+  if (buildingId === 'gold-mine') {
+    const valuePerHour = Math.max(0, Number(calculateProductionPerHour({ 'gold-mine': level }, 0, 1).gold ?? 0));
+    return `+${valuePerHour.toFixed(2)} zlata / h`;
+  }
   if (buildingId === 'warehouse') {
     return `Kapacita skladu: ${calculateResourceCap(level).toLocaleString('cs-CZ')}`;
+  }
+  if (buildingId === 'hideout') {
+    const protectedAmount = calculateHideoutProtectedAmount(level);
+    return protectedAmount > 0
+      ? `Skrys chrani ${protectedAmount.toLocaleString('cs-CZ')} dreva/kamene/zeleza`
+      : 'Skrys zatim nechrani zadne suroviny';
+  }
+  if (buildingId === 'mint') {
+    const goldCap = calculateMintGoldStorageCap(level);
+    const coinCap = calculateMintCoinStorageCap(level);
+    const throughput = calculateMintThroughputPerHour(level);
+    return level > 0
+      ? `Razba: ${throughput.toFixed(2)} minci/h, sklad zlata ${goldCap.toLocaleString('cs-CZ')}, sklad minci ${coinCap.toLocaleString('cs-CZ')}`
+      : 'Mincovna neaktivni';
+  }
+  if (buildingId === 'vault') {
+    const protection = calculateVaultProtection(level);
+    return level > 0
+      ? `Chraneno: ${protection.gold.toLocaleString('cs-CZ')} zlata a ${protection.coins.toLocaleString('cs-CZ')} minci`
+      : 'Bez trezoru je zlato i mince rabovatelne';
+  }
+  if (buildingId === 'market') {
+    const marketCapByLevel = [0, 5000, 30000, 150000, 300000];
+    const capacity = Number(marketCapByLevel[Math.max(0, Math.floor(Number(level ?? 0)))] ?? 0);
+    if (capacity <= 0) {
+      return 'Obchod uzavren (L0)';
+    }
+    return level >= 4
+      ? `Kapacita obchodu ${capacity.toLocaleString('cs-CZ')} (Cech obchodniku odemcen)`
+      : `Kapacita obchodu ${capacity.toLocaleString('cs-CZ')}`;
   }
   if (buildingId === 'residential-quarter') {
     return `Kapacita populace: ${calculatePopulationCap(level).toLocaleString('cs-CZ')} (obsluha budov je rezervována automaticky)`;
   }
   if (buildingId === 'townhall') {
-    const reductionPct = Math.round(Math.min(15, Math.max(0, Number(level ?? 0)) * 15));
+    const reductionPct = Math.round((1 - Math.pow(0.95, Math.max(0, Math.floor(Number(level ?? 0))))) * 100);
     return reductionPct > 0
       ? `Vystavba budov: -${reductionPct} % casu`
       : 'Vystavba budov bez casoveho bonusu';
   }
   if (buildingId === 'university') {
     const researchBonusPct = Math.round(Math.max(0, Number(level ?? 0)) * 20);
-    return researchBonusPct > 0 ? `Vyzkum: +${researchBonusPct} % rychlost` : 'Vyzkum bez bonusu';
+    const academicSlots = getVillageUniversityCapacity({ university: level });
+    const academicLabel = `Sloty akademiku: ${academicSlots.toLocaleString('cs-CZ')} / 3`;
+    return researchBonusPct > 0
+      ? `Vyzkum: +${researchBonusPct} % rychlost · ${academicLabel}`
+      : `Vyzkum bez bonusu · ${academicLabel}`;
   }
   if (buildingId === 'barracks') {
     const reductionPct = Math.round(calculateRecruitmentSpeedReduction(level) * 100);
@@ -2767,6 +3668,237 @@ const calculateBuildingEffect = (buildingId, level) => {
   return `Uroven ${level}`;
 };
 
+const formatSignedInteger = (nextValueRaw, currentValueRaw) => {
+  const nextValue = Math.max(0, Math.floor(Number(nextValueRaw ?? 0)));
+  const currentValue = Math.max(0, Math.floor(Number(currentValueRaw ?? 0)));
+  const delta = nextValue - currentValue;
+  const sign = delta >= 0 ? '+' : '-';
+  return `${sign}${Math.abs(delta).toLocaleString('cs-CZ')}`;
+};
+
+const buildUnlockPreviewItems = (buildingId, currentLevelRaw, nextLevelRaw) => {
+  const currentLevel = Math.max(0, Math.floor(Number(currentLevelRaw ?? 0)));
+  const nextLevel = Math.max(0, Math.floor(Number(nextLevelRaw ?? 0)));
+  const unlocks = [];
+
+  for (const candidateBuildingId of BUILDING_ORDER) {
+    if (candidateBuildingId === buildingId) {
+      continue;
+    }
+    const requirements = BUILDING_DEFS[candidateBuildingId]?.requiredBuildings;
+    if (!requirements || typeof requirements !== 'object') {
+      continue;
+    }
+    const requiredLevel = Math.max(1, Math.floor(Number(requirements[buildingId] ?? 0)));
+    if (requiredLevel <= 0 || currentLevel >= requiredLevel || nextLevel < requiredLevel) {
+      continue;
+    }
+    const candidateName = String(BUILDING_DEFS[candidateBuildingId]?.name ?? candidateBuildingId);
+    unlocks.push(`Budova: ${candidateName} (splnena podminka ${requiredLevel}. urovne).`);
+  }
+
+  for (const unitId of UNIT_ORDER) {
+    const unitDef = UNIT_DEFS[unitId];
+    if (!unitDef || unitDef.isRecruitable === false) {
+      continue;
+    }
+    if (String(unitDef.requiredBuilding ?? '') !== String(buildingId)) {
+      continue;
+    }
+    const requiredLevel = Math.max(1, Math.floor(Number(unitDef.requiredBuildingLevel ?? 1)));
+    if (currentLevel >= requiredLevel || nextLevel < requiredLevel) {
+      continue;
+    }
+    unlocks.push(`Jednotka: ${String(unitDef.name)} (budova splni pozadovanou uroven).`);
+  }
+
+  if (buildingId === 'market' && currentLevel < 4 && nextLevel >= 4) {
+    unlocks.push('Automaticka logistika Cechu obchodniku (po vyzkumu Vliv cechu).');
+  }
+
+  return unlocks;
+};
+
+const buildBuildingNextLevelPreview = ({
+  buildingId,
+  fromLevel,
+  toLevel,
+}) => {
+  const currentLevel = Math.max(0, Math.floor(Number(fromLevel ?? 0)));
+  const nextLevel = Math.max(0, Math.floor(Number(toLevel ?? 0)));
+  const deltas = [];
+
+  if (buildingId === 'woodcutter' || buildingId === 'quarry' || buildingId === 'iron-mine') {
+    const currentProduction = calculateResourceNodeProductionPerHour(buildingId, currentLevel);
+    const nextProduction = calculateResourceNodeProductionPerHour(buildingId, nextLevel);
+    const label =
+      buildingId === 'woodcutter'
+        ? 'Drevo'
+        : buildingId === 'quarry'
+          ? 'Kamen'
+          : 'Zelezo';
+    deltas.push(
+      `${label}/h: ${Math.round(currentProduction).toLocaleString('cs-CZ')} -> ${Math.round(nextProduction).toLocaleString('cs-CZ')} (${formatSignedInteger(nextProduction, currentProduction)}).`,
+    );
+  } else if (buildingId === 'gold-mine') {
+    const currentGold = Math.max(0, Number(calculateProductionPerHour({ 'gold-mine': currentLevel }, 0, 1).gold ?? 0));
+    const nextGold = Math.max(0, Number(calculateProductionPerHour({ 'gold-mine': nextLevel }, 0, 1).gold ?? 0));
+    const delta = Number((nextGold - currentGold).toFixed(2));
+    const sign = delta >= 0 ? '+' : '-';
+    deltas.push(
+      `Zlato/h: ${currentGold.toFixed(2)} -> ${nextGold.toFixed(2)} (${sign}${Math.abs(delta).toFixed(2)}).`,
+    );
+  } else if (buildingId === 'warehouse') {
+    const currentCap = calculateResourceCap(currentLevel);
+    const nextCap = calculateResourceCap(nextLevel);
+    deltas.push(
+      `Kapacita skladu: ${currentCap.toLocaleString('cs-CZ')} -> ${nextCap.toLocaleString('cs-CZ')} (${formatSignedInteger(nextCap, currentCap)}).`,
+    );
+  } else if (buildingId === 'hideout') {
+    const currentProtection = calculateHideoutProtectedAmount(currentLevel);
+    const nextProtection = calculateHideoutProtectedAmount(nextLevel);
+    deltas.push(
+      `Skrys (na surovinu): ${currentProtection.toLocaleString('cs-CZ')} -> ${nextProtection.toLocaleString('cs-CZ')} (${formatSignedInteger(nextProtection, currentProtection)}).`,
+    );
+  } else if (buildingId === 'mint') {
+    const currentThroughput = calculateMintThroughputPerHour(currentLevel);
+    const nextThroughput = calculateMintThroughputPerHour(nextLevel);
+    const currentGoldCap = calculateMintGoldStorageCap(currentLevel);
+    const nextGoldCap = calculateMintGoldStorageCap(nextLevel);
+    const currentCoinCap = calculateMintCoinStorageCap(currentLevel);
+    const nextCoinCap = calculateMintCoinStorageCap(nextLevel);
+    deltas.push(
+      `Razba minci/h: ${currentThroughput.toFixed(2)} -> ${nextThroughput.toFixed(2)} (${(nextThroughput - currentThroughput).toFixed(2).startsWith('-') ? '' : '+'}${(nextThroughput - currentThroughput).toFixed(2)}).`,
+    );
+    deltas.push(
+      `Sklad zlata: ${currentGoldCap.toLocaleString('cs-CZ')} -> ${nextGoldCap.toLocaleString('cs-CZ')} (${formatSignedInteger(nextGoldCap, currentGoldCap)}).`,
+    );
+    deltas.push(
+      `Sklad minci: ${currentCoinCap.toLocaleString('cs-CZ')} -> ${nextCoinCap.toLocaleString('cs-CZ')} (${formatSignedInteger(nextCoinCap, currentCoinCap)}).`,
+    );
+  } else if (buildingId === 'vault') {
+    const currentProtection = calculateVaultProtection(currentLevel);
+    const nextProtection = calculateVaultProtection(nextLevel);
+    deltas.push(
+      `Chranene zlato: ${currentProtection.gold.toLocaleString('cs-CZ')} -> ${nextProtection.gold.toLocaleString('cs-CZ')} (${formatSignedInteger(nextProtection.gold, currentProtection.gold)}).`,
+    );
+    deltas.push(
+      `Chranene mince: ${currentProtection.coins.toLocaleString('cs-CZ')} -> ${nextProtection.coins.toLocaleString('cs-CZ')} (${formatSignedInteger(nextProtection.coins, currentProtection.coins)}).`,
+    );
+  } else if (buildingId === 'market') {
+    const currentCapacity = calculateMarketCapacity(currentLevel);
+    const nextCapacity = calculateMarketCapacity(nextLevel);
+    deltas.push(
+      `Kapacita obchodu: ${currentCapacity.toLocaleString('cs-CZ')} -> ${nextCapacity.toLocaleString('cs-CZ')} (${formatSignedInteger(nextCapacity, currentCapacity)}).`,
+    );
+    deltas.push('Logistika: cesta = 10 min + 2 min za pole (max 50 poli).');
+  } else if (buildingId === 'residential-quarter') {
+    const currentPopulationCap = calculatePopulationCap(currentLevel);
+    const nextPopulationCap = calculatePopulationCap(nextLevel);
+    deltas.push(
+      `Kapacita populace: ${currentPopulationCap.toLocaleString('cs-CZ')} -> ${nextPopulationCap.toLocaleString('cs-CZ')} (${formatSignedInteger(nextPopulationCap, currentPopulationCap)}).`,
+    );
+  } else if (buildingId === 'townhall') {
+    const currentReductionPct = Math.round((1 - Math.pow(0.95, currentLevel)) * 100);
+    const nextReductionPct = Math.round((1 - Math.pow(0.95, nextLevel)) * 100);
+    const sampleCurrent = calculateUpgradeDurationSec('woodcutter', 1, currentLevel);
+    const sampleNext = calculateUpgradeDurationSec('woodcutter', 1, nextLevel);
+    deltas.push(
+      `Rychlost vystavby: -${currentReductionPct} % -> -${nextReductionPct} % (zmena +${Math.max(0, nextReductionPct - currentReductionPct)} p.b.).`,
+    );
+    deltas.push(
+      `Priklad (Drevorubec L1->2): ${formatRemaining(sampleCurrent)} -> ${formatRemaining(sampleNext)}.`,
+    );
+  } else if (buildingId === 'university') {
+    const currentSpeedBonus = Math.round(currentLevel * 5);
+    const nextSpeedBonus = Math.round(nextLevel * 5);
+    deltas.push(`Rychlost vyzkumu akademiku: +${currentSpeedBonus}% -> +${nextSpeedBonus}%.`);
+    const currentAcademicSlots = getVillageUniversityCapacity({ university: currentLevel });
+    const nextAcademicSlots = getVillageUniversityCapacity({ university: nextLevel });
+    deltas.push(
+      `Sloty akademiku: ${currentAcademicSlots.toLocaleString('cs-CZ')} -> ${nextAcademicSlots.toLocaleString(
+        'cs-CZ',
+      )} (${formatSignedInteger(nextAcademicSlots, currentAcademicSlots)}).`,
+    );
+  } else if (buildingId === 'barracks') {
+    const currentReduction = Math.round(calculateRecruitmentSpeedReduction(currentLevel) * 100);
+    const nextReduction = Math.round(calculateRecruitmentSpeedReduction(nextLevel) * 100);
+    const currentMilitiaRecruit = calculateRecruitDurationSec('militia', 1, currentLevel);
+    const nextMilitiaRecruit = calculateRecruitDurationSec('militia', 1, nextLevel);
+    deltas.push(
+      `Nabor pechoty: -${currentReduction}% -> -${nextReduction}% (zmena +${Math.max(0, nextReduction - currentReduction)} p.b.).`,
+    );
+    deltas.push(
+      `Ozbrojenec (1 ks): ${formatRemaining(currentMilitiaRecruit)} -> ${formatRemaining(nextMilitiaRecruit)}.`,
+    );
+  } else if (buildingId === 'stable') {
+    const currentReduction = Math.round(calculateRecruitmentSpeedReduction(currentLevel) * 100);
+    const nextReduction = Math.round(calculateRecruitmentSpeedReduction(nextLevel) * 100);
+    const currentCavalryRecruit = calculateRecruitDurationSec('cavalry', 1, currentLevel);
+    const nextCavalryRecruit = calculateRecruitDurationSec('cavalry', 1, nextLevel);
+    deltas.push(
+      `Nabor jezdectva: -${currentReduction}% -> -${nextReduction}% (zmena +${Math.max(0, nextReduction - currentReduction)} p.b.).`,
+    );
+    deltas.push(`Jezdec (1 ks): ${formatRemaining(currentCavalryRecruit)} -> ${formatRemaining(nextCavalryRecruit)}.`);
+  } else if (buildingId === 'workshop') {
+    const currentReduction = Math.round(calculateRecruitmentSpeedReduction(currentLevel) * 100);
+    const nextReduction = Math.round(calculateRecruitmentSpeedReduction(nextLevel) * 100);
+    const currentRamRecruit = calculateRecruitDurationSec('ram', 1, currentLevel);
+    const nextRamRecruit = calculateRecruitDurationSec('ram', 1, nextLevel);
+    deltas.push(
+      `Nabor dilenskych jednotek: -${currentReduction}% -> -${nextReduction}% (zmena +${Math.max(0, nextReduction - currentReduction)} p.b.).`,
+    );
+    deltas.push(
+      `Beranidlo (1 ks): ${formatRemaining(currentRamRecruit)} -> ${formatRemaining(nextRamRecruit)}.`,
+    );
+  } else if (buildingId === 'fortification') {
+    const currentDefenseBonus = Math.round(Math.min(45, currentLevel * 3));
+    const nextDefenseBonus = Math.round(Math.min(45, nextLevel * 3));
+    deltas.push(
+      `Obrana osady: +${currentDefenseBonus}% -> +${nextDefenseBonus}% (${formatSignedInteger(nextDefenseBonus, currentDefenseBonus)} p.b.).`,
+    );
+  } else if (buildingId === 'gate') {
+    if (currentLevel <= 0 && nextLevel > 0) {
+      deltas.push('Brana aktivovana: s opevnenim zastavi utok bez beranidel.');
+      deltas.push('Kazde beranidlo snizi 1 uroven brany.');
+    } else {
+      deltas.push('Brana je uz aktivni, dalsi uroven neni dostupna.');
+    }
+  } else {
+    const currentEffect = calculateBuildingEffect(buildingId, currentLevel);
+    const nextEffect = calculateBuildingEffect(buildingId, nextLevel);
+    deltas.push(`Efekt: ${currentEffect} -> ${nextEffect}`);
+  }
+
+  return {
+    fromLevel: currentLevel,
+    toLevel: nextLevel,
+    deltas,
+    unlocks: buildUnlockPreviewItems(buildingId, currentLevel, nextLevel),
+  };
+};
+
+const resolveBuildingRequirementError = (buildingId, buildingLevels) => {
+  const requirements = BUILDING_DEFS[buildingId]?.requiredBuildings;
+  if (!requirements || typeof requirements !== 'object') {
+    return null;
+  }
+
+  for (const [requiredBuildingId, requiredLevelRaw] of Object.entries(requirements)) {
+    const requiredLevel = Math.max(1, Math.floor(Number(requiredLevelRaw ?? 0)));
+    const currentLevel = Math.max(0, Math.floor(Number(buildingLevels?.[requiredBuildingId] ?? 0)));
+    if (currentLevel >= requiredLevel) {
+      continue;
+    }
+    const requiredName = BUILDING_DEFS[requiredBuildingId]?.name ?? requiredBuildingId;
+    return requiredLevel <= 1
+      ? `Vybuduj ${requiredName}.`
+      : `Vybuduj ${requiredName} na uroven ${requiredLevel}.`;
+  }
+
+  return null;
+};
+
 const formatRemaining = (seconds) => {
   const safe = Math.max(0, Math.floor(seconds));
   const hours = Math.floor(safe / 3600);
@@ -2786,6 +3918,16 @@ const calculateTileDistance = (fromVillage, toVillage) =>
     Math.abs(Number(toVillage.coordX) - Number(fromVillage.coordX)),
     Math.abs(Number(toVillage.coordY) - Number(fromVillage.coordY)),
   );
+
+const calculateMarketCapacity = (marketLevelRaw) => {
+  const level = Math.max(0, Math.floor(Number(marketLevelRaw ?? 0)));
+  return Number(MARKET_CAPACITY_BY_LEVEL[level] ?? 0);
+};
+
+const calculateLogisticsDurationSec = (distanceTilesRaw) => {
+  const distanceTiles = Math.max(0, Math.floor(Number(distanceTilesRaw ?? 0)));
+  return Math.max(60, Math.floor((LOGISTICS_MINUTES_BASE + distanceTiles * LOGISTICS_MINUTES_PER_TILE) * 60));
+};
 
 const parseArmyUnitSelection = (unitsPayload) => {
   if (!unitsPayload || typeof unitsPayload !== 'object') {
@@ -2831,8 +3973,6 @@ const LOOT_BALANCED_PRIORITY = 'balanced';
 const LOOT_PRIORITIES = [...LOOT_RESOURCE_ORDER, LOOT_BALANCED_PRIORITY];
 const CARAVAN_UNIT_ID = 'caravan';
 const COMBAT_ESCORT_UNIT_ORDER = UNIT_ORDER.filter((unitId) => unitId !== CARAVAN_UNIT_ID);
-const LOOT_PROTECTED_RESOURCE_CAPACITY_PER_LEVEL = 0;
-const LOOT_PROTECTED_BUILDING_ID = null;
 const UNIT_LOOT_CAPACITY = Object.freeze({
   militia: 20,
   archer: 16,
@@ -2841,6 +3981,7 @@ const UNIT_LOOT_CAPACITY = Object.freeze({
   knight: 45,
   ram: 0,
   caravan: 250,
+  mercenary: 0,
 });
 const BATTLE_UNIT_STATS = Object.freeze({
   militia: { attack: 11, defense: 12, health: 18 },
@@ -2850,6 +3991,7 @@ const BATTLE_UNIT_STATS = Object.freeze({
   knight: { attack: 300, defense: 255, health: 240 },
   ram: { attack: 0, defense: 0, health: 42 },
   caravan: { attack: 0, defense: 0, health: 8 },
+  mercenary: { attack: 11, defense: 12, health: 18 },
 });
 const RAM_ATTACK_SUPPORT_MULTIPLIER = 1.1;
 const clampNumber = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -2909,12 +4051,20 @@ const getVillagePopulationStatus = (villageId) => {
   const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(Number(villageId)));
   const unitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(Number(villageId)));
   const populationCap = calculatePopulationCap(buildingLevels['residential-quarter'] ?? 0);
-  const populationUsed = calculatePopulationUsed(buildingLevels, unitCounts);
+  const unitAndBuildingPopulationUsed = calculatePopulationUsed(buildingLevels, unitCounts);
+  const academicCount = Math.max(
+    0,
+    Math.floor(Number(countActiveAcademicsByVillageStmt.get(Number(villageId))?.total ?? 0)),
+  );
+  const academicPopulationUsed = academicCount * ACADEMIC_POPULATION_COST;
+  const populationUsed = unitAndBuildingPopulationUsed + academicPopulationUsed;
   const availablePopulation = Math.max(0, populationCap - populationUsed);
 
   return {
     buildingLevels,
     unitCounts,
+    academicCount,
+    academicPopulationUsed,
     populationCap,
     populationUsed,
     availablePopulation,
@@ -3420,36 +4570,69 @@ const calculateLootDistribution = (resourcePocket, priority, carryingCapacity) =
   };
 };
 
+const resolveVillageResourceCaps = (buildingLevels) => {
+  const warehouseCap = calculateResourceCap(buildingLevels.warehouse ?? 0);
+  const mintLevel = Math.max(0, Math.floor(Number(buildingLevels.mint ?? 0)));
+  const goldCap = mintLevel > 0 ? calculateMintGoldStorageCap(mintLevel) : 1000;
+  const coinCap = mintLevel > 0 ? calculateMintCoinStorageCap(mintLevel) : 0;
+  return {
+    wood: warehouseCap,
+    stone: warehouseCap,
+    iron: warehouseCap,
+    gold: Math.max(0, Math.floor(Number(goldCap ?? 0))),
+    coins: Math.max(0, Math.floor(Number(coinCap ?? 0))),
+  };
+};
+
+const writeVillageResources = (villageId, pocket) => {
+  updateResourcesStmt.run(
+    roundResource(Number(pocket.wood ?? 0)),
+    roundResource(Number(pocket.stone ?? 0)),
+    roundResource(Number(pocket.iron ?? 0)),
+    roundResource(Number(pocket.gold ?? 0)),
+    roundResource(Number(pocket.coins ?? 0)),
+    Number(villageId),
+  );
+};
+
 const applyResourceDeltaWithCap = (villageId, delta) => {
   const resourceRow = selectResourcesByVillageStmt.get(Number(villageId));
   if (!resourceRow) {
-    return { applied: { wood: 0, stone: 0, iron: 0 }, next: null };
+    return { applied: { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 }, next: null };
   }
 
   const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(Number(villageId)));
-  const cap = calculateResourceCap(buildingLevels.warehouse ?? 0);
+  const caps = resolveVillageResourceCaps(buildingLevels);
   const current = {
     wood: Number(resourceRow.wood),
     stone: Number(resourceRow.stone),
     iron: Number(resourceRow.iron),
+    gold: Number(resourceRow.gold ?? 0),
+    coins: Number(resourceRow.coins ?? 0),
   };
   const requested = {
     wood: Number(delta.wood ?? 0),
     stone: Number(delta.stone ?? 0),
     iron: Number(delta.iron ?? 0),
+    gold: Number(delta.gold ?? 0),
+    coins: Number(delta.coins ?? 0),
   };
   const next = {
-    wood: clampResourceToCap(current.wood + requested.wood, cap),
-    stone: clampResourceToCap(current.stone + requested.stone, cap),
-    iron: clampResourceToCap(current.iron + requested.iron, cap),
+    wood: clampResourceToCap(current.wood + requested.wood, caps.wood),
+    stone: clampResourceToCap(current.stone + requested.stone, caps.stone),
+    iron: clampResourceToCap(current.iron + requested.iron, caps.iron),
+    gold: clampResourceToCap(current.gold + requested.gold, caps.gold),
+    coins: clampResourceToCap(current.coins + requested.coins, caps.coins),
   };
   const applied = {
-    wood: Math.max(0, Math.round(next.wood - current.wood)),
-    stone: Math.max(0, Math.round(next.stone - current.stone)),
-    iron: Math.max(0, Math.round(next.iron - current.iron)),
+    wood: Math.round(next.wood - current.wood),
+    stone: Math.round(next.stone - current.stone),
+    iron: Math.round(next.iron - current.iron),
+    gold: Math.round(next.gold - current.gold),
+    coins: Math.round(next.coins - current.coins),
   };
 
-  updateResourcesStmt.run(roundResource(next.wood), roundResource(next.stone), roundResource(next.iron), Number(villageId));
+  writeVillageResources(Number(villageId), next);
 
   return {
     applied,
@@ -3460,26 +4643,32 @@ const applyResourceDeltaWithCap = (villageId, delta) => {
 const addResourcesWithoutCap = (villageId, delta) => {
   const resourceRow = selectResourcesByVillageStmt.get(Number(villageId));
   if (!resourceRow) {
-    return { added: { wood: 0, stone: 0, iron: 0 }, next: null };
+    return { added: { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 }, next: null };
   }
 
   const current = {
     wood: Number(resourceRow.wood),
     stone: Number(resourceRow.stone),
     iron: Number(resourceRow.iron),
+    gold: Number(resourceRow.gold ?? 0),
+    coins: Number(resourceRow.coins ?? 0),
   };
   const added = {
     wood: Math.max(0, Math.floor(Number(delta.wood ?? 0))),
     stone: Math.max(0, Math.floor(Number(delta.stone ?? 0))),
     iron: Math.max(0, Math.floor(Number(delta.iron ?? 0))),
+    gold: Math.max(0, Math.floor(Number(delta.gold ?? 0))),
+    coins: Math.max(0, Math.floor(Number(delta.coins ?? 0))),
   };
   const next = {
     wood: current.wood + added.wood,
     stone: current.stone + added.stone,
     iron: current.iron + added.iron,
+    gold: current.gold + added.gold,
+    coins: current.coins + added.coins,
   };
 
-  updateResourcesStmt.run(roundResource(next.wood), roundResource(next.stone), roundResource(next.iron), Number(villageId));
+  writeVillageResources(Number(villageId), next);
 
   return {
     added,
@@ -3491,17 +4680,12 @@ const toNonNegativeResourcePocket = (rawResources) => ({
   wood: Math.max(0, Math.floor(Number(rawResources?.wood ?? 0))),
   stone: Math.max(0, Math.floor(Number(rawResources?.stone ?? 0))),
   iron: Math.max(0, Math.floor(Number(rawResources?.iron ?? 0))),
+  gold: Math.max(0, Math.floor(Number(rawResources?.gold ?? 0))),
+  coins: Math.max(0, Math.floor(Number(rawResources?.coins ?? 0))),
 });
 
 const calculateLootProtectionPocket = (buildingLevels) => {
-  const protectedLevel =
-    LOOT_PROTECTED_BUILDING_ID == null
-      ? 0
-      : Math.max(0, Math.floor(Number(buildingLevels?.[LOOT_PROTECTED_BUILDING_ID] ?? 0)));
-  const protectedPerResource = Math.max(
-    0,
-    Math.floor(Number(LOOT_PROTECTED_RESOURCE_CAPACITY_PER_LEVEL) * protectedLevel),
-  );
+  const protectedPerResource = Math.max(0, Math.floor(calculateHideoutProtectedAmount(buildingLevels?.hideout ?? 0)));
   return {
     wood: protectedPerResource,
     stone: protectedPerResource,
@@ -3515,10 +4699,22 @@ const calculateLootableResourcePocket = (resourcePocket, protectedPocket) => ({
   iron: Math.max(0, Math.floor(Number(resourcePocket?.iron ?? 0)) - Math.floor(Number(protectedPocket?.iron ?? 0))),
 });
 
-const subtractResources = (villageId, delta, minimumRemaining = { wood: 0, stone: 0, iron: 0 }) => {
+const calculateCurrencyProtectionPocket = (buildingLevels) => {
+  const protection = calculateVaultProtection(buildingLevels?.vault ?? 0);
+  return {
+    gold: Math.max(0, Math.floor(Number(protection.gold ?? 0))),
+    coins: Math.max(0, Math.floor(Number(protection.coins ?? 0))),
+  };
+};
+
+const subtractResources = (
+  villageId,
+  delta,
+  minimumRemaining = { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 },
+) => {
   const resourceRow = selectResourcesByVillageStmt.get(Number(villageId));
   if (!resourceRow) {
-    return { taken: { wood: 0, stone: 0, iron: 0 }, next: null };
+    return { taken: { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 }, next: null };
   }
 
   const current = toNonNegativeResourcePocket(resourceRow);
@@ -3528,14 +4724,18 @@ const subtractResources = (villageId, delta, minimumRemaining = { wood: 0, stone
     wood: Math.min(Math.max(0, current.wood - floorPocket.wood), requested.wood),
     stone: Math.min(Math.max(0, current.stone - floorPocket.stone), requested.stone),
     iron: Math.min(Math.max(0, current.iron - floorPocket.iron), requested.iron),
+    gold: Math.min(Math.max(0, current.gold - floorPocket.gold), requested.gold),
+    coins: Math.min(Math.max(0, current.coins - floorPocket.coins), requested.coins),
   };
   const next = {
     wood: Math.max(0, current.wood - taken.wood),
     stone: Math.max(0, current.stone - taken.stone),
     iron: Math.max(0, current.iron - taken.iron),
+    gold: Math.max(0, current.gold - taken.gold),
+    coins: Math.max(0, current.coins - taken.coins),
   };
 
-  updateResourcesStmt.run(roundResource(next.wood), roundResource(next.stone), roundResource(next.iron), Number(villageId));
+  writeVillageResources(Number(villageId), next);
 
   return { taken, next };
 };
@@ -3639,6 +4839,10 @@ const simulateAttackBattle = ({
   attackerUnitsRaw,
   defenderUnitsRaw,
   defenderBuildingLevels,
+  attackerPrestige = 0,
+  defenderPrestige = 0,
+  retaliationOverrideApplied = false,
+  battleTimeIso = nowIso(),
 }) => {
   const attackerStartUnits = toCompleteUnitSelection(attackerUnitsRaw);
   const attackerUnits = toCompleteUnitSelection(attackerUnitsRaw);
@@ -3655,6 +4859,32 @@ const simulateAttackBattle = ({
   let ramsConsumedOnGate = 0;
 
   const bonuses = [];
+  const prestigeAttackModifier = calculateAttackModifier(attackerPrestige, defenderPrestige);
+  const prestigeDefenseBonus = calculateDefenseBonus(attackerPrestige, defenderPrestige);
+  const prestigeLootModifier = calculateLootModifier(attackerPrestige, defenderPrestige);
+  const resolvedPrestigeBalance = resolveCombatBalance(attackerPrestige, defenderPrestige);
+  const prestigeBalance = {
+    ...resolvedPrestigeBalance,
+    attackAllowed: Boolean(resolvedPrestigeBalance.attackAllowed || retaliationOverrideApplied),
+    retaliationOverrideApplied: Boolean(retaliationOverrideApplied),
+    attackModifier: Number(prestigeAttackModifier.toFixed(4)),
+    defenseBonus: Number(prestigeDefenseBonus.toFixed(4)),
+    defenseMultiplier: Number((1 + prestigeDefenseBonus).toFixed(4)),
+    lootModifier: Number(prestigeLootModifier.toFixed(4)),
+  };
+  if (prestigeAttackModifier < 1) {
+    bonuses.push(`Balanc prestize: utok x${prestigeAttackModifier.toFixed(2)}.`);
+  }
+  if (prestigeDefenseBonus > 0) {
+    bonuses.push(`Balanc prestize: obrana +${Math.round(prestigeDefenseBonus * 100)} %.`);
+  }
+  if (prestigeLootModifier < 1) {
+    bonuses.push(`Balanc prestize: korist x${prestigeLootModifier.toFixed(2)}.`);
+  }
+  if (retaliationOverrideApplied) {
+    bonuses.push('Balanc prestize: odvetny utok byl povolen po predchozi agresi cile.');
+  }
+  const isNightDefenseWindow = isNightModeAtTime(battleTimeIso);
 
   if (gateLevel > 0) {
     const availableRams = Math.max(0, Math.floor(Number(attackerUnits.ram ?? 0)));
@@ -3700,18 +4930,22 @@ const simulateAttackBattle = ({
 
     const baseAttackPower = sumCombatPower(attackerUnits, 'attack');
     const baseDefensePower = sumCombatPower(defenderUnits, 'defense');
+    const effectiveAttackPower = baseAttackPower * prestigeAttackModifier;
+    const effectiveDefensePower = baseDefensePower * (1 + prestigeDefenseBonus);
     return {
       attackerWins: false,
       attackerRetreated: attackerSurvivorsTotal > 0,
+      nightModeDefenseApplied: isNightDefenseWindow,
       blockedByGate: true,
       gateDamageLossRatio: Number(retreatLossRatio.toFixed(4)),
       baseAttackPower: Number(baseAttackPower.toFixed(2)),
       baseDefensePower: Number(baseDefensePower.toFixed(2)),
-      finalAttackPower: Number(baseAttackPower.toFixed(2)),
-      finalDefensePower: Number(baseDefensePower.toFixed(2)),
-      attackMultiplier: 1,
-      defenseMultiplier: 1,
+      finalAttackPower: Number(effectiveAttackPower.toFixed(2)),
+      finalDefensePower: Number(effectiveDefensePower.toFixed(2)),
+      attackMultiplier: Number(prestigeAttackModifier.toFixed(3)),
+      defenseMultiplier: Number((1 + prestigeDefenseBonus).toFixed(3)),
       bonuses,
+      prestigeBalance,
       attackerLossRatio: Number((attackerStartTotal > 0 ? attackerLossesTotal / attackerStartTotal : 0).toFixed(4)),
       defenderLossRatio: Number((defenderStartTotal > 0 ? defenderLossesTotal / defenderStartTotal : 0).toFixed(4)),
       gate: {
@@ -3749,19 +4983,23 @@ const simulateAttackBattle = ({
     const defenderLossesTotal = sumSelectedUnits(defenderLosses);
     const baseAttackPower = sumCombatPower(attackerUnits, 'attack');
     const baseDefensePower = sumCombatPower(defenderUnits, 'defense');
+    const effectiveAttackPower = baseAttackPower * prestigeAttackModifier;
+    const effectiveDefensePower = baseDefensePower * (1 + prestigeDefenseBonus);
 
     return {
       attackerWins: true,
       attackerRetreated: false,
+      nightModeDefenseApplied: isNightDefenseWindow,
       blockedByGate: false,
       gateDamageLossRatio: 0,
       baseAttackPower: Number(baseAttackPower.toFixed(2)),
       baseDefensePower: Number(baseDefensePower.toFixed(2)),
-      finalAttackPower: Number(baseAttackPower.toFixed(2)),
-      finalDefensePower: Number(baseDefensePower.toFixed(2)),
-      attackMultiplier: 1,
-      defenseMultiplier: 1,
+      finalAttackPower: Number(effectiveAttackPower.toFixed(2)),
+      finalDefensePower: Number(effectiveDefensePower.toFixed(2)),
+      attackMultiplier: Number(prestigeAttackModifier.toFixed(3)),
+      defenseMultiplier: Number((1 + prestigeDefenseBonus).toFixed(3)),
       bonuses,
+      prestigeBalance,
       attackerLossRatio: Number((attackerStartTotal > 0 ? attackerLossesTotal / attackerStartTotal : 0).toFixed(4)),
       defenderLossRatio: Number((defenderStartTotal > 0 ? defenderLossesTotal / defenderStartTotal : 0).toFixed(4)),
       gate: {
@@ -3787,8 +5025,8 @@ const simulateAttackBattle = ({
     };
   }
 
-  let attackMultiplier = 1;
-  let defenseMultiplier = 1;
+  let attackMultiplier = prestigeAttackModifier;
+  let defenseMultiplier = 1 + prestigeDefenseBonus;
   const attackerTactical = resolveArmyTacticalModifier(attackerUnits, 'attack');
   const defenderTactical = resolveArmyTacticalModifier(defenderUnits, 'defense');
   attackMultiplier *= attackerTactical.multiplier;
@@ -3814,6 +5052,11 @@ const simulateAttackBattle = ({
       defenseMultiplier *= 1 + archerWallBonus;
       bonuses.push(`Lucistnici na hradbach: obrana +${Math.round(archerWallBonus * 100)} %`);
     }
+  }
+
+  if (isNightDefenseWindow) {
+    defenseMultiplier *= 2;
+    bonuses.push('Nocni rezim: obrance +100 % obrany');
   }
 
   let ramSupportApplied = false;
@@ -3903,6 +5146,7 @@ const simulateAttackBattle = ({
   return {
     attackerWins,
     attackerRetreated: !attackerWins && attackerSurvivorsTotal > 0,
+    nightModeDefenseApplied: isNightDefenseWindow,
     blockedByGate: false,
     gateDamageLossRatio: 0,
     baseAttackPower: Number(baseAttackPower.toFixed(2)),
@@ -3912,6 +5156,7 @@ const simulateAttackBattle = ({
     attackMultiplier: Number(attackMultiplier.toFixed(3)),
     defenseMultiplier: Number(defenseMultiplier.toFixed(3)),
     bonuses,
+    prestigeBalance,
     attackerLossRatio: Number(attackerLossRatio.toFixed(4)),
     defenderLossRatio: Number(defenderLossRatio.toFixed(4)),
     gate: {
@@ -4075,16 +5320,49 @@ const normalizeSettlementKind = (isOwn, isRoyalSettlement, isAbandonedBot) => {
   return isRoyalSettlement ? 'bot' : 'player';
 };
 
-const buildWorldSettlements = (viewerVillage, viewerUsername, world) => {
+const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, world) => {
   const region = resolveWorldRegionDefinition(world);
   const spawnConfig = resolveWorldSpawnConfig(world);
   const villageProtectionRuleDays = Math.max(0, Number(spawnConfig.playerProtectionDays ?? 0));
   const villages = selectAllVillagesForWorldStmt.all(Number(world.region));
   const viewerKingdom = viewerVillage.kingdom;
+  const numericViewerPlayerId = Number(viewerPlayerId);
+  const playerPrestigeByPlayerId = new Map();
+
+  for (const row of villages) {
+    const playerId = Number(row.playerId);
+    if (!Number.isFinite(playerId) || playerId <= 0) {
+      continue;
+    }
+    const nextTotal =
+      Math.max(0, Number(playerPrestigeByPlayerId.get(playerId) ?? 0)) +
+      Math.max(0, Math.floor(Number(row.prestige ?? 0)));
+    playerPrestigeByPlayerId.set(playerId, nextTotal);
+  }
+
+  const viewerPrestige = Math.max(
+    0,
+    Math.floor(Number(playerPrestigeByPlayerId.get(numericViewerPlayerId) ?? 0)),
+  );
+  const retaliationRows =
+    Number.isFinite(numericViewerPlayerId) && numericViewerPlayerId > 0
+      ? selectCombatRetaliationFlagsByDefenderStmt.all(numericViewerPlayerId, Number(world.region))
+      : [];
+  const retaliationByAggressorId = new Map(
+    retaliationRows
+      .map((row) => ({
+        aggressorPlayerId: Number(row.aggressorPlayerId),
+        firstAttackedAt: row.firstAttackedAt ? String(row.firstAttackedAt) : null,
+        lastAttackedAt: row.lastAttackedAt ? String(row.lastAttackedAt) : null,
+      }))
+      .filter((row) => Number.isFinite(row.aggressorPlayerId) && row.aggressorPlayerId > 0)
+      .map((row) => [row.aggressorPlayerId, row]),
+  );
 
   return villages.map((row) => {
     const coordX = Number(row.coordX);
     const coordY = Number(row.coordY);
+    const playerId = Number(row.playerId);
     const isAbandonedBot = Number(row.isBot) === 1;
     const isOwn = row.owner === viewerUsername;
     const isRoyalSettlement = row.kingdom === 'Neutral' && !isAbandonedBot;
@@ -4095,10 +5373,40 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, world) => {
     const protectionRemainingSec = isAbandonedBot
       ? 0
       : getVillageProtectionRemainingSec(row, villageProtectionRuleDays);
+    const ownerTotalPrestige = Math.max(
+      0,
+      Math.floor(Number(playerPrestigeByPlayerId.get(playerId) ?? row.prestige ?? 0)),
+    );
+    const prestigeCheckRelevant =
+      !isAbandonedBot && !isOwn && !sameKingdom && Number.isFinite(playerId) && playerId > 0;
+    const blockedByPrestige =
+      prestigeCheckRelevant && viewerPrestige > 0
+        ? !isAttackAllowed(viewerPrestige, ownerTotalPrestige)
+        : false;
+    const retaliationFlag = prestigeCheckRelevant ? retaliationByAggressorId.get(playerId) ?? null : null;
+    const retaliationUnlocked = blockedByPrestige && retaliationFlag != null;
+    const prestigeAttackBlockedForViewer = blockedByPrestige && !retaliationUnlocked;
+    const minimumRequiredPrestige =
+      viewerPrestige > 0 ? Math.max(1, Math.ceil(viewerPrestige * MIN_ATTACKABLE_PRESTIGE_RATIO)) : 0;
+    let balanceHint = '';
+    if (prestigeAttackBlockedForViewer) {
+      balanceHint = ` Ochrana prestiže: tento hráč má ${ownerTotalPrestige.toLocaleString(
+        'cs-CZ',
+      )} prestiže, pro útok potřebuje alespoň ${minimumRequiredPrestige.toLocaleString('cs-CZ')}.`;
+    } else if (retaliationUnlocked) {
+      balanceHint =
+        ' Ochrana prestiže je prolomena: tento hráč už na tebe zaútočil, útok můžeš vrátit.';
+    }
+    const baseNote = isOwn
+      ? 'Tvoje hlavni vesnice. Mas plny pristup ke statistikam.'
+      : isAbandonedBot
+        ? 'Opustene leno s AI obranou. Podrobnosti o budovach a jednotkach jsou skryte.'
+        : 'Cizi leno - podrobnosti o budovach a jednotkach jsou skryte.';
 
     return {
       id: `vlg-${row.id}`,
       villageId: Number(row.id),
+      playerId: Number.isFinite(playerId) && playerId > 0 ? playerId : null,
       name: row.name,
       kind: normalizeSettlementKind(isOwn, isRoyalSettlement, isAbandonedBot),
       owner: row.owner,
@@ -4110,16 +5418,18 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, world) => {
       globalY: coordY,
       prestige: Number(row.prestige),
       loyalty: isOwn ? Number(row.loyalty) : 0,
-      note: isOwn
-        ? 'Tvoje hlavni vesnice. Mas plny pristup ke statistikam.'
-        : isAbandonedBot
-          ? 'Opustene leno s AI obranou. Podrobnosti o budovach a jednotkach jsou skryte.'
-          : 'Cizi leno - podrobnosti o budovach a jednotkach jsou skryte.',
+      note: `${baseNote}${balanceHint}`,
       visibility: isOwn ? 'full' : 'public',
       relation: isOwn ? 'self' : isAbandonedBot ? 'enemy' : sameKingdom ? 'ally' : 'enemy',
       protectionUntil,
       protectionRemainingSec,
       protectionRuleDays: villageProtectionRuleDays,
+      viewerPrestige,
+      ownerTotalPrestige,
+      prestigeAttackMinimumForViewer: minimumRequiredPrestige,
+      prestigeAttackBlockedForViewer,
+      retaliationUnlockedForViewer: retaliationUnlocked,
+      retaliationUnlockedAt: retaliationFlag?.lastAttackedAt ?? null,
     };
   });
 };
@@ -4196,11 +5506,22 @@ const buildArmyState = (playerId, currentVillageId, region) => {
       isIncoming: true,
       isRelatedToCurrentVillage: movement.targetVillageId === numericCurrentVillageId,
     }));
+  const recentAttackTargets = selectRecentAttackTargetsByPlayerRegionStmt
+    .all(numericPlayerId, numericRegion)
+    .map((row) => ({
+      targetVillageId: Number(row.targetVillageId),
+      targetName: String(row.targetName ?? ''),
+      targetCoordX: Number(row.targetCoordX),
+      targetCoordY: Number(row.targetCoordY),
+      lastIssuedAt: String(row.lastIssuedAt ?? nowIso()),
+    }))
+    .filter((item) => Number.isFinite(item.targetVillageId) && item.targetVillageId > 0);
 
   return {
     activeMovements,
     stationedSupports,
     incomingMovements,
+    recentAttackTargets,
   };
 };
 
@@ -4563,10 +5884,15 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
   const lastTickMs = Number.isFinite(parsedLastTick) ? parsedLastTick : tickTimeMs;
   const elapsedSec = Math.max(0, (tickTimeMs - lastTickMs) / 1000);
   const villageRows = selectAllVillageIdsStmt.all();
+  const playerRegionPairs = new Set();
 
   for (const villageRow of villageRows) {
     const villageId = Number(villageRow.id);
+    const villagePlayerId = Number(villageRow.playerId);
     const villageRegion = Number(villageRow.region);
+    if (Number.isFinite(villagePlayerId) && Number.isFinite(villageRegion)) {
+      playerRegionPairs.add(`${villagePlayerId}|${villageRegion}`);
+    }
     const resourceRow = selectResourcesByVillageStmt.get(villageId);
     if (!resourceRow) {
       continue;
@@ -4574,26 +5900,46 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
 
     const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(villageId));
     const unitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(villageId));
-    const resourceCap = calculateResourceCap(buildingLevels.warehouse ?? 0);
+    const resourceCaps = resolveVillageResourceCaps(buildingLevels);
     const populationCap = calculatePopulationCap(buildingLevels['residential-quarter'] ?? 0);
-    const populationUsed = calculatePopulationUsed(buildingLevels, unitCounts);
+    const activeAcademicsInVillage = Math.max(
+      0,
+      Math.floor(Number(countActiveAcademicsByVillageStmt.get(villageId)?.total ?? 0)),
+    );
+    const populationUsed =
+      calculatePopulationUsed(buildingLevels, unitCounts) + activeAcademicsInVillage * ACADEMIC_POPULATION_COST;
     const baseProduction = calculateProductionPerHour(buildingLevels, populationUsed, populationCap);
     const world = resolveWorldByRegion(villageRegion);
     const developerBoost = resolveDeveloperResourceBoostForWorld(world, tickTimeMs);
     const production = applyProductionMultiplier(baseProduction, developerBoost.multiplier);
 
     if (elapsedSec > 0) {
-      const nextWood = roundResource(
-        clampResourceToCap(Number(resourceRow.wood) + (production.wood * elapsedSec) / 3600, resourceCap),
-      );
-      const nextStone = roundResource(
-        clampResourceToCap(Number(resourceRow.stone) + (production.stone * elapsedSec) / 3600, resourceCap),
-      );
-      const nextIron = roundResource(
-        clampResourceToCap(Number(resourceRow.iron) + (production.iron * elapsedSec) / 3600, resourceCap),
-      );
+      let nextWood = clampResourceToCap(Number(resourceRow.wood) + (production.wood * elapsedSec) / 3600, resourceCaps.wood);
+      let nextStone = clampResourceToCap(Number(resourceRow.stone) + (production.stone * elapsedSec) / 3600, resourceCaps.stone);
+      let nextIron = clampResourceToCap(Number(resourceRow.iron) + (production.iron * elapsedSec) / 3600, resourceCaps.iron);
+      let nextGold = clampResourceToCap(Number(resourceRow.gold ?? 0) + (Number(production.gold ?? 0) * elapsedSec) / 3600, resourceCaps.gold);
+      let nextCoins = clampResourceToCap(Number(resourceRow.coins ?? 0), resourceCaps.coins);
 
-      updateResourcesStmt.run(nextWood, nextStone, nextIron, villageId);
+      const mintLevel = Math.max(0, Math.floor(Number(buildingLevels.mint ?? 0)));
+      if (mintLevel > 0 && resourceCaps.coins > 0) {
+        const throughputPerHour = Math.max(0, Number(calculateMintThroughputPerHour(mintLevel) ?? 0));
+        const mintLimitByTime = (throughputPerHour * elapsedSec) / 3600;
+        const coinStorageRemaining = Math.max(0, resourceCaps.coins - nextCoins);
+        const mintable = Math.max(0, Math.min(nextGold, mintLimitByTime, coinStorageRemaining));
+        if (mintable > 0) {
+          nextGold -= mintable;
+          nextCoins += mintable;
+        }
+      }
+
+      updateResourcesStmt.run(
+        roundResource(nextWood),
+        roundResource(nextStone),
+        roundResource(nextIron),
+        roundResource(nextGold),
+        roundResource(nextCoins),
+        villageId,
+      );
     }
 
     updateVillagePrestigeStmt.run(calculateVillagePrestige(buildingLevels, unitCounts), villageId);
@@ -4682,6 +6028,10 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
   let completedArmyMovements = 0;
   let spawnedReturnMovements = 0;
   let generatedBattleReports = 0;
+  let completedLogisticsRoutes = 0;
+  let deliveredMercenaryContracts = 0;
+  let expiredMercenaryContracts = 0;
+  let completedResearchProjects = 0;
   let prunedNotifications = 0;
   const villagesToRecalculatePrestige = new Set();
   for (const movement of dueArmyMovements) {
@@ -4703,6 +6053,20 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       const targetVillage = selectVillageWithOwnerByIdStmt.get(Number(movement.targetVillageId));
       const homeVillage = selectVillageByIdStmt.get(Number(movement.homeVillageId));
       const attackerPlayer = selectPlayerByIdStmt.get(Number(movement.playerId));
+      const attackerPrestige = targetVillage
+        ? getPlayerPrestigeInRegion(Number(movement.playerId), Number(targetVillage.region))
+        : 0;
+      const defenderPrestige = targetVillage
+        ? getPlayerPrestigeInRegion(Number(targetVillage.playerId), Number(targetVillage.region))
+        : 0;
+      const retaliationOverrideApplied =
+        targetVillage &&
+        !isAttackAllowed(attackerPrestige, defenderPrestige) &&
+        hasCombatRetaliationFlag(
+          Number(targetVillage.playerId),
+          Number(movement.playerId),
+          Number(targetVillage.region),
+        );
       const totalSentUnits = sumSelectedUnits(unitSelection);
       if (!targetVillage || !homeVillage || totalSentUnits <= 0) {
         updateArmyMovementStatusStmt.run('completed', tickTimeIso, movementId);
@@ -4851,6 +6215,10 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         attackerUnitsRaw: unitSelection,
         defenderUnitsRaw: defenderUnitsBefore,
         defenderBuildingLevels,
+        attackerPrestige,
+        defenderPrestige,
+        retaliationOverrideApplied,
+        battleTimeIso: tickTimeIso,
       });
       const gateStartLevel = Math.max(0, Math.floor(Number(battle?.gate?.startLevel ?? defenderBuildingLevels.gate ?? 0)));
       const gateEndLevel = Math.max(0, Math.floor(Number(battle?.gate?.endLevel ?? gateStartLevel)));
@@ -4928,33 +6296,21 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         defenderVillageSurvivorsTotal <= 0 &&
         stationedSupportSurvivorsTotal <= 0 &&
         Number(targetVillage.playerId) !== Number(movement.playerId);
-      const attackerVillageCount = getPlayerVillageCount(Number(movement.playerId), Number(targetVillage.region));
-      const canConquerAnotherVillage = attackerVillageCount < MAX_PLAYER_VILLAGES;
       let conquestPayload = null;
-      if (canCaptureWithKnight && canConquerAnotherVillage) {
+      if (canCaptureWithKnight) {
         const kingdomRow = selectPrimaryKingdomByPlayerAndRegionStmt.get(
           Number(movement.playerId),
           Number(targetVillage.region),
         );
         const conquerorKingdom = String(kingdomRow?.kingdom ?? 'Neutral');
+        clearResearchAssignmentsByVillageStmt.run(Number(targetVillage.id));
+        removeAcademicsByVillageStmt.run(tickTimeIso, Number(targetVillage.id));
         updateVillageOwnerForConquestStmt.run(Number(movement.playerId), conquerorKingdom, Number(targetVillage.id));
         villagesToRecalculatePrestige.add(Number(targetVillage.id));
         conquestPayload = {
           conquered: true,
-          blockedByVillageLimit: false,
-          villageLimit: MAX_PLAYER_VILLAGES,
           previousOwner: String(targetVillage.ownerUsername ?? ''),
           newOwner: String(attackerPlayer?.username ?? ''),
-          targetVillageId: Number(targetVillage.id),
-          targetVillageName: String(targetVillage.name ?? ''),
-        };
-      } else if (canCaptureWithKnight && !canConquerAnotherVillage) {
-        conquestPayload = {
-          conquered: false,
-          blockedByVillageLimit: true,
-          villageLimit: MAX_PLAYER_VILLAGES,
-          previousOwner: String(targetVillage.ownerUsername ?? ''),
-          newOwner: String(targetVillage.ownerUsername ?? ''),
           targetVillageId: Number(targetVillage.id),
           targetVillageName: String(targetVillage.name ?? ''),
         };
@@ -5030,12 +6386,14 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       let lootTaken = { wood: 0, stone: 0, iron: 0 };
       if (battle.attackerWins && attackerSurvivorsAfterConquestTotal > 0) {
         const carryingCapacity = calculateLootCapacityFromSelection(returnUnits);
-        if (carryingCapacity > 0) {
+        const prestigeLootModifier = calculateLootModifier(attackerPrestige, defenderPrestige);
+        const effectiveCarryingCapacity = Math.max(0, Math.floor(carryingCapacity * prestigeLootModifier));
+        if (effectiveCarryingCapacity > 0) {
           const defenderResources = selectResourcesByVillageStmt.get(Number(targetVillage.id));
           if (defenderResources) {
             const protectedPocket = calculateLootProtectionPocket(defenderBuildingLevels);
             const lootableResourcePocket = calculateLootableResourcePocket(defenderResources, protectedPocket);
-            const requestedLoot = calculateLootDistribution(lootableResourcePocket, lootPriority, carryingCapacity);
+            const requestedLoot = calculateLootDistribution(lootableResourcePocket, lootPriority, effectiveCarryingCapacity);
             if (requestedLoot.total > 0) {
               const subtraction = subtractResources(Number(targetVillage.id), requestedLoot.loot, protectedPocket);
               lootTaken = {
@@ -5110,6 +6468,17 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         : battle.attackerWins
           ? 'Prohra'
           : 'Vitezstvi';
+      const prestigeBalance = battle?.prestigeBalance ?? null;
+      const hasPrestigeImpact =
+        prestigeBalance != null &&
+        (Number(prestigeBalance.attackModifier ?? 1) < 0.999 ||
+          Number(prestigeBalance.defenseBonus ?? 0) > 0.0001 ||
+          Number(prestigeBalance.lootModifier ?? 1) < 0.999);
+      const prestigeSummarySuffix = hasPrestigeImpact
+        ? ` Balanc prestize: utok x${Number(prestigeBalance?.attackModifier ?? 1).toFixed(2)}, obrana +${Math.round(
+            Number(prestigeBalance?.defenseBonus ?? 0) * 100,
+          )} %, korist x${Number(prestigeBalance?.lootModifier ?? 1).toFixed(2)}.`
+        : '';
       let attackTitle = blockedByGate
         ? `Utok odrazen branou: ${attackerName} -> ${targetVillage.name}`
         : `Bitva: ${attackerName} -> ${targetVillage.name}`;
@@ -5124,8 +6493,9 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         if (conquestPayload.knightConsumed) {
           attackSummary += ' Rytir osadu obsadil a po dobyti zmizel.';
         }
-      } else if (conquestPayload?.blockedByVillageLimit) {
-        attackSummary += ` Dobytí se neprovedlo: dosažen limit ${MAX_PLAYER_VILLAGES} osad v tomto svete.`;
+      }
+      if (prestigeSummarySuffix) {
+        attackSummary += prestigeSummarySuffix;
       }
       if (attackerPlayer && Number(attackerPlayer.isBot ?? 0) !== 1) {
         let reportId = null;
@@ -5212,8 +6582,9 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         if (conquestPayload?.conquered) {
           defenseTitle = `Dobytí léna: ${targetVillage.name}`;
           defenseSummary = `Leno ${targetVillage.name} bylo dobyto hracem ${attackerName}.`;
-        } else if (conquestPayload?.blockedByVillageLimit) {
-          defenseSummary += ` Utocnik dosahl limitu ${MAX_PLAYER_VILLAGES} osad v tomto svete, dobytí se neprovedlo.`;
+        }
+        if (prestigeSummarySuffix) {
+          defenseSummary += prestigeSummarySuffix;
         }
         const defenderPayload = {
           perspective: 'defender',
@@ -5464,6 +6835,207 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     completedArmyMovements += 1;
   }
 
+  const dueLogisticsRoutes = selectDueLogisticsRoutesStmt.all(tickTimeIso);
+  for (const route of dueLogisticsRoutes) {
+    const delivered = applyResourceDeltaWithCap(Number(route.targetVillageId), {
+      wood: Math.max(0, Math.floor(Number(route.wood ?? 0))),
+      stone: Math.max(0, Math.floor(Number(route.stone ?? 0))),
+      iron: Math.max(0, Math.floor(Number(route.iron ?? 0))),
+    });
+    completeLogisticsRouteStmt.run(tickTimeIso, Number(route.id));
+    completedLogisticsRoutes += 1;
+
+    const ownerPlayer = selectPlayerByIdStmt.get(Number(route.ownerPlayerId));
+    if (ownerPlayer && Number(ownerPlayer.isBot ?? 0) !== 1) {
+      createPlayerNotification({
+        playerId: Number(ownerPlayer.id),
+        region: Number(route.region),
+        category: 'economy',
+        eventType: 'logistics_delivered',
+        severity: 'info',
+        title: 'Logisticka zasilka dorazila',
+        summary: `Zasilka #${Number(route.id)} dorucena (${Math.max(0, Number(delivered.applied.wood ?? 0))} dreva, ${Math.max(0, Number(delivered.applied.stone ?? 0))} kamene, ${Math.max(0, Number(delivered.applied.iron ?? 0))} zeleza).`,
+        payload: {
+          routeId: Number(route.id),
+          targetVillageId: Number(route.targetVillageId),
+          applied: delivered.applied,
+        },
+        sourceType: 'logistics_route',
+        sourceId: Number(route.id),
+        createdAt: tickTimeIso,
+      });
+    }
+  }
+
+  const dueMercenaryArrivals = selectDueMercenaryArrivalsStmt.all(tickTimeIso);
+  for (const contract of dueMercenaryArrivals) {
+    const currentAmountRow = selectUnitAmountByVillageAndUnitStmt.get(Number(contract.villageId), MERCENARY_UNIT_ID);
+    const currentAmount = Math.max(0, Math.floor(Number(currentAmountRow?.amount ?? 0)));
+    const unitAmount = Math.max(0, Math.floor(Number(contract.unitAmount ?? MERCENARY_CONTRACT_UNIT_AMOUNT)));
+    if (unitAmount > 0) {
+      updateUnitAmountStmt.run(currentAmount + unitAmount, Number(contract.villageId), MERCENARY_UNIT_ID);
+      villagesToRecalculatePrestige.add(Number(contract.villageId));
+    }
+    markMercenaryDeliveredStmt.run(tickTimeIso, Number(contract.id));
+    deliveredMercenaryContracts += 1;
+
+    const ownerPlayer = selectPlayerByIdStmt.get(Number(contract.playerId));
+    const villageRow = selectVillageByIdStmt.get(Number(contract.villageId));
+    if (ownerPlayer && Number(ownerPlayer.isBot ?? 0) !== 1 && villageRow) {
+      createPlayerNotification({
+        playerId: Number(ownerPlayer.id),
+        region: Number(contract.region),
+        category: 'military',
+        eventType: 'mercenary_arrived',
+        severity: 'success',
+        title: 'Zoldaci dorazili',
+        summary: `${unitAmount.toLocaleString('cs-CZ')} zoldaku dorazilo do osady ${String(villageRow.name)}.`,
+        payload: {
+          contractId: Number(contract.id),
+          villageId: Number(contract.villageId),
+          unitAmount,
+          expiresAt: String(contract.expiresAt),
+        },
+        sourceType: 'mercenary_contract',
+        sourceId: Number(contract.id),
+        createdAt: tickTimeIso,
+      });
+    }
+  }
+
+  const dueMercenaryExpirations = selectDueMercenaryExpirationsStmt.all(tickTimeIso);
+  for (const contract of dueMercenaryExpirations) {
+    const currentAmountRow = selectUnitAmountByVillageAndUnitStmt.get(Number(contract.villageId), MERCENARY_UNIT_ID);
+    const currentAmount = Math.max(0, Math.floor(Number(currentAmountRow?.amount ?? 0)));
+    const removableAmount = Math.max(0, Math.floor(Number(contract.unitAmount ?? MERCENARY_CONTRACT_UNIT_AMOUNT)));
+    const nextAmount = Math.max(0, currentAmount - removableAmount);
+    if (nextAmount !== currentAmount) {
+      updateUnitAmountStmt.run(nextAmount, Number(contract.villageId), MERCENARY_UNIT_ID);
+      villagesToRecalculatePrestige.add(Number(contract.villageId));
+    }
+    markMercenaryExpiredStmt.run(tickTimeIso, Number(contract.id));
+    expiredMercenaryContracts += 1;
+
+    const ownerPlayer = selectPlayerByIdStmt.get(Number(contract.playerId));
+    const villageRow = selectVillageByIdStmt.get(Number(contract.villageId));
+    if (ownerPlayer && Number(ownerPlayer.isBot ?? 0) !== 1 && villageRow) {
+      createPlayerNotification({
+        playerId: Number(ownerPlayer.id),
+        region: Number(contract.region),
+        category: 'military',
+        eventType: 'mercenary_expired',
+        severity: 'warning',
+        title: 'Zoldacky kontrakt vyprsel',
+        summary: `Kontrakt v osade ${String(villageRow.name)} vyprsel. Zoldaci opustili mesto.`,
+        payload: {
+          contractId: Number(contract.id),
+          villageId: Number(contract.villageId),
+          removedAmount: Math.max(0, currentAmount - nextAmount),
+        },
+        sourceType: 'mercenary_contract',
+        sourceId: Number(contract.id),
+        createdAt: tickTimeIso,
+      });
+    }
+  }
+
+  for (const pair of playerRegionPairs) {
+    const [playerIdRaw, regionRaw] = String(pair).split('|');
+    const playerId = Number(playerIdRaw);
+    const region = Number(regionRaw);
+    if (!Number.isFinite(playerId) || !Number.isFinite(region)) {
+      continue;
+    }
+
+    ensureResolvedResearchProgressForPlayerRegion(playerId, region, tickTimeIso);
+    const activeResearch = selectActiveResearchByPlayerRegionStmt.get(playerId, region);
+    if (!activeResearch) {
+      continue;
+    }
+    const definition = getResearchDefinition(String(activeResearch.researchId));
+    if (!definition) {
+      continue;
+    }
+    const assignedAcademics = Math.max(
+      0,
+      Math.floor(
+        Number(
+          countAssignedAcademicsForResearchByPlayerRegionStmt.get(
+            playerId,
+            region,
+            String(activeResearch.researchId),
+          )?.total ?? 0,
+        ),
+      ),
+    );
+    if (assignedAcademics <= 0 || elapsedSec <= 0) {
+      continue;
+    }
+    const maxUniversityLevel = Math.max(
+      0,
+      Math.floor(Number(selectMaxUniversityLevelByPlayerAndRegionStmt.get(playerId, region)?.maxLevel ?? 0)),
+    );
+    const speedMultiplier = calculateResearchSpeedMultiplier(assignedAcademics, maxUniversityLevel);
+    if (speedMultiplier <= 0) {
+      continue;
+    }
+    const progressGain = (elapsedSec / 3600) * 120 * speedMultiplier;
+    const currentProgress = Math.max(0, Number(activeResearch.progress ?? 0));
+    const requiredPoints = getResearchProgressPointsRequired(definition);
+    const nextProgress = Math.min(requiredPoints, currentProgress + progressGain);
+    const startedAt = activeResearch.startedAt ? String(activeResearch.startedAt) : tickTimeIso;
+
+    if (nextProgress >= requiredPoints) {
+      clearResearchAssignmentsByPlayerRegionStmt.run(playerId, region);
+      upsertResearchProgressStmt.run(
+        playerId,
+        region,
+        String(definition.id),
+        'completed',
+        requiredPoints,
+        0,
+        startedAt,
+        tickTimeIso,
+        tickTimeIso,
+      );
+      ensureResolvedResearchProgressForPlayerRegion(playerId, region, tickTimeIso);
+      completedResearchProjects += 1;
+
+      const playerRow = selectPlayerByIdStmt.get(playerId);
+      if (playerRow && Number(playerRow.isBot ?? 0) !== 1) {
+        createPlayerNotification({
+          playerId,
+          region,
+          category: 'research',
+          eventType: 'research_completed',
+          severity: 'success',
+          title: `Vyzkum dokoncen: ${String(definition.name)}`,
+          summary: `${String(definition.name)} byl uspesne dokoncen.`,
+          payload: {
+            researchId: String(definition.id),
+            completedAt: tickTimeIso,
+          },
+          sourceType: 'research_progress',
+          sourceId: null,
+          createdAt: tickTimeIso,
+        });
+      }
+      continue;
+    }
+
+    upsertResearchProgressStmt.run(
+      playerId,
+      region,
+      String(definition.id),
+      'researching',
+      nextProgress,
+      assignedAcademics,
+      startedAt,
+      null,
+      tickTimeIso,
+    );
+  }
+
   for (const villageId of villagesToRecalculatePrestige) {
     updateVillagePrestigeFromCurrentState(Number(villageId));
   }
@@ -5480,6 +7052,10 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     stationedSupports,
     spawnedReturnMovements,
     generatedBattleReports,
+    completedLogisticsRoutes,
+    deliveredMercenaryContracts,
+    expiredMercenaryContracts,
+    completedResearchProjects,
     prunedNotifications,
     tickedAt: tickTimeIso,
   };
@@ -5615,8 +7191,17 @@ export const getVillageSnapshot = (
   const unitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(village.id));
   const townhallLevel = buildingLevels.townhall ?? 0;
   const resourceCap = calculateResourceCap(buildingLevels.warehouse ?? 0);
+  const mintLevel = Math.max(0, Math.floor(Number(buildingLevels.mint ?? 0)));
+  const mintGoldCap = calculateMintGoldStorageCap(mintLevel);
+  const mintCoinCap = calculateMintCoinStorageCap(mintLevel);
+  const mintThroughputPerHour = calculateMintThroughputPerHour(mintLevel);
   const populationCap = calculatePopulationCap(buildingLevels['residential-quarter'] ?? 0);
-  const populationUsed = calculatePopulationUsed(buildingLevels, unitCounts);
+  const academicCountInVillage = Math.max(
+    0,
+    Math.floor(Number(countActiveAcademicsByVillageStmt.get(Number(village.id))?.total ?? 0)),
+  );
+  const academicPopulationUsed = academicCountInVillage * ACADEMIC_POPULATION_COST;
+  const populationUsed = calculatePopulationUsed(buildingLevels, unitCounts) + academicPopulationUsed;
   const baseProduction = calculateProductionPerHour(buildingLevels, populationUsed, populationCap);
   const developerResourceBoost = resolveDeveloperResourceBoostForWorld(world);
   const production = applyProductionMultiplier(baseProduction, developerResourceBoost.multiplier);
@@ -5654,6 +7239,8 @@ export const getVillageSnapshot = (
     wood: Number(resourcesRow.wood),
     stone: Number(resourcesRow.stone),
     iron: Number(resourcesRow.iron),
+    gold: Number(resourcesRow.gold ?? 0),
+    coins: Number(resourcesRow.coins ?? 0),
   };
 
   const availablePopulation = Math.max(0, populationCap - populationUsed);
@@ -5663,9 +7250,27 @@ export const getVillageSnapshot = (
     populationUsed,
     reservedPopulationForRecruitment,
   );
+  const villageAcademicCapacity = getVillageUniversityCapacity(buildingLevels);
+  const villageAcademicAvailableSlots = Math.max(0, villageAcademicCapacity - academicCountInVillage);
   const knightCapacity = getPlayerKnightCapacity(Number(player.id), Number(world.region));
   const playerKnightTotal = getPlayerKnightTotalInWorld(Number(player.id), Number(world.region));
   const remainingKnightCapacity = Math.max(0, knightCapacity - playerKnightTotal);
+  const researchRows = ensureResolvedResearchProgressForPlayerRegion(Number(player.id), Number(world.region));
+  const completedResearchIds = buildCompletedResearchSet(researchRows);
+  const researchView = buildResearchViewModel(researchRows, {
+    playerId: Number(player.id),
+    region: Number(world.region),
+    snapshotIso: nowIso(),
+  });
+  const totalAcademicsInRegion = Math.max(
+    0,
+    Math.floor(Number(countActiveAcademicsByPlayerRegionStmt.get(Number(player.id), Number(world.region))?.total ?? 0)),
+  );
+  const idleAcademicsInRegion = Math.max(
+    0,
+    Math.floor(Number(countIdleAcademicsByPlayerRegionStmt.get(Number(player.id), Number(world.region))?.total ?? 0)),
+  );
+  const activeResearchRow = selectActiveResearchByPlayerRegionStmt.get(Number(player.id), Number(world.region));
 
   const buildings = BUILDING_ORDER.map((buildingId) => {
     const def = BUILDING_DEFS[buildingId];
@@ -5675,14 +7280,32 @@ export const getVillageSnapshot = (
     const nextCost = calculateUpgradeCost(buildingId, effectiveLevel);
     const nextDurationSec =
       nextCost == null ? null : calculateUpgradeDurationSec(buildingId, effectiveLevel, townhallLevel);
+    const nextLevelPreview =
+      effectiveLevel >= maxLevel
+        ? null
+        : buildBuildingNextLevelPreview({
+            buildingId,
+            fromLevel: effectiveLevel,
+            toLevel: effectiveLevel + 1,
+          });
     const workersUsed = (def.workerPerLevel ?? 0) * level;
     const activeUpgradeForBuilding = activeUpgradeByBuilding.get(buildingId) ?? null;
     const isInProgress = activeUpgradeForBuilding != null;
     let blockedReason = null;
     let canUpgrade = false;
+    const requirementError = resolveBuildingRequirementError(buildingId, buildingLevels);
+    const requiredResearchId = BUILDING_RESEARCH_REQUIREMENTS[buildingId] ?? null;
+    const missingRequiredResearch =
+      requiredResearchId && !completedResearchIds.has(String(requiredResearchId))
+        ? getResearchDefinition(requiredResearchId)?.name ?? requiredResearchId
+        : null;
 
     if (effectiveLevel >= maxLevel) {
       blockedReason = 'Maximalni uroven dosazena';
+    } else if (requirementError) {
+      blockedReason = requirementError;
+    } else if (missingRequiredResearch) {
+      blockedReason = `Vyzkum '${missingRequiredResearch}' je povinny.`;
     } else if (nextCost && !canAfford(currentResources, nextCost)) {
       blockedReason = 'Nedostatek surovin';
     } else {
@@ -5701,6 +7324,7 @@ export const getVillageSnapshot = (
       maxLevel,
       workersUsed,
       effect: calculateBuildingEffect(buildingId, level),
+      nextLevelPreview,
       nextCost,
       nextDurationSec,
       canUpgrade,
@@ -5725,18 +7349,30 @@ export const getVillageSnapshot = (
     const maxByKnightLimit = unitId === KNIGHT_UNIT_ID ? remainingKnightCapacity : Number.POSITIVE_INFINITY;
     const maxBySingleOrder = unitId === KNIGHT_UNIT_ID ? 1 : Number.POSITIVE_INFINITY;
     const maxByVillageKnightSlot = hasVillageKnightSlotOccupied ? 0 : Number.POSITIVE_INFINITY;
-    const maxRecruitable = Math.max(
-      0,
-      Math.min(maxByPopulation, maxByResources, maxByKnightLimit, maxBySingleOrder, maxByVillageKnightSlot),
-    );
+    const isSpecialNonRecruitable = def.isRecruitable === false;
+    const maxRecruitable = isSpecialNonRecruitable
+      ? 0
+      : Math.max(
+          0,
+          Math.min(maxByPopulation, maxByResources, maxByKnightLimit, maxBySingleOrder, maxByVillageKnightSlot),
+        );
 
     let blockedReason = null;
     let canRecruit = false;
-    if (requiredBuildingCurrentLevel < requiredBuildingLevel) {
+    const requiredResearchId = UNIT_RESEARCH_REQUIREMENTS[unitId] ?? null;
+    const missingRequiredResearch =
+      requiredResearchId && !completedResearchIds.has(String(requiredResearchId))
+        ? getResearchDefinition(requiredResearchId)?.name ?? requiredResearchId
+        : null;
+    if (isSpecialNonRecruitable) {
+      blockedReason = 'Speciální jednotka (nábor přes kontrakt)';
+    } else if (requiredBuildingCurrentLevel < requiredBuildingLevel) {
       blockedReason =
         requiredBuildingLevel <= 1
           ? `Vybuduj ${BUILDING_DEFS[requiredBuildingId].name}`
           : `Vybuduj ${BUILDING_DEFS[requiredBuildingId].name} na uroveň ${requiredBuildingLevel}`;
+    } else if (missingRequiredResearch) {
+      blockedReason = `Vyzkum '${missingRequiredResearch}' je povinny`;
     } else if (hasVillageKnightSlotOccupied) {
       blockedReason = 'V osade uz je rytir nebo je ve vycviku';
     } else if (unitId === KNIGHT_UNIT_ID && remainingKnightCapacity <= 0) {
@@ -5842,6 +7478,39 @@ export const getVillageSnapshot = (
     }
   }
 
+  if (activeResearchRow) {
+    const definition = getResearchDefinition(String(activeResearchRow.researchId));
+    const requiredPoints = getResearchProgressPointsRequired(definition);
+    const percent =
+      requiredPoints > 0
+        ? Math.max(0, Math.min(100, (Number(activeResearchRow.progress ?? 0) / requiredPoints) * 100))
+        : 0;
+    activeOrders.push(
+      `Vyzkum: ${definition?.name ?? activeResearchRow.researchId} (${percent.toFixed(1)} %, akademici ${Math.max(
+        0,
+        Number(activeResearchRow.assignedAcademics ?? 0),
+      )})`,
+    );
+  } else {
+    activeOrders.push('Vyzkum: zadny aktivni projekt');
+  }
+
+  const mercenaryContracts = selectMercenaryContractsByVillageStmt.all(Number(village.id));
+  const activeMercenaryContract = mercenaryContracts.find((contract) =>
+    ['en_route', 'active'].includes(String(contract.status)),
+  );
+  if (activeMercenaryContract) {
+    if (String(activeMercenaryContract.status) === 'en_route') {
+      const remainingSec = Math.max(0, Math.ceil((Date.parse(String(activeMercenaryContract.arriveAt)) - Date.now()) / 1000));
+      activeOrders.push(`Zoldaci: kontrakt na ceste (dorazi za ${formatRemaining(remainingSec)})`);
+    } else {
+      const remainingSec = Math.max(0, Math.ceil((Date.parse(String(activeMercenaryContract.expiresAt)) - Date.now()) / 1000));
+      activeOrders.push(`Zoldaci: aktivni obrana (${Number(activeMercenaryContract.unitAmount)} jednotek, zbyva ${formatRemaining(remainingSec)})`);
+    }
+  } else {
+    activeOrders.push('Zoldaci: zadny aktivni kontrakt');
+  }
+
   activeOrders.push('Ekonomika jede v realnem case podle cron ticku.');
   activeOrders.push('Nabor i vystavba bezi oddelene pro kazde leno.');
   if (developerResourceBoost.isActive) {
@@ -5851,9 +7520,41 @@ export const getVillageSnapshot = (
   }
 
   const activeUpgrade = activeUpgrades.length > 0 ? activeUpgrades[0] : null;
-  const settlements = buildWorldSettlements(village, player.username, world);
+  const settlements = buildWorldSettlements(village, player.username, Number(player.id), world);
   const leaderboard = listPlayerLeaderboard(world.id);
   const kingdomHub = buildKingdomHubState(player, village);
+  const recentLogisticsRoutes = selectRecentLogisticsByVillageStmt
+    .all(Number(village.id), Number(village.id), Number(world.region))
+    .map((route) => {
+      const arriveAtMs = Date.parse(String(route.arriveAt ?? ''));
+      const completedAtMs = Date.parse(String(route.completedAt ?? ''));
+      const remainingSec =
+        String(route.status) === 'in_progress' && Number.isFinite(arriveAtMs)
+          ? Math.max(0, Math.ceil((arriveAtMs - Date.now()) / 1000))
+          : 0;
+      return {
+        id: Number(route.id),
+        ownerPlayerId: Number(route.ownerPlayerId),
+        sourceVillageId: Number(route.sourceVillageId),
+        targetVillageId: Number(route.targetVillageId),
+        sourceVillageName: String(route.sourceVillageName ?? ''),
+        targetVillageName: String(route.targetVillageName ?? ''),
+        mode: String(route.mode ?? 'manual'),
+        status: String(route.status ?? 'completed'),
+        wood: Math.max(0, Math.floor(Number(route.wood ?? 0))),
+        stone: Math.max(0, Math.floor(Number(route.stone ?? 0))),
+        iron: Math.max(0, Math.floor(Number(route.iron ?? 0))),
+        startedAt: String(route.startedAt ?? nowIso()),
+        arriveAt: String(route.arriveAt ?? nowIso()),
+        completedAt: Number.isFinite(completedAtMs) ? String(route.completedAt) : null,
+        remainingSec,
+      };
+    });
+  const marketLevel = Math.max(0, Math.floor(Number(buildingLevels.market ?? 0)));
+  const marketCapacity = calculateMarketCapacity(marketLevel);
+  const hideoutProtection = calculateLootProtectionPocket(buildingLevels);
+  const vaultProtection = calculateCurrencyProtectionPocket(buildingLevels);
+  const marketGuildUnlocked = marketLevel >= 4 && completedResearchIds.has('guild-influence');
   const worldSpawnConfig = resolveWorldSpawnConfig(world);
   const villageProtectionRuleDays = Math.max(0, Number(worldSpawnConfig.playerProtectionDays ?? 0));
   const villageProtectionUntil = resolveVillageProtectionUntilIso(village, villageProtectionRuleDays);
@@ -5908,12 +7609,25 @@ export const getVillageSnapshot = (
       wood: Math.floor(currentResources.wood),
       stone: Math.floor(currentResources.stone),
       iron: Math.floor(currentResources.iron),
+      gold: Math.floor(currentResources.gold),
+      coins: Math.floor(currentResources.coins),
       cap: resourceCap,
+      goldCap: mintGoldCap,
+      coinsCap: mintCoinCap,
       productionPerHour: {
         wood: Number(production.wood.toFixed(2)),
         stone: Number(production.stone.toFixed(2)),
         iron: Number(production.iron.toFixed(2)),
+        gold: Number((production.gold ?? 0).toFixed(2)),
+        mintCoins: Number(mintThroughputPerHour.toFixed(2)),
         penalty: Number(production.penalty.toFixed(2)),
+      },
+      protection: {
+        wood: hideoutProtection.wood,
+        stone: hideoutProtection.stone,
+        iron: hideoutProtection.iron,
+        gold: vaultProtection.gold,
+        coins: vaultProtection.coins,
       },
       developerBoost: {
         isActive: Boolean(developerResourceBoost.isActive),
@@ -5932,6 +7646,7 @@ export const getVillageSnapshot = (
       used: populationUsed,
       cap: populationCap,
       available: availablePopulation,
+      academicsUsed: academicPopulationUsed,
     },
     buildings,
     units,
@@ -5974,6 +7689,52 @@ export const getVillageSnapshot = (
       remainingSec: Math.max(0, Math.ceil((Date.parse(recruitment.finishAt) - Date.now()) / 1000)),
     })),
     army: armyState,
+    research: {
+      totalAcademics: totalAcademicsInRegion,
+      idleAcademics: idleAcademicsInRegion,
+      villageAcademics: academicCountInVillage,
+      villageAcademicCapacity,
+      villageAcademicAvailableSlots,
+      activeProjectId: activeResearchRow ? String(activeResearchRow.researchId) : null,
+      projects: researchView,
+    },
+    market: {
+      level: marketLevel,
+      capacity: marketCapacity,
+      maxDistance: MARKET_MAX_DISTANCE_TILES,
+      guildUnlocked: marketGuildUnlocked,
+      logisticsRoutes: recentLogisticsRoutes,
+    },
+    mercenaries: {
+      contracts: selectMercenaryContractsByVillageStmt.all(Number(village.id)).map((contract) => ({
+        id: Number(contract.id),
+        status: String(contract.status ?? 'expired'),
+        orderedAt: String(contract.orderedAt ?? nowIso()),
+        arriveAt: String(contract.arriveAt ?? nowIso()),
+        expiresAt: String(contract.expiresAt ?? nowIso()),
+        deliveredAt: contract.deliveredAt ? String(contract.deliveredAt) : null,
+        finishedAt: contract.finishedAt ? String(contract.finishedAt) : null,
+        unitAmount: Math.max(0, Math.floor(Number(contract.unitAmount ?? 0))),
+      })),
+      cooldownRemainingSec: getMercenaryCooldownRemainingSec(
+        selectLatestMercenaryContractByPlayerRegionStmt.get(Number(player.id), Number(world.region)),
+      ),
+    },
+    rules: {
+      nightMode: {
+        startHourUtc: NIGHT_MODE_START_HOUR,
+        endHourUtc: NIGHT_MODE_END_HOUR,
+        isActiveNow: isNightModeAtTime(nowIso()),
+        defenseBonusPct: 100,
+      },
+      prestigeBalance: {
+        minAttackablePrestigeRatio: MIN_ATTACKABLE_PRESTIGE_RATIO,
+        minLootModifier: MIN_LOOT_MODIFIER,
+        retaliationRule:
+          'Pokud slabsi hrac zautoci na silnejsiho, ztraci ochranu prestize vuci tomuto hraci a muze dostat odvetny utok.',
+      },
+      cancelCommandProgressLimit: COMMAND_CANCEL_MAX_PROGRESS,
+    },
     activeOrders,
     limits: {
       maxBuildingLevel: getGlobalMaxBuildingLevel(),
@@ -6030,7 +7791,8 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
       Math.abs(Number(support.homeCoordY) - Number(support.targetCoordY)),
     );
     const durationSec = calculateArmyTravelDurationSec(unitSelection, distanceTiles);
-    const arriveAtIso = new Date(Date.parse(issuedAtIso) + durationSec * 1000).toISOString();
+    const effectiveDurationSec = Math.max(1, Math.floor(Number(durationSec ?? 0)));
+    const arriveAtIso = new Date(Date.parse(issuedAtIso) + effectiveDurationSec * 1000).toISOString();
     const inserted = insertArmyMovementStmt.run(
       Number(player.id),
       'return',
@@ -6063,13 +7825,37 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
       targetVillageId: Number(support.homeVillageId),
       totalUnits: sumSelectedUnits(unitSelection),
       distanceTiles,
-      durationSec,
+      durationSec: effectiveDurationSec,
       arriveAt: arriveAtIso,
+      arrivesDuringNightMode: false,
     };
   }
 
-  const targetVillageId = requirePositiveInteger(payload?.targetVillageId, 'targetVillageId');
-  const targetVillage = selectVillageWithOwnerByIdStmt.get(targetVillageId);
+  let targetVillage = null;
+  if (commandType === 'attack' && payload?.manualTargetCoordX != null && payload?.manualTargetCoordY != null) {
+    const manualCoordX = Number(payload?.manualTargetCoordX);
+    const manualCoordY = Number(payload?.manualTargetCoordY);
+    if (
+      Number.isFinite(manualCoordX) &&
+      Number.isFinite(manualCoordY) &&
+      Number.isInteger(manualCoordX) &&
+      Number.isInteger(manualCoordY)
+    ) {
+      targetVillage = selectVillageWithOwnerByCoordsAndRegionStmt.get(
+        Math.floor(manualCoordX),
+        Math.floor(manualCoordY),
+        Number(village.region),
+      );
+      if (!targetVillage) {
+        throw new GameRuleError('Rucne zadane souradnice neodpovidaji zadnemu lenu v tomto svete.', 404);
+      }
+    }
+  }
+
+  if (!targetVillage) {
+    const targetVillageId = requirePositiveInteger(payload?.targetVillageId, 'targetVillageId');
+    targetVillage = selectVillageWithOwnerByIdStmt.get(targetVillageId);
+  }
   if (!targetVillage) {
     throw new GameRuleError('Cilove leno neexistuje.', 404);
   }
@@ -6111,9 +7897,35 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
         );
       }
     }
+
+    const isTargetNonBotPlayer = Number(targetVillage.ownerIsBot ?? 0) !== 1;
+    if (isTargetNonBotPlayer) {
+      const attackerPrestige = getPlayerPrestigeInRegion(Number(player.id), Number(village.region));
+      const defenderPrestige = getPlayerPrestigeInRegion(Number(targetVillage.playerId), Number(targetVillage.region));
+      const prestigeLock = evaluatePrestigeAttackLock({
+        attackerPrestige,
+        defenderPrestige,
+        attackerPlayerId: Number(player.id),
+        defenderPlayerId: Number(targetVillage.playerId),
+        region: Number(village.region),
+      });
+      if (!prestigeLock.canAttack) {
+        throw new GameRuleError(
+          `Balanc prestize blokuje utok: cil ma ${Math.floor(defenderPrestige).toLocaleString(
+            'cs-CZ',
+          )} prestize, potrebuje alespon ${prestigeLock.minimumDefenderPrestige.toLocaleString(
+            'cs-CZ',
+          )}. Ochrana se zrusi, pokud te cilovy hrac napadne jako prvni.`,
+          403,
+        );
+      }
+    }
   }
 
   const selectedUnits = parseArmyUnitSelection(payload?.units);
+  if (Math.max(0, Math.floor(Number(selectedUnits[MERCENARY_UNIT_ID] ?? 0))) > 0) {
+    throw new GameRuleError('Zoldaky nelze vysilat mimo jejich domovske leno.');
+  }
   if (commandType === 'support' && Number(selectedUnits.caravan ?? 0) > 0) {
     throw new GameRuleError('Karavany nelze posilat jako podporu.');
   }
@@ -6150,7 +7962,8 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
   if (durationSec <= 0) {
     throw new GameRuleError('Nelze vypocitat dobu presunu armady.');
   }
-  const arriveAtIso = new Date(Date.parse(issuedAtIso) + durationSec * 1000).toISOString();
+  const effectiveDurationSec = Math.max(1, Math.floor(Number(durationSec ?? 0)));
+  const arriveAtIso = new Date(Date.parse(issuedAtIso) + effectiveDurationSec * 1000).toISOString();
 
   for (const unitId of UNIT_ORDER) {
     const requestedAmount = Number(selectedUnits[unitId] ?? 0);
@@ -6185,6 +7998,15 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
     insertArmyMovementUnitStmt.run(movementId, unitId, amount);
   }
 
+  if (commandType === 'attack' && Number(targetVillage.ownerIsBot ?? 0) !== 1) {
+    registerCombatRetaliationFlag({
+      aggressorPlayerId: Number(player.id),
+      defenderPlayerId: Number(targetVillage.playerId),
+      region: Number(village.region),
+      attackedAtIso: issuedAtIso,
+    });
+  }
+
   const commandLabel =
     commandType === 'attack' ? 'Útok' : commandType === 'support' ? 'Podpora' : commandType === 'move' ? 'Přesun' : 'Rozkaz';
   createPlayerNotification({
@@ -6194,7 +8016,7 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
     eventType: 'army_command_sent',
     severity: 'info',
     title: `${commandLabel} odeslán`,
-    summary: `${commandLabel} z osady ${String(village.name)} na ${String(targetVillage.name)} dorazí za ${formatRemaining(durationSec)}.`,
+    summary: `${commandLabel} z osady ${String(village.name)} na ${String(targetVillage.name)} dorazí za ${formatRemaining(effectiveDurationSec)}.`,
     payload: {
       movementId,
       commandType,
@@ -6224,7 +8046,7 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
       eventType: commandType === 'attack' ? 'incoming_attack' : 'incoming_command',
       severity: incomingSeverity,
       title: incomingTitle,
-      summary: `${player.username} vyslal ${commandLabel.toLowerCase()} z ${String(village.name)}. ETA ${formatRemaining(durationSec)}.`,
+      summary: `${player.username} vyslal ${commandLabel.toLowerCase()} z ${String(village.name)}. ETA ${formatRemaining(effectiveDurationSec)}.`,
       payload: {
         movementId,
         commandType,
@@ -6250,18 +8072,146 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
     totalUnits,
     totalCost: sumSelectedCost(selectedUnits),
     distanceTiles,
-    durationSec,
+    durationSec: effectiveDurationSec,
     arriveAt: arriveAtIso,
+    arrivesDuringNightMode: commandType === 'attack' ? isNightModeAtTime(arriveAtIso) : false,
     lootPriority,
   };
 });
 
+const cancelArmyCommandTransaction = db.transaction((username, movementIdRaw, requestedVillageId, worldId = null) => {
+  const { player, world } = requireVillageForUser(username, requestedVillageId, worldId);
+  const movementId = requirePositiveInteger(movementIdRaw, 'movementId');
+  const movement = selectInProgressMovementByIdForPlayerStmt.get(
+    Number(movementId),
+    Number(player.id),
+    Number(world.region),
+  );
+  if (!movement) {
+    throw new GameRuleError('Rozkaz nebyl nalezen nebo uz nelze zrusit.', 404);
+  }
+
+  const commandType = String(movement.commandType ?? '');
+  if (!['attack', 'support', 'move'].includes(commandType)) {
+    throw new GameRuleError('Tento typ rozkazu nelze zrusit.', 400);
+  }
+
+  const startedAtMs = Date.parse(String(movement.startedAt));
+  const arriveAtMs = Date.parse(String(movement.arriveAt));
+  const nowMs = Date.now();
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(arriveAtMs) || arriveAtMs <= startedAtMs) {
+    throw new GameRuleError('Rozkaz ma neplatna casova data a nelze jej zrusit.', 400);
+  }
+
+  const totalDurationSec = Math.max(1, (arriveAtMs - startedAtMs) / 1000);
+  const elapsedSec = Math.max(0, Math.min(totalDurationSec, (nowMs - startedAtMs) / 1000));
+  const maxCancelableSec = totalDurationSec * COMMAND_CANCEL_MAX_PROGRESS;
+  if (elapsedSec > maxCancelableSec) {
+    throw new GameRuleError(
+      `Rozkaz lze zrusit pouze do 1/3 cesty. Aktualni prubeh: ${Math.round((elapsedSec / totalDurationSec) * 100)} %.`,
+      400,
+    );
+  }
+
+  const movementUnitsRows = selectMovementUnitsStmt.all(Number(movement.id));
+  const returnSelection = toCompleteUnitSelection({});
+  for (const unitRow of movementUnitsRows) {
+    const unitId = String(unitRow.unitId ?? '');
+    if (!UNIT_ORDER.includes(unitId)) {
+      continue;
+    }
+    returnSelection[unitId] = Math.max(0, Math.floor(Number(unitRow.amount ?? 0)));
+  }
+  const totalUnits = sumSelectedUnits(returnSelection);
+  if (totalUnits <= 0) {
+    updateArmyMovementStatusStmt.run('completed', nowIso(), Number(movement.id));
+    return {
+      canceledMovementId: Number(movement.id),
+      returnMovementId: null,
+      totalUnits: 0,
+      elapsedSec: Math.round(elapsedSec),
+      returnDurationSec: 0,
+      returnArriveAt: null,
+    };
+  }
+
+  const returnDurationSec = Math.max(1, Math.round(elapsedSec));
+  const startedAtIso = nowIso();
+  const returnArriveAtIso = new Date(Date.parse(startedAtIso) + returnDurationSec * 1000).toISOString();
+  const insertedReturn = insertArmyMovementStmt.run(
+    Number(player.id),
+    'return',
+    Number(movement.targetVillageId),
+    Number(movement.homeVillageId),
+    Number(movement.homeVillageId),
+    null,
+    0,
+    0,
+    0,
+    startedAtIso,
+    returnArriveAtIso,
+    'in_progress',
+  );
+  const returnMovementId = Number(insertedReturn.lastInsertRowid);
+  for (const unitId of UNIT_ORDER) {
+    const amount = Math.max(0, Math.floor(Number(returnSelection[unitId] ?? 0)));
+    if (amount <= 0) {
+      continue;
+    }
+    insertArmyMovementUnitStmt.run(returnMovementId, unitId, amount);
+  }
+
+  updateArmyMovementStatusStmt.run('completed', startedAtIso, Number(movement.id));
+
+  createPlayerNotification({
+    playerId: Number(player.id),
+    region: Number(world.region),
+    category: 'command',
+    eventType: 'army_command_canceled',
+    severity: 'info',
+    title: 'Rozkaz byl zrusen',
+    summary: `Jednotky se vraceji (${totalUnits.toLocaleString('cs-CZ')} jednotek, navrat za ${formatRemaining(returnDurationSec)}).`,
+    payload: {
+      canceledMovementId: Number(movement.id),
+      returnMovementId,
+      elapsedSec: Math.round(elapsedSec),
+      returnDurationSec,
+      returnArriveAt: returnArriveAtIso,
+    },
+    sourceType: 'army_movement',
+    sourceId: returnMovementId,
+    createdAt: startedAtIso,
+  });
+
+  return {
+    canceledMovementId: Number(movement.id),
+    returnMovementId,
+    totalUnits,
+    elapsedSec: Math.round(elapsedSec),
+    returnDurationSec,
+    returnArriveAt: returnArriveAtIso,
+  };
+});
+
 const startUpgradeTransaction = db.transaction((username, buildingId, startedAtIso, requestedVillageId, worldId = null) => {
-  const { village } = requireVillageForUser(username, requestedVillageId, worldId);
+  const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
   const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(village.id));
   const currentLevel = buildingLevels[buildingId];
   if (currentLevel == null) {
     throw new GameRuleError('Neznama budova.');
+  }
+  const requirementError = resolveBuildingRequirementError(buildingId, buildingLevels);
+  if (requirementError) {
+    throw new GameRuleError(requirementError, 400);
+  }
+
+  const requiredResearchId = BUILDING_RESEARCH_REQUIREMENTS[buildingId] ?? null;
+  if (requiredResearchId) {
+    const researchRows = ensureResolvedResearchProgressForPlayerRegion(Number(player.id), Number(village.region), startedAtIso);
+    if (!isResearchCompleted(researchRows, requiredResearchId)) {
+      const researchName = getResearchDefinition(requiredResearchId)?.name ?? requiredResearchId;
+      throw new GameRuleError(`Pro vystavbu je nejprve potreba dokoncit vyzkum '${researchName}'.`, 400);
+    }
   }
   const maxLevel = getMaxBuildingLevel(buildingId);
   const queuedUpgradesForBuilding = selectActiveUpgradesByVillageAndBuildingStmt.all(village.id, buildingId);
@@ -6310,6 +8260,8 @@ const startUpgradeTransaction = db.transaction((username, buildingId, startedAtI
     roundResource(pocket.wood - cost.wood),
     roundResource(pocket.stone - cost.stone),
     roundResource(pocket.iron - cost.iron),
+    roundResource(Number(resources.gold ?? 0)),
+    roundResource(Number(resources.coins ?? 0)),
     village.id,
   );
 
@@ -6418,14 +8370,11 @@ const conquerVillageTransaction = db.transaction((username, villageIdRaw, reques
     };
   }
 
-  const playerVillageCount = getPlayerVillageCount(Number(player.id), Number(world.region));
-  if (playerVillageCount >= MAX_PLAYER_VILLAGES) {
-    throw new GameRuleError(`Byl dosazen limit ${MAX_PLAYER_VILLAGES} osad v tomto svete.`, 400);
-  }
-
   const kingdomRow = selectPrimaryKingdomByPlayerAndRegionStmt.get(Number(player.id), Number(world.region));
   const conquerorKingdom = String(kingdomRow?.kingdom ?? 'Neutral');
 
+  clearResearchAssignmentsByVillageStmt.run(Number(villageId));
+  removeAcademicsByVillageStmt.run(nowIso(), Number(villageId));
   updateVillageOwnerForConquestStmt.run(Number(player.id), conquerorKingdom, villageId);
 
   return {
@@ -6853,6 +8802,81 @@ const kickKingdomMemberTransaction = db.transaction((username, targetUsernameRaw
   };
 });
 
+const transferKingdomLeadershipTransaction = db.transaction(
+  (username, targetUsernameRaw, requestedVillageId = null, worldId = null) => {
+    const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
+    const worldRegion = Number(village.region);
+    const kingdomName = normalizeKingdomValue(village.kingdom) || 'Neutral';
+    requireKingdomLeadership(player, kingdomName, worldRegion);
+
+    const targetUsername = normalizeUsername(targetUsernameRaw);
+    if (!targetUsername) {
+      throw new GameRuleError("Pole 'targetUsername' je povinne.");
+    }
+
+    const targetPlayer = selectNonBotPlayerByUsernameStmt.get(targetUsername);
+    if (!targetPlayer) {
+      throw new GameRuleError(`Hrac '${targetUsername}' neexistuje.`, 404);
+    }
+    if (Number(targetPlayer.id) === Number(player.id)) {
+      throw new GameRuleError('Kralovstvi uz vedes ty.', 400);
+    }
+
+    const targetKingdom = resolvePrimaryKingdomByPlayerId(Number(targetPlayer.id), worldRegion);
+    if (normalizeKingdomComparable(targetKingdom) !== normalizeKingdomComparable(kingdomName)) {
+      throw new GameRuleError('Cilovy hrac neni clenem tveho kralovstvi.', 400);
+    }
+
+    const transferredAt = nowIso();
+    createKingdomEvent({
+      region: worldRegion,
+      kingdom: kingdomName,
+      eventType: 'leadership_transferred',
+      actorPlayerId: Number(player.id),
+      targetPlayerId: Number(targetPlayer.id),
+      payload: {
+        previousLeaderPlayerId: Number(player.id),
+        previousLeaderUsername: String(player.username),
+        newLeaderPlayerId: Number(targetPlayer.id),
+        newLeaderUsername: String(targetPlayer.username),
+      },
+    });
+    createPlayerNotification({
+      playerId: Number(player.id),
+      region: worldRegion,
+      category: 'kingdom',
+      eventType: 'kingdom_leadership_transferred_out',
+      severity: 'warning',
+      title: 'Predal jsi titul Krale',
+      summary: `Titul Krale v kralovstvi ${kingdomName} byl predan hraci ${String(targetPlayer.username)}.`,
+      payload: { kingdom: kingdomName, targetUsername: String(targetPlayer.username) },
+      sourceType: 'kingdom_event',
+      sourceId: null,
+      createdAt: transferredAt,
+    });
+    createPlayerNotification({
+      playerId: Number(targetPlayer.id),
+      region: worldRegion,
+      category: 'kingdom',
+      eventType: 'kingdom_leadership_transferred_in',
+      severity: 'success',
+      title: 'Byl ti predan titul Krale',
+      summary: `${player.username} ti predal titul Krale v kralovstvi ${kingdomName}.`,
+      payload: { kingdom: kingdomName, actorUsername: player.username },
+      sourceType: 'kingdom_event',
+      sourceId: null,
+      createdAt: transferredAt,
+    });
+
+    return {
+      kingdom: kingdomName,
+      previousLeaderUsername: String(player.username),
+      newLeaderUsername: String(targetPlayer.username),
+      transferredAt,
+    };
+  },
+);
+
 export const createKingdom = (username, kingdomName, requestedVillageId = null, worldId = null) =>
   createKingdomTransaction(username, kingdomName, requestedVillageId, worldId);
 
@@ -6871,11 +8895,17 @@ export const leaveKingdom = (username, requestedVillageId = null, worldId = null
 export const kickKingdomMember = (username, targetUsername, requestedVillageId = null, worldId = null) =>
   kickKingdomMemberTransaction(username, targetUsername, requestedVillageId, worldId);
 
+export const transferKingdomLeadership = (username, targetUsername, requestedVillageId = null, worldId = null) =>
+  transferKingdomLeadershipTransaction(username, targetUsername, requestedVillageId, worldId);
+
 const recruitTransaction = db.transaction((username, unitId, amount, requestedVillageId, worldId = null) => {
   const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
   const unitDef = UNIT_DEFS[unitId];
   if (!unitDef) {
     throw new GameRuleError('Neznama jednotka.');
+  }
+  if (unitDef.isRecruitable === false) {
+    throw new GameRuleError('Tuto jednotku nelze naverbovat bez specialniho kontraktu.');
   }
 
   const recruitAmount = requirePositiveInteger(amount, 'amount');
@@ -6903,7 +8933,11 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
     .filter((recruitment) => recruitment.unitId === unitId)
     .reduce((sum, recruitment) => sum + Number(recruitment.amount), 0);
   const populationCap = calculatePopulationCap(buildingLevels['residential-quarter'] ?? 0);
-  const populationUsed = calculatePopulationUsed(buildingLevels, unitCounts);
+  const academicCount = Math.max(
+    0,
+    Math.floor(Number(countActiveAcademicsByVillageStmt.get(Number(village.id))?.total ?? 0)),
+  );
+  const populationUsed = calculatePopulationUsed(buildingLevels, unitCounts) + academicCount * ACADEMIC_POPULATION_COST;
   const reservedPopulationForRecruitment = calculateReservedPopulationForRecruitments(activeRecruitments);
   const availablePopulationForRecruitment = calculateAvailablePopulationForRecruitment(
     populationCap,
@@ -6915,6 +8949,15 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
 
   if (unitId === KNIGHT_UNIT_ID && recruitAmount !== 1) {
     throw new GameRuleError('Rytire lze svolat pouze po jednom.');
+  }
+
+  const requiredResearchId = UNIT_RESEARCH_REQUIREMENTS[unitId] ?? null;
+  if (requiredResearchId) {
+    const researchRows = ensureResolvedResearchProgressForPlayerRegion(Number(player.id), Number(village.region));
+    if (!isResearchCompleted(researchRows, requiredResearchId)) {
+      const researchName = getResearchDefinition(requiredResearchId)?.name ?? requiredResearchId;
+      throw new GameRuleError(`Pro nabor jednotky je potreba dokoncit vyzkum '${researchName}'.`);
+    }
   }
 
   if (unitId === KNIGHT_UNIT_ID) {
@@ -6969,10 +9012,13 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
     roundResource(pocket.wood - totalCost.wood),
     roundResource(pocket.stone - totalCost.stone),
     roundResource(pocket.iron - totalCost.iron),
+    roundResource(Number(resources.gold ?? 0)),
+    roundResource(Number(resources.coins ?? 0)),
     village.id,
   );
   const startedAtIso = nowIso();
-  const durationSec = calculateRecruitDurationSec(unitId, recruitAmount, currentBuildingLevel);
+  const calculatedDurationSec = calculateRecruitDurationSec(unitId, recruitAmount, currentBuildingLevel);
+  const durationSec = Math.max(1, Math.floor(Number(calculatedDurationSec ?? 0)));
   const finishAtIso = new Date(Date.parse(startedAtIso) + durationSec * 1000).toISOString();
 
   const insertion = insertRecruitmentStmt.run(
@@ -7055,6 +9101,439 @@ const recallKnightTransaction = db.transaction((username, requestedVillageId, wo
   };
 });
 
+const hireAcademicsTransaction = db.transaction((username, amountRaw, requestedVillageId, worldId = null) => {
+  const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
+  const hireAmountRequested = requirePositiveInteger(amountRaw, 'amount');
+  const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(Number(village.id)));
+  const universityLevel = Math.max(0, Math.floor(Number(buildingLevels.university ?? 0)));
+  if (universityLevel <= 0) {
+    throw new GameRuleError('Pro najem akademiku je potreba Univerzita alespon na urovni 1.', 400);
+  }
+
+  const villageCapacity = getVillageUniversityCapacity(buildingLevels);
+  const activeInVillage = Math.max(
+    0,
+    Math.floor(Number(countActiveAcademicsByVillageStmt.get(Number(village.id))?.total ?? 0)),
+  );
+  const availableSlots = Math.max(0, villageCapacity - activeInVillage);
+  if (availableSlots <= 0) {
+    throw new GameRuleError('V teto osade je kapacita akademiku vycerpana.', 400);
+  }
+
+  const hireAmount = Math.min(hireAmountRequested, availableSlots);
+  if (hireAmount <= 0) {
+    throw new GameRuleError('Neni dostupny zadny slot pro akademika.', 400);
+  }
+
+  const population = getVillagePopulationStatus(Number(village.id));
+  const requiredPopulation = hireAmount * ACADEMIC_POPULATION_COST;
+  if (population.availablePopulation < requiredPopulation) {
+    throw new GameRuleError('Nedostatek populace pro najem akademiku.', 400);
+  }
+
+  const resources = selectResourcesByVillageStmt.get(Number(village.id));
+  if (!resources) {
+    throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
+  }
+  const totalCoinCost = hireAmount * ACADEMIC_COST_COINS;
+  const currentCoins = Math.max(0, Number(resources.coins ?? 0));
+  if (currentCoins < totalCoinCost) {
+    throw new GameRuleError(`Nedostatek minci. Potrebujes ${totalCoinCost.toLocaleString('cs-CZ')} minci.`, 400);
+  }
+
+  updateResourcesAfterSpendStmt.run(
+    roundResource(Number(resources.wood ?? 0)),
+    roundResource(Number(resources.stone ?? 0)),
+    roundResource(Number(resources.iron ?? 0)),
+    roundResource(Number(resources.gold ?? 0)),
+    roundResource(currentCoins - totalCoinCost),
+    Number(village.id),
+  );
+
+  const hiredAtIso = nowIso();
+  for (let index = 0; index < hireAmount; index += 1) {
+    insertAcademicStmt.run(Number(player.id), Number(village.id), Number(village.region), hiredAtIso);
+  }
+
+  return {
+    hired: hireAmount,
+    villageId: Number(village.id),
+    universityLevel,
+    totalCoinCost,
+    hiredAt: hiredAtIso,
+  };
+});
+
+const startResearchProjectTransaction = db.transaction(
+  (username, researchIdRaw, requestedAcademicsRaw, requestedVillageId, worldId = null) => {
+    const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
+    const researchId = String(researchIdRaw ?? '').trim();
+    const definition = getResearchDefinition(researchId);
+    if (!definition) {
+      throw new GameRuleError('Neznamy vyzkumny projekt.', 404);
+    }
+
+    const nowTimeIso = nowIso();
+    const researchRows = ensureResolvedResearchProgressForPlayerRegion(
+      Number(player.id),
+      Number(village.region),
+      nowTimeIso,
+    );
+    const currentRow =
+      selectResearchProgressByPlayerRegionAndResearchStmt.get(Number(player.id), Number(village.region), researchId) ??
+      null;
+    if (String(currentRow?.status ?? '') === 'completed') {
+      throw new GameRuleError('Tento vyzkum uz byl dokoncen.', 400);
+    }
+
+    const requestedAcademics = Math.max(
+      1,
+      Math.min(MAX_ACADEMICS_PER_RESEARCH, Math.floor(Number(requestedAcademicsRaw ?? 1))),
+    );
+    const idleAcademics = Math.max(
+      0,
+      Math.floor(Number(countIdleAcademicsByPlayerRegionStmt.get(Number(player.id), Number(village.region))?.total ?? 0)),
+    );
+    if (idleAcademics <= 0) {
+      throw new GameRuleError('Pro zahajeni vyzkumu chybi volni akademici.', 400);
+    }
+    const assignedAcademics = Math.min(requestedAcademics, idleAcademics);
+
+    const activeResearch = selectActiveResearchByPlayerRegionStmt.get(Number(player.id), Number(village.region));
+    if (activeResearch && String(activeResearch.researchId ?? '') !== researchId) {
+      const previousResearchId = String(activeResearch.researchId ?? '');
+      const previousRow =
+        selectResearchProgressByPlayerRegionAndResearchStmt.get(
+          Number(player.id),
+          Number(village.region),
+          previousResearchId,
+        ) ?? null;
+      if (previousRow) {
+        upsertResearchProgressStmt.run(
+          Number(player.id),
+          Number(village.region),
+          previousResearchId,
+          'available',
+          Math.max(0, Number(previousRow.progress ?? 0)),
+          0,
+          previousRow.startedAt ? String(previousRow.startedAt) : null,
+          null,
+          nowTimeIso,
+        );
+      }
+    }
+
+    const shouldPayCoins =
+      Math.max(0, Number(currentRow?.progress ?? 0)) <= 0 &&
+      String(currentRow?.status ?? '') !== 'researching' &&
+      String(currentRow?.status ?? '') !== 'completed';
+    const resources = selectResourcesByVillageStmt.get(Number(village.id));
+    if (!resources) {
+      throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
+    }
+    const currentCoins = Math.max(0, Number(resources.coins ?? 0));
+    const coinCost = shouldPayCoins ? Math.max(0, Number(definition.coinCost ?? 0)) : 0;
+    if (coinCost > 0 && currentCoins < coinCost) {
+      throw new GameRuleError(`Nedostatek minci pro vyzkum '${definition.name}'.`, 400);
+    }
+
+    if (coinCost > 0) {
+      updateResourcesAfterSpendStmt.run(
+        roundResource(Number(resources.wood ?? 0)),
+        roundResource(Number(resources.stone ?? 0)),
+        roundResource(Number(resources.iron ?? 0)),
+        roundResource(Number(resources.gold ?? 0)),
+        roundResource(currentCoins - coinCost),
+        Number(village.id),
+      );
+    }
+
+    clearResearchAssignmentsByPlayerRegionStmt.run(Number(player.id), Number(village.region));
+    updateAcademicAssignmentByPlayerRegionStmt.run(
+      'assigned',
+      researchId,
+      Number(player.id),
+      Number(village.region),
+      assignedAcademics,
+    );
+
+    upsertResearchProgressStmt.run(
+      Number(player.id),
+      Number(village.region),
+      researchId,
+      'researching',
+      Math.max(0, Number(currentRow?.progress ?? 0)),
+      assignedAcademics,
+      currentRow?.startedAt ? String(currentRow.startedAt) : nowTimeIso,
+      null,
+      nowTimeIso,
+    );
+
+    return {
+      researchId,
+      researchName: String(definition.name),
+      assignedAcademics,
+      coinCostPaid: coinCost,
+      startedAt: nowTimeIso,
+    };
+  },
+);
+
+const adjustResearchProjectAcademicsTransaction = db.transaction(
+  (username, researchIdRaw, deltaRaw, requestedVillageId, worldId = null) => {
+    const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
+    const researchId = String(researchIdRaw ?? '').trim();
+    const definition = getResearchDefinition(researchId);
+    if (!definition) {
+      throw new GameRuleError('Neznamy vyzkumny projekt.', 404);
+    }
+
+    const nowTimeIso = nowIso();
+    ensureResolvedResearchProgressForPlayerRegion(Number(player.id), Number(village.region), nowTimeIso);
+    const activeResearch = selectActiveResearchByPlayerRegionStmt.get(Number(player.id), Number(village.region));
+    if (!activeResearch || String(activeResearch.researchId ?? '') !== researchId) {
+      throw new GameRuleError('Akademiky lze upravit pouze u aktivne zkoumaneho projektu.', 400);
+    }
+
+    const currentRow =
+      selectResearchProgressByPlayerRegionAndResearchStmt.get(Number(player.id), Number(village.region), researchId) ?? null;
+    if (!currentRow || String(currentRow.status ?? '') !== 'researching') {
+      throw new GameRuleError('Vybrany projekt momentalne neni ve stavu vyzkumu.', 400);
+    }
+
+    const requestedDelta = Math.trunc(Number(deltaRaw ?? 0));
+    if (!Number.isFinite(requestedDelta) || requestedDelta === 0) {
+      throw new GameRuleError('Pole delta musi byt cele cislo ruzne od nuly.', 400);
+    }
+
+    const currentAssignedAcademics = Math.max(
+      0,
+      Math.floor(
+        Number(
+          countAssignedAcademicsForResearchByPlayerRegionStmt.get(
+            Number(player.id),
+            Number(village.region),
+            researchId,
+          )?.total ?? 0,
+        ),
+      ),
+    );
+
+    let deltaApplied = 0;
+    if (requestedDelta > 0) {
+      const idleAcademics = Math.max(
+        0,
+        Math.floor(Number(countIdleAcademicsByPlayerRegionStmt.get(Number(player.id), Number(village.region))?.total ?? 0)),
+      );
+      const freeProjectSlots = Math.max(0, MAX_ACADEMICS_PER_RESEARCH - currentAssignedAcademics);
+      const assignable = Math.max(0, Math.min(requestedDelta, idleAcademics, freeProjectSlots));
+      if (assignable <= 0) {
+        if (currentAssignedAcademics >= MAX_ACADEMICS_PER_RESEARCH) {
+          throw new GameRuleError('Projekt uz dosahl maximalniho poctu akademiku.', 400);
+        }
+        throw new GameRuleError('V regionu nejsou dostupni volni akademici.', 400);
+      }
+      updateAcademicAssignmentByPlayerRegionStmt.run(
+        'assigned',
+        researchId,
+        Number(player.id),
+        Number(village.region),
+        assignable,
+      );
+      deltaApplied = assignable;
+    } else {
+      const releasable = Math.max(0, Math.min(Math.abs(requestedDelta), currentAssignedAcademics));
+      if (releasable <= 0) {
+        throw new GameRuleError('V projektu nejsou zadni akademici k odebrani.', 400);
+      }
+      releaseAcademicAssignmentByResearchForPlayerRegionStmt.run(
+        Number(player.id),
+        Number(village.region),
+        researchId,
+        releasable,
+      );
+      deltaApplied = -releasable;
+    }
+
+    const updatedAssignedAcademics = Math.max(
+      0,
+      Math.floor(
+        Number(
+          countAssignedAcademicsForResearchByPlayerRegionStmt.get(
+            Number(player.id),
+            Number(village.region),
+            researchId,
+          )?.total ?? 0,
+        ),
+      ),
+    );
+    const startedAtIso = currentRow?.startedAt ? String(currentRow.startedAt) : nowTimeIso;
+    upsertResearchProgressStmt.run(
+      Number(player.id),
+      Number(village.region),
+      researchId,
+      'researching',
+      Math.max(0, Number(currentRow?.progress ?? 0)),
+      updatedAssignedAcademics,
+      startedAtIso,
+      null,
+      nowTimeIso,
+    );
+
+    return {
+      researchId,
+      researchName: String(definition.name),
+      deltaApplied,
+      assignedAcademics: updatedAssignedAcademics,
+      updatedAt: nowTimeIso,
+    };
+  },
+);
+
+const hireMercenaryContractTransaction = db.transaction((username, requestedVillageId, worldId = null) => {
+  const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
+  const nowTimeIso = nowIso();
+  const researchRows = ensureResolvedResearchProgressForPlayerRegion(Number(player.id), Number(village.region), nowTimeIso);
+  if (!isResearchCompleted(researchRows, 'verven-bank')) {
+    throw new GameRuleError("Pro nájem žoldáků je potřeba výzkum 'Vervenská zlatá banka'.", 400);
+  }
+
+  const latestContract = selectLatestMercenaryContractByPlayerRegionStmt.get(Number(player.id), Number(village.region));
+  const cooldownRemainingSec = getMercenaryCooldownRemainingSec(latestContract, nowTimeIso);
+  if (cooldownRemainingSec > 0) {
+    throw new GameRuleError(
+      `Zoldaky lze najmout znovu za ${formatRemaining(cooldownRemainingSec)}.`,
+      400,
+    );
+  }
+
+  const resources = selectResourcesByVillageStmt.get(Number(village.id));
+  if (!resources) {
+    throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
+  }
+  const currentCoins = Math.max(0, Number(resources.coins ?? 0));
+  if (currentCoins < MERCENARY_CONTRACT_COST_COINS) {
+    throw new GameRuleError(
+      `Nedostatek minci. Kontrakt vyzaduje ${MERCENARY_CONTRACT_COST_COINS.toLocaleString('cs-CZ')} minci.`,
+      400,
+    );
+  }
+
+  updateResourcesAfterSpendStmt.run(
+    roundResource(Number(resources.wood ?? 0)),
+    roundResource(Number(resources.stone ?? 0)),
+    roundResource(Number(resources.iron ?? 0)),
+    roundResource(Number(resources.gold ?? 0)),
+    roundResource(currentCoins - MERCENARY_CONTRACT_COST_COINS),
+    Number(village.id),
+  );
+
+  const orderedAtIso = nowTimeIso;
+  const arriveAtIso = new Date(Date.parse(orderedAtIso) + MERCENARY_DELIVERY_DELAY_MINUTES * 60 * 1000).toISOString();
+  const expiresAtIso = new Date(Date.parse(arriveAtIso) + MERCENARY_DURATION_HOURS * 60 * 60 * 1000).toISOString();
+  const insertion = insertMercenaryContractStmt.run(
+    Number(player.id),
+    Number(village.id),
+    Number(village.region),
+    'en_route',
+    orderedAtIso,
+    arriveAtIso,
+    expiresAtIso,
+    MERCENARY_CONTRACT_UNIT_AMOUNT,
+  );
+
+  return {
+    contractId: Number(insertion.lastInsertRowid),
+    villageId: Number(village.id),
+    orderedAt: orderedAtIso,
+    arriveAt: arriveAtIso,
+    expiresAt: expiresAtIso,
+    unitAmount: MERCENARY_CONTRACT_UNIT_AMOUNT,
+    cooldownHours: MERCENARY_CONTRACT_COOLDOWN_HOURS,
+  };
+});
+
+const sendMarketLogisticsTransaction = db.transaction((username, payload, requestedVillageId, worldId = null) => {
+  const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
+  const targetVillageId = requirePositiveInteger(payload?.targetVillageId, 'targetVillageId');
+  const targetVillage = selectVillageByIdStmt.get(Number(targetVillageId));
+  if (!targetVillage) {
+    throw new GameRuleError('Cilove leno neexistuje.', 404);
+  }
+  if (Number(targetVillage.region) !== Number(village.region)) {
+    throw new GameRuleError('Cilove leno je v jinem svete.', 400);
+  }
+
+  const resourcesToSend = {
+    wood: Math.max(0, Math.floor(Number(payload?.wood ?? 0))),
+    stone: Math.max(0, Math.floor(Number(payload?.stone ?? 0))),
+    iron: Math.max(0, Math.floor(Number(payload?.iron ?? 0))),
+  };
+  const total = resourcesToSend.wood + resourcesToSend.stone + resourcesToSend.iron;
+  if (total <= 0) {
+    throw new GameRuleError('Vypln alespon jednu surovinu k odeslani.', 400);
+  }
+
+  const sourceBuildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(Number(village.id)));
+  const sourceMarketLevel = Math.max(0, Math.floor(Number(sourceBuildingLevels.market ?? 0)));
+  if (sourceMarketLevel <= 0) {
+    throw new GameRuleError('Pro logistiku je potreba Mestsky trh alespon na urovni 1.', 400);
+  }
+  const capacity = calculateMarketCapacity(sourceMarketLevel);
+  if (total > capacity) {
+    throw new GameRuleError(
+      `Aktualni trh pojme maximalne ${capacity.toLocaleString('cs-CZ')} surovin na jednu zasilku.`,
+      400,
+    );
+  }
+
+  const distanceTiles = calculateTileDistance(village, targetVillage);
+  if (distanceTiles > MARKET_MAX_DISTANCE_TILES) {
+    throw new GameRuleError(`Logistika presahuje maximalni dosah ${MARKET_MAX_DISTANCE_TILES} policek.`, 400);
+  }
+
+  const sourceResources = selectResourcesByVillageStmt.get(Number(village.id));
+  if (!sourceResources) {
+    throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
+  }
+  const currentPocket = toNonNegativeResourcePocket(sourceResources);
+  if (
+    resourcesToSend.wood > currentPocket.wood ||
+    resourcesToSend.stone > currentPocket.stone ||
+    resourcesToSend.iron > currentPocket.iron
+  ) {
+    throw new GameRuleError('Nedostatek surovin ve sklade zdrojove osady.', 400);
+  }
+
+  subtractResources(Number(village.id), resourcesToSend, { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 });
+
+  const startedAtIso = nowIso();
+  const durationSec = calculateLogisticsDurationSec(distanceTiles);
+  const arriveAtIso = new Date(Date.parse(startedAtIso) + durationSec * 1000).toISOString();
+  const insertion = insertLogisticsRouteStmt.run(
+    Number(player.id),
+    Number(village.id),
+    Number(targetVillage.id),
+    Number(village.region),
+    'manual',
+    resourcesToSend.wood,
+    resourcesToSend.stone,
+    resourcesToSend.iron,
+    startedAtIso,
+    arriveAtIso,
+  );
+
+  return {
+    routeId: Number(insertion.lastInsertRowid),
+    sourceVillageId: Number(village.id),
+    targetVillageId: Number(targetVillage.id),
+    distanceTiles,
+    durationSec,
+    arriveAt: arriveAtIso,
+    resources: resourcesToSend,
+  };
+});
+
 export const recruitUnits = (username, unitId, amount, requestedVillageId = null, worldId = null) =>
   recruitTransaction(username, unitId, amount, requestedVillageId, worldId);
 
@@ -7066,6 +9545,29 @@ export const recallKnight = (username, requestedVillageId = null, worldId = null
 
 export const issueArmyCommand = (username, payload, requestedVillageId = null, worldId = null) =>
   issueArmyCommandTransaction(username, requestedVillageId, payload, worldId);
+
+export const cancelArmyCommand = (username, movementId, requestedVillageId = null, worldId = null) =>
+  cancelArmyCommandTransaction(username, movementId, requestedVillageId, worldId);
+
+export const hireAcademics = (username, amount, requestedVillageId = null, worldId = null) =>
+  hireAcademicsTransaction(username, amount, requestedVillageId, worldId);
+
+export const startResearchProject = (username, researchId, assignedAcademics = 1, requestedVillageId = null, worldId = null) =>
+  startResearchProjectTransaction(username, researchId, assignedAcademics, requestedVillageId, worldId);
+
+export const adjustResearchProjectAcademics = (
+  username,
+  researchId,
+  delta,
+  requestedVillageId = null,
+  worldId = null,
+) => adjustResearchProjectAcademicsTransaction(username, researchId, delta, requestedVillageId, worldId);
+
+export const hireMercenaryContract = (username, requestedVillageId = null, worldId = null) =>
+  hireMercenaryContractTransaction(username, requestedVillageId, worldId);
+
+export const sendMarketLogistics = (username, payload, requestedVillageId = null, worldId = null) =>
+  sendMarketLogisticsTransaction(username, payload, requestedVillageId, worldId);
 
 export { GameRuleError };
 

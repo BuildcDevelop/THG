@@ -9,7 +9,7 @@ import { LoginPage } from './pages/LoginPage';
 import { WorldsPage } from './pages/WorldsPage';
 import './App.css';
 
-const GAME_VERSION_LABEL = (import.meta.env.VITE_GAME_VERSION as string | undefined)?.trim() || '0.1.08';
+const GAME_VERSION_LABEL = (import.meta.env.VITE_GAME_VERSION as string | undefined)?.trim() || '0.1.09';
 const CLIENT_BUILD_ID = (import.meta.env.VITE_BUILD_ID as string | undefined)?.trim() || null;
 const HEALTH_POLL_INTERVAL_MS = 15000;
 const ACTIVE_DEPLOYMENT_STATUSES = new Set(['building', 'deploying', 'updating', 'maintenance']);

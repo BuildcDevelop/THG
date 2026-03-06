@@ -51,7 +51,14 @@ const MOBILE_BREAKPOINT = 920;
 const UI_STATE_VERSION = 2;
 const TOKEN_CLICK_EVENT = 'tld:communication:token-click';
 const MESSAGE_TOKEN_REGEX = /(\/\/Ozn[aá]men[ií]:\d+|@[^\s]+|#[^\s]+|_\d{1,4}\|\d{1,4}_)/gu;
-const QUICK_EMOJIS = ['🙂', '😉', '🔥', '⚔️', '🛡️'];
+const QUICK_EMOJIS = ['🙂', '😄', '🔥', '⚔️', '🛡️'];
+const EMOJI_TOKEN_REPLACEMENTS: Array<{ pattern: RegExp; replacement: string }> = [
+  { pattern: /:\)/g, replacement: '🙂' },
+  { pattern: /:D/gi, replacement: '😄' },
+  { pattern: /\bFIRE\b/gi, replacement: '🔥' },
+  { pattern: /\bFIGHT\b/gi, replacement: '⚔️' },
+  { pattern: /\bSHIELD\b/gi, replacement: '🛡️' },
+];
 const TABS = ['threads', 'requests', 'friends', 'blocked'] as const;
 
 type HubTab = (typeof TABS)[number];
@@ -330,7 +337,16 @@ export const CommunicationHub = () => {
   const requestIdRef = useRef(0);
   const previousUsernameRef = useRef<string | null>(null);
   const composerRefByThreadId = useRef<Record<number, HTMLTextAreaElement | null>>({});
+  const chatBodyRefByThreadId = useRef<Record<number, HTMLDivElement | null>>({});
   const isInGame = location.pathname.startsWith('/game');
+
+  const normalizeEmojiTokens = useCallback((value: string): string => {
+    let next = String(value ?? '');
+    for (const entry of EMOJI_TOKEN_REPLACEMENTS) {
+      next = next.replace(entry.pattern, entry.replacement);
+    }
+    return next;
+  }, []);
 
   const summary = inbox?.summary ?? summaryState;
   const badgeCount = useMemo(() => {
@@ -645,9 +661,10 @@ export const CommunicationHub = () => {
       friendRequests: Number(summary.friendRequests ?? 0),
       totalAttention: Number(summary.totalAttention ?? 0),
       newSinceLastOpen: badgeCount,
+      hubOpen,
     };
     window.dispatchEvent(new CustomEvent(COMMUNICATION_SUMMARY_EVENT, { detail }));
-  }, [badgeCount, summary.friendRequests, summary.messageRequests, summary.totalAttention, summary.unreadMessages]);
+  }, [badgeCount, hubOpen, summary.friendRequests, summary.messageRequests, summary.totalAttention, summary.unreadMessages]);
 
   useEffect(() => {
     const onOpen = () => {
@@ -937,7 +954,7 @@ export const CommunicationHub = () => {
       if (!username) {
         return;
       }
-      const normalizedBody = String(body ?? '').trim().slice(0, MAX_BODY_LENGTH);
+      const normalizedBody = normalizeEmojiTokens(String(body ?? '').trim()).slice(0, MAX_BODY_LENGTH);
       if (!normalizedBody && payload == null) {
         return;
       }
@@ -967,15 +984,41 @@ export const CommunicationHub = () => {
         setActionKey(null);
       }
     },
-    [updateInbox, username],
+    [normalizeEmojiTokens, updateInbox, username],
   );
 
   const sendEmoji = useCallback(
     (threadId: number, emoji: string) => {
-      void sendMessage(threadId, emoji);
+      setThreadDrafts((previous) => {
+        const current = previous[threadId] ?? '';
+        const separator = current.trim().length > 0 ? ' ' : '';
+        return {
+          ...previous,
+          [threadId]: `${current}${separator}${emoji}`,
+        };
+      });
+      window.setTimeout(() => {
+        const target = composerRefByThreadId.current[threadId];
+        if (!target) {
+          return;
+        }
+        target.focus();
+        target.selectionStart = target.value.length;
+        target.selectionEnd = target.value.length;
+      }, 0);
     },
-    [sendMessage],
+    [],
   );
+
+  useEffect(() => {
+    for (const threadId of openThreadIds) {
+      const bodyNode = chatBodyRefByThreadId.current[threadId];
+      if (!bodyNode) {
+        continue;
+      }
+      bodyNode.scrollTop = bodyNode.scrollHeight;
+    }
+  }, [messagesByThreadId, openThreadIds]);
 
   const handleDeleteMessage = useCallback(
     async (messageId: number) => {
@@ -1324,7 +1367,12 @@ export const CommunicationHub = () => {
           </div>
         </header>
 
-        <div className="communication-chat-body">
+        <div
+          className="communication-chat-body"
+          ref={(node) => {
+            chatBodyRefByThreadId.current[threadId] = node;
+          }}
+        >
           {messages.length > 0 ? (
             messages.map((message) => {
               const isMine =
@@ -1408,7 +1456,23 @@ export const CommunicationHub = () => {
           />
           <div className="communication-quick-row">
             {QUICK_EMOJIS.map((emoji) => (
-              <button key={`quick-emoji-${threadId}-${emoji}`} type="button" className="secondary-action" onClick={() => sendEmoji(threadId, emoji)}>
+              <button
+                key={`quick-emoji-${threadId}-${emoji}`}
+                type="button"
+                className="secondary-action"
+                onClick={() => sendEmoji(threadId, emoji)}
+                title={
+                  emoji === '🙂'
+                    ? ':)'
+                    : emoji === '😄'
+                      ? ':D'
+                      : emoji === '🔥'
+                        ? 'FIRE'
+                        : emoji === '⚔️'
+                          ? 'FIGHT'
+                          : 'SHIELD'
+                }
+              >
                 {emoji}
               </button>
             ))}

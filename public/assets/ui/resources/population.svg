@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="popGold" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F0D59B"/>
+      <stop offset="1" stop-color="#BC8E46"/>
+    </linearGradient>
+  </defs>
+  <circle cx="23" cy="24" r="7" fill="url(#popGold)" stroke="#6C4A1D" stroke-width="2"/>
+  <circle cx="41" cy="22" r="6" fill="#D0A562" stroke="#6C4A1D" stroke-width="2"/>
+  <path d="M12 49C12 41.8 17.8 36 25 36H29C36.2 36 42 41.8 42 49V52H12V49Z" fill="#9B6A2E" stroke="#5A3A15" stroke-width="2"/>
+  <path d="M34 52V47.5C34 42.8 37.8 39 42.5 39H43.5C48.2 39 52 42.8 52 47.5V52" fill="#7A4F23"/>
+  <path d="M34 52V47.5C34 42.8 37.8 39 42.5 39H43.5C48.2 39 52 42.8 52 47.5V52" stroke="#523515" stroke-width="2"/>
+</svg>

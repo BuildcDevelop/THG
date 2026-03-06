@@ -69,7 +69,7 @@ test('mixed scout attacks are allowed and scout does not loot', () => {
   assert.equal(Number(result.attackerStart?.militia ?? 0), 1);
   assert.equal(Number(result.attackerStart?.scout ?? 0), 5);
   assert.equal(Number(result.attackerSurvivors?.scout ?? 0), 5);
-  assert.equal(Number(result.totalLoot ?? 0), 20);
+  assert.equal(Number(result.totalLoot ?? 0), 6);
 });
 
 test('scouts can be combined with every unit in attack command', () => {
@@ -89,13 +89,13 @@ test('scouts can be combined with every unit in attack command', () => {
 
 test('loot capacity includes non-scout non-ram units', () => {
   const result = runScenario('loot-capacity-all-units');
-  assert.equal(Number(result.totalLoot ?? 0), 366);
+  assert.equal(Number(result.totalLoot ?? 0), 120);
 });
 
 test('attack defaults to balanced loot priority', () => {
   const result = runScenario('default-balanced-loot-priority');
   assert.equal(String(result.reportedLootPriority ?? ''), 'balanced');
-  assert.equal(Number(result.totalLoot ?? 0), 40);
+  assert.equal(Number(result.totalLoot ?? 0), 13);
   assert.ok(Number(result.lootSpread ?? 999) <= 1);
 });
 
@@ -132,14 +132,15 @@ test('loot capacity uses units that actually return after conquest', () => {
   assert.equal(Number(result.totalLoot ?? -1), 0);
 });
 
-test('village limit is enforced per world with cap 6', () => {
+test('village conquest has no hard cap per world', () => {
   const result = runScenario('world-village-limit');
-  assert.equal(Number(result.maxPlayerVillages ?? 0), 6);
   assert.ok(Number(result.primaryCount ?? 0) >= 6);
   assert.equal(String(result.firstConquest?.newOwner ?? ''), 'Hayato');
   assert.equal(Number(result.fireCountAfterSuccess ?? 0), 2);
   assert.equal(Number(result.fireCountBeforeBlockedAttempt ?? 0), 6);
-  assert.match(String(result.blockedError ?? ''), /limit 6 osad/i);
+  assert.equal(String(result.secondConquest?.newOwner ?? ''), 'Hayato');
+  assert.equal(Number(result.fireCountAfterSecondAttempt ?? 0), 7);
+  assert.equal(result.blockedError, null);
 });
 
 test('large attacking army is not excessively punished', () => {
@@ -147,6 +148,13 @@ test('large attacking army is not excessively punished', () => {
   assert.equal(result.attackerWins, true);
   assert.ok(Number(result.attackerLossRatio ?? 1) < 0.2);
   assert.ok(Number(result.defenderLossRatio ?? 0) >= 0.8);
+});
+
+test('prestige protection unlocks retaliation after smaller attack', () => {
+  const result = runScenario('prestige-retaliation-unlock');
+  assert.match(String(result.blockedBeforeRetaliation ?? ''), /balanc prestize blokuje utok/i);
+  assert.ok(Number(result.smallerAttackOrderId ?? 0) > 0);
+  assert.ok(Number(result.retaliationAttackOrderId ?? 0) > 0);
 });
 
 test('defender knight is removed from village when attacker wins battle', () => {

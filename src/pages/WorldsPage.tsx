@@ -89,13 +89,14 @@ export const WorldsPage = () => {
     [selectedWorld],
   );
 
-  const handleEnterWorld = async () => {
-    if (!selectedWorld || !isWorldPlayable(selectedWorld)) {
+  const handleEnterWorld = async (worldOverride?: WorldPortalItem | null) => {
+    const targetWorld = worldOverride ?? selectedWorld;
+    if (!targetWorld || !isWorldPlayable(targetWorld)) {
       return;
     }
 
     setIsEntering(true);
-    setSelectedWorld(selectedWorld.id, selectedSpawnDirection);
+    setSelectedWorld(targetWorld.id, selectedSpawnDirection);
     navigate('/game', { replace: true });
   };
 
@@ -179,19 +180,31 @@ export const WorldsPage = () => {
               const worldRank = world.player?.rank ?? null;
               const worldKingdom = world.player?.kingdom ?? 'Bez kralovstvi';
               const worldPlayerAccounts = world.stats?.playerAccounts ?? 0;
+              const worldHeading =
+                world.id === 'dominion-1'
+                  ? `${world.name} · Testovací svět`
+                  : world.id === 'dominion-1-fire'
+                    ? `${world.name} · Pre-alpha`
+                    : world.name;
               return (
                 <article
                   key={world.id}
-                  className={`world-card ${isSelected ? 'is-selected' : ''} ${playable ? 'is-playable' : 'is-locked'}`}
+                  className={`world-card ${isSelected ? 'is-selected' : ''} ${playable ? 'is-playable' : 'is-locked'} ${world.id === 'dominion-1' ? 'is-test-world' : ''}`}
                 >
                   <button
                     type="button"
                     className="world-select"
                     onClick={() => setSelectedWorldId(world.id)}
+                    onDoubleClick={() => {
+                      setSelectedWorldId(world.id);
+                      if (playable) {
+                        void handleEnterWorld(world);
+                      }
+                    }}
                     aria-pressed={isSelected}
                   >
                     <p className="world-status">{playable ? 'ONLINE' : 'UZAVŘENO'}</p>
-                    <h3>{world.name}</h3>
+                    <h3>{worldHeading}</h3>
                     <p className="world-subtitle">{world.subtitle}</p>
                     <p className="world-description">{world.description}</p>
                     <dl>

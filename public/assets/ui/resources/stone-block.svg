@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="stoneFront" x1="10" y1="18" x2="54" y2="50" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B9C3CC"/>
+      <stop offset="1" stop-color="#7E8892"/>
+    </linearGradient>
+  </defs>
+  <path d="M12 22L30 13L52 20L52 42L34 51L12 44V22Z" fill="url(#stoneFront)" stroke="#4A525A" stroke-width="2"/>
+  <path d="M30 13V35L12 44M30 35L52 42" stroke="#5E6770" stroke-width="1.8"/>
+  <path d="M19 27L25 25M35 23L44 25M20 36L28 38M36 34L45 36" stroke="#D8E0E7" stroke-opacity=".5" stroke-width="1.5" stroke-linecap="round"/>
+</svg>

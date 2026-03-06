@@ -1,13 +1,22 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BUILDING_ORDER, UNIT_ORDER, getMaxBuildingLevel } from './gameConfig.js';
+import {
+  BUILDING_ORDER,
+  UNIT_ORDER,
+  calculateMintCoinStorageCap,
+  calculateMintGoldStorageCap,
+  calculateResourceCap,
+  getMaxBuildingLevel,
+} from './gameConfig.js';
 
 const configuredDataDir = String(process.env.TLD_DATA_DIR ?? process.env.THG_DATA_DIR ?? '').trim();
 const configuredSeedDbPath = String(process.env.TLD_SEED_DB_PATH ?? process.env.THG_SEED_DB_PATH ?? '').trim();
 const isNetlifyRuntime = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const appEnv = String(process.env.TLD_ENV ?? process.env.APP_ENV ?? process.env.NODE_ENV ?? '').trim().toLowerCase();
 const isProduction = appEnv === 'production';
+const enableLocalTestSetup =
+  !isProduction && String(process.env.TLD_LOCAL_TEST_SETUP ?? 'true').trim().toLowerCase() !== 'false';
 const allowServerlessSqlite =
   String(process.env.TLD_ALLOW_SERVERLESS_SQLITE ?? '').trim().toLowerCase() === 'true';
 const localDataDir = path.join(process.cwd(), 'server', 'data');
@@ -91,9 +100,14 @@ const STARTING_BUILDING_LEVELS = {
   woodcutter: 1,
   quarry: 1,
   'iron-mine': 1,
+  'gold-mine': 0,
   barracks: 0,
   stable: 0,
   workshop: 0,
+  market: 0,
+  mint: 0,
+  vault: 0,
+  hideout: 0,
   fortification: 0,
   gate: 0,
 };
@@ -101,7 +115,12 @@ const VILLAGE_BUILDING_LEVEL_FLOORS = {
   woodcutter: 1,
   quarry: 1,
   'iron-mine': 1,
+  'gold-mine': 0,
   warehouse: 1,
+  hideout: 0,
+  mint: 0,
+  vault: 0,
+  market: 0,
   barracks: 0,
   stable: 0,
   workshop: 0,
@@ -115,12 +134,14 @@ const ABANDONED_STARTING_BUILDING_LEVELS = {
   woodcutter: 5,
   quarry: 5,
   'iron-mine': 5,
+  'gold-mine': 0,
   warehouse: 1,
 };
 const SPECIAL_PLAYER_BOOSTED_BUILDING_LEVELS = {
   woodcutter: 5,
   quarry: 5,
   'iron-mine': 5,
+  'gold-mine': 1,
   warehouse: 1,
 };
 const ABANDONED_MILITIA_COUNT = 100;
@@ -162,6 +183,8 @@ CREATE TABLE IF NOT EXISTS resources (
   wood REAL NOT NULL,
   stone REAL NOT NULL,
   iron REAL NOT NULL,
+  gold REAL NOT NULL DEFAULT 0,
+  coins REAL NOT NULL DEFAULT 0,
   FOREIGN KEY (village_id) REFERENCES villages(id)
 );
 
@@ -249,6 +272,20 @@ CREATE TABLE IF NOT EXISTS army_movement_units (
   PRIMARY KEY (movement_id, unit_id),
   FOREIGN KEY (movement_id) REFERENCES army_movements(id)
 );
+
+CREATE TABLE IF NOT EXISTS combat_retaliation_flags (
+  aggressor_player_id INTEGER NOT NULL,
+  defender_player_id INTEGER NOT NULL,
+  region INTEGER NOT NULL DEFAULT 1,
+  first_attacked_at TEXT NOT NULL,
+  last_attacked_at TEXT NOT NULL,
+  PRIMARY KEY (aggressor_player_id, defender_player_id, region),
+  FOREIGN KEY (aggressor_player_id) REFERENCES players(id),
+  FOREIGN KEY (defender_player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_combat_retaliation_defender_region
+  ON combat_retaliation_flags(defender_player_id, region, last_attacked_at DESC);
 
 CREATE TABLE IF NOT EXISTS battle_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -503,6 +540,103 @@ CREATE INDEX IF NOT EXISTS idx_player_sessions_player_expires
 CREATE INDEX IF NOT EXISTS idx_player_sessions_expires
   ON player_sessions(expires_at);
 
+CREATE TABLE IF NOT EXISTS market_offers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  player_id INTEGER NOT NULL,
+  village_id INTEGER NOT NULL,
+  region INTEGER NOT NULL,
+  give_wood INTEGER NOT NULL DEFAULT 0,
+  give_stone INTEGER NOT NULL DEFAULT 0,
+  give_iron INTEGER NOT NULL DEFAULT 0,
+  want_wood INTEGER NOT NULL DEFAULT 0,
+  want_stone INTEGER NOT NULL DEFAULT 0,
+  want_iron INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL,
+  accepted_at TEXT,
+  expires_at TEXT,
+  FOREIGN KEY (player_id) REFERENCES players(id),
+  FOREIGN KEY (village_id) REFERENCES villages(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_offers_status_region_created
+  ON market_offers(status, region, created_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS logistics_routes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_player_id INTEGER NOT NULL,
+  source_village_id INTEGER NOT NULL,
+  target_village_id INTEGER NOT NULL,
+  region INTEGER NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'manual',
+  wood INTEGER NOT NULL DEFAULT 0,
+  stone INTEGER NOT NULL DEFAULT 0,
+  iron INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'in_progress',
+  started_at TEXT NOT NULL,
+  arrive_at TEXT NOT NULL,
+  completed_at TEXT,
+  FOREIGN KEY (owner_player_id) REFERENCES players(id),
+  FOREIGN KEY (source_village_id) REFERENCES villages(id),
+  FOREIGN KEY (target_village_id) REFERENCES villages(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_logistics_routes_status_arrive
+  ON logistics_routes(status, arrive_at, region);
+
+CREATE TABLE IF NOT EXISTS academics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  player_id INTEGER NOT NULL,
+  village_id INTEGER NOT NULL,
+  region INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'idle',
+  assigned_research_id TEXT,
+  created_at TEXT NOT NULL,
+  removed_at TEXT,
+  FOREIGN KEY (player_id) REFERENCES players(id),
+  FOREIGN KEY (village_id) REFERENCES villages(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_academics_player_region_status
+  ON academics(player_id, region, status, id DESC);
+
+CREATE TABLE IF NOT EXISTS research_progress (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  player_id INTEGER NOT NULL,
+  region INTEGER NOT NULL,
+  research_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'locked',
+  progress REAL NOT NULL DEFAULT 0,
+  assigned_academics INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT,
+  completed_at TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE(player_id, region, research_id),
+  FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_progress_player_region
+  ON research_progress(player_id, region, status, research_id);
+
+CREATE TABLE IF NOT EXISTS mercenary_contracts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  player_id INTEGER NOT NULL,
+  village_id INTEGER NOT NULL,
+  region INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'en_route',
+  ordered_at TEXT NOT NULL,
+  arrive_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  delivered_at TEXT,
+  finished_at TEXT,
+  unit_amount INTEGER NOT NULL DEFAULT 1000,
+  FOREIGN KEY (player_id) REFERENCES players(id),
+  FOREIGN KEY (village_id) REFERENCES villages(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mercenary_contracts_status_timing
+  ON mercenary_contracts(status, region, arrive_at, expires_at);
+
 CREATE TABLE IF NOT EXISTS game_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   last_tick_at TEXT NOT NULL
@@ -523,6 +657,16 @@ CREATE TABLE IF NOT EXISTS game_state (
   const hasIsBotColumn = playerColumns.some((column) => column.name === 'is_bot');
   if (!hasIsBotColumn) {
     db.prepare('ALTER TABLE players ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0').run();
+  }
+
+  const resourceColumns = db.prepare('PRAGMA table_info(resources)').all();
+  const hasGoldColumn = resourceColumns.some((column) => column.name === 'gold');
+  if (!hasGoldColumn) {
+    db.prepare('ALTER TABLE resources ADD COLUMN gold REAL NOT NULL DEFAULT 0').run();
+  }
+  const hasCoinsColumn = resourceColumns.some((column) => column.name === 'coins');
+  if (!hasCoinsColumn) {
+    db.prepare('ALTER TABLE resources ADD COLUMN coins REAL NOT NULL DEFAULT 0').run();
   }
 
   const movementColumns = db.prepare('PRAGMA table_info(army_movements)').all();
@@ -643,6 +787,7 @@ DELETE FROM unit_recruitments;
 DELETE FROM army_movement_units;
 DELETE FROM army_movements;
 DELETE FROM battle_reports;
+DELETE FROM combat_retaliation_flags;
 DELETE FROM kingdom_invites;
 DELETE FROM kingdom_events;
 DELETE FROM player_notifications;
@@ -657,6 +802,11 @@ DELETE FROM player_presence;
 DELETE FROM player_profiles;
 DELETE FROM player_ui_state;
 DELETE FROM player_sessions;
+DELETE FROM mercenary_contracts;
+DELETE FROM research_progress;
+DELETE FROM academics;
+DELETE FROM logistics_routes;
+DELETE FROM market_offers;
 DELETE FROM units;
 DELETE FROM buildings;
 DELETE FROM resources;
@@ -686,7 +836,7 @@ const seedWorld = db.transaction(() => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertResourceStmt = db.prepare(
-    'INSERT INTO resources (village_id, wood, stone, iron) VALUES (?, ?, ?, ?)',
+    'INSERT INTO resources (village_id, wood, stone, iron, gold, coins) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const insertBuildingStmt = db.prepare(
     'INSERT INTO buildings (village_id, building_id, level) VALUES (?, ?, ?)',
@@ -728,6 +878,8 @@ const seedWorld = db.transaction(() => {
       STARTING_RESOURCES.wood,
       STARTING_RESOURCES.stone,
       STARTING_RESOURCES.iron,
+      0,
+      0,
     );
 
     for (const buildingId of BUILDING_ORDER) {
@@ -859,7 +1011,7 @@ const ensureAbandonedVillages = db.transaction(() => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertResourceStmt = db.prepare(
-    'INSERT INTO resources (village_id, wood, stone, iron) VALUES (?, ?, ?, ?)',
+    'INSERT INTO resources (village_id, wood, stone, iron, gold, coins) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const insertBuildingStmt = db.prepare(
     'INSERT INTO buildings (village_id, building_id, level) VALUES (?, ?, ?)',
@@ -900,6 +1052,8 @@ const ensureAbandonedVillages = db.transaction(() => {
       STARTING_RESOURCES.wood,
       STARTING_RESOURCES.stone,
       STARTING_RESOURCES.iron,
+      0,
+      0,
     );
 
     for (const buildingId of BUILDING_ORDER) {
@@ -967,6 +1121,158 @@ const ensureHayatoOwnsAbandonedVillage13 = db.transaction(() => {
   ).run(Number(hayato.playerId), String(hayato.kingdom ?? 'Neutral'), Number(targetVillage.id));
 });
 
+const ensureHayatoLocalTestVillageState = db.transaction(() => {
+  if (!enableLocalTestSetup) {
+    return;
+  }
+
+  const targetCoordX = 211;
+  const targetCoordY = 469;
+  const targetUnitAmounts = {
+    militia: 600,
+    archer: 420,
+    cavalry: 280,
+    scout: 180,
+    knight: 1,
+    ram: 120,
+    caravan: 200,
+    mercenary: 0,
+  };
+
+  const hayato = db
+    .prepare(
+      `SELECT
+          p.id AS playerId,
+          COALESCE((SELECT vv.kingdom FROM villages vv WHERE vv.player_id = p.id ORDER BY vv.id ASC LIMIT 1), 'Neutral') AS kingdom
+       FROM players p
+       WHERE p.username = 'Hayato' AND p.is_bot = 0
+       LIMIT 1`,
+    )
+    .get();
+  if (!hayato) {
+    return;
+  }
+
+  let village = db
+    .prepare(
+      `SELECT
+          id,
+          player_id AS playerId,
+          name
+       FROM villages
+       WHERE coord_x = ? AND coord_y = ? AND region = ?
+       LIMIT 1`,
+    )
+    .get(targetCoordX, targetCoordY, WORLD_REGION.id);
+
+  if (!village) {
+    const insertedVillage = db
+      .prepare(
+        `INSERT INTO villages (
+          player_id,
+          name,
+          kingdom,
+          coord_x,
+          coord_y,
+          region,
+          prestige,
+          loyalty,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        Number(hayato.playerId),
+        `Hayato test ${targetCoordX}|${targetCoordY}`,
+        String(hayato.kingdom ?? 'Neutral'),
+        targetCoordX,
+        targetCoordY,
+        WORLD_REGION.id,
+        startingPrestige(20),
+        100,
+        nowIso(),
+      );
+    village = {
+      id: Number(insertedVillage.lastInsertRowid),
+      playerId: Number(hayato.playerId),
+      name: `Hayato test ${targetCoordX}|${targetCoordY}`,
+    };
+  }
+
+  if (Number(village.playerId) !== Number(hayato.playerId)) {
+    db.prepare(
+      `UPDATE villages
+       SET player_id = ?, kingdom = ?, loyalty = 100
+       WHERE id = ?`,
+    ).run(Number(hayato.playerId), String(hayato.kingdom ?? 'Neutral'), Number(village.id));
+  }
+
+  const upsertBuildingStmt = db.prepare(
+    `INSERT INTO buildings (village_id, building_id, level)
+     VALUES (?, ?, ?)
+     ON CONFLICT(village_id, building_id) DO UPDATE SET
+       level = CASE
+         WHEN buildings.level < excluded.level THEN excluded.level
+         ELSE buildings.level
+       END`,
+  );
+  for (const buildingId of BUILDING_ORDER) {
+    const halfLevel = Math.max(1, Math.ceil(getMaxBuildingLevel(buildingId) / 2));
+    upsertBuildingStmt.run(Number(village.id), buildingId, halfLevel);
+  }
+
+  const buildingRows = db
+    .prepare(
+      `SELECT building_id AS buildingId, level
+       FROM buildings
+       WHERE village_id = ?`,
+    )
+    .all(Number(village.id));
+  const buildingLevelById = Object.fromEntries(
+    buildingRows.map((row) => [String(row.buildingId), Math.max(0, Math.floor(Number(row.level ?? 0)))]),
+  );
+  const warehouseLevel = Math.max(0, Math.floor(Number(buildingLevelById['warehouse'] ?? 0)));
+  const mintLevel = Math.max(0, Math.floor(Number(buildingLevelById['mint'] ?? 0)));
+  const targetResourceStock = {
+    wood: Math.max(0, Math.floor(calculateResourceCap(warehouseLevel))),
+    stone: Math.max(0, Math.floor(calculateResourceCap(warehouseLevel))),
+    iron: Math.max(0, Math.floor(calculateResourceCap(warehouseLevel))),
+    gold: Math.max(0, Math.floor(calculateMintGoldStorageCap(mintLevel))),
+    coins: Math.max(0, Math.floor(calculateMintCoinStorageCap(mintLevel))),
+  };
+
+  db.prepare(
+    `INSERT INTO resources (village_id, wood, stone, iron, gold, coins)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(village_id) DO UPDATE SET
+       wood = excluded.wood,
+       stone = excluded.stone,
+       iron = excluded.iron,
+       gold = excluded.gold,
+       coins = excluded.coins`,
+  ).run(
+    Number(village.id),
+    targetResourceStock.wood,
+    targetResourceStock.stone,
+    targetResourceStock.iron,
+    targetResourceStock.gold,
+    targetResourceStock.coins,
+  );
+
+  const upsertUnitStmt = db.prepare(
+    `INSERT INTO units (village_id, unit_id, amount)
+     VALUES (?, ?, ?)
+     ON CONFLICT(village_id, unit_id) DO UPDATE SET
+       amount = CASE
+         WHEN units.amount < excluded.amount THEN excluded.amount
+         ELSE units.amount
+       END`,
+  );
+  for (const unitId of UNIT_ORDER) {
+    const amount = Math.max(0, Math.floor(Number(targetUnitAmounts[unitId] ?? 0)));
+    upsertUnitStmt.run(Number(village.id), unitId, amount);
+  }
+});
+
 const ensureSpecialPlayerAccounts = db.transaction(() => {
   const selectPlayerStmt = db.prepare(
     `SELECT id, password
@@ -998,12 +1304,14 @@ const ensureSpecialPlayerAccounts = db.transaction(() => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const upsertResourceStmt = db.prepare(
-    `INSERT INTO resources (village_id, wood, stone, iron)
-     VALUES (?, ?, ?, ?)
+    `INSERT INTO resources (village_id, wood, stone, iron, gold, coins)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(village_id) DO UPDATE SET
        wood = CASE WHEN resources.wood < excluded.wood THEN excluded.wood ELSE resources.wood END,
        stone = CASE WHEN resources.stone < excluded.stone THEN excluded.stone ELSE resources.stone END,
-       iron = CASE WHEN resources.iron < excluded.iron THEN excluded.iron ELSE resources.iron END`,
+       iron = CASE WHEN resources.iron < excluded.iron THEN excluded.iron ELSE resources.iron END,
+       gold = CASE WHEN resources.gold < excluded.gold THEN excluded.gold ELSE resources.gold END,
+       coins = CASE WHEN resources.coins < excluded.coins THEN excluded.coins ELSE resources.coins END`,
   );
   const upsertBuildingStmt = db.prepare(
     `INSERT INTO buildings (village_id, building_id, level)
@@ -1084,6 +1392,8 @@ const ensureSpecialPlayerAccounts = db.transaction(() => {
         STARTING_RESOURCES.wood,
         STARTING_RESOURCES.stone,
         STARTING_RESOURCES.iron,
+        0,
+        0,
       );
 
       for (const buildingId of BUILDING_ORDER) {
@@ -1167,6 +1477,15 @@ const ensureReferentialIntegrity = db.transaction(() => {
          )
           OR NOT EXISTS (
            SELECT 1 FROM players p WHERE p.id = kingdom_invites.target_player_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM combat_retaliation_flags
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = combat_retaliation_flags.aggressor_player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = combat_retaliation_flags.defender_player_id
          )`,
     ),
     db.prepare(
@@ -1281,6 +1600,51 @@ const ensureReferentialIntegrity = db.transaction(() => {
        WHERE NOT EXISTS (
          SELECT 1 FROM players p WHERE p.id = chat_abuse_events.player_id
        )`,
+    ),
+    db.prepare(
+      `DELETE FROM market_offers
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = market_offers.player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = market_offers.village_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM logistics_routes
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = logistics_routes.owner_player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = logistics_routes.source_village_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = logistics_routes.target_village_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM academics
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = academics.player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = academics.village_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM research_progress
+       WHERE NOT EXISTS (
+         SELECT 1 FROM players p WHERE p.id = research_progress.player_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM mercenary_contracts
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = mercenary_contracts.player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = mercenary_contracts.village_id
+         )`,
     ),
     db.prepare(
       `DELETE FROM army_movements
@@ -1437,4 +1801,5 @@ ensurePriorityPlayerPasswords();
 ensureVillageBuildingLevelFloors();
 ensureVillageBuildingLevelCaps();
 ensureHayatoOwnsAbandonedVillage13();
+ensureHayatoLocalTestVillageState();
 ensureReferentialIntegrity();

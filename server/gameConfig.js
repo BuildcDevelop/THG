@@ -9,6 +9,11 @@ export const STABLE_MAX_LEVEL = 20;
 export const WORKSHOP_MAX_LEVEL = 20;
 export const FORTIFICATION_MAX_LEVEL = 10;
 export const GATE_MAX_LEVEL = 1;
+export const GOLD_MINE_MAX_LEVEL = 10;
+export const MINT_MAX_LEVEL = 3;
+export const VAULT_MAX_LEVEL = 2;
+export const HIDEOUT_MAX_LEVEL = 3;
+export const MARKET_MAX_LEVEL = 4;
 export const MAX_BUILDING_LEVEL = RESOURCE_BUILDING_MAX_LEVEL;
 export const MAX_PLAYER_VILLAGES = 6;
 
@@ -46,6 +51,19 @@ export const BUILDING_DEFS = {
     baseDurationSec: 130,
     productionPerHourAtLevel1: 28,
   },
+  'gold-mine': {
+    id: 'gold-mine',
+    name: 'Zlaty dul',
+    category: 'Produkce',
+    maxLevel: GOLD_MINE_MAX_LEVEL,
+    workerPerLevel: 4,
+    baseCost: { wood: 180, stone: 220, iron: 240 },
+    costGrowth: 1.36,
+    baseDurationSec: 260,
+    requiredBuildings: {
+      townhall: 5,
+    },
+  },
   warehouse: {
     id: 'warehouse',
     name: 'Sklad surovin',
@@ -55,6 +73,59 @@ export const BUILDING_DEFS = {
     baseCost: { wood: 90, stone: 90, iron: 40 },
     costGrowth: 1.24,
     baseDurationSec: 140,
+  },
+  hideout: {
+    id: 'hideout',
+    name: 'Skrys',
+    category: 'Podpora',
+    maxLevel: HIDEOUT_MAX_LEVEL,
+    workerPerLevel: 1,
+    baseCost: { wood: 220, stone: 260, iron: 140 },
+    costGrowth: 1.5,
+    baseDurationSec: 220,
+    requiredBuildings: {
+      warehouse: 5,
+    },
+  },
+  mint: {
+    id: 'mint',
+    name: 'Mincovna',
+    category: 'Administrativa',
+    maxLevel: MINT_MAX_LEVEL,
+    workerPerLevel: 2,
+    baseCost: { wood: 260, stone: 260, iron: 320 },
+    costGrowth: 1.38,
+    baseDurationSec: 300,
+    requiredBuildings: {
+      townhall: 5,
+      'gold-mine': 1,
+    },
+  },
+  vault: {
+    id: 'vault',
+    name: 'Trezor',
+    category: 'Podpora',
+    maxLevel: VAULT_MAX_LEVEL,
+    workerPerLevel: 1,
+    baseCost: { wood: 420, stone: 440, iron: 580 },
+    costGrowth: 1.65,
+    baseDurationSec: 360,
+    requiredBuildings: {
+      mint: 1,
+    },
+  },
+  market: {
+    id: 'market',
+    name: 'Mestsky trh',
+    category: 'Ekonomika',
+    maxLevel: MARKET_MAX_LEVEL,
+    workerPerLevel: 2,
+    baseCost: { wood: 240, stone: 180, iron: 160 },
+    costGrowth: 1.32,
+    baseDurationSec: 230,
+    requiredBuildings: {
+      townhall: 3,
+    },
   },
   barracks: {
     id: 'barracks',
@@ -142,7 +213,12 @@ export const BUILDING_ORDER = [
   'woodcutter',
   'quarry',
   'iron-mine',
+  'gold-mine',
   'warehouse',
+  'hideout',
+  'mint',
+  'vault',
+  'market',
   'barracks',
   'stable',
   'workshop',
@@ -231,19 +307,32 @@ export const UNIT_DEFS = {
     speedTilesPerHour: 14,
     populationCost: 1,
   },
+  mercenary: {
+    id: 'mercenary',
+    name: 'Zoldak',
+    role: 'Docasna elitni obrana',
+    cost: { wood: 0, stone: 0, iron: 0 },
+    requiredBuilding: 'townhall',
+    requiredBuildingLevel: 1,
+    baseRecruitDurationSec: 1,
+    speedTilesPerHour: 0,
+    populationCost: 0,
+    isRecruitable: false,
+  },
 };
 
-export const UNIT_ORDER = ['militia', 'archer', 'cavalry', 'scout', 'knight', 'ram', 'caravan'];
+export const UNIT_ORDER = ['militia', 'archer', 'cavalry', 'scout', 'knight', 'ram', 'caravan', 'mercenary'];
 
 const roundNumber = (value) => Math.max(0, Math.round(value));
 const RESOURCE_PRODUCTION_CURVE_FACTOR = 0.045;
 const WAREHOUSE_BASE_CAP = 1200;
-const WAREHOUSE_MAX_CAP = 300000;
+const WAREHOUSE_MAX_CAP = 250000;
 const WAREHOUSE_CAP_CURVE_EXPONENT = 1.6;
-const BUILDING_TIME_MULTIPLIER = 1.45;
-const RECRUIT_TIME_MULTIPLIER = 1.4;
+const BUILDING_TIME_MULTIPLIER = 1.3;
+const RECRUIT_TIME_MULTIPLIER = 1.3;
 const ARMY_TRAVEL_TIME_MULTIPLIER = 1.25;
 const MIN_ARMY_TRAVEL_DURATION_SEC = 45;
+const RESOURCE_BASE_PRODUCTION_BOOST = 1.1;
 
 const clampNumber = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -299,8 +388,8 @@ export const calculateUpgradeDurationSec = (buildingId, currentLevel, townhallLe
   }
 
   const levelFactor = Math.pow(1.14, currentLevel);
-  const townHallReduction = Math.min(0.15, Math.max(0, Number(townhallLevel ?? 0)) * 0.15);
-  const duration = def.baseDurationSec * levelFactor * (1 - townHallReduction) * BUILDING_TIME_MULTIPLIER;
+  const townhallSpeedMultiplier = Math.pow(0.95, Math.max(0, Math.floor(Number(townhallLevel ?? 0))));
+  const duration = def.baseDurationSec * levelFactor * BUILDING_TIME_MULTIPLIER * townhallSpeedMultiplier;
 
   return Math.max(35, Math.round(duration));
 };
@@ -314,11 +403,8 @@ export const calculateRecruitDurationSec = (unitId, amount, requiredBuildingLeve
   const safeAmount = Math.max(1, Math.floor(amount));
   const buildingLevel = Math.max(0, Math.floor(requiredBuildingLevel));
   const base = Math.max(8, Number(def.baseRecruitDurationSec ?? 30));
-  const levelReduction = Math.min(
-    0.55,
-    Math.max(0, buildingLevel * 0.012 + Math.log2(buildingLevel + 1) * 0.04),
-  );
-  const duration = base * safeAmount * (1 - levelReduction) * RECRUIT_TIME_MULTIPLIER;
+  const buildingSpeedMultiplier = Math.pow(0.96, buildingLevel);
+  const duration = base * safeAmount * buildingSpeedMultiplier * RECRUIT_TIME_MULTIPLIER;
 
   return Math.max(12, Math.round(duration));
 };
@@ -373,6 +459,59 @@ export const calculatePopulationCap = (residentialLevel) => {
   return 220 + level * 80 + level * level * 5;
 };
 
+export const calculateGoldMineProductionPerDay = (levelRaw) => {
+  const level = clampBuildingLevel('gold-mine', Math.max(0, Math.floor(Number(levelRaw ?? 0))));
+  return Math.max(0, 10 * level * level);
+};
+
+export const calculateGoldMineProductionPerHour = (levelRaw) => calculateGoldMineProductionPerDay(levelRaw) / 24;
+
+const MINT_GOLD_STORAGE_BY_LEVEL = [0, 2000, 5000, 10000];
+const MINT_COIN_STORAGE_BY_LEVEL = [0, 10000, 25000, 50000];
+const MINT_THROUGHPUT_PER_DAY_BY_LEVEL = [0, 125, 250, 500];
+
+export const calculateMintGoldStorageCap = (mintLevelRaw) => {
+  const level = clampBuildingLevel('mint', Math.max(0, Math.floor(Number(mintLevelRaw ?? 0))));
+  return Number(MINT_GOLD_STORAGE_BY_LEVEL[level] ?? 0);
+};
+
+export const calculateMintCoinStorageCap = (mintLevelRaw) => {
+  const level = clampBuildingLevel('mint', Math.max(0, Math.floor(Number(mintLevelRaw ?? 0))));
+  return Number(MINT_COIN_STORAGE_BY_LEVEL[level] ?? 0);
+};
+
+export const calculateMintThroughputPerDay = (mintLevelRaw) => {
+  const level = clampBuildingLevel('mint', Math.max(0, Math.floor(Number(mintLevelRaw ?? 0))));
+  return Number(MINT_THROUGHPUT_PER_DAY_BY_LEVEL[level] ?? 0);
+};
+
+export const calculateMintThroughputPerHour = (mintLevelRaw) => calculateMintThroughputPerDay(mintLevelRaw) / 24;
+
+export const calculateHideoutProtectedAmount = (hideoutLevelRaw) => {
+  const level = clampBuildingLevel('hideout', Math.max(0, Math.floor(Number(hideoutLevelRaw ?? 0))));
+  if (level <= 0) {
+    return 0;
+  }
+  if (level === 1) {
+    return 3000;
+  }
+  if (level === 2) {
+    return 10000;
+  }
+  return 20000;
+};
+
+export const calculateVaultProtection = (vaultLevelRaw) => {
+  const level = clampBuildingLevel('vault', Math.max(0, Math.floor(Number(vaultLevelRaw ?? 0))));
+  if (level <= 0) {
+    return { gold: 0, coins: 0 };
+  }
+  if (level === 1) {
+    return { gold: 500, coins: 1000 };
+  }
+  return { gold: 1000, coins: 2000 };
+};
+
 export const calculatePopulationUsed = (buildingLevels, unitCounts) => {
   let workers = 0;
   for (const buildingId of BUILDING_ORDER) {
@@ -384,7 +523,7 @@ export const calculatePopulationUsed = (buildingLevels, unitCounts) => {
   let units = 0;
   for (const unitId of UNIT_ORDER) {
     const amount = Math.max(0, Math.floor(Number(unitCounts[unitId] ?? 0)));
-    const populationCost = Math.max(1, Math.floor(Number(UNIT_DEFS[unitId]?.populationCost ?? 1)));
+    const populationCost = Math.max(0, Math.floor(Number(UNIT_DEFS[unitId]?.populationCost ?? 1)));
     units += amount * populationCost;
   }
 
@@ -393,14 +532,25 @@ export const calculatePopulationUsed = (buildingLevels, unitCounts) => {
 
 export const calculateProductionPerHour = (buildingLevels, populationUsed, populationCap) => {
   const penalty = populationUsed > populationCap ? 0.5 : 1;
-  const wood = calculateResourceNodeProductionPerHour('woodcutter', buildingLevels.woodcutter ?? 0) * penalty;
-  const stone = calculateResourceNodeProductionPerHour('quarry', buildingLevels.quarry ?? 0) * penalty;
-  const iron = calculateResourceNodeProductionPerHour('iron-mine', buildingLevels['iron-mine'] ?? 0) * penalty;
+  const wood =
+    calculateResourceNodeProductionPerHour('woodcutter', buildingLevels.woodcutter ?? 0) *
+    RESOURCE_BASE_PRODUCTION_BOOST *
+    penalty;
+  const stone =
+    calculateResourceNodeProductionPerHour('quarry', buildingLevels.quarry ?? 0) *
+    RESOURCE_BASE_PRODUCTION_BOOST *
+    penalty;
+  const iron =
+    calculateResourceNodeProductionPerHour('iron-mine', buildingLevels['iron-mine'] ?? 0) *
+    RESOURCE_BASE_PRODUCTION_BOOST *
+    penalty;
+  const gold = calculateGoldMineProductionPerHour(buildingLevels['gold-mine'] ?? 0) * penalty;
 
   return {
     wood,
     stone,
     iron,
+    gold,
     penalty,
   };
 };
