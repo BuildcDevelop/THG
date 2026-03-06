@@ -1652,6 +1652,68 @@ const detectTouchDevice = (): boolean => {
   return Number(window.navigator.maxTouchPoints ?? 0) > 0;
 };
 
+const toFiniteNumber = (value: unknown, fallback = 0): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const normalizeGameStateForUi = (state: GameStateResponse): GameStateResponse => {
+  const rawResources = (state.resources ?? {}) as Partial<GameStateResponse['resources']> & {
+    productionPerHour?: Partial<GameStateResponse['resources']['productionPerHour']>;
+    protection?: Partial<GameStateResponse['resources']['protection']>;
+    developerBoost?: Partial<DeveloperResourceBoostState> | null;
+  };
+  const rawProduction =
+    (rawResources.productionPerHour ?? {}) as Partial<GameStateResponse['resources']['productionPerHour']>;
+  const rawProtection = (rawResources.protection ?? {}) as Partial<GameStateResponse['resources']['protection']>;
+  const rawBoost = (rawResources.developerBoost ?? {}) as Partial<DeveloperResourceBoostState>;
+  const baseCap = Math.max(0, Math.floor(toFiniteNumber(rawResources.cap, 0)));
+
+  return {
+    ...state,
+    resources: {
+      ...rawResources,
+      wood: Math.max(0, Math.floor(toFiniteNumber(rawResources.wood, 0))),
+      stone: Math.max(0, Math.floor(toFiniteNumber(rawResources.stone, 0))),
+      iron: Math.max(0, Math.floor(toFiniteNumber(rawResources.iron, 0))),
+      gold: Math.max(0, Math.floor(toFiniteNumber(rawResources.gold, 0))),
+      coins: Math.max(0, Math.floor(toFiniteNumber(rawResources.coins, 0))),
+      cap: baseCap,
+      goldCap: Math.max(0, Math.floor(toFiniteNumber(rawResources.goldCap, baseCap))),
+      coinsCap: Math.max(0, Math.floor(toFiniteNumber(rawResources.coinsCap, baseCap))),
+      productionPerHour: {
+        ...rawProduction,
+        wood: toFiniteNumber(rawProduction.wood, 0),
+        stone: toFiniteNumber(rawProduction.stone, 0),
+        iron: toFiniteNumber(rawProduction.iron, 0),
+        gold: toFiniteNumber(rawProduction.gold, 0),
+        mintCoins: toFiniteNumber(rawProduction.mintCoins, 0),
+        penalty: toFiniteNumber(rawProduction.penalty, 1),
+      },
+      protection: {
+        ...rawProtection,
+        wood: Math.max(0, Math.floor(toFiniteNumber(rawProtection.wood, 0))),
+        stone: Math.max(0, Math.floor(toFiniteNumber(rawProtection.stone, 0))),
+        iron: Math.max(0, Math.floor(toFiniteNumber(rawProtection.iron, 0))),
+        gold: Math.max(0, Math.floor(toFiniteNumber(rawProtection.gold, 0))),
+        coins: Math.max(0, Math.floor(toFiniteNumber(rawProtection.coins, 0))),
+      },
+      developerBoost: {
+        isActive: rawBoost.isActive === true,
+        source: String(rawBoost.source ?? 'none'),
+        worldId: rawBoost.worldId == null ? null : String(rawBoost.worldId),
+        reason: rawBoost.reason == null ? null : String(rawBoost.reason),
+        label: rawBoost.label == null ? null : String(rawBoost.label),
+        bonusPercent: toFiniteNumber(rawBoost.bonusPercent, 0),
+        multiplier: toFiniteNumber(rawBoost.multiplier, 1),
+        startsAt: rawBoost.startsAt == null ? null : String(rawBoost.startsAt),
+        endsAt: rawBoost.endsAt == null ? null : String(rawBoost.endsAt),
+        remainingSec: Math.max(0, Math.floor(toFiniteNumber(rawBoost.remainingSec, 0))),
+      },
+    },
+  };
+};
+
 const clampAvatarValue = (value: number, min: number, max: number): number => Math.min(Math.max(value, min), max);
 
 const computeAvatarCropMetrics = (
@@ -11517,15 +11579,16 @@ export const GamePage = () => {
 
   const latestAppliedStateServerTimeMsRef = useRef(0);
   const applyIncomingGameState = useCallback((nextState: GameStateResponse): boolean => {
-    const parsedServerTimeMs = Date.parse(nextState.serverTime);
+    const normalizedState = normalizeGameStateForUi(nextState);
+    const parsedServerTimeMs = Date.parse(normalizedState.serverTime);
     const nextServerTimeMs = Number.isFinite(parsedServerTimeMs) ? parsedServerTimeMs : Date.now();
     if (nextServerTimeMs < latestAppliedStateServerTimeMsRef.current) {
       return false;
     }
 
     latestAppliedStateServerTimeMsRef.current = nextServerTimeMs;
-    setGameState(nextState);
-    setActiveVillageId((previous) => (previous === nextState.village.id ? previous : nextState.village.id));
+    setGameState(normalizedState);
+    setActiveVillageId((previous) => (previous === normalizedState.village.id ? previous : normalizedState.village.id));
     setStateError(null);
     return true;
   }, []);
