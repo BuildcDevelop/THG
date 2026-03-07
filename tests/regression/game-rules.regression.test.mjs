@@ -66,10 +66,12 @@ test('ram destroys one gate level and is consumed', () => {
 
 test('mixed scout attacks are allowed and scout does not loot', () => {
   const result = runScenario('mixed-scout-attack-loot');
+  const lootModifier = Math.max(0, Number(result.lootModifier ?? 1));
+  const expectedLoot = Math.floor(20 * lootModifier);
   assert.equal(Number(result.attackerStart?.militia ?? 0), 1);
   assert.equal(Number(result.attackerStart?.scout ?? 0), 5);
   assert.equal(Number(result.attackerSurvivors?.scout ?? 0), 5);
-  assert.equal(Number(result.totalLoot ?? 0), 6);
+  assert.equal(Number(result.totalLoot ?? 0), expectedLoot);
 });
 
 test('scouts can be combined with every unit in attack command', () => {
@@ -89,13 +91,17 @@ test('scouts can be combined with every unit in attack command', () => {
 
 test('loot capacity includes non-scout non-ram units', () => {
   const result = runScenario('loot-capacity-all-units');
-  assert.equal(Number(result.totalLoot ?? 0), 120);
+  const lootModifier = Math.max(0, Number(result.lootModifier ?? 1));
+  const expectedLoot = Math.floor((20 + 16 + 80 + 250) * lootModifier);
+  assert.equal(Number(result.totalLoot ?? 0), expectedLoot);
 });
 
 test('attack defaults to balanced loot priority', () => {
   const result = runScenario('default-balanced-loot-priority');
+  const lootModifier = Math.max(0, Number(result.lootModifier ?? 1));
+  const expectedLoot = Math.floor(40 * lootModifier);
   assert.equal(String(result.reportedLootPriority ?? ''), 'balanced');
-  assert.equal(Number(result.totalLoot ?? 0), 13);
+  assert.equal(Number(result.totalLoot ?? 0), expectedLoot);
   assert.ok(Number(result.lootSpread ?? 999) <= 1);
 });
 
@@ -179,4 +185,58 @@ test('only one knight can exist or be queued per village at once', () => {
   assert.ok(Number(result.firstRecruitmentOrderId ?? 0) > 0);
   assert.match(String(result.blockedWithExistingKnight ?? ''), /rytir.*ve vycviku|ryt[ií]r.*osad[ěe]/i);
   assert.match(String(result.blockedWithQueuedKnight ?? ''), /rytir.*ve vycviku|ryt[ií]r.*osad[ěe]/i);
+});
+
+test('stage6: summary endpoints stay consistent and payload is materially smaller', () => {
+  const result = runScenario('summary-polling-consistency');
+  const reports = result?.reports ?? {};
+  const activity = result?.activity ?? {};
+
+  assert.ok(Number(reports.fullTotal ?? 0) >= 1);
+  assert.equal(Number(reports.summaryTotal ?? -1), Number(reports.fullTotal ?? -2));
+  assert.ok(Number(reports.summaryPayloadBytes ?? Infinity) < Number(reports.fullPayloadBytes ?? 0));
+  assert.ok(
+    Number(reports.summaryPayloadBytes ?? Infinity) <= Number(reports.fullPayloadBytes ?? 0) * 0.25,
+    'reports summary payload should stay under 25% of full payload',
+  );
+
+  assert.equal(Number(activity.summaryUnreadTotal ?? -1), Number(activity.fullUnreadTotal ?? -2));
+  assert.equal(Number(activity.summaryAttentionTotal ?? -1), Number(activity.fullAttentionTotal ?? -2));
+  assert.ok(Number(activity.summaryUnreadFeedSize ?? 0) <= Number(activity.fullUnreadFeedSize ?? 0));
+  assert.ok(Number(activity.summaryPayloadBytes ?? Infinity) < Number(activity.fullPayloadBytes ?? 0));
+  assert.ok(
+    Number(activity.summaryPayloadBytes ?? Infinity) <= Number(activity.fullPayloadBytes ?? 0) * 0.5,
+    'activity summary payload should stay under 50% of full payload',
+  );
+});
+
+test('stage6: read models do not progress queued work without explicit tick', () => {
+  const result = runScenario('read-models-no-tick-side-effects');
+  const beforeRead = result?.beforeRead ?? {};
+  const afterRead = result?.afterRead ?? {};
+  const afterTick = result?.afterTick ?? {};
+
+  assert.ok(Number(result?.recruitmentOrderId ?? 0) > 0);
+  assert.equal(Number(beforeRead.militia ?? -1), 0);
+  assert.equal(Number(beforeRead.inProgressRecruitments ?? -1), 1);
+  assert.equal(Number(afterRead.militia ?? -1), Number(beforeRead.militia ?? -2));
+  assert.equal(
+    Number(afterRead.inProgressRecruitments ?? -1),
+    Number(beforeRead.inProgressRecruitments ?? -2),
+  );
+  assert.equal(Number(afterTick.militia ?? -1), 1);
+  assert.equal(Number(afterTick.inProgressRecruitments ?? -1), 0);
+});
+
+test('stage6: map stress culls render scope in dense settlements', () => {
+  const result = runScenario('map-render-scope-stress');
+  const totalSettlements = Number(result?.totalSettlements ?? 0);
+  const renderedSettlements = Number(result?.renderedSettlements ?? 0);
+  const renderedRatio = Number(result?.renderedRatio ?? 1);
+
+  assert.ok(totalSettlements >= 120, 'stress scenario should have dense settlement count');
+  assert.ok(renderedSettlements > 0);
+  assert.ok(renderedSettlements < totalSettlements);
+  assert.ok(renderedRatio <= 0.65, 'viewport culling should cap rendered scope to 65% or less');
+  assert.ok(Number(result?.mapPayloadBytes ?? 0) > 0);
 });

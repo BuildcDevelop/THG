@@ -246,6 +246,93 @@ export type LogisticsRouteState = {
   remainingSec: number;
 };
 
+export type MarketMerchantState = {
+  total: number;
+  inUse: number;
+  available: number;
+};
+
+export type MarketGuildVillageEconomyState = {
+  villageId: number;
+  name: string;
+  coordX: number;
+  coordY: number;
+  marketLevel: number;
+  cap: number;
+  resources: {
+    wood: number;
+    stone: number;
+    iron: number;
+  };
+  totalResources: number;
+  fillPct: number;
+  merchants: MarketMerchantState;
+};
+
+export type MarketGuildTargetState = {
+  id: number;
+  targetVillageId: number;
+  sortIndex: number;
+  isPaused: boolean;
+  name: string;
+  coordX: number;
+  coordY: number;
+  isActive: boolean;
+  warning: string | null;
+  cap: number;
+  resources: {
+    wood: number;
+    stone: number;
+    iron: number;
+  };
+  totalResources: number;
+  fillPct: number;
+};
+
+export type MarketGuildAuditLogEntry = {
+  id: number;
+  ownerPlayerId: number;
+  sourceVillageId: number;
+  targetVillageId: number | null;
+  region: number;
+  severity: string;
+  reasonCode: string;
+  message: string;
+  details: Record<string, unknown> | null;
+  createdAt: string;
+};
+
+export type MarketGuildAutomationState = {
+  enabled: boolean;
+  cycleIntervalSec: number;
+  nextDispatchAt: string | null;
+  lastDispatchAt: string | null;
+  cursorIndex: number;
+  dispatchWindow: {
+    startHourUtc: number;
+    endHourUtc: number;
+    isActiveNow: boolean;
+  };
+  merchants: MarketMerchantState;
+  ownVillages: MarketGuildVillageEconomyState[];
+  targets: MarketGuildTargetState[];
+  auditLog: MarketGuildAuditLogEntry[];
+};
+
+export type WorldMapSnapshotResponse = {
+  serverTime: string;
+  world: {
+    id?: string;
+    name?: string;
+    region: number;
+    originX: number;
+    originY: number;
+    size: number;
+    settlements: WorldSettlement[];
+    kingdoms: WorldKingdomSummary[];
+  };
+};
+
 export type MercenaryContractState = {
   id: number;
   status: string;
@@ -380,6 +467,8 @@ export type GameStateResponse = {
   research?: {
     totalAcademics: number;
     idleAcademics: number;
+    regionAcademicCapacity?: number;
+    regionAcademicAvailableSlots?: number;
     villageAcademics?: number;
     villageAcademicCapacity?: number;
     villageAcademicAvailableSlots?: number;
@@ -391,7 +480,9 @@ export type GameStateResponse = {
     capacity: number;
     maxDistance: number;
     guildUnlocked: boolean;
+    merchants: MarketMerchantState;
     logisticsRoutes: LogisticsRouteState[];
+    guildAutomation: MarketGuildAutomationState;
   };
   mercenaries?: {
     contracts: MercenaryContractState[];
@@ -676,6 +767,11 @@ export type BattleReportListResponse = {
   items: BattleReportItem[];
 };
 
+export type BattleReportSummaryResponse = {
+  total: number;
+  updatedAt: string;
+};
+
 export type GameActivitySeverity = 'info' | 'success' | 'warning' | 'critical';
 
 export type GameActivityItem = {
@@ -705,6 +801,13 @@ export type GameActivityListResponse = {
   attentionTotal: number;
   unreadFeed: GameActivityItem[];
   items: GameActivityItem[];
+};
+
+export type GameActivitySummaryResponse = {
+  unreadTotal: number;
+  attentionTotal: number;
+  unreadFeed: GameActivityItem[];
+  updatedAt: string;
 };
 
 export type GameActivityMutationResult = {
@@ -823,6 +926,30 @@ export type SendMarketLogisticsResult = {
     stone: number;
     iron: number;
   };
+};
+
+export type CancelMarketLogisticsResult = {
+  canceledRouteId: number;
+  sourceVillageId: number;
+  targetVillageId: number;
+  refunded: {
+    wood: number;
+    stone: number;
+    iron: number;
+  };
+  elapsedSec: number;
+  totalDurationSec: number;
+  canceledAt: string;
+};
+
+export type ConfigureMarketGuildAutomationResult = {
+  sourceVillageId: number;
+  enabled: boolean;
+  targetCount: number;
+  pausedTargetCount?: number;
+  cycleIntervalSec: number;
+  nextDispatchAt: string | null;
+  updatedAt: string;
 };
 
 export type KingdomInviteResult = {
@@ -1305,6 +1432,7 @@ export const fetchGameState = async (
   villageId?: number | null,
   worldId?: string | null,
   spawnDirection?: SpawnDirection | string | null,
+  includeWorldMap?: boolean,
 ): Promise<GameStateResponse> => {
   const params = new URLSearchParams({ username });
   if (villageId != null && Number.isFinite(villageId)) {
@@ -1316,7 +1444,30 @@ export const fetchGameState = async (
   if (spawnDirection != null && String(spawnDirection).trim() !== '') {
     params.set('spawnDirection', String(spawnDirection).trim());
   }
+  if (includeWorldMap === true) {
+    params.set('includeWorldMap', '1');
+  }
   const payload = await request<ApiOk<GameStateResponse>>(`/api/v1/state?${params.toString()}`);
+  return payload.data;
+};
+
+export const fetchWorldMapSnapshot = async (
+  username: string,
+  villageId?: number | null,
+  worldId?: string | null,
+  spawnDirection?: SpawnDirection | string | null,
+): Promise<WorldMapSnapshotResponse> => {
+  const params = new URLSearchParams({ username });
+  if (villageId != null && Number.isFinite(villageId)) {
+    params.set('villageId', String(villageId));
+  }
+  if (worldId != null && String(worldId).trim() !== '') {
+    params.set('worldId', String(worldId).trim());
+  }
+  if (spawnDirection != null && String(spawnDirection).trim() !== '') {
+    params.set('spawnDirection', String(spawnDirection).trim());
+  }
+  const payload = await request<ApiOk<WorldMapSnapshotResponse>>(`/api/v1/world-map?${params.toString()}`);
   return payload.data;
 };
 
@@ -1674,6 +1825,55 @@ export const sendMarketLogistics = async (
   };
 };
 
+export const cancelMarketLogistics = async (
+  username: string,
+  routeId: number,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: CancelMarketLogisticsResult; data: GameStateResponse }> => {
+  const response = await request<ApiOk<GameStateResponse> & { result: CancelMarketLogisticsResult }>(
+    `/api/v1/market/logistics/${encodeURIComponent(String(routeId))}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, villageId, worldId }),
+    },
+  );
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
+export const configureMarketGuildAutomation = async (
+  username: string,
+  payload: {
+    enabled?: boolean;
+    targetVillageIds?: number[];
+    pausedTargetVillageIds?: number[];
+    villageId?: number | null;
+    worldId?: string | null;
+  },
+): Promise<{ result: ConfigureMarketGuildAutomationResult; data: GameStateResponse }> => {
+  const response = await request<ApiOk<GameStateResponse> & { result: ConfigureMarketGuildAutomationResult }>(
+    '/api/v1/market/guild/configure',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        villageId: payload.villageId ?? null,
+        worldId: payload.worldId ?? null,
+        enabled: payload.enabled,
+        targetVillageIds: payload.targetVillageIds ?? [],
+        pausedTargetVillageIds: payload.pausedTargetVillageIds ?? [],
+      }),
+    },
+  );
+  return {
+    result: response.result,
+    data: response.data,
+  };
+};
+
 export const fetchBattleReports = async (
   username: string,
   page = 1,
@@ -1689,6 +1889,18 @@ export const fetchBattleReports = async (
     params.set('worldId', String(worldId).trim());
   }
   const payload = await request<ApiOk<BattleReportListResponse>>(`/api/v1/reports?${params.toString()}`);
+  return payload.data;
+};
+
+export const fetchBattleReportsSummary = async (
+  username: string,
+  worldId?: string | null,
+): Promise<BattleReportSummaryResponse> => {
+  const params = new URLSearchParams({ username });
+  if (worldId != null && String(worldId).trim() !== '') {
+    params.set('worldId', String(worldId).trim());
+  }
+  const payload = await request<ApiOk<BattleReportSummaryResponse>>(`/api/v1/reports/summary?${params.toString()}`);
   return payload.data;
 };
 
@@ -1713,6 +1925,18 @@ export const fetchGameActivity = async (
     params.set('includeArchived', 'true');
   }
   const payload = await request<ApiOk<GameActivityListResponse>>(`/api/v1/activity?${params.toString()}`);
+  return payload.data;
+};
+
+export const fetchGameActivitySummary = async (
+  username: string,
+  worldId?: string | null,
+): Promise<GameActivitySummaryResponse> => {
+  const params = new URLSearchParams({ username });
+  if (worldId != null && String(worldId).trim() !== '') {
+    params.set('worldId', String(worldId).trim());
+  }
+  const payload = await request<ApiOk<GameActivitySummaryResponse>>(`/api/v1/activity/summary?${params.toString()}`);
   return payload.data;
 };
 

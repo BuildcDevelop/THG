@@ -681,8 +681,8 @@ html {
   display: flex;
   flex-wrap: wrap;
   align-items: stretch;
-  gap: 0.56rem;
-  padding: 0.5rem 1rem 0.6rem;
+  gap: 0.42rem;
+  padding: 0.4rem 0.86rem 0.5rem;
 }
 
 .ux-help-strip {
@@ -707,66 +707,85 @@ html {
   position: relative;
   border: 1px solid rgba(149, 191, 225, 0.2);
   border-radius: 10px;
-  padding: 0.32rem 0.46rem;
+  padding: 0.26rem 0.4rem;
   background: linear-gradient(150deg, rgba(11, 23, 36, 0.9), rgba(7, 15, 24, 0.9));
   display: grid;
-  gap: 0.08rem;
+  gap: 0.06rem;
   overflow: hidden;
   text-align: left;
   cursor: pointer;
   font: inherit;
   color: inherit;
-  line-height: 1.14;
+  line-height: 1.1;
   min-height: 0;
-  flex: 1 1 190px;
+  flex: 1 1 176px;
 }
 
 .resource-card-split {
-  grid-template-columns: minmax(0, 1.16fr) minmax(128px, 0.94fr);
-  gap: 0.52rem;
-  align-items: stretch;
-  flex-basis: 240px;
-  min-width: 226px;
+  grid-template-columns: minmax(0, 1.12fr) minmax(106px, 0.8fr);
+  gap: 0.34rem;
+  align-items: center;
+  flex-basis: 214px;
+  min-width: 194px;
 }
 
 .resource-card-left,
 .resource-card-right {
   min-width: 0;
   display: grid;
-  gap: 0.12rem;
+  gap: 0.08rem;
   align-content: start;
 }
 
 .resource-card-right {
   border-left: 1px solid rgba(141, 187, 223, 0.26);
-  padding-left: 0.42rem;
+  padding-left: 0.3rem;
+  align-content: center;
 }
 
 .resource-card-right p {
   text-transform: none;
   letter-spacing: 0.015em;
   color: #9bc8ea;
-  font-size: 0.74rem;
+  font-size: 0.66rem;
 }
 
 .resource-card-right strong {
-  font-size: 1.02rem;
+  font-size: 0.84rem;
   color: #f0f8ff;
   letter-spacing: 0.01em;
   line-height: 1.08;
 }
 
-.resource-upgrade-note {
-  color: #ffc6ad;
-  font-weight: 700;
+.resource-capacity-inline {
+  opacity: 0.9;
+  letter-spacing: 0.01em;
 }
 
 .resource-upgrade-idle {
-  color: #9db3c7;
+  color: #7f8fa0;
+  font-size: 0.64rem;
+  line-height: 1;
+  min-height: 0.8rem;
 }
 
 .resource-upgrade-queue {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 0.7rem;
+  margin-top: 0.02rem;
+}
+
+.resource-upgrade-arrows {
+  display: block;
   color: #e2c58f;
+  font-weight: 800;
+  letter-spacing: -0.08em;
+  font-size: 0.78rem;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .resource-strip .resource-card .resource-boost-note {
@@ -794,59 +813,111 @@ html {
 }
 
 .resource-strip strong {
-  font-size: 1.42rem;
+  font-size: 1.18rem;
   line-height: 1.02;
   letter-spacing: 0.02em;
 }
 
 .resource-strip span {
   color: #d2ab61;
-  font-size: 0.78rem;
+  font-size: 0.7rem;
 }
 
 .resource-strip small {
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.6rem;
   line-height: 1.18;
 }
 
 @media (max-width: 760px) {
+  .resource-strip {
+    gap: 0.28rem;
+    padding: 0.32rem 0.46rem 0.36rem;
+  }
+
+  .resource-card {
+    padding: 0.24rem 0.34rem;
+  }
+
   .resource-card-split {
-    grid-template-columns: 1fr;
-    gap: 0.22rem;
+    grid-template-columns: minmax(0, 1fr) minmax(84px, 0.74fr);
+    gap: 0.26rem;
+    min-width: 0;
   }
 
   .resource-card-right {
-    border-left: 0;
-    border-top: 1px solid rgba(141, 187, 223, 0.24);
-    padding-left: 0;
-    padding-top: 0.22rem;
+    border-left: 1px solid rgba(141, 187, 223, 0.24);
+    border-top: 0;
+    padding-left: 0.28rem;
+    padding-top: 0;
+  }
+
+  .resource-card-right p {
+    font-size: 0.62rem;
+  }
+
+  .resource-card-right strong {
+    font-size: 0.78rem;
+  }
+}
+
+@media (max-width: 520px) {
+  .resource-card-split {
+    grid-template-columns: minmax(0, 1fr) 76px;
+  }
+
+  .resource-card-right p {
+    display: none;
+  }
+
+  .resource-strip strong {
+    font-size: 1.05rem;
+  }
+
+  .resource-strip span {
+    font-size: 0.66rem;
+  }
+
+  .resource-strip small {
+    font-size: 0.56rem;
   }
 }
 
 .village-card-stack {
-  flex: 1 1 300px;
-  min-width: 260px;
-  max-width: 420px;
+  flex: 0 1 182px;
+  min-width: 156px;
+  max-width: 216px;
   display: grid;
-  gap: 0.24rem;
+  gap: 0.18rem;
+  align-self: flex-start;
 }
 
 .village-resource-card {
   min-width: 0;
   max-width: none;
   width: 100%;
-  gap: 0.16rem;
+  gap: 0.12rem;
+}
+
+.village-resource-card strong {
+  font-size: 1.02rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.village-resource-card span {
+  font-size: 0.64rem;
 }
 
 .village-protection-timer {
   border: 1px solid rgba(196, 154, 90, 0.4);
   border-radius: 9px;
-  padding: 0.34rem 0.5rem;
+  padding: 0.26rem 0.4rem;
   background: linear-gradient(145deg, rgba(37, 28, 17, 0.88), rgba(23, 18, 11, 0.88));
   color: #f0cc8e;
-  font-size: 0.75rem;
-  line-height: 1.25;
+  font-size: 0.66rem;
+  line-height: 1.2;
   letter-spacing: 0.015em;
   box-shadow: inset 0 0 0 1px rgba(245, 210, 157, 0.08);
 }
@@ -861,10 +932,10 @@ html {
   margin-top: 0.08rem;
   border: 0;
   border-radius: 9px;
-  padding: 0.3rem 0.44rem;
+  padding: 0.24rem 0.36rem;
   background: linear-gradient(135deg, rgba(104, 145, 188, 0.95), rgba(66, 103, 142, 0.94));
   color: #edf6ff;
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   font-weight: 700;
   text-align: left;
 }
@@ -879,16 +950,23 @@ html {
 }
 
 .research-spotlight-card {
-  flex: 1 1 205px;
-  min-width: 180px;
-  max-width: 270px;
-  margin-left: auto;
+  flex: 0 1 182px;
+  min-width: 156px;
+  max-width: 216px;
+  margin-left: 0;
 }
 
-.research-preparing-note {
-  color: #d9c7a4;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+.research-spotlight-card p {
+  font-size: 0.64rem;
+}
+
+.research-spotlight-card strong {
+  font-size: 0.88rem;
+}
+
+.research-spotlight-card span {
+  font-size: 0.62rem;
+  line-height: 1.15;
 }
 
 .village-menu-overlay {
@@ -969,7 +1047,14 @@ html {
 }
 
 .village-menu-option.is-active {
-  border-color: rgba(157, 206, 245, 0.62);
+  border-color: rgba(255, 209, 125, 0.86);
+  background:
+    linear-gradient(160deg, rgba(67, 45, 20, 0.92), rgba(24, 19, 14, 0.95)),
+    radial-gradient(circle at 18% 12%, rgba(255, 215, 148, 0.24), transparent 56%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 228, 172, 0.24),
+    0 0 0 1px rgba(255, 210, 129, 0.34),
+    0 0 18px rgba(255, 205, 112, 0.2);
 }
 
 .village-menu-option.is-hotkey-selected {
@@ -3937,6 +4022,202 @@ html {
   gap: 0.4rem;
 }
 
+.market-guild-panel {
+  margin-top: 0.55rem;
+  border: 1px solid rgba(118, 167, 112, 0.34);
+  border-radius: 10px;
+  background:
+    linear-gradient(155deg, rgba(8, 20, 14, 0.88), rgba(8, 13, 17, 0.86)),
+    radial-gradient(circle at 92% 0, rgba(114, 190, 124, 0.18), transparent 48%);
+  padding: 0.56rem;
+  display: grid;
+  gap: 0.46rem;
+}
+
+.market-guild-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.market-guild-header h4 {
+  margin: 0;
+  font-size: 0.86rem;
+  color: #d7f1d2;
+}
+
+.market-guild-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.34rem;
+  font-size: 0.78rem;
+  color: #caeec5;
+}
+
+.market-guild-toggle input {
+  accent-color: #7ec375;
+}
+
+.market-guild-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.4rem;
+}
+
+.market-guild-add-row select {
+  border: 1px solid rgba(165, 210, 152, 0.35);
+  border-radius: 8px;
+  padding: 0.34rem 0.45rem;
+  background: rgba(7, 18, 14, 0.92);
+  color: #daf3d1;
+  font-size: 0.8rem;
+}
+
+.market-guild-target-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.34rem;
+}
+
+.market-guild-target-item {
+  border: 1px solid rgba(150, 183, 146, 0.26);
+  border-radius: 9px;
+  background: rgba(11, 21, 16, 0.88);
+  padding: 0.42rem 0.48rem;
+  display: grid;
+  gap: 0.22rem;
+  cursor: grab;
+}
+
+.market-guild-target-item:active {
+  cursor: grabbing;
+}
+
+.market-guild-target-item.is-inactive {
+  border-color: rgba(206, 95, 95, 0.7);
+  background: rgba(31, 12, 12, 0.84);
+}
+
+.market-guild-target-item.is-paused {
+  border-color: rgba(229, 175, 99, 0.68);
+  background: rgba(33, 24, 11, 0.86);
+}
+
+.market-guild-target-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.market-guild-target-title {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.market-guild-target-title span {
+  font-size: 0.72rem;
+  color: rgba(181, 219, 171, 0.84);
+}
+
+.market-guild-target-item.is-inactive .market-guild-target-title span {
+  color: rgba(255, 181, 181, 0.9);
+}
+
+.market-guild-target-item.is-paused .market-guild-target-title span {
+  color: rgba(255, 214, 153, 0.95);
+}
+
+.market-guild-target-drag {
+  color: rgba(166, 213, 162, 0.82);
+  font-size: 0.9rem;
+  line-height: 1;
+  letter-spacing: -0.05em;
+  user-select: none;
+}
+
+.market-guild-target-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.market-guild-target-actions .inline-cancel-button {
+  white-space: nowrap;
+}
+
+.market-guild-audit {
+  border-top: 1px dashed rgba(145, 185, 138, 0.35);
+  margin-top: 0.3rem;
+  padding-top: 0.35rem;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.market-guild-audit h5 {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #cde6c7;
+}
+
+.market-guild-audit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.28rem;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.market-guild-audit-item {
+  border: 1px solid rgba(130, 165, 127, 0.28);
+  border-radius: 8px;
+  background: rgba(9, 20, 15, 0.8);
+  padding: 0.34rem 0.42rem;
+  display: grid;
+  gap: 0.16rem;
+}
+
+.market-guild-audit-item.severity-warning {
+  border-color: rgba(220, 144, 90, 0.6);
+  background: rgba(31, 18, 9, 0.84);
+}
+
+.market-guild-audit-item.severity-error {
+  border-color: rgba(216, 95, 95, 0.68);
+  background: rgba(34, 11, 11, 0.84);
+}
+
+.market-guild-audit-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+
+.market-guild-audit-head strong {
+  font-size: 0.68rem;
+  color: rgba(198, 223, 194, 0.9);
+}
+
+.market-guild-audit-head span {
+  font-size: 0.66rem;
+  color: rgba(161, 206, 151, 0.88);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.market-guild-audit-item p {
+  margin: 0;
+  font-size: 0.74rem;
+  color: #d4ead2;
+  line-height: 1.3;
+}
+
 @keyframes research-rune-pulse {
   0%,
   100% {
@@ -4040,6 +4321,25 @@ html {
   .research-logistics-grid {
     grid-template-columns: 1fr;
   }
+
+  .market-guild-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .market-guild-add-row {
+    grid-template-columns: 1fr;
+  }
+
+  .market-guild-target-head {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .market-guild-target-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -4063,6 +4363,7 @@ html {
   min-height: 0;
   --settlement-color-active: #f8fbff;
   --settlement-color-own: #f2c269;
+  --settlement-color-bot: #9f8cff;
   --settlement-color-royal: #8fc9ff;
   --settlement-color-allied: #5fbf8f;
   --settlement-color-nap: #6fc6d8;
@@ -4226,6 +4527,10 @@ html {
   background: var(--settlement-color-own);
 }
 
+.legend.bot::before {
+  background: var(--settlement-color-bot);
+}
+
 .legend.active::before {
   background: var(--settlement-color-active);
 }
@@ -4384,7 +4689,7 @@ html {
   cursor: pointer;
   border-color: rgba(166, 209, 244, 0.56);
   position: relative;
-  overflow: clip;
+  overflow: visible;
   --settlement-dot-color: #c3d3df;
   --settlement-tier-scale: 1;
   --settlement-halo-size: 1.18;
@@ -4539,41 +4844,42 @@ html {
 
 .coverage-dot {
   position: absolute;
-  width: 4.56rem;
-  height: 4.56rem;
+  width: 5.2rem;
+  height: 5.2rem;
   border-radius: 999px;
   border: 0;
   --coverage-rgb: 255, 255, 255;
   background: radial-gradient(
     circle,
-    rgba(var(--coverage-rgb), 0.34) 0%,
-    rgba(var(--coverage-rgb), 0.22) 26%,
-    rgba(var(--coverage-rgb), 0.13) 48%,
-    rgba(var(--coverage-rgb), 0.07) 66%,
-    rgba(var(--coverage-rgb), 0.03) 82%,
+    rgba(var(--coverage-rgb), 0.5) 0%,
+    rgba(var(--coverage-rgb), 0.34) 24%,
+    rgba(var(--coverage-rgb), 0.2) 48%,
+    rgba(var(--coverage-rgb), 0.1) 66%,
+    rgba(var(--coverage-rgb), 0.05) 82%,
     rgba(var(--coverage-rgb), 0) 100%
   );
-  box-shadow: 0 0 20px rgba(var(--coverage-rgb), 0.12);
+  box-shadow: 0 0 28px rgba(var(--coverage-rgb), 0.24);
   opacity: 1;
 }
 
 .coverage-dot.layer-1 {
-  width: 4.56rem;
-  height: 4.56rem;
+  width: 5.2rem;
+  height: 5.2rem;
 }
 
 .coverage-dot.layer-2 {
-  width: 5.92rem;
-  height: 5.92rem;
+  width: 6.8rem;
+  height: 6.8rem;
 }
 
 .coverage-dot.layer-3 {
-  width: 7.32rem;
-  height: 7.32rem;
+  width: 8.4rem;
+  height: 8.4rem;
 }
 
 .coverage-dot.attack {
-  --coverage-rgb: 255, 112, 112;
+  --coverage-rgb: 255, 74, 74;
+  box-shadow: 0 0 34px rgba(255, 74, 74, 0.36);
 }
 
 .coverage-dot.support {
@@ -4633,8 +4939,8 @@ html {
 }
 
 .settlement-order-icon.move {
-  border-color: rgba(126, 184, 255, 0.82);
-  background: rgba(17, 45, 82, 0.92);
+  border-color: rgba(238, 199, 109, 0.84);
+  background: rgba(98, 69, 18, 0.92);
 }
 
 .settlement-order-icon.knight-attack {
@@ -4666,6 +4972,13 @@ html {
   border-color: rgba(143, 201, 255, 0.72);
   --settlement-dot-color: var(--settlement-color-royal);
   --settlement-halo-color: 143, 201, 255;
+}
+
+.region-cell.settlement.bot {
+  background: rgba(159, 140, 255, 0.24);
+  border-color: rgba(159, 140, 255, 0.74);
+  --settlement-dot-color: var(--settlement-color-bot);
+  --settlement-halo-color: 159, 140, 255;
 }
 
 .region-cell.settlement.allied {
@@ -4733,6 +5046,10 @@ html {
   border-color: rgba(149, 205, 247, 0.95);
   box-shadow: 0 0 0 1px rgba(149, 205, 247, 0.45), 0 0 15px rgba(149, 205, 247, 0.28);
   z-index: 7;
+}
+
+.region-cell.settlement.has-order-marker {
+  z-index: 6;
 }
 
 .map-navigation {
@@ -4822,6 +5139,10 @@ html {
 
 .mini-map-dot.royal {
   background: var(--settlement-color-royal);
+}
+
+.mini-map-dot.bot {
+  background: var(--settlement-color-bot);
 }
 
 .mini-map-dot.allied {
@@ -6237,14 +6558,14 @@ html {
   }
 
   .village-card-stack {
-    flex: 1 1 100%;
-    max-width: none;
+    flex: 0 1 176px;
+    max-width: 208px;
     min-width: 0;
   }
 
   .research-spotlight-card {
-    flex: 1 1 190px;
-    max-width: none;
+    flex: 0 1 176px;
+    max-width: 208px;
     margin-left: 0;
   }
 
@@ -6321,12 +6642,24 @@ html {
   }
 
   .resource-strip {
-    gap: 0.34rem;
-    padding: 0.38rem 0.55rem 0.42rem;
+    gap: 0.26rem;
+    padding: 0.3rem 0.42rem 0.34rem;
   }
 
   .resource-card {
-    flex: 1 1 100%;
+    flex: 1 1 calc(50% - 0.18rem);
+    max-width: none;
+    min-width: 0;
+  }
+
+  .resource-card-split {
+    min-width: 0;
+  }
+
+  .village-card-stack,
+  .research-spotlight-card {
+    flex: 1 1 calc(50% - 0.18rem);
+    min-width: 0;
     max-width: none;
   }
 
@@ -6639,6 +6972,24 @@ html {
     radial-gradient(circle at 20% 12%, rgba(182, 194, 209, 0.16), transparent 36%);
 }
 
+@media (max-width: 460px) {
+  .resource-card {
+    flex: 1 1 100%;
+  }
+
+  .village-card-stack,
+  .research-spotlight-card {
+    flex: 1 1 100%;
+  }
+}
+
+.world-card.is-prealpha-world {
+  border-color: rgba(255, 129, 96, 0.62);
+  background:
+    linear-gradient(162deg, rgba(51, 22, 21, 0.92), rgba(21, 12, 14, 0.96)),
+    radial-gradient(circle at 20% 12%, rgba(255, 142, 89, 0.24), transparent 42%);
+}
+
 .world-select {
   width: 100%;
   height: 100%;
@@ -6879,6 +7230,26 @@ html {
   color: #fff3dc;
 }
 
+.world-switch-option.is-test {
+  border-color: rgba(136, 164, 193, 0.5);
+  background: linear-gradient(165deg, rgba(23, 30, 39, 0.86), rgba(12, 18, 26, 0.92));
+}
+
+.world-switch-option.is-prealpha {
+  border-color: rgba(220, 109, 92, 0.58);
+  background: linear-gradient(165deg, rgba(57, 25, 24, 0.88), rgba(24, 13, 14, 0.94));
+}
+
+.world-switch-option.is-active.is-test {
+  border-color: rgba(172, 204, 235, 0.86);
+  box-shadow: 0 0 0 1px rgba(172, 204, 235, 0.34);
+}
+
+.world-switch-option.is-active.is-prealpha {
+  border-color: rgba(255, 156, 132, 0.9);
+  box-shadow: 0 0 0 1px rgba(255, 156, 132, 0.34);
+}
+
 .world-switch-option:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -6912,6 +7283,36 @@ html {
 
 .world-indicator span {
   opacity: 0.84;
+}
+
+.world-indicator em {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.08rem 0.42rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  font-style: normal;
+  border: 1px solid rgba(196, 212, 228, 0.34);
+  color: #d9e6f4;
+  background: rgba(20, 29, 40, 0.84);
+}
+
+.world-indicator.is-test {
+  border-color: rgba(147, 180, 211, 0.58);
+  background: linear-gradient(165deg, rgba(17, 27, 39, 0.8), rgba(11, 18, 28, 0.9));
+}
+
+.world-indicator.is-prealpha {
+  border-color: rgba(235, 124, 102, 0.64);
+  background: linear-gradient(165deg, rgba(56, 24, 23, 0.82), rgba(24, 12, 14, 0.92));
+}
+
+.world-indicator.is-prealpha em {
+  border-color: rgba(255, 171, 145, 0.62);
+  color: #ffdacc;
+  background: rgba(91, 33, 30, 0.86);
 }
 
 .world-indicator-wrap {
@@ -7027,9 +7428,9 @@ html {
 }
 
 :root[data-game-font-scale] .village-card-stack {
-  flex: 1 1 340px;
-  max-width: 460px;
-  min-width: 260px;
+  flex: 0 1 200px;
+  max-width: 240px;
+  min-width: 170px;
 }
 
 :root[data-game-font-scale] .village-protection-timer {
@@ -7043,9 +7444,9 @@ html {
 }
 
 :root[data-game-font-scale] .research-spotlight-card {
-  flex: 1 1 210px;
-  max-width: 300px;
-  margin-left: auto;
+  flex: 0 1 200px;
+  max-width: 240px;
+  margin-left: 0;
 }
 
 :root[data-game-font-scale] .kingdom-audit-item strong {
@@ -7140,8 +7541,8 @@ html {
 }
 
 :root[data-game-font-scale='plus20'] .village-card-stack {
-  flex-basis: 320px;
-  max-width: 430px;
+  flex-basis: 210px;
+  max-width: 252px;
 }
 
 :root[data-game-font-scale='plus20'] .world-indicator {
@@ -7175,12 +7576,15 @@ html {
   }
 
   :root[data-game-font-scale] .village-card-stack {
-    flex: 1 1 100%;
-    max-width: none;
+    flex: 0 1 200px;
+    max-width: 240px;
+    min-width: 170px;
   }
 
   :root[data-game-font-scale] .research-spotlight-card {
-    max-width: none;
+    flex: 0 1 200px;
+    max-width: 240px;
+    min-width: 170px;
     margin-left: 0;
   }
 
@@ -7952,9 +8356,13 @@ html {
 }
 
 
+:root {
+  --communication-horizontal-shift: min(10vw, 180px);
+}
+
 .communication-launcher {
   position: fixed;
-  right: 18px;
+  right: calc(18px + var(--communication-horizontal-shift));
   bottom: 18px;
   z-index: 1800;
   border: 1px solid rgba(153, 197, 236, 0.46);
@@ -7996,7 +8404,7 @@ html {
 
 .communication-hub {
   position: fixed;
-  right: 18px;
+  right: calc(18px + var(--communication-horizontal-shift));
   bottom: 68px;
   width: min(430px, calc(100vw - 28px));
   max-height: min(76vh, 760px);
@@ -8231,7 +8639,7 @@ html {
 
 .communication-chat-overlay {
   position: fixed;
-  right: 22px;
+  right: calc(22px + var(--communication-horizontal-shift));
   bottom: 68px;
   width: min(360px, calc(100vw - 30px));
   max-height: min(76vh, 760px);
@@ -8246,7 +8654,7 @@ html {
 
 .communication-chat-dock {
   position: fixed;
-  right: 190px;
+  right: calc(190px + var(--communication-horizontal-shift));
   bottom: 18px;
   z-index: 1780;
   display: flex;
@@ -8262,7 +8670,7 @@ html {
 }
 
 .communication-chat-dock.with-hub {
-  right: 460px;
+  right: calc(460px + var(--communication-horizontal-shift));
   bottom: 18px;
 }
 
@@ -10294,7 +10702,6 @@ body[data-ui-skin='dark-medieval'] .game-page .world-switch-menu {
   overflow: visible;
 }
 
-body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav,
 body[data-ui-skin='dark-medieval'] .game-page .world-switch-option {
   overflow: hidden;
 }
@@ -10309,7 +10716,7 @@ body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav {
   background: transparent;
   border: 0;
   box-shadow: none;
-  overflow: clip;
+  overflow: visible;
 }
 
 body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .nav-action:last-child::after {
@@ -10928,7 +11335,7 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
 
 .game-page .top-navigation {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
   grid-template-areas: 'world nav session';
   align-items: start;
   column-gap: 0.5rem;
@@ -10943,7 +11350,7 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
 .game-page .top-navigation nav {
   grid-area: nav;
   align-items: stretch;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 0.24rem;
   row-gap: 0.34rem;
   flex-wrap: nowrap;
@@ -10965,16 +11372,21 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
   display: grid;
   grid-template-rows: minmax(2.72rem, auto) minmax(2.06rem, auto);
   align-items: stretch;
-  width: auto;
-  min-width: 0;
-  flex: 0 1 auto;
+  width: max-content;
+  min-width: max-content;
+  flex: 0 0 auto;
 }
 
 .nav-action-stack .menu-button-base.nav-action {
-  width: 100%;
+  width: auto;
   min-height: 2.72rem;
   justify-content: center;
   padding-inline: 0.68rem;
+  white-space: nowrap;
+}
+
+.game-page .top-navigation nav .nav-action-stack .menu-button-base.nav-action .nav-action-glyph {
+  flex: 0 0 auto;
 }
 
 .game-page .top-navigation nav .nav-action-stack .menu-button-base.nav-action .nav-action-title {
@@ -11016,7 +11428,18 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
   justify-content: flex-end;
   min-height: 2.72rem;
   gap: 0.24rem;
-  min-width: max-content;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.game-page .session-actions::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 .game-page .session-actions .menu-button-base.quick-session-action {
@@ -11024,9 +11447,15 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
   padding-inline: 0.66rem;
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
-@media (max-width: 1180px) {
+.game-page .session-actions .menu-button-base.quick-session-action .nav-action-title {
+  white-space: nowrap;
+}
+
+@media (max-width: 1400px) {
   .game-page .top-navigation {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
@@ -11058,13 +11487,17 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
 
 @media (max-width: 1660px) {
   .nav-action-stack {
-    width: auto;
+    width: max-content;
+    min-width: max-content;
+    flex: 0 0 auto;
   }
 }
 
 @media (max-width: 1440px) {
   .nav-action-stack {
-    width: auto;
+    width: max-content;
+    min-width: max-content;
+    flex: 0 0 auto;
   }
 
   .nav-action-meta {
@@ -11075,7 +11508,9 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
 
 @media (max-width: 1200px) {
   .nav-action-stack {
-    width: auto;
+    width: max-content;
+    min-width: max-content;
+    flex: 0 0 auto;
   }
 
   .nav-action-meta {
@@ -11252,4 +11687,231 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
 .city-unit-amount {
   font-size: 1.42rem;
   line-height: 1.06;
+}
+
+/* Final compact layout pass: free header/components + compact resource strip */
+.game-page .top-navigation {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    'world'
+    'nav';
+  align-items: center;
+  row-gap: 0.22rem;
+  column-gap: 0.34rem;
+  margin: 0.24rem 0.4rem 0.22rem;
+  padding: 0;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+.game-page .top-navigation .world-indicator-wrap {
+  grid-area: world;
+  min-width: 0;
+  max-width: fit-content;
+  display: grid;
+  gap: 0.06rem;
+  justify-self: end;
+}
+
+.game-page .top-navigation .world-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  width: max-content;
+  max-width: min(100%, 26rem);
+  padding: 0.18rem 0.42rem;
+  min-height: 0;
+}
+
+.game-page .top-navigation .world-indicator strong {
+  max-width: 17rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.game-page .top-navigation .world-version-note {
+  font-size: 0.56rem;
+  letter-spacing: 0.04em;
+}
+
+.game-page .top-navigation nav {
+  grid-area: nav;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+  align-items: flex-start;
+  gap: 0.2rem;
+  flex-wrap: wrap;
+  overflow: visible;
+  padding-bottom: 0;
+}
+
+.game-page .top-navigation .nav-action-meta {
+  display: grid;
+  min-height: 1.58rem;
+  margin-top: 0.1rem;
+  font-size: 0.6rem;
+  padding: 0.12rem 0.2rem;
+}
+
+.game-page .top-navigation .nav-action-stack {
+  grid-template-rows: minmax(2.2rem, 2.2rem) minmax(1.58rem, 1.58rem);
+  position: relative;
+}
+
+.game-page .top-navigation .nav-action-stack .menu-button-base.nav-action,
+.game-page .top-navigation nav .menu-button-base.quick-session-action {
+  min-height: 2.2rem;
+  height: 2.2rem;
+  padding: 0.34rem 0.58rem;
+  white-space: nowrap;
+  box-shadow: none !important;
+}
+
+.game-page .top-navigation .nav-action-stack .menu-button-base.nav-action:hover,
+.game-page .top-navigation .nav-action-stack .menu-button-base.nav-action:focus-visible,
+.game-page .top-navigation .nav-action-stack .menu-button-base.nav-action.is-open,
+.game-page .top-navigation nav .menu-button-base.quick-session-action:hover,
+.game-page .top-navigation nav .menu-button-base.quick-session-action:focus-visible,
+.game-page .top-navigation nav .menu-button-base.quick-session-action.is-open {
+  box-shadow: none !important;
+}
+
+.game-page .top-navigation .nav-action-stack.nav-action-stack-session {
+  grid-template-rows: minmax(2.2rem, 2.2rem) minmax(1.58rem, 1.58rem);
+}
+
+.game-page .top-navigation .nav-action-stack.nav-action-stack-world-switch .world-switch-menu {
+  right: auto;
+  left: 0;
+}
+
+.game-page .top-navigation nav .menu-button-base.quick-session-action .nav-action-title {
+  white-space: nowrap;
+}
+
+.game-page .top-navigation .nav-action-meta {
+  width: 100%;
+}
+
+.game-page .resource-strip {
+  margin: 0.22rem 0.4rem 0.3rem;
+  padding: 0;
+  gap: 0.22rem;
+  align-items: flex-start;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.game-page .resource-strip > .resource-card,
+.game-page .resource-strip > .village-card-stack .village-resource-card,
+.game-page .resource-strip > .research-spotlight-card {
+  box-shadow: none !important;
+}
+
+.game-page .resource-strip > .resource-card:hover,
+.game-page .resource-strip > .resource-card:focus-visible,
+.game-page .resource-strip > .village-card-stack .village-resource-card:hover,
+.game-page .resource-strip > .village-card-stack .village-resource-card:focus-visible,
+.game-page .resource-strip > .research-spotlight-card:hover,
+.game-page .resource-strip > .research-spotlight-card:focus-visible {
+  box-shadow: none !important;
+}
+
+.game-page .resource-strip > .resource-card:not(.research-spotlight-card) {
+  flex: 0 0 auto;
+  width: max-content;
+  min-width: 8.8rem;
+  max-width: 12.8rem;
+}
+
+.game-page .resource-strip > .village-card-stack {
+  flex: 0 0 auto;
+  width: max-content;
+  min-width: 12.6rem;
+  max-width: min(100%, 38rem);
+}
+
+.game-page .resource-strip > .village-card-stack .village-resource-card strong {
+  font-size: 1.25rem;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.game-page .resource-strip > .research-spotlight-card {
+  flex: 0 1 182px;
+  min-width: 156px;
+  max-width: 216px;
+}
+
+.game-page .resource-strip > .research-spotlight-card strong {
+  font-size: 1.25rem;
+}
+
+.game-page .resource-strip > .resource-card:not(.research-spotlight-card) {
+  padding: 0.22rem 0.34rem;
+  gap: 0.05rem;
+}
+
+.game-page .resource-strip > .resource-card:not(.research-spotlight-card) strong {
+  font-size: 1.25rem;
+}
+
+.game-page .resource-strip > .resource-card:not(.research-spotlight-card) span {
+  font-size: 0.6rem;
+}
+
+.game-page .resource-strip > .resource-card:not(.research-spotlight-card) small {
+  font-size: 0.55rem;
+}
+
+.game-page .resource-strip > .resource-card:not(.research-spotlight-card) .resource-slot-icon {
+  width: 0.86rem;
+  font-size: 0.74rem;
+}
+
+.game-page .resource-strip > .resource-card:not(.research-spotlight-card) .resource-slot-icon img {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+@media (max-width: 1400px) {
+  .game-page .top-navigation {
+    margin: 0.22rem 0.32rem 0.2rem;
+  }
+
+  .game-page .top-navigation nav {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+}
+
+@media (max-width: 980px) {
+  .game-page .resource-strip > .resource-card:not(.research-spotlight-card),
+  .game-page .resource-strip > .village-card-stack,
+  .game-page .resource-strip > .research-spotlight-card {
+    flex: 1 1 calc(50% - 0.12rem);
+    width: auto;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .game-page .resource-strip > .village-card-stack {
+    margin-right: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .game-page .resource-strip > .resource-card:not(.research-spotlight-card),
+  .game-page .resource-strip > .village-card-stack,
+  .game-page .resource-strip > .research-spotlight-card {
+    flex: 1 1 100%;
+  }
 }

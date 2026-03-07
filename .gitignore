@@ -26,6 +26,7 @@ dir/
 tmp/
 tmp-*
 tmp*/
+artifacts/perf/
 
 # Editor directories and files
 .vscode/*

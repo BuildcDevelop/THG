@@ -1,4 +1,16 @@
-import { conquerVillage, getVillageSnapshot, issueArmyCommand, recruitUnits, runGameTick } from '../../server/gameService.js';
+import {
+  conquerVillage,
+  createAbandonedVillages,
+  getBattleReportSummary,
+  getPlayerNotificationSummary,
+  getVillageSnapshot,
+  getWorldMapSnapshot,
+  issueArmyCommand,
+  listBattleReports,
+  listPlayerNotifications,
+  recruitUnits,
+  runGameTick,
+} from '../../server/gameService.js';
 import { db } from '../../server/db.js';
 import { UNIT_ORDER } from '../../server/gameConfig.js';
 import { listCommunicationInbox, sendCommunicationMessage } from '../../server/communicationService.js';
@@ -11,6 +23,10 @@ const REGION_PRIMARY = 1;
 const REGION_FIRE = 2;
 const KINGDOM_ATTACKER = 'Aurora Pact';
 const KINGDOM_DEFENDER = 'Neutral';
+const DEFAULT_TEST_PRESTIGE = 2000;
+const MAP_REGION_CELL_SIZE = 25;
+const MAP_CELL_GAP_PX = 2;
+const MAP_RENDER_MARGIN_CELLS = 2;
 
 const selectPlayerByUsernameStmt = db.prepare(
   `SELECT id, username
@@ -79,6 +95,22 @@ const updateVillagePrestigeByPlayerRegionStmt = db.prepare(
    WHERE player_id = ?
      AND region = ?`,
 );
+const updateRecruitmentFinishAtStmt = db.prepare(
+  `UPDATE unit_recruitments
+   SET finish_at = ?
+   WHERE id = ?`,
+);
+const selectActiveRecruitmentCountByVillageStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM unit_recruitments
+   WHERE village_id = ? AND status = 'in_progress'`,
+);
+const selectUnitAmountByVillageAndUnitStmt = db.prepare(
+  `SELECT amount
+   FROM units
+   WHERE village_id = ? AND unit_id = ?
+   LIMIT 1`,
+);
 
 const emptySelection = () => Object.fromEntries(UNIT_ORDER.map((unitId) => [unitId, 0]));
 const toCompleteSelection = (partialSelection = {}) => {
@@ -97,6 +129,56 @@ const sumSelectionWithoutCaravans = (selection = {}) =>
     }
     return sum + Math.max(0, Math.floor(Number(selection[unitId] ?? 0)));
   }, 0);
+const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+const payloadBytes = (value) => Buffer.byteLength(JSON.stringify(value ?? null), 'utf8');
+const countRenderedSettlements = (settlements, renderedCellRange) =>
+  settlements.reduce((count, settlement) => {
+    const localX = Math.floor(Number(settlement?.localX ?? 0));
+    const localY = Math.floor(Number(settlement?.localY ?? 0));
+    if (
+      localX >= Number(renderedCellRange.minX) &&
+      localX <= Number(renderedCellRange.maxX) &&
+      localY >= Number(renderedCellRange.minY) &&
+      localY <= Number(renderedCellRange.maxY)
+    ) {
+      return count + 1;
+    }
+    return count;
+  }, 0);
+const calculateRenderedCellRange = ({
+  cellSize,
+  mapCellGapPx,
+  regionSize,
+  clientWidth,
+  clientHeight,
+  scrollLeft,
+  scrollTop,
+}) => {
+  const safeRegionSize = Math.max(1, Math.floor(Number(regionSize ?? 1)));
+  const cellSpan = Math.max(1, Math.floor(Number(cellSize ?? 0) + Number(mapCellGapPx ?? 0)));
+  const safeClientWidth = Math.max(0, Number(clientWidth ?? 0));
+  const safeClientHeight = Math.max(0, Number(clientHeight ?? 0));
+  if (safeClientWidth <= 1 || safeClientHeight <= 1) {
+    return {
+      minX: 1,
+      maxX: safeRegionSize,
+      minY: 1,
+      maxY: safeRegionSize,
+    };
+  }
+
+  const viewportStartX = Math.floor(Math.max(0, Number(scrollLeft ?? 0)) / cellSpan) + 1;
+  const viewportEndX = Math.ceil((Math.max(0, Number(scrollLeft ?? 0)) + safeClientWidth) / cellSpan) + 1;
+  const viewportStartY = Math.floor(Math.max(0, Number(scrollTop ?? 0)) / cellSpan) + 1;
+  const viewportEndY = Math.ceil((Math.max(0, Number(scrollTop ?? 0)) + safeClientHeight) / cellSpan) + 1;
+
+  return {
+    minX: clamp(viewportStartX - MAP_RENDER_MARGIN_CELLS, 1, safeRegionSize),
+    maxX: clamp(viewportEndX + MAP_RENDER_MARGIN_CELLS, 1, safeRegionSize),
+    minY: clamp(viewportStartY - MAP_RENDER_MARGIN_CELLS, 1, safeRegionSize),
+    maxY: clamp(viewportEndY + MAP_RENDER_MARGIN_CELLS, 1, safeRegionSize),
+  };
+};
 const getPlayer = (username) => {
   const player = selectPlayerByUsernameStmt.get(String(username));
   if (!player) {
@@ -112,6 +194,20 @@ const getVillageForPlayerInWorld = (username, worldId) => {
     region: Number(snapshot.village.region),
   };
 };
+const applyBalancedPrestigeForRegion = (attackerPlayerId, defenderPlayerId, region) => {
+  const attackerVillageCount = Math.max(
+    1,
+    Math.floor(Number(selectVillageCountByPlayerAndRegionStmt.get(Number(attackerPlayerId), Number(region))?.total ?? 0)),
+  );
+  const defenderVillageCount = Math.max(
+    1,
+    Math.floor(Number(selectVillageCountByPlayerAndRegionStmt.get(Number(defenderPlayerId), Number(region))?.total ?? 0)),
+  );
+  const attackerVillagePrestige = DEFAULT_TEST_PRESTIGE * defenderVillageCount;
+  const defenderVillagePrestige = DEFAULT_TEST_PRESTIGE * attackerVillageCount;
+  updateVillagePrestigeByPlayerRegionStmt.run(attackerVillagePrestige, Number(attackerPlayerId), Number(region));
+  updateVillagePrestigeByPlayerRegionStmt.run(defenderVillagePrestige, Number(defenderPlayerId), Number(region));
+};
 const clearTransientState = () => {
   db.exec(`
     DELETE FROM army_movement_units;
@@ -121,6 +217,18 @@ const clearTransientState = () => {
     DELETE FROM unit_recruitments;
     DELETE FROM building_upgrades;
   `);
+  const attacker = selectPlayerByUsernameStmt.get(String(ATTACKER_USERNAME));
+  const defender = selectPlayerByUsernameStmt.get(String(DEFENDER_USERNAME));
+  if (attacker?.id && defender?.id) {
+    applyBalancedPrestigeForRegion(Number(attacker.id), Number(defender.id), REGION_PRIMARY);
+    applyBalancedPrestigeForRegion(Number(attacker.id), Number(defender.id), REGION_FIRE);
+  } else if (attacker?.id) {
+    updateVillagePrestigeByPlayerRegionStmt.run(DEFAULT_TEST_PRESTIGE, Number(attacker.id), REGION_PRIMARY);
+    updateVillagePrestigeByPlayerRegionStmt.run(DEFAULT_TEST_PRESTIGE, Number(attacker.id), REGION_FIRE);
+  } else if (defender?.id) {
+    updateVillagePrestigeByPlayerRegionStmt.run(DEFAULT_TEST_PRESTIGE, Number(defender.id), REGION_PRIMARY);
+    updateVillagePrestigeByPlayerRegionStmt.run(DEFAULT_TEST_PRESTIGE, Number(defender.id), REGION_FIRE);
+  }
 };
 const setVillageUnits = (villageId, unitSelection = {}) => {
   const normalized = toCompleteSelection(unitSelection);
@@ -269,6 +377,7 @@ const runScenarioMixedScoutAttackAndLoot = () => {
   return {
     attackerStart: payload?.battle?.attacker?.start ?? {},
     attackerSurvivors: payload?.battle?.attacker?.survivors ?? {},
+    lootModifier: Number(payload?.battle?.prestigeBalance?.lootModifier ?? 1),
     lootTaken,
     totalLoot: Number(lootTaken.wood ?? 0) + Number(lootTaken.stone ?? 0) + Number(lootTaken.iron ?? 0),
   };
@@ -372,6 +481,7 @@ const runScenarioLootCapacity = () => {
   const lootTaken = payload?.lootTaken ?? { wood: 0, stone: 0, iron: 0 };
 
   return {
+    lootModifier: Number(payload?.battle?.prestigeBalance?.lootModifier ?? 1),
     lootTaken,
     totalLoot: Number(lootTaken.wood ?? 0) + Number(lootTaken.stone ?? 0) + Number(lootTaken.iron ?? 0),
     survivors: payload?.battle?.attacker?.survivors ?? {},
@@ -401,6 +511,7 @@ const runScenarioDefaultBalancedLootPriority = () => {
 
   return {
     reportedLootPriority: String(payload?.lootPriority ?? ''),
+    lootModifier: Number(payload?.battle?.prestigeBalance?.lootModifier ?? 1),
     lootTaken,
     totalLoot: lootValues.reduce((sum, value) => sum + value, 0),
     lootSpread: maxLoot - minLoot,
@@ -414,14 +525,14 @@ const runScenarioCaravanBinaryCasualties = () => {
 
   clearTransientState();
   updateVillageOwnerStmt.run(Number(defender.id), KINGDOM_DEFENDER, Number(defenderVillage.villageId));
-  setVillageUnits(attackerVillage.villageId, { militia: 60, caravan: 4 });
+  setVillageUnits(attackerVillage.villageId, { militia: 250, caravan: 4 });
   setVillageUnits(defenderVillage.villageId, { militia: 25 });
   setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
   const { payload: survivorPayload } = runAttackAndGetPayload({
     username: ATTACKER_USERNAME,
     originVillageId: attackerVillage.villageId,
     targetVillageId: defenderVillage.villageId,
-    units: { militia: 60, caravan: 4 },
+    units: { militia: 250, caravan: 4 },
     lootPriority: 'balanced',
   });
 
@@ -816,6 +927,196 @@ const runScenarioPrestigeRetaliationUnlock = () => {
   };
 };
 
+const runScenarioSummaryPollingConsistency = () => {
+  clearTransientState();
+  const attacker = getPlayer(ATTACKER_USERNAME);
+  const defender = getPlayer(DEFENDER_USERNAME);
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const defenderVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+  const reportSeedRuns = 8;
+
+  setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+
+  for (let index = 0; index < reportSeedRuns; index += 1) {
+    applyBalancedPrestigeForRegion(Number(attacker.id), Number(defender.id), REGION_PRIMARY);
+    setVillageUnits(attackerVillage.villageId, { militia: 30 });
+    setVillageUnits(defenderVillage.villageId, {});
+    setVillageResources(defenderVillage.villageId, { wood: 2500, stone: 2500, iron: 2500 });
+
+    runAttackAndGetPayload({
+      username: ATTACKER_USERNAME,
+      originVillageId: attackerVillage.villageId,
+      targetVillageId: defenderVillage.villageId,
+      units: { militia: 10 },
+      lootPriority: 'balanced',
+    });
+  }
+
+  const fullReports = listBattleReports(
+    ATTACKER_USERNAME,
+    {
+      page: 1,
+      pageSize: 50,
+    },
+    WORLD_PRIMARY,
+  );
+  const summaryReports = getBattleReportSummary(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const fullActivity = listPlayerNotifications(
+    ATTACKER_USERNAME,
+    {
+      page: 1,
+      pageSize: 50,
+      includeArchived: false,
+    },
+    WORLD_PRIMARY,
+  );
+  const summaryActivity = getPlayerNotificationSummary(ATTACKER_USERNAME, WORLD_PRIMARY);
+
+  return {
+    reports: {
+      fullTotal: Math.max(0, Math.floor(Number(fullReports?.total ?? 0))),
+      summaryTotal: Math.max(0, Math.floor(Number(summaryReports?.total ?? 0))),
+      fullPayloadBytes: payloadBytes(fullReports),
+      summaryPayloadBytes: payloadBytes(summaryReports),
+    },
+    activity: {
+      fullUnreadTotal: Math.max(0, Math.floor(Number(fullActivity?.unreadTotal ?? 0))),
+      summaryUnreadTotal: Math.max(0, Math.floor(Number(summaryActivity?.unreadTotal ?? 0))),
+      fullAttentionTotal: Math.max(0, Math.floor(Number(fullActivity?.attentionTotal ?? 0))),
+      summaryAttentionTotal: Math.max(0, Math.floor(Number(summaryActivity?.attentionTotal ?? 0))),
+      fullUnreadFeedSize: Array.isArray(fullActivity?.unreadFeed) ? fullActivity.unreadFeed.length : 0,
+      summaryUnreadFeedSize: Array.isArray(summaryActivity?.unreadFeed) ? summaryActivity.unreadFeed.length : 0,
+      fullPayloadBytes: payloadBytes(fullActivity),
+      summaryPayloadBytes: payloadBytes(summaryActivity),
+    },
+  };
+};
+
+const runScenarioReadModelsNoTickSideEffects = () => {
+  clearTransientState();
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  setVillageResources(attackerVillage.villageId, { wood: 4000, stone: 4000, iron: 4000 });
+  setVillageUnits(attackerVillage.villageId, { militia: 0 });
+
+  const recruitment = recruitUnits(
+    ATTACKER_USERNAME,
+    'militia',
+    1,
+    Number(attackerVillage.villageId),
+    WORLD_PRIMARY,
+  );
+  const forcedPastFinishAt = new Date(Date.now() - 60 * 1000).toISOString();
+  updateRecruitmentFinishAtStmt.run(forcedPastFinishAt, Number(recruitment.orderId));
+
+  const readUnitAmount = () =>
+    Math.max(
+      0,
+      Math.floor(
+        Number(
+          selectUnitAmountByVillageAndUnitStmt.get(Number(attackerVillage.villageId), 'militia')?.amount ?? 0,
+        ),
+      ),
+    );
+  const readRecruitmentQueueSize = () =>
+    Math.max(
+      0,
+      Math.floor(Number(selectActiveRecruitmentCountByVillageStmt.get(Number(attackerVillage.villageId))?.total ?? 0)),
+    );
+
+  const beforeReadMilitia = readUnitAmount();
+  const beforeReadQueueSize = readRecruitmentQueueSize();
+
+  listBattleReports(ATTACKER_USERNAME, { page: 1, pageSize: 10 }, WORLD_PRIMARY);
+  getBattleReportSummary(ATTACKER_USERNAME, WORLD_PRIMARY);
+  listPlayerNotifications(ATTACKER_USERNAME, { page: 1, pageSize: 10 }, WORLD_PRIMARY);
+  getPlayerNotificationSummary(ATTACKER_USERNAME, WORLD_PRIMARY);
+  getWorldMapSnapshot(ATTACKER_USERNAME, Number(attackerVillage.villageId), WORLD_PRIMARY, 'center');
+  getVillageSnapshot(ATTACKER_USERNAME, Number(attackerVillage.villageId), WORLD_PRIMARY, 'center', {
+    includeWorldMap: false,
+  });
+
+  const afterReadMilitia = readUnitAmount();
+  const afterReadQueueSize = readRecruitmentQueueSize();
+
+  runGameTick();
+
+  const afterTickMilitia = readUnitAmount();
+  const afterTickQueueSize = readRecruitmentQueueSize();
+
+  return {
+    recruitmentOrderId: Number(recruitment?.orderId ?? 0),
+    beforeRead: {
+      militia: beforeReadMilitia,
+      inProgressRecruitments: beforeReadQueueSize,
+    },
+    afterRead: {
+      militia: afterReadMilitia,
+      inProgressRecruitments: afterReadQueueSize,
+    },
+    afterTick: {
+      militia: afterTickMilitia,
+      inProgressRecruitments: afterTickQueueSize,
+    },
+  };
+};
+
+const runScenarioMapRenderScopeStress = () => {
+  clearTransientState();
+  createAbandonedVillages(50);
+  createAbandonedVillages(50);
+  createAbandonedVillages(50);
+
+  const originVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const worldMapSnapshot = getWorldMapSnapshot(
+    ATTACKER_USERNAME,
+    Number(originVillage.villageId),
+    WORLD_PRIMARY,
+    'center',
+  );
+  const settlements = Array.isArray(worldMapSnapshot?.world?.settlements)
+    ? worldMapSnapshot.world.settlements
+    : [];
+  const regionSize = Math.max(1, Math.floor(Number(worldMapSnapshot?.world?.size ?? 1)));
+  const zoomPercent = 0;
+  const zoomScale = 1 + zoomPercent / 100;
+  const cellSize = Math.max(8, Math.round(MAP_REGION_CELL_SIZE * zoomScale));
+  const mapGridSizePx = regionSize * cellSize + Math.max(0, regionSize - 1) * MAP_CELL_GAP_PX;
+  const viewport = {
+    width: 560,
+    height: 340,
+  };
+  const scrollLeft = Math.max(0, mapGridSizePx / 2 - viewport.width / 2);
+  const scrollTop = Math.max(0, mapGridSizePx / 2 - viewport.height / 2);
+  const renderedCellRange = calculateRenderedCellRange({
+    cellSize,
+    mapCellGapPx: MAP_CELL_GAP_PX,
+    regionSize,
+    clientWidth: viewport.width,
+    clientHeight: viewport.height,
+    scrollLeft,
+    scrollTop,
+  });
+  const renderedSettlements = countRenderedSettlements(settlements, renderedCellRange);
+  const totalSettlements = Math.max(0, settlements.length);
+  const renderedRatio = totalSettlements > 0 ? renderedSettlements / totalSettlements : 1;
+
+  return {
+    totalSettlements,
+    renderedSettlements,
+    culledSettlements: Math.max(0, totalSettlements - renderedSettlements),
+    renderedRatio: Number(renderedRatio.toFixed(4)),
+    mapPayloadBytes: payloadBytes(worldMapSnapshot),
+    viewport: {
+      ...viewport,
+      scrollLeft: Number(scrollLeft.toFixed(1)),
+      scrollTop: Number(scrollTop.toFixed(1)),
+      cellSize,
+    },
+    renderedCellRange,
+    regionSize,
+  };
+};
+
 const scenarioName = String(process.argv[2] ?? '').trim();
 const scenarioHandlers = new Map([
   ['empty-fortified-no-loss', runScenarioEmptyFortifiedNoLoss],
@@ -833,6 +1134,9 @@ const scenarioHandlers = new Map([
   ['communication-thread-isolation', runScenarioCommunicationThreadIsolation],
   ['knight-single-slot-per-village', runScenarioKnightSingleSlotPerVillage],
   ['prestige-retaliation-unlock', runScenarioPrestigeRetaliationUnlock],
+  ['summary-polling-consistency', runScenarioSummaryPollingConsistency],
+  ['read-models-no-tick-side-effects', runScenarioReadModelsNoTickSideEffects],
+  ['map-render-scope-stress', runScenarioMapRenderScopeStress],
 ]);
 
 const handler = scenarioHandlers.get(scenarioName);

@@ -4,6 +4,16 @@ import { fetchWorlds, type WorldPortalItem, type WorldsPortalResponse } from '..
 import { getSession, logout, setSelectedWorld } from '../auth';
 
 const isWorldPlayable = (world: WorldPortalItem): boolean => String(world.status).toLowerCase() === 'online';
+const resolveWorldFlavorById = (worldIdRaw: string): 'test' | 'prealpha' | 'default' => {
+  const worldId = String(worldIdRaw ?? '').trim();
+  if (worldId === 'dominion-1') {
+    return 'test';
+  }
+  if (worldId === 'dominion-1-fire') {
+    return 'prealpha';
+  }
+  return 'default';
+};
 const SPAWN_DIRECTION_OPTIONS = [
   {
     id: 'center',
@@ -177,6 +187,9 @@ export const WorldsPage = () => {
             {(portalData?.worlds ?? []).map((world) => {
               const isSelected = world.id === selectedWorldId;
               const playable = isWorldPlayable(world);
+              const worldFlavor = resolveWorldFlavorById(world.id);
+              const worldFlavorLabel =
+                worldFlavor === 'test' ? 'Testovací svět' : worldFlavor === 'prealpha' ? 'Pre-alpha' : 'Standard';
               const worldRank = world.player?.rank ?? null;
               const worldKingdom = world.player?.kingdom ?? 'Bez kralovstvi';
               const worldPlayerAccounts = world.stats?.playerAccounts ?? 0;
@@ -189,7 +202,7 @@ export const WorldsPage = () => {
               return (
                 <article
                   key={world.id}
-                  className={`world-card ${isSelected ? 'is-selected' : ''} ${playable ? 'is-playable' : 'is-locked'} ${world.id === 'dominion-1' ? 'is-test-world' : ''}`}
+                  className={`world-card ${isSelected ? 'is-selected' : ''} ${playable ? 'is-playable' : 'is-locked'} ${worldFlavor === 'test' ? 'is-test-world' : ''} ${worldFlavor === 'prealpha' ? 'is-prealpha-world' : ''}`}
                 >
                   <button
                     type="button"
@@ -203,7 +216,9 @@ export const WorldsPage = () => {
                     }}
                     aria-pressed={isSelected}
                   >
-                    <p className="world-status">{playable ? 'ONLINE' : 'UZAVŘENO'}</p>
+                    <p className="world-status">
+                      {playable ? 'ONLINE' : 'UZAVŘENO'} · {worldFlavorLabel.toUpperCase()}
+                    </p>
                     <h3>{worldHeading}</h3>
                     <p className="world-subtitle">{world.subtitle}</p>
                     <p className="world-description">{world.description}</p>

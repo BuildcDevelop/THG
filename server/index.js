@@ -7,7 +7,9 @@ import {
   archivePlayerNotification,
   cancelArmyCommand,
   cancelBuildingUpgrade,
+  cancelMarketLogistics,
   cancelRecruitment,
+  configureMarketGuildAutomation,
   createPlayerAccount,
   createKingdom,
   deletePlayerNotification,
@@ -15,7 +17,10 @@ import {
   authenticatePlayer,
   createAbandonedVillages,
   conquerVillage,
+  getBattleReportSummary,
+  getPlayerNotificationSummary,
   getVillageSnapshot,
+  getWorldMapSnapshot,
   invitePlayerToKingdom,
   issueArmyCommand,
   hireAcademics,
@@ -155,6 +160,22 @@ const parseOptionalPositiveNumber = (value) => {
   }
   return parsed;
 };
+const parseOptionalBoolean = (value, fallback = false) => {
+  if (value == null) {
+    return fallback;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === '') {
+    return fallback;
+  }
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+  return fallback;
+};
 
 const toGameRuleError = (error) => {
   if (error instanceof GameRuleError) {
@@ -291,10 +312,7 @@ app.get('/api/v1/worlds', async (req, res, next) => {
       throw new GameRuleError("Query parametr 'username' je povinny.", 400);
     }
 
-    const data = await executeWithWriteOperation(() => {
-      runGameTick();
-      return listPlayerWorlds(username);
-    });
+    const data = await executeWithReadOperation(() => listPlayerWorlds(username));
 
     res.json({
       ok: true,
@@ -307,10 +325,7 @@ app.get('/api/v1/worlds', async (req, res, next) => {
 
 app.get('/api/v1/admin/players', async (_req, res, next) => {
   try {
-    const data = await executeWithWriteOperation(() => {
-      runGameTick();
-      return listAdminPlayers();
-    });
+    const data = await executeWithReadOperation(() => listAdminPlayers());
 
     res.json({
       ok: true,
@@ -326,16 +341,16 @@ app.get('/api/v1/state', async (req, res, next) => {
     const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
     const worldId = parseOptionalWorldId(req.query.worldId);
     const spawnDirection = parseOptionalSpawnDirection(req.query.spawnDirection);
+    const includeWorldMap = parseOptionalBoolean(req.query.includeWorldMap, false);
     const villageIdRaw = req.query.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
         ? null
         : Number(String(villageIdRaw).trim());
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
-    const resolvedState = await executeWithWriteOperation(() => {
-      runGameTick();
-      return getVillageSnapshot(username, normalizedVillageId, worldId, spawnDirection);
-    });
+    const resolvedState = await executeWithReadOperation(() =>
+      getVillageSnapshot(username, normalizedVillageId, worldId, spawnDirection, { includeWorldMap }),
+    );
 
     res.json({
       ok: true,
@@ -349,10 +364,7 @@ app.get('/api/v1/state', async (req, res, next) => {
 app.get('/api/v1/ranking', async (req, res, next) => {
   try {
     const worldId = parseOptionalWorldId(req.query.worldId);
-    const data = await executeWithWriteOperation(() => {
-      runGameTick();
-      return listPlayerLeaderboard(worldId);
-    });
+    const data = await executeWithReadOperation(() => listPlayerLeaderboard(worldId));
 
     res.json({
       ok: true,
@@ -369,13 +381,16 @@ app.get('/api/v1/reports', async (req, res, next) => {
     const worldId = parseOptionalWorldId(req.query.worldId);
     const page = Number(req.query.page ?? 1);
     const pageSize = Number(req.query.pageSize ?? 20);
-    const data = await executeWithWriteOperation(() => {
-      runGameTick();
-      return listBattleReports(username, {
-        page: Number.isFinite(page) ? page : 1,
-        pageSize: Number.isFinite(pageSize) ? pageSize : 20,
-      }, worldId);
-    });
+    const data = await executeWithReadOperation(() =>
+      listBattleReports(
+        username,
+        {
+          page: Number.isFinite(page) ? page : 1,
+          pageSize: Number.isFinite(pageSize) ? pageSize : 20,
+        },
+        worldId,
+      ),
+    );
 
     res.json({
       ok: true,
@@ -450,9 +465,8 @@ app.get('/api/v1/activity', async (req, res, next) => {
     const page = Number(req.query.page ?? 1);
     const pageSize = Number(req.query.pageSize ?? 25);
     const includeArchived = String(req.query.includeArchived ?? '').trim();
-    const data = await executeWithWriteOperation(() => {
-      runGameTick();
-      return listPlayerNotifications(
+    const data = await executeWithWriteOperation(() =>
+      listPlayerNotifications(
         username,
         {
           page: Number.isFinite(page) ? page : 1,
@@ -460,8 +474,8 @@ app.get('/api/v1/activity', async (req, res, next) => {
           includeArchived,
         },
         worldId,
-      );
-    });
+      ),
+    );
 
     res.json({
       ok: true,
@@ -565,16 +579,15 @@ app.get('/api/v1/communication', async (req, res, next) => {
     const threadLimit = parseOptionalPositiveNumber(req.query.threadLimit);
     const messageLimit = parseOptionalPositiveNumber(req.query.messageLimit);
     const search = String(req.query.search ?? '').trim();
-    const data = await executeWithWriteOperation(() => {
-      runGameTick();
-      return listCommunicationInbox(username, {
+    const data = await executeWithReadOperation(() =>
+      listCommunicationInbox(username, {
         threadId,
         beforeMessageId,
         threadLimit,
         messageLimit,
         search,
-      });
-    });
+      }),
+    );
 
     res.json({
       ok: true,
@@ -923,7 +936,7 @@ app.post('/api/v1/buildings/:buildingId/upgrade', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = startBuildingUpgrade(username, buildingId, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -951,7 +964,7 @@ app.post('/api/v1/buildings/upgrades/:upgradeId/cancel', async (req, res, next) 
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = cancelBuildingUpgrade(username, upgradeId, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -980,7 +993,7 @@ app.post('/api/v1/units/:unitId/recruit', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = recruitUnits(username, unitId, amount, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1008,7 +1021,7 @@ app.post('/api/v1/units/recruitments/:recruitmentId/cancel', async (req, res, ne
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = cancelRecruitment(username, recruitmentId, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1035,7 +1048,7 @@ app.post('/api/v1/townhall/knight/recall', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = recallKnight(username, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1067,6 +1080,8 @@ app.post('/api/v1/villages/:villageId/conquer', async (req, res, next) => {
         username,
         normalizedRequestedVillageId ?? (Number.isFinite(villageId) ? villageId : null),
         worldId,
+        'center',
+        { includeWorldMap: false },
       );
       return { result, state };
     });
@@ -1094,7 +1109,7 @@ app.post('/api/v1/villages/restart', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = restartVillageProgress(username, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1122,7 +1137,7 @@ const handleVillageRenameRequest = async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = renameVillage(username, name, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1171,7 +1186,7 @@ app.post('/api/v1/army/command', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = issueArmyCommand(username, req.body ?? {}, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1199,7 +1214,7 @@ app.post('/api/v1/army/command/:movementId/cancel', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = cancelArmyCommand(username, movementId, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1227,7 +1242,7 @@ app.post('/api/v1/research/academics/hire', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = hireAcademics(username, amount, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1256,7 +1271,7 @@ app.post('/api/v1/research/project/start', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = startResearchProject(username, researchId, academics, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1291,7 +1306,7 @@ app.post('/api/v1/research/project/academics/adjust', async (req, res, next) => 
         normalizedVillageId,
         worldId,
       );
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1318,7 +1333,7 @@ app.post('/api/v1/mercenaries/hire', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = hireMercenaryContract(username, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1345,11 +1360,122 @@ app.post('/api/v1/market/logistics/send', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = sendMarketLogistics(username, req.body ?? {}, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
     res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.get('/api/v1/activity/summary', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.query.worldId);
+    const data = await executeWithReadOperation(() => getPlayerNotificationSummary(username, worldId));
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.get('/api/v1/reports/summary', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.query.worldId);
+    const data = await executeWithReadOperation(() => getBattleReportSummary(username, worldId));
+
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.get('/api/v1/world-map', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.query.worldId);
+    const spawnDirection = parseOptionalSpawnDirection(req.query.spawnDirection);
+    const villageIdRaw = req.query.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const worldMapSnapshot = await executeWithReadOperation(() =>
+      getWorldMapSnapshot(username, normalizedVillageId, worldId, spawnDirection),
+    );
+
+    res.json({
+      ok: true,
+      data: worldMapSnapshot,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/market/logistics/:routeId/cancel', async (req, res, next) => {
+  try {
+    const routeId = Number(String(req.params.routeId ?? '').trim());
+    if (!Number.isFinite(routeId) || routeId <= 0) {
+      throw new GameRuleError('Neplatne routeId.', 400);
+    }
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = cancelMarketLogistics(username, routeId, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
+      return { result, state };
+    });
+
+    res.status(200).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/market/guild/configure', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = configureMarketGuildAutomation(username, req.body ?? {}, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
+      return { result, state };
+    });
+
+    res.status(200).json({
       ok: true,
       result: payload.result,
       data: payload.state,
@@ -1373,7 +1499,7 @@ app.post('/api/v1/kingdom/create', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = createKingdom(username, kingdomName, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1401,7 +1527,7 @@ app.post('/api/v1/kingdom/invite', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = invitePlayerToKingdom(username, targetUsername, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1429,7 +1555,7 @@ app.post('/api/v1/kingdom/invite/:inviteId/accept', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = acceptKingdomInvite(username, inviteId, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1457,7 +1583,7 @@ app.post('/api/v1/kingdom/invite/:inviteId/reject', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = rejectKingdomInvite(username, inviteId, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1484,7 +1610,7 @@ app.post('/api/v1/kingdom/leave', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = leaveKingdom(username, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1512,7 +1638,7 @@ app.post('/api/v1/kingdom/kick', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = kickKingdomMember(username, targetUsername, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1540,7 +1666,7 @@ app.post('/api/v1/kingdom/transfer-leadership', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = transferKingdomLeadership(username, targetUsername, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1633,3 +1759,4 @@ if (!isServerlessRuntime) {
 
 export { app };
 export default app;
+
