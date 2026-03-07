@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - develop
+      - feat/**
+      - fix/**
+      - chore/**
+      - refactor/**
+      - perf/**
+
+jobs:
+  stage6-guardrails:
+    name: stage6-guardrails
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run stage 6 guardrail tests
+        run: npm run test:stage6
+
+      - name: Generate stage 6 metrics report
+        run: npm run report:stage6
+
+      - name: Upload stage 6 metrics artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage6-metrics
+          path: artifacts/perf/*.json
+          if-no-files-found: error
+
+  regression:
+    name: regression
+    needs: stage6-guardrails
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run regression suite
+        run: npm run test:regression

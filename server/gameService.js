@@ -97,7 +97,7 @@ const WORLD_CATALOG = Object.freeze([
       'Nový svět bez historických osad. Každý nový velitel započne se stejnými podmínkami.',
     spawn: {
       playerTemplateType: 'fire-world',
-      abandonedTemplateType: 'fire-world',
+      abandonedTemplateType: 'default-abandoned',
       nearbyAbandonedCount: DOMINION_FIRE_NEARBY_ABANDONED_COUNT,
       playerProtectionDays: DOMINION_FIRE_PLAYER_PROTECTION_DAYS,
       playerSpawnMinDistanceMin: DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MIN,
@@ -128,6 +128,19 @@ const MARKET_MAX_DISTANCE_TILES = 50;
 const LOGISTICS_MINUTES_BASE = 10;
 const LOGISTICS_MINUTES_PER_TILE = 2;
 const MARKET_CAPACITY_BY_LEVEL = [0, 5000, 30000, 150000, 300000];
+const MARKET_GUILD_MIN_MARKET_LEVEL = 4;
+const MARKET_GUILD_REQUIRED_RESEARCH_ID = 'guild-influence';
+const MARKET_GUILD_CYCLE_INTERVAL_SEC = 5 * 60 * 60;
+const MARKET_GUILD_ACTIVE_START_HOUR = 8;
+const MARKET_GUILD_ACTIVE_END_HOUR = 20;
+const MARKET_GUILD_MIN_TARGET_COUNT = 1;
+const MARKET_GUILD_MAX_TARGETS_PER_CYCLE = 32;
+const MARKET_GUILD_MAX_DISPATCHES_PER_TICK = 120;
+const MARKET_GUILD_PER_SOURCE_MAX_DISPATCHES_PER_TICK = 1;
+const MARKET_GUILD_RATE_LIMIT_BACKOFF_SEC = 5 * 60;
+const MARKET_GUILD_AUDIT_LOG_LIMIT = 25;
+const MARKET_GUILD_AUDIT_RETENTION_DAYS = 14;
+const MARKET_GUILD_AUDIT_MAX_ROWS_PER_SOURCE = 300;
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const PLAYER_NOTIFICATION_RETENTION_DAYS = 30;
 const PLAYER_NOTIFICATION_MAX_PAGE_SIZE = 100;
@@ -201,25 +214,30 @@ const STARTING_PLAYER_BUILDING_LEVELS = {
   gate: 0,
 };
 const STARTING_ABANDONED_BUILDING_LEVELS = {
+  townhall: 3,
+  warehouse: 3,
+  'residential-quarter': 3,
   woodcutter: 5,
   quarry: 5,
   'iron-mine': 5,
   'gold-mine': 0,
-  warehouse: 1,
+  market: 3,
+  hideout: 1,
+  barracks: 1,
 };
 const FIRE_WORLD_STARTING_BUILDING_LEVELS = {
   townhall: 1,
+  warehouse: 1,
+  'residential-quarter': 1,
   woodcutter: 1,
   quarry: 1,
   'iron-mine': 1,
   'gold-mine': 0,
-  warehouse: 1,
   hideout: 0,
   mint: 0,
   vault: 0,
   market: 0,
-  'residential-quarter': 1,
-  barracks: 1,
+  barracks: 0,
 };
 const STARTING_PLAYER_UNITS = {
   militia: 5,
@@ -230,6 +248,25 @@ const STARTING_ABANDONED_UNITS = {
 const FIRE_WORLD_STARTING_UNITS = {
   militia: 5,
 };
+const ACTIVE_BOT_USERNAME = 'Bot';
+const ACTIVE_BOT_MAX_VILLAGES_PER_CYCLE = 3;
+const BOT_NIGHT_BUILD_PRIORITY = Object.freeze([
+  'woodcutter',
+  'quarry',
+  'iron-mine',
+  'warehouse',
+  'residential-quarter',
+  'townhall',
+  'barracks',
+  'hideout',
+]);
+const BOT_NIGHT_MILITIA_RECRUIT_BATCH = 20;
+const BOT_NIGHT_RESOURCE_RESERVE = Object.freeze({
+  wood: 300,
+  stone: 300,
+  iron: 300,
+});
+let lastBotNightCycleHourKey = null;
 const RESEARCH_DEFS = Object.freeze([
   {
     id: 'linen-ropes',
@@ -389,6 +426,22 @@ const selectVillagesByPlayerAndRegionStmt = db.prepare(
    FROM villages
    WHERE player_id = ? AND region = ?
    ORDER BY id ASC`,
+);
+const selectNamedBotVillagesByRegionStmt = db.prepare(
+  `SELECT
+      v.id,
+      v.player_id AS playerId,
+      v.name,
+      v.coord_x AS coordX,
+      v.coord_y AS coordY,
+      v.region,
+      v.kingdom
+   FROM villages v
+   INNER JOIN players p ON p.id = v.player_id
+   WHERE p.is_bot = 1
+     AND p.username = ? COLLATE NOCASE
+     AND v.region = ?
+   ORDER BY v.id ASC`,
 );
 const selectVillageCoordsStmt = db.prepare(
   `SELECT
@@ -578,9 +631,10 @@ const selectAllVillagesForWorldStmt = db.prepare(
       v.loyalty,
       v.peace_until AS peaceUntil,
       CASE
-        WHEN p.is_bot = 1 THEN 'Opuštěná osada'
+        WHEN p.is_bot = 1 AND p.username GLOB '__abandoned_ai__*' THEN 'Opuštěná osada'
         ELSE p.username
       END AS owner,
+      p.username AS ownerUsername,
       p.is_bot AS isBot
    FROM villages v
    INNER JOIN players p ON p.id = v.player_id
@@ -1055,6 +1109,13 @@ const selectMaxUniversityLevelByPlayerAndRegionStmt = db.prepare(
      AND v.region = ?
      AND b.building_id = 'university'`,
 );
+const selectTotalUniversityAcademicCapacityByPlayerAndRegionStmt = db.prepare(
+  `SELECT COALESCE(SUM(MIN(3, COALESCE(b.level, 0))), 0) AS totalCapacity
+   FROM villages v
+   LEFT JOIN buildings b ON b.village_id = v.id AND b.building_id = 'university'
+   WHERE v.player_id = ?
+     AND v.region = ?`,
+);
 const selectTotalPlayerUnitAmountStmt = db.prepare(
   `SELECT COALESCE(SUM(u.amount), 0) AS total
    FROM units u
@@ -1146,8 +1207,32 @@ const selectDueLogisticsRoutesStmt = db.prepare(
    WHERE status = 'in_progress' AND arrive_at <= ?
    ORDER BY arrive_at ASC, id ASC`,
 );
+const selectInProgressLogisticsRouteByIdForPlayerStmt = db.prepare(
+  `SELECT
+      lr.id,
+      lr.owner_player_id AS ownerPlayerId,
+      lr.source_village_id AS sourceVillageId,
+      lr.target_village_id AS targetVillageId,
+      lr.region,
+      lr.mode,
+      lr.wood,
+      lr.stone,
+      lr.iron,
+      lr.status,
+      lr.started_at AS startedAt,
+      lr.arrive_at AS arriveAt
+   FROM logistics_routes lr
+   WHERE lr.id = ?
+     AND lr.owner_player_id = ?
+     AND lr.region = ?
+     AND lr.status = 'in_progress'
+   LIMIT 1`,
+);
 const completeLogisticsRouteStmt = db.prepare(
   "UPDATE logistics_routes SET status = 'completed', completed_at = ? WHERE id = ?",
+);
+const cancelLogisticsRouteStmt = db.prepare(
+  "UPDATE logistics_routes SET status = 'canceled', completed_at = ? WHERE id = ? AND status = 'in_progress'",
 );
 const selectRecentLogisticsByVillageStmt = db.prepare(
   `SELECT
@@ -1173,6 +1258,143 @@ const selectRecentLogisticsByVillageStmt = db.prepare(
      AND lr.region = ?
    ORDER BY lr.id DESC
    LIMIT 40`,
+);
+const countInProgressLogisticsBySourceVillageStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM logistics_routes
+   WHERE source_village_id = ?
+     AND status = 'in_progress'`,
+);
+const selectMarketGuildSettingBySourceVillageStmt = db.prepare(
+  `SELECT
+      source_village_id AS sourceVillageId,
+      owner_player_id AS ownerPlayerId,
+      region,
+      enabled,
+      cycle_interval_sec AS cycleIntervalSec,
+      cursor_index AS cursorIndex,
+      next_dispatch_at AS nextDispatchAt,
+      last_dispatch_at AS lastDispatchAt,
+      updated_at AS updatedAt
+   FROM market_guild_settings
+   WHERE source_village_id = ?
+   LIMIT 1`,
+);
+const upsertMarketGuildSettingStmt = db.prepare(
+  `INSERT INTO market_guild_settings (
+      source_village_id,
+      owner_player_id,
+      region,
+      enabled,
+      cycle_interval_sec,
+      cursor_index,
+      next_dispatch_at,
+      last_dispatch_at,
+      updated_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(source_village_id)
+   DO UPDATE SET
+      owner_player_id = excluded.owner_player_id,
+      region = excluded.region,
+      enabled = excluded.enabled,
+      cycle_interval_sec = excluded.cycle_interval_sec,
+      cursor_index = excluded.cursor_index,
+      next_dispatch_at = excluded.next_dispatch_at,
+      last_dispatch_at = excluded.last_dispatch_at,
+      updated_at = excluded.updated_at`,
+);
+const updateMarketGuildSettingDispatchStateStmt = db.prepare(
+  `UPDATE market_guild_settings
+   SET cursor_index = ?,
+       next_dispatch_at = ?,
+       last_dispatch_at = ?,
+       updated_at = ?
+   WHERE source_village_id = ?`,
+);
+const selectDueMarketGuildSettingsStmt = db.prepare(
+  `SELECT
+      source_village_id AS sourceVillageId,
+      owner_player_id AS ownerPlayerId,
+      region,
+      enabled,
+      cycle_interval_sec AS cycleIntervalSec,
+      cursor_index AS cursorIndex,
+      next_dispatch_at AS nextDispatchAt,
+      last_dispatch_at AS lastDispatchAt
+   FROM market_guild_settings
+   WHERE enabled = 1
+     AND next_dispatch_at IS NOT NULL
+     AND next_dispatch_at <= ?
+   ORDER BY source_village_id ASC`,
+);
+const selectMarketGuildTargetsBySourceVillageStmt = db.prepare(
+  `SELECT
+      id,
+      source_village_id AS sourceVillageId,
+      target_village_id AS targetVillageId,
+      sort_index AS sortIndex,
+      is_paused AS isPaused,
+      created_at AS createdAt
+   FROM market_guild_targets
+   WHERE source_village_id = ?
+   ORDER BY sort_index ASC, id ASC`,
+);
+const deleteMarketGuildTargetsBySourceVillageStmt = db.prepare(
+  'DELETE FROM market_guild_targets WHERE source_village_id = ?',
+);
+const insertMarketGuildTargetStmt = db.prepare(
+  `INSERT INTO market_guild_targets (
+      source_village_id,
+      target_village_id,
+      sort_index,
+      is_paused,
+      created_at
+   ) VALUES (?, ?, ?, ?, ?)`,
+);
+const insertMarketGuildAuditLogStmt = db.prepare(
+  `INSERT INTO market_guild_audit_logs (
+      owner_player_id,
+      source_village_id,
+      target_village_id,
+      region,
+      severity,
+      reason_code,
+      message,
+      details_json,
+      created_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+);
+const selectRecentMarketGuildAuditLogsBySourceVillageStmt = db.prepare(
+  `SELECT
+      id,
+      owner_player_id AS ownerPlayerId,
+      source_village_id AS sourceVillageId,
+      target_village_id AS targetVillageId,
+      region,
+      severity,
+      reason_code AS reasonCode,
+      message,
+      details_json AS detailsJson,
+      created_at AS createdAt
+   FROM market_guild_audit_logs
+   WHERE source_village_id = ?
+   ORDER BY id DESC
+   LIMIT ?`,
+);
+const deleteOldMarketGuildAuditLogsStmt = db.prepare(
+  `DELETE FROM market_guild_audit_logs
+   WHERE created_at < ?`,
+);
+const trimMarketGuildAuditLogsBySourceVillageStmt = db.prepare(
+  `DELETE FROM market_guild_audit_logs
+   WHERE source_village_id = ?
+     AND id NOT IN (
+       SELECT id
+       FROM market_guild_audit_logs
+       WHERE source_village_id = ?
+       ORDER BY id DESC
+       LIMIT ?
+     )`,
 );
 const insertAcademicStmt = db.prepare(
   `INSERT INTO academics (
@@ -1240,6 +1462,15 @@ const releaseAcademicAssignmentByResearchForPlayerRegionStmt = db.prepare(
      ORDER BY id DESC
      LIMIT ?
    )`,
+);
+const releaseAllAcademicAssignmentsByResearchForPlayerRegionStmt = db.prepare(
+  `UPDATE academics
+   SET status = 'idle',
+       assigned_research_id = NULL
+   WHERE player_id = ?
+     AND region = ?
+     AND status = 'assigned'
+     AND assigned_research_id = ?`,
 );
 const selectAssignedResearchAcademicsByVillageForPlayerRegionStmt = db.prepare(
   `SELECT
@@ -1349,6 +1580,18 @@ const selectActiveResearchByPlayerRegionStmt = db.prepare(
      AND status = 'researching'
    ORDER BY updated_at DESC, id DESC
    LIMIT 1`,
+);
+const selectResearchingProjectsByPlayerRegionStmt = db.prepare(
+  `SELECT
+      research_id AS researchId,
+      progress,
+      assigned_academics AS assignedAcademics,
+      started_at AS startedAt
+   FROM research_progress
+   WHERE player_id = ?
+     AND region = ?
+     AND status = 'researching'
+   ORDER BY updated_at DESC, id DESC`,
 );
 const selectLatestMercenaryContractByPlayerRegionStmt = db.prepare(
   `SELECT
@@ -1894,7 +2137,18 @@ const selectKingdomEventsByPlayerStmt = db.prepare(
    LIMIT ?`,
 );
 
-const roundResource = (value) => Number(Math.max(0, value).toFixed(3));
+const roundResource = (value) => Math.max(0, Math.round(Number(value ?? 0)));
+
+const POPULATION_CLEANUP_UNIT_PRIORITY = [
+  'militia',
+  'archer',
+  'scout',
+  'cavalry',
+  'ram',
+  'caravan',
+  'mercenary',
+  'knight',
+];
 
 const normalizeKingdomValue = (value) => String(value ?? '').trim();
 
@@ -3878,15 +4132,37 @@ const buildBuildingNextLevelPreview = ({
   };
 };
 
-const resolveBuildingRequirementError = (buildingId, buildingLevels) => {
+const buildProjectedBuildingLevels = (buildingLevels, activeUpgrades = []) => {
+  const projected = {};
+  for (const candidateBuildingId of BUILDING_ORDER) {
+    projected[candidateBuildingId] = Math.max(0, Math.floor(Number(buildingLevels?.[candidateBuildingId] ?? 0)));
+  }
+
+  for (const upgrade of activeUpgrades) {
+    const candidateBuildingId = String(upgrade?.buildingId ?? '').trim();
+    if (!candidateBuildingId || !BUILDING_ORDER.includes(candidateBuildingId)) {
+      continue;
+    }
+    const queuedTargetLevel = Math.max(0, Math.floor(Number(upgrade?.toLevel ?? 0)));
+    projected[candidateBuildingId] = Math.max(
+      projected[candidateBuildingId] ?? 0,
+      Math.min(getMaxBuildingLevel(candidateBuildingId), queuedTargetLevel),
+    );
+  }
+
+  return projected;
+};
+
+const resolveBuildingRequirementError = (buildingId, buildingLevels, options = {}) => {
   const requirements = BUILDING_DEFS[buildingId]?.requiredBuildings;
   if (!requirements || typeof requirements !== 'object') {
     return null;
   }
+  const effectiveLevels = options?.effectiveBuildingLevels ?? buildingLevels;
 
   for (const [requiredBuildingId, requiredLevelRaw] of Object.entries(requirements)) {
     const requiredLevel = Math.max(1, Math.floor(Number(requiredLevelRaw ?? 0)));
-    const currentLevel = Math.max(0, Math.floor(Number(buildingLevels?.[requiredBuildingId] ?? 0)));
+    const currentLevel = Math.max(0, Math.floor(Number(effectiveLevels?.[requiredBuildingId] ?? 0)));
     if (currentLevel >= requiredLevel) {
       continue;
     }
@@ -3924,9 +4200,73 @@ const calculateMarketCapacity = (marketLevelRaw) => {
   return Number(MARKET_CAPACITY_BY_LEVEL[level] ?? 0);
 };
 
+const calculateMarketMerchantCapacity = (marketLevelRaw) => {
+  const level = Math.max(0, Math.floor(Number(marketLevelRaw ?? 0)));
+  return level;
+};
+
+const calculateMarketMerchantStateByVillage = (sourceVillageId, marketLevelRaw) => {
+  const total = calculateMarketMerchantCapacity(marketLevelRaw);
+  const inUse = Math.max(
+    0,
+    Math.floor(Number(countInProgressLogisticsBySourceVillageStmt.get(Number(sourceVillageId))?.total ?? 0)),
+  );
+  const available = Math.max(0, total - inUse);
+  return { total, inUse, available };
+};
+
+const isMarketGuildUnlocked = (marketLevelRaw, completedResearchIds = null) => {
+  const marketLevel = Math.max(0, Math.floor(Number(marketLevelRaw ?? 0)));
+  if (marketLevel < MARKET_GUILD_MIN_MARKET_LEVEL) {
+    return false;
+  }
+  if (!(completedResearchIds instanceof Set)) {
+    return false;
+  }
+  return completedResearchIds.has(MARKET_GUILD_REQUIRED_RESEARCH_ID);
+};
+
 const calculateLogisticsDurationSec = (distanceTilesRaw) => {
   const distanceTiles = Math.max(0, Math.floor(Number(distanceTilesRaw ?? 0)));
   return Math.max(60, Math.floor((LOGISTICS_MINUTES_BASE + distanceTiles * LOGISTICS_MINUTES_PER_TILE) * 60));
+};
+
+const isMarketGuildDispatchWindowAtTime = (timeIso) => {
+  const timestamp = Date.parse(String(timeIso ?? ''));
+  if (!Number.isFinite(timestamp)) {
+    return false;
+  }
+  const date = new Date(timestamp);
+  const hour = date.getUTCHours();
+  return hour >= MARKET_GUILD_ACTIVE_START_HOUR && hour < MARKET_GUILD_ACTIVE_END_HOUR;
+};
+
+const alignMarketGuildDispatchToWindowIso = (timestampMsRaw) => {
+  const timestampMs = Number(timestampMsRaw);
+  if (!Number.isFinite(timestampMs)) {
+    return nowIso();
+  }
+  const date = new Date(timestampMs);
+  const hour = date.getUTCHours();
+  if (hour >= MARKET_GUILD_ACTIVE_END_HOUR) {
+    date.setUTCDate(date.getUTCDate() + 1);
+    date.setUTCHours(MARKET_GUILD_ACTIVE_START_HOUR, 0, 0, 0);
+    return date.toISOString();
+  }
+  if (hour < MARKET_GUILD_ACTIVE_START_HOUR) {
+    date.setUTCHours(MARKET_GUILD_ACTIVE_START_HOUR, 0, 0, 0);
+    return date.toISOString();
+  }
+  return date.toISOString();
+};
+
+const resolveNextMarketGuildDispatchAt = (referenceIso, cycleIntervalSecRaw = MARKET_GUILD_CYCLE_INTERVAL_SEC) => {
+  const referenceMs = Date.parse(String(referenceIso ?? ''));
+  const cycleIntervalSec = Math.max(300, Math.floor(Number(cycleIntervalSecRaw ?? MARKET_GUILD_CYCLE_INTERVAL_SEC)));
+  if (!Number.isFinite(referenceMs)) {
+    return alignMarketGuildDispatchToWindowIso(Date.now() + cycleIntervalSec * 1000);
+  }
+  return alignMarketGuildDispatchToWindowIso(referenceMs + cycleIntervalSec * 1000);
 };
 
 const parseArmyUnitSelection = (unitsPayload) => {
@@ -4045,6 +4385,65 @@ const buildStationedSupportBattleGroups = (targetVillageId) => {
   }
 
   return groups;
+};
+
+const calculateBuildingPopulationUsed = (buildingLevels) =>
+  BUILDING_ORDER.reduce((sum, buildingId) => {
+    const level = Math.max(0, Math.floor(Number(buildingLevels?.[buildingId] ?? 0)));
+    const workerPerLevel = Math.max(0, Math.floor(Number(BUILDING_DEFS[buildingId]?.workerPerLevel ?? 0)));
+    return sum + level * workerPerLevel;
+  }, 0);
+
+const calculateUnitPopulationUsed = (unitCounts) =>
+  UNIT_ORDER.reduce((sum, unitId) => {
+    const amount = Math.max(0, Math.floor(Number(unitCounts?.[unitId] ?? 0)));
+    const populationCost = Math.max(0, Math.floor(Number(UNIT_DEFS[unitId]?.populationCost ?? 0)));
+    return sum + amount * populationCost;
+  }, 0);
+
+const enforceVillagePopulationBudget = (villageId, buildingLevels, unitCounts, academicCount = 0) => {
+  const populationCap = calculatePopulationCap(buildingLevels['residential-quarter'] ?? 0);
+  const buildingPopulationUsed = calculateBuildingPopulationUsed(buildingLevels);
+  const reservedAcademicPopulation = Math.max(0, Math.floor(Number(academicCount ?? 0))) * ACADEMIC_POPULATION_COST;
+  const maxUnitPopulation = Math.max(0, populationCap - buildingPopulationUsed - reservedAcademicPopulation);
+  const nextUnitCounts = { ...unitCounts };
+  const removedUnits = {};
+  let overflowPopulation = Math.max(0, calculateUnitPopulationUsed(nextUnitCounts) - maxUnitPopulation);
+
+  if (overflowPopulation > 0) {
+    for (const unitId of POPULATION_CLEANUP_UNIT_PRIORITY) {
+      const currentAmount = Math.max(0, Math.floor(Number(nextUnitCounts[unitId] ?? 0)));
+      if (currentAmount <= 0) {
+        continue;
+      }
+      const populationCost = Math.max(0, Math.floor(Number(UNIT_DEFS[unitId]?.populationCost ?? 0)));
+      if (populationCost <= 0) {
+        continue;
+      }
+
+      const removableAmount = Math.min(currentAmount, Math.ceil(overflowPopulation / populationCost));
+      if (removableAmount <= 0) {
+        continue;
+      }
+
+      const nextAmount = currentAmount - removableAmount;
+      nextUnitCounts[unitId] = nextAmount;
+      removedUnits[unitId] = removableAmount;
+      overflowPopulation = Math.max(0, overflowPopulation - removableAmount * populationCost);
+      updateUnitAmountStmt.run(nextAmount, Number(villageId), unitId);
+
+      if (overflowPopulation <= 0) {
+        break;
+      }
+    }
+  }
+
+  return {
+    unitCounts: nextUnitCounts,
+    removedUnits,
+    populationCap,
+    populationUsed: Math.max(0, buildingPopulationUsed + calculateUnitPopulationUsed(nextUnitCounts) + reservedAcademicPopulation),
+  };
 };
 
 const getVillagePopulationStatus = (villageId) => {
@@ -4574,7 +4973,7 @@ const resolveVillageResourceCaps = (buildingLevels) => {
   const warehouseCap = calculateResourceCap(buildingLevels.warehouse ?? 0);
   const mintLevel = Math.max(0, Math.floor(Number(buildingLevels.mint ?? 0)));
   const goldCap = mintLevel > 0 ? calculateMintGoldStorageCap(mintLevel) : 1000;
-  const coinCap = mintLevel > 0 ? calculateMintCoinStorageCap(mintLevel) : 0;
+  const coinCap = mintLevel > 0 ? calculateMintCoinStorageCap(mintLevel) : 1000;
   return {
     wood: warehouseCap,
     stone: warehouseCap,
@@ -5260,6 +5659,182 @@ const getVillageProtectionRemainingSec = (village, protectionDaysRaw = 0, refere
 const isVillageUnderSpawnProtection = (village, protectionDaysRaw = 0, referenceMs = Date.now()) =>
   getVillageProtectionRemainingSec(village, protectionDaysRaw, referenceMs) > 0;
 
+const buildVillageLogisticsEconomySnapshot = (villageRow) => {
+  const villageId = Number(villageRow?.id ?? 0);
+  if (!Number.isFinite(villageId) || villageId <= 0) {
+    return null;
+  }
+  const resourcesRow = selectResourcesByVillageStmt.get(villageId);
+  const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(villageId));
+  const warehouseLevel = Math.max(0, Math.floor(Number(buildingLevels.warehouse ?? 0)));
+  const marketLevel = Math.max(0, Math.floor(Number(buildingLevels.market ?? 0)));
+  const cap = calculateResourceCap(warehouseLevel);
+  const resources = toNonNegativeResourcePocket(resourcesRow);
+  const totalResources = resources.wood + resources.stone + resources.iron;
+  const capTotal = Math.max(1, cap * 3);
+  const merchants = calculateMarketMerchantStateByVillage(villageId, marketLevel);
+  return {
+    villageId,
+    name: String(villageRow?.name ?? `Leno ${villageId}`),
+    coordX: Number(villageRow?.coordX ?? 0),
+    coordY: Number(villageRow?.coordY ?? 0),
+    marketLevel,
+    cap: Math.max(0, Math.floor(cap)),
+    resources: {
+      wood: resources.wood,
+      stone: resources.stone,
+      iron: resources.iron,
+    },
+    totalResources,
+    fillPct: Math.max(0, Math.min(1, totalResources / capTotal)),
+    merchants,
+  };
+};
+
+const parseMarketGuildAuditDetails = (detailsJson) => {
+  if (detailsJson == null || String(detailsJson).trim() === '') {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(String(detailsJson));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const pruneMarketGuildAuditLogs = (sourceVillageId, referenceIso = nowIso()) => {
+  const retentionCutoffMs = Date.parse(String(referenceIso)) - MARKET_GUILD_AUDIT_RETENTION_DAYS * DAY_IN_MS;
+  if (Number.isFinite(retentionCutoffMs)) {
+    deleteOldMarketGuildAuditLogsStmt.run(new Date(retentionCutoffMs).toISOString());
+  }
+  trimMarketGuildAuditLogsBySourceVillageStmt.run(
+    Number(sourceVillageId),
+    Number(sourceVillageId),
+    MARKET_GUILD_AUDIT_MAX_ROWS_PER_SOURCE,
+  );
+};
+
+const appendMarketGuildAuditLog = ({
+  ownerPlayerId,
+  sourceVillageId,
+  targetVillageId = null,
+  region,
+  severity = 'info',
+  reasonCode,
+  message,
+  details = null,
+  createdAt = nowIso(),
+}) => {
+  const normalizedReasonCode = String(reasonCode ?? '').trim().toLowerCase();
+  if (!normalizedReasonCode) {
+    return;
+  }
+  insertMarketGuildAuditLogStmt.run(
+    Number(ownerPlayerId),
+    Number(sourceVillageId),
+    targetVillageId == null ? null : Number(targetVillageId),
+    Number(region),
+    String(severity ?? 'info').trim().toLowerCase() || 'info',
+    normalizedReasonCode,
+    String(message ?? '').trim() || 'Bez detailu',
+    details == null ? null : JSON.stringify(details),
+    String(createdAt),
+  );
+  pruneMarketGuildAuditLogs(sourceVillageId, createdAt);
+};
+
+const listMarketGuildAuditLogsBySourceVillage = (sourceVillageId) =>
+  selectRecentMarketGuildAuditLogsBySourceVillageStmt
+    .all(Number(sourceVillageId), MARKET_GUILD_AUDIT_LOG_LIMIT)
+    .map((entry) => ({
+      id: Number(entry.id),
+      ownerPlayerId: Number(entry.ownerPlayerId),
+      sourceVillageId: Number(entry.sourceVillageId),
+      targetVillageId: entry.targetVillageId == null ? null : Number(entry.targetVillageId),
+      region: Number(entry.region),
+      severity: String(entry.severity ?? 'info'),
+      reasonCode: String(entry.reasonCode ?? 'unknown'),
+      message: String(entry.message ?? ''),
+      details: parseMarketGuildAuditDetails(entry.detailsJson),
+      createdAt: String(entry.createdAt ?? nowIso()),
+    }));
+
+const buildMarketGuildAutomationState = ({
+  playerId,
+  region,
+  sourceVillageId,
+  sourceMarketLevel,
+  guildUnlocked,
+  referenceIso = nowIso(),
+}) => {
+  const setting = selectMarketGuildSettingBySourceVillageStmt.get(Number(sourceVillageId)) ?? null;
+  const targetRows = selectMarketGuildTargetsBySourceVillageStmt.all(Number(sourceVillageId));
+  const ownVillages = selectVillagesByPlayerAndRegionStmt
+    .all(Number(playerId), Number(region))
+    .filter((entry) => Number(entry.id) !== Number(sourceVillageId));
+  const ownVillageSnapshots = ownVillages
+    .map((village) => buildVillageLogisticsEconomySnapshot(village))
+    .filter((entry) => entry != null);
+  const ownVillageSnapshotById = new Map(
+    ownVillageSnapshots.map((entry) => [Number(entry.villageId), entry]),
+  );
+  const targets = targetRows.map((targetRow) => {
+    const targetVillageId = Number(targetRow.targetVillageId);
+    const isPaused = Number(targetRow.isPaused ?? 0) === 1;
+    const targetVillage = selectVillageWithOwnerByIdStmt.get(targetVillageId);
+    const isOwnedActive =
+      targetVillage &&
+      Number(targetVillage.playerId) === Number(playerId) &&
+      Number(targetVillage.region) === Number(region);
+    const economySnapshot =
+      (isOwnedActive ? ownVillageSnapshotById.get(targetVillageId) : null) ??
+      (isOwnedActive ? buildVillageLogisticsEconomySnapshot(targetVillage) : null);
+    let warning = null;
+    if (!targetVillage) {
+      warning = 'Leno uz neexistuje.';
+    } else if (!isOwnedActive) {
+      warning = 'Leno jiz nepatri tobe a auto-logistika ho preskakuje.';
+    }
+    return {
+      id: Number(targetRow.id),
+      targetVillageId,
+      sortIndex: Math.max(0, Math.floor(Number(targetRow.sortIndex ?? 0))),
+      isPaused,
+      name: String(targetVillage?.name ?? economySnapshot?.name ?? `Leno ${targetVillageId}`),
+      coordX: Number(targetVillage?.coordX ?? economySnapshot?.coordX ?? 0),
+      coordY: Number(targetVillage?.coordY ?? economySnapshot?.coordY ?? 0),
+      isActive: Boolean(isOwnedActive),
+      warning,
+      cap: Number(economySnapshot?.cap ?? 0),
+      resources: economySnapshot?.resources ?? { wood: 0, stone: 0, iron: 0 },
+      totalResources: Number(economySnapshot?.totalResources ?? 0),
+      fillPct: Number(economySnapshot?.fillPct ?? 0),
+    };
+  });
+  const sourceMerchants = calculateMarketMerchantStateByVillage(Number(sourceVillageId), sourceMarketLevel);
+  const auditLog = listMarketGuildAuditLogsBySourceVillage(sourceVillageId);
+  return {
+    enabled: guildUnlocked ? Boolean(Number(setting?.enabled ?? 0)) : false,
+    cycleIntervalSec: Math.max(
+      300,
+      Math.floor(Number(setting?.cycleIntervalSec ?? MARKET_GUILD_CYCLE_INTERVAL_SEC)),
+    ),
+    nextDispatchAt: setting?.nextDispatchAt ? String(setting.nextDispatchAt) : null,
+    lastDispatchAt: setting?.lastDispatchAt ? String(setting.lastDispatchAt) : null,
+    cursorIndex: Math.max(0, Math.floor(Number(setting?.cursorIndex ?? 0))),
+    dispatchWindow: {
+      startHourUtc: MARKET_GUILD_ACTIVE_START_HOUR,
+      endHourUtc: MARKET_GUILD_ACTIVE_END_HOUR,
+      isActiveNow: isMarketGuildDispatchWindowAtTime(referenceIso),
+    },
+    merchants: sourceMerchants,
+    ownVillages: ownVillageSnapshots,
+    targets,
+    auditLog,
+  };
+};
+
 const requireVillageForUser = (
   username,
   requestedVillageId = null,
@@ -5308,7 +5883,7 @@ const requireVillageForUser = (
   return { player, village, villages, world: selectedWorld };
 };
 
-const normalizeSettlementKind = (isOwn, isRoyalSettlement, isAbandonedBot) => {
+const normalizeSettlementKind = (isOwn, isBotSettlement, isAbandonedBot) => {
   if (isOwn) {
     return 'own';
   }
@@ -5317,7 +5892,7 @@ const normalizeSettlementKind = (isOwn, isRoyalSettlement, isAbandonedBot) => {
     return 'abandoned';
   }
 
-  return isRoyalSettlement ? 'bot' : 'player';
+  return isBotSettlement ? 'bot' : 'player';
 };
 
 const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, world) => {
@@ -5363,10 +5938,13 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
     const coordX = Number(row.coordX);
     const coordY = Number(row.coordY);
     const playerId = Number(row.playerId);
-    const isAbandonedBot = Number(row.isBot) === 1;
-    const isOwn = row.owner === viewerUsername;
-    const isRoyalSettlement = row.kingdom === 'Neutral' && !isAbandonedBot;
-    const sameKingdom = !isAbandonedBot && row.kingdom === viewerKingdom;
+    const ownerUsernameComparable = normalizeUsernameComparable(String(row.ownerUsername ?? ''));
+    const isAbandonedBot =
+      Number(row.isBot) === 1 &&
+      ownerUsernameComparable.startsWith(normalizeUsernameComparable(ABANDONED_BOT_USERNAME_PREFIX));
+    const isBotSettlement = Number(row.isBot) === 1 && !isAbandonedBot;
+    const isOwn = Number.isFinite(playerId) && playerId > 0 && playerId === numericViewerPlayerId;
+    const sameKingdom = !isAbandonedBot && !isBotSettlement && row.kingdom === viewerKingdom;
     const protectionUntil = isAbandonedBot
       ? null
       : resolveVillageProtectionUntilIso(row, villageProtectionRuleDays);
@@ -5377,8 +5955,7 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
       0,
       Math.floor(Number(playerPrestigeByPlayerId.get(playerId) ?? row.prestige ?? 0)),
     );
-    const prestigeCheckRelevant =
-      !isAbandonedBot && !isOwn && !sameKingdom && Number.isFinite(playerId) && playerId > 0;
+    const prestigeCheckRelevant = !isAbandonedBot && !isOwn && !sameKingdom && Number.isFinite(playerId) && playerId > 0;
     const blockedByPrestige =
       prestigeCheckRelevant && viewerPrestige > 0
         ? !isAttackAllowed(viewerPrestige, ownerTotalPrestige)
@@ -5401,6 +5978,8 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
       ? 'Tvoje hlavni vesnice. Mas plny pristup ke statistikam.'
       : isAbandonedBot
         ? 'Opustene leno s AI obranou. Podrobnosti o budovach a jednotkach jsou skryte.'
+        : isBotSettlement
+          ? 'Bot osada. Brani se jednotkami v osade, ale sama nevede utocne rozkazy.'
         : 'Cizi leno - podrobnosti o budovach a jednotkach jsou skryte.';
 
     return {
@@ -5408,7 +5987,7 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
       villageId: Number(row.id),
       playerId: Number.isFinite(playerId) && playerId > 0 ? playerId : null,
       name: row.name,
-      kind: normalizeSettlementKind(isOwn, isRoyalSettlement, isAbandonedBot),
+      kind: normalizeSettlementKind(isOwn, isBotSettlement, isAbandonedBot),
       owner: row.owner,
       kingdom: row.kingdom,
       region: Number(row.region),
@@ -5420,7 +5999,7 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
       loyalty: isOwn ? Number(row.loyalty) : 0,
       note: `${baseNote}${balanceHint}`,
       visibility: isOwn ? 'full' : 'public',
-      relation: isOwn ? 'self' : isAbandonedBot ? 'enemy' : sameKingdom ? 'ally' : 'enemy',
+      relation: isOwn ? 'self' : isAbandonedBot || isBotSettlement ? 'enemy' : sameKingdom ? 'ally' : 'enemy',
       protectionUntil,
       protectionRemainingSec,
       protectionRuleDays: villageProtectionRuleDays,
@@ -5707,6 +6286,26 @@ export const listBattleReports = (username, options = {}, worldId = null) => {
   };
 };
 
+export const getBattleReportSummary = (username, worldId = null) => {
+  const player = selectPlayerByUsernameStmt.get(username);
+  if (!player) {
+    throw new GameRuleError(`Hrac '${username}' neexistuje.`, 404);
+  }
+  const world = resolveWorldById(worldId);
+  const total = Number(
+    selectBattleReportCountByPlayerAndRegionStmt.get(
+      Number(player.id),
+      Number(world.region),
+      Number(world.region),
+    )?.total ?? 0,
+  );
+
+  return {
+    total: Math.max(0, total),
+    updatedAt: nowIso(),
+  };
+};
+
 const normalizeBooleanFlag = (value) => {
   const normalized = String(value ?? '')
     .trim()
@@ -5777,6 +6376,23 @@ export const listPlayerNotifications = (username, options = {}, worldId = null) 
     attentionTotal: summary.attentionTotal,
     unreadFeed: summary.unreadFeed,
     items: rows.map((row) => toNotificationItem(row)),
+  };
+};
+
+export const getPlayerNotificationSummary = (username, worldId = null) => {
+  const player = selectPlayerByUsernameStmt.get(username);
+  if (!player) {
+    throw new GameRuleError(`Hrac '${username}' neexistuje.`, 404);
+  }
+  const world = resolveWorldById(worldId);
+  ensureRelease0107Notification(Number(player.id), Number(world.region));
+  const summary = buildPlayerNotificationSummaryByPlayerId(Number(player.id), Number(world.region));
+
+  return {
+    unreadTotal: Math.max(0, Number(summary.unreadTotal ?? 0)),
+    attentionTotal: Math.max(0, Number(summary.attentionTotal ?? 0)),
+    unreadFeed: Array.isArray(summary.unreadFeed) ? summary.unreadFeed : [],
+    updatedAt: nowIso(),
   };
 };
 
@@ -5878,6 +6494,521 @@ export const deletePlayerNotification = (username, notificationId, worldId = nul
 export const markAllPlayerNotificationsRead = (username, worldId = null) =>
   markAllPlayerNotificationsReadTransaction(username, worldId);
 
+const processDueMarketGuildDispatches = (tickTimeIso) => {
+  const dueSettings = selectDueMarketGuildSettingsStmt.all(String(tickTimeIso));
+  let dispatchedRoutes = 0;
+
+  for (const setting of dueSettings) {
+    const sourceVillageId = Number(setting.sourceVillageId);
+    const ownerPlayerId = Number(setting.ownerPlayerId);
+    const region = Number(setting.region);
+    const cycleIntervalSec = Math.max(
+      300,
+      Math.floor(Number(setting.cycleIntervalSec ?? MARKET_GUILD_CYCLE_INTERVAL_SEC)),
+    );
+    const sourceVillage = selectVillageByIdStmt.get(sourceVillageId);
+    const targetRows = selectMarketGuildTargetsBySourceVillageStmt.all(sourceVillageId);
+    const targetCount = targetRows.length;
+    const currentCursor = Math.max(0, Math.floor(Number(setting.cursorIndex ?? 0)));
+    let nextCursor = targetCount > 0 ? currentCursor % targetCount : 0;
+    let lastDispatchAt = setting.lastDispatchAt ? String(setting.lastDispatchAt) : null;
+
+    const appendAudit = ({
+      severity = 'info',
+      reasonCode,
+      message,
+      targetVillageId = null,
+      details = null,
+    }) => {
+      appendMarketGuildAuditLog({
+        ownerPlayerId,
+        sourceVillageId,
+        targetVillageId,
+        region,
+        severity,
+        reasonCode,
+        message,
+        details,
+        createdAt: tickTimeIso,
+      });
+    };
+
+    if (dispatchedRoutes >= MARKET_GUILD_MAX_DISPATCHES_PER_TICK) {
+      const delayedDispatchAt = new Date(
+        Date.parse(String(tickTimeIso)) + MARKET_GUILD_RATE_LIMIT_BACKOFF_SEC * 1000,
+      ).toISOString();
+      updateMarketGuildSettingDispatchStateStmt.run(
+        nextCursor,
+        delayedDispatchAt,
+        lastDispatchAt,
+        String(tickTimeIso),
+        sourceVillageId,
+      );
+      appendAudit({
+        severity: 'warning',
+        reasonCode: 'rate_limited_global',
+        message: 'Auto-logistika byla dočasně přibrzděna kvůli bezpečnostnímu limitu počtu tras.',
+        details: {
+          tickLimit: MARKET_GUILD_MAX_DISPATCHES_PER_TICK,
+          dispatchedRoutes,
+          delayedDispatchAt,
+        },
+      });
+      continue;
+    }
+
+    if (
+      !sourceVillage ||
+      Number(sourceVillage.playerId) !== ownerPlayerId ||
+      Number(sourceVillage.region) !== region ||
+      targetCount < MARKET_GUILD_MIN_TARGET_COUNT
+    ) {
+      updateMarketGuildSettingDispatchStateStmt.run(
+        0,
+        resolveNextMarketGuildDispatchAt(tickTimeIso, cycleIntervalSec),
+        lastDispatchAt,
+        String(tickTimeIso),
+        sourceVillageId,
+      );
+      appendAudit({
+        severity: 'warning',
+        reasonCode: 'invalid_source_or_targets',
+        message: 'Cech přeskočil cyklus: zdrojové léno nebo cíle jsou neplatné.',
+        details: {
+          sourceExists: Boolean(sourceVillage),
+          targetCount,
+        },
+      });
+      continue;
+    }
+
+    if (!isMarketGuildDispatchWindowAtTime(tickTimeIso)) {
+      const alignedDispatchAt = alignMarketGuildDispatchToWindowIso(Date.parse(String(tickTimeIso)));
+      updateMarketGuildSettingDispatchStateStmt.run(
+        nextCursor,
+        alignedDispatchAt,
+        lastDispatchAt,
+        String(tickTimeIso),
+        sourceVillageId,
+      );
+      appendAudit({
+        reasonCode: 'outside_dispatch_window',
+        message: 'Cech čeká mimo denní okno. Odesílání pokračuje až v aktivních hodinách.',
+        details: {
+          dispatchWindowStartUtc: MARKET_GUILD_ACTIVE_START_HOUR,
+          dispatchWindowEndUtc: MARKET_GUILD_ACTIVE_END_HOUR,
+          alignedDispatchAt,
+        },
+      });
+      continue;
+    }
+
+    const sourceBuildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(sourceVillageId));
+    const sourceMarketLevel = Math.max(0, Math.floor(Number(sourceBuildingLevels.market ?? 0)));
+    const sourceMarketCapacity = calculateMarketCapacity(sourceMarketLevel);
+    const sourceMerchantState = calculateMarketMerchantStateByVillage(sourceVillageId, sourceMarketLevel);
+    const completedResearchIds = buildCompletedResearchSet(
+      ensureResolvedResearchProgressForPlayerRegion(ownerPlayerId, region, tickTimeIso),
+    );
+    const guildUnlocked = isMarketGuildUnlocked(sourceMarketLevel, completedResearchIds);
+    if (!guildUnlocked || sourceMerchantState.available <= 0 || sourceMarketCapacity <= 0) {
+      updateMarketGuildSettingDispatchStateStmt.run(
+        nextCursor,
+        resolveNextMarketGuildDispatchAt(tickTimeIso, cycleIntervalSec),
+        lastDispatchAt,
+        String(tickTimeIso),
+        sourceVillageId,
+      );
+      appendAudit({
+        severity: guildUnlocked ? 'info' : 'warning',
+        reasonCode: !guildUnlocked
+          ? 'guild_locked'
+          : sourceMerchantState.available <= 0
+            ? 'no_merchants_available'
+            : 'market_capacity_zero',
+        message: !guildUnlocked
+          ? 'Cech nelze spustit: chybí podmínky odemknutí.'
+          : sourceMerchantState.available <= 0
+            ? 'Cech čeká: všichni obchodníci jsou právě na cestě.'
+            : 'Cech čeká: zdrojové léno má nulovou kapacitu trhu.',
+        details: {
+          sourceMarketLevel,
+          sourceMarketCapacity,
+          merchants: sourceMerchantState,
+          guildUnlocked,
+        },
+      });
+      continue;
+    }
+
+    const sourceEconomy = buildVillageLogisticsEconomySnapshot(sourceVillage);
+    if (!sourceEconomy) {
+      updateMarketGuildSettingDispatchStateStmt.run(
+        nextCursor,
+        resolveNextMarketGuildDispatchAt(tickTimeIso, cycleIntervalSec),
+        lastDispatchAt,
+        String(tickTimeIso),
+        sourceVillageId,
+      );
+      appendAudit({
+        severity: 'warning',
+        reasonCode: 'source_snapshot_missing',
+        message: 'Cech přeskočil cyklus: nepodařilo se načíst ekonomii zdrojového léna.',
+      });
+      continue;
+    }
+
+    let dispatched = false;
+    let dispatchedForSource = 0;
+    const skippedReasonCounts = new Map();
+    const scannedTargets = Math.min(targetCount, MARKET_GUILD_MAX_TARGETS_PER_CYCLE);
+
+    const addSkippedReason = (reasonCode) => {
+      const key = String(reasonCode ?? 'unknown').trim().toLowerCase() || 'unknown';
+      skippedReasonCounts.set(key, Number(skippedReasonCounts.get(key) ?? 0) + 1);
+    };
+
+    for (let offset = 0; offset < scannedTargets; offset += 1) {
+      if (dispatchedRoutes >= MARKET_GUILD_MAX_DISPATCHES_PER_TICK) {
+        addSkippedReason('rate_limited_global');
+        break;
+      }
+      if (dispatchedForSource >= MARKET_GUILD_PER_SOURCE_MAX_DISPATCHES_PER_TICK) {
+        addSkippedReason('rate_limited_source');
+        break;
+      }
+
+      const listIndex = (currentCursor + offset) % targetCount;
+      const targetRow = targetRows[listIndex] ?? null;
+      if (!targetRow) {
+        addSkippedReason('target_missing');
+        continue;
+      }
+      const targetVillageId = Number(targetRow.targetVillageId ?? 0);
+      const targetPaused = Number(targetRow.isPaused ?? 0) === 1;
+      if (targetPaused) {
+        addSkippedReason('target_paused');
+        continue;
+      }
+      const targetVillage = selectVillageWithOwnerByIdStmt.get(targetVillageId);
+      if (
+        !targetVillage ||
+        Number(targetVillage.playerId) !== ownerPlayerId ||
+        Number(targetVillage.region) !== region
+      ) {
+        addSkippedReason('target_not_owned_or_missing');
+        continue;
+      }
+      const distanceTiles = calculateTileDistance(sourceVillage, targetVillage);
+      if (distanceTiles > MARKET_MAX_DISTANCE_TILES) {
+        addSkippedReason('target_out_of_range');
+        continue;
+      }
+
+      const targetEconomy = buildVillageLogisticsEconomySnapshot(targetVillage);
+      if (!targetEconomy) {
+        addSkippedReason('target_snapshot_missing');
+        continue;
+      }
+      const shipmentDecision = resolveMarketGuildAutoShipment({
+        sourceResources: sourceEconomy.resources,
+        sourceCap: sourceEconomy.cap,
+        targetResources: targetEconomy.resources,
+        targetCap: targetEconomy.cap,
+        routeCapacity: sourceMarketCapacity,
+      });
+      const shipment = shipmentDecision.shipment;
+      if (shipment.total <= 0) {
+        addSkippedReason(shipmentDecision.reasonCode);
+        continue;
+      }
+
+      const sourcePocket = toNonNegativeResourcePocket(selectResourcesByVillageStmt.get(sourceVillageId));
+      if (
+        shipment.wood > sourcePocket.wood ||
+        shipment.stone > sourcePocket.stone ||
+        shipment.iron > sourcePocket.iron
+      ) {
+        addSkippedReason('insufficient_source_resources');
+        continue;
+      }
+
+      subtractResources(sourceVillageId, shipment, { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 });
+      const durationSec = calculateLogisticsDurationSec(distanceTiles);
+      const arriveAtIso = new Date(Date.parse(String(tickTimeIso)) + durationSec * 1000).toISOString();
+      insertLogisticsRouteStmt.run(
+        ownerPlayerId,
+        sourceVillageId,
+        Number(targetVillage.id),
+        region,
+        'guild-auto',
+        shipment.wood,
+        shipment.stone,
+        shipment.iron,
+        String(tickTimeIso),
+        arriveAtIso,
+      );
+      dispatched = true;
+      dispatchedForSource += 1;
+      dispatchedRoutes += 1;
+      lastDispatchAt = String(tickTimeIso);
+      nextCursor = (listIndex + 1) % targetCount;
+      appendAudit({
+        reasonCode: 'dispatch_created',
+        message: `Cech odeslal zásilku do ${String(targetVillage.name)} (${Number(targetVillage.coordX)}|${Number(
+          targetVillage.coordY,
+        )}).`,
+        targetVillageId: Number(targetVillage.id),
+        details: {
+          shipment,
+          distanceTiles,
+          durationSec,
+          sourceFillPct: Number((sourceEconomy.fillPct * 100).toFixed(1)),
+          targetFillPct: Number((targetEconomy.fillPct * 100).toFixed(1)),
+          decisionMetrics: shipmentDecision.metrics ?? null,
+        },
+      });
+      break;
+    }
+
+    if (!dispatched && targetCount > 0) {
+      nextCursor = (currentCursor + 1) % targetCount;
+      let dominantReasonCode = 'no_dispatch';
+      let dominantReasonCount = -1;
+      for (const [reasonCode, count] of skippedReasonCounts.entries()) {
+        if (count > dominantReasonCount) {
+          dominantReasonCode = reasonCode;
+          dominantReasonCount = count;
+        }
+      }
+      appendAudit({
+        reasonCode: dominantReasonCode,
+        message: 'Cech v tomto cyklu nenašel vhodnou zásilku.',
+        details: {
+          scannedTargets,
+          targetCount,
+          dominantReasonCode,
+          skippedReasons: Object.fromEntries(skippedReasonCounts.entries()),
+          sourceFillPct: Number((sourceEconomy.fillPct * 100).toFixed(1)),
+        },
+      });
+    }
+
+    updateMarketGuildSettingDispatchStateStmt.run(
+      nextCursor,
+      resolveNextMarketGuildDispatchAt(tickTimeIso, cycleIntervalSec),
+      lastDispatchAt,
+      String(tickTimeIso),
+      sourceVillageId,
+    );
+  }
+
+  return dispatchedRoutes;
+};
+
+const resolveTickHourKeyUtc = (timeIso) => {
+  const timestamp = Date.parse(String(timeIso ?? ''));
+  if (!Number.isFinite(timestamp)) {
+    return null;
+  }
+  return new Date(timestamp).toISOString().slice(0, 13);
+};
+
+const isBotNightWindowAtTime = (timeIso) => {
+  const timestamp = Date.parse(String(timeIso ?? ''));
+  if (!Number.isFinite(timestamp)) {
+    return false;
+  }
+  const hour = new Date(timestamp).getUTCHours();
+  return hour >= NIGHT_MODE_START_HOUR && hour < NIGHT_MODE_END_HOUR;
+};
+
+const resolveBotAvailableResourcePocket = (resourcePocket) => ({
+  wood: Math.max(0, Math.floor(Number(resourcePocket?.wood ?? 0)) - BOT_NIGHT_RESOURCE_RESERVE.wood),
+  stone: Math.max(0, Math.floor(Number(resourcePocket?.stone ?? 0)) - BOT_NIGHT_RESOURCE_RESERVE.stone),
+  iron: Math.max(0, Math.floor(Number(resourcePocket?.iron ?? 0)) - BOT_NIGHT_RESOURCE_RESERVE.iron),
+  gold: Math.max(0, Math.floor(Number(resourcePocket?.gold ?? 0))),
+  coins: Math.max(0, Math.floor(Number(resourcePocket?.coins ?? 0))),
+});
+
+const spendVillageResourcesForBotAction = (villageId, resourcePocket, cost) => {
+  const safeCost = {
+    wood: Math.max(0, Math.floor(Number(cost?.wood ?? 0))),
+    stone: Math.max(0, Math.floor(Number(cost?.stone ?? 0))),
+    iron: Math.max(0, Math.floor(Number(cost?.iron ?? 0))),
+  };
+  if (!canAfford(resourcePocket, safeCost)) {
+    return null;
+  }
+  const nextPocket = {
+    wood: Math.max(0, Math.floor(Number(resourcePocket.wood ?? 0)) - safeCost.wood),
+    stone: Math.max(0, Math.floor(Number(resourcePocket.stone ?? 0)) - safeCost.stone),
+    iron: Math.max(0, Math.floor(Number(resourcePocket.iron ?? 0)) - safeCost.iron),
+    gold: Math.max(0, Math.floor(Number(resourcePocket.gold ?? 0))),
+    coins: Math.max(0, Math.floor(Number(resourcePocket.coins ?? 0))),
+  };
+  updateResourcesAfterSpendStmt.run(
+    nextPocket.wood,
+    nextPocket.stone,
+    nextPocket.iron,
+    nextPocket.gold,
+    nextPocket.coins,
+    Number(villageId),
+  );
+  return nextPocket;
+};
+
+const processBotNightEconomyCycle = (tickTimeIso) => {
+  const empty = {
+    executed: false,
+    processedVillages: 0,
+    startedUpgrades: 0,
+    startedRecruitments: 0,
+    failedVillages: 0,
+  };
+  if (!isBotNightWindowAtTime(tickTimeIso)) {
+    return empty;
+  }
+
+  const hourKey = resolveTickHourKeyUtc(tickTimeIso);
+  if (!hourKey || hourKey === lastBotNightCycleHourKey) {
+    return empty;
+  }
+
+  const stats = {
+    executed: true,
+    processedVillages: 0,
+    startedUpgrades: 0,
+    startedRecruitments: 0,
+    failedVillages: 0,
+  };
+
+  for (const world of WORLD_CATALOG) {
+    const botVillages = selectNamedBotVillagesByRegionStmt
+      .all(ACTIVE_BOT_USERNAME, Number(world.region))
+      .slice(0, ACTIVE_BOT_MAX_VILLAGES_PER_CYCLE);
+    for (const village of botVillages) {
+      const villageId = Number(village.id);
+      if (!Number.isFinite(villageId) || villageId <= 0) {
+        continue;
+      }
+
+      try {
+        const resourcesRow = selectResourcesByVillageStmt.get(villageId);
+        if (!resourcesRow) {
+          continue;
+        }
+        let resourcePocket = toNonNegativeResourcePocket(resourcesRow);
+        const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(villageId));
+        const activeUpgrades = selectActiveUpgradesByVillageStmt.all(villageId);
+        const activeRecruitments = selectActiveRecruitmentsByVillageStmt.all(villageId);
+        stats.processedVillages += 1;
+
+        if (activeUpgrades.length <= 0) {
+          const projectedLevels = buildProjectedBuildingLevels(buildingLevels, activeUpgrades);
+          for (const buildingId of BOT_NIGHT_BUILD_PRIORITY) {
+            const fromLevel = Math.max(0, Math.floor(Number(buildingLevels[buildingId] ?? 0)));
+            const maxLevel = getMaxBuildingLevel(buildingId);
+            if (fromLevel >= maxLevel) {
+              continue;
+            }
+            const requirementError = resolveBuildingRequirementError(buildingId, buildingLevels, {
+              effectiveBuildingLevels: projectedLevels,
+            });
+            if (requirementError) {
+              continue;
+            }
+            const upgradeCost = calculateUpgradeCost(buildingId, fromLevel);
+            if (!upgradeCost) {
+              continue;
+            }
+            const availablePocket = resolveBotAvailableResourcePocket(resourcePocket);
+            if (!canAfford(availablePocket, upgradeCost)) {
+              continue;
+            }
+            const paidPocket = spendVillageResourcesForBotAction(villageId, resourcePocket, upgradeCost);
+            if (!paidPocket) {
+              continue;
+            }
+            resourcePocket = paidPocket;
+            const townhallLevel = Math.max(0, Math.floor(Number(buildingLevels.townhall ?? 0)));
+            const durationSec = calculateUpgradeDurationSec(buildingId, fromLevel, townhallLevel);
+            const finishAtIso = new Date(Date.parse(String(tickTimeIso)) + durationSec * 1000).toISOString();
+            insertUpgradeStmt.run(
+              villageId,
+              buildingId,
+              fromLevel,
+              Math.min(maxLevel, fromLevel + 1),
+              upgradeCost.wood,
+              upgradeCost.stone,
+              upgradeCost.iron,
+              String(tickTimeIso),
+              finishAtIso,
+            );
+            stats.startedUpgrades += 1;
+            break;
+          }
+        }
+
+        const barracksLevel = Math.max(0, Math.floor(Number(buildingLevels.barracks ?? 0)));
+        const hasMilitiaQueued = activeRecruitments.some(
+          (entry) => String(entry.unitId ?? '').trim().toLowerCase() === 'militia',
+        );
+        if (barracksLevel > 0 && !hasMilitiaQueued) {
+          const militiaDef = UNIT_DEFS.militia;
+          const villagePopulation = getVillagePopulationStatus(villageId);
+          const reservedPopulation = calculateReservedPopulationForRecruitments(activeRecruitments);
+          const availablePopulationForRecruitment = calculateAvailablePopulationForRecruitment(
+            villagePopulation.populationCap,
+            villagePopulation.populationUsed,
+            reservedPopulation,
+          );
+          const maxByPopulation = Math.max(
+            0,
+            Math.floor(availablePopulationForRecruitment / getUnitPopulationCost('militia')),
+          );
+          const availablePocket = resolveBotAvailableResourcePocket(resourcePocket);
+          const maxByResources = calculateMaxRecruitableByResources(availablePocket, militiaDef.cost);
+          const recruitAmount = Math.max(
+            0,
+            Math.min(BOT_NIGHT_MILITIA_RECRUIT_BATCH, maxByPopulation, maxByResources),
+          );
+          if (recruitAmount > 0) {
+            const recruitmentCost = {
+              wood: militiaDef.cost.wood * recruitAmount,
+              stone: militiaDef.cost.stone * recruitAmount,
+              iron: militiaDef.cost.iron * recruitAmount,
+            };
+            const paidPocket = spendVillageResourcesForBotAction(villageId, resourcePocket, recruitmentCost);
+            if (paidPocket) {
+              resourcePocket = paidPocket;
+              const durationSec = calculateRecruitDurationSec('militia', recruitAmount, barracksLevel);
+              const finishAtIso = new Date(Date.parse(String(tickTimeIso)) + durationSec * 1000).toISOString();
+              insertRecruitmentStmt.run(
+                villageId,
+                'militia',
+                recruitAmount,
+                recruitmentCost.wood,
+                recruitmentCost.stone,
+                recruitmentCost.iron,
+                String(tickTimeIso),
+                finishAtIso,
+              );
+              stats.startedRecruitments += 1;
+            }
+          }
+        }
+      } catch (error) {
+        stats.failedVillages += 1;
+        console.warn(`[bot-night] Village ${villageId} cycle failed:`, error);
+      }
+    }
+  }
+
+  lastBotNightCycleHourKey = hourKey;
+  return stats;
+};
+
 const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
   const state = selectGameStateStmt.get();
   const parsedLastTick = state?.lastTickAt ? Date.parse(state.lastTickAt) : Number.NaN;
@@ -5899,15 +7030,21 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     }
 
     const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(villageId));
-    const unitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(villageId));
+    const rawUnitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(villageId));
     const resourceCaps = resolveVillageResourceCaps(buildingLevels);
-    const populationCap = calculatePopulationCap(buildingLevels['residential-quarter'] ?? 0);
     const activeAcademicsInVillage = Math.max(
       0,
       Math.floor(Number(countActiveAcademicsByVillageStmt.get(villageId)?.total ?? 0)),
     );
-    const populationUsed =
-      calculatePopulationUsed(buildingLevels, unitCounts) + activeAcademicsInVillage * ACADEMIC_POPULATION_COST;
+    const populationSnapshot = enforceVillagePopulationBudget(
+      villageId,
+      buildingLevels,
+      rawUnitCounts,
+      activeAcademicsInVillage,
+    );
+    const unitCounts = populationSnapshot.unitCounts;
+    const populationCap = populationSnapshot.populationCap;
+    const populationUsed = populationSnapshot.populationUsed;
     const baseProduction = calculateProductionPerHour(buildingLevels, populationUsed, populationCap);
     const world = resolveWorldByRegion(villageRegion);
     const developerBoost = resolveDeveloperResourceBoostForWorld(world, tickTimeMs);
@@ -6029,6 +7166,14 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
   let spawnedReturnMovements = 0;
   let generatedBattleReports = 0;
   let completedLogisticsRoutes = 0;
+  let autoGuildDispatches = 0;
+  let botNightEconomy = {
+    executed: false,
+    processedVillages: 0,
+    startedUpgrades: 0,
+    startedRecruitments: 0,
+    failedVillages: 0,
+  };
   let deliveredMercenaryContracts = 0;
   let expiredMercenaryContracts = 0;
   let completedResearchProjects = 0;
@@ -6866,6 +8011,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       });
     }
   }
+  autoGuildDispatches = processDueMarketGuildDispatches(tickTimeIso);
+  botNightEconomy = processBotNightEconomyCycle(tickTimeIso);
 
   const dueMercenaryArrivals = selectDueMercenaryArrivalsStmt.all(tickTimeIso);
   for (const contract of dueMercenaryArrivals) {
@@ -6948,92 +8095,99 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     }
 
     ensureResolvedResearchProgressForPlayerRegion(playerId, region, tickTimeIso);
-    const activeResearch = selectActiveResearchByPlayerRegionStmt.get(playerId, region);
-    if (!activeResearch) {
-      continue;
-    }
-    const definition = getResearchDefinition(String(activeResearch.researchId));
-    if (!definition) {
-      continue;
-    }
-    const assignedAcademics = Math.max(
-      0,
-      Math.floor(
-        Number(
-          countAssignedAcademicsForResearchByPlayerRegionStmt.get(
-            playerId,
-            region,
-            String(activeResearch.researchId),
-          )?.total ?? 0,
-        ),
-      ),
-    );
-    if (assignedAcademics <= 0 || elapsedSec <= 0) {
+    const activeResearchRows = selectResearchingProjectsByPlayerRegionStmt.all(playerId, region);
+    if (!Array.isArray(activeResearchRows) || activeResearchRows.length <= 0) {
       continue;
     }
     const maxUniversityLevel = Math.max(
       0,
       Math.floor(Number(selectMaxUniversityLevelByPlayerAndRegionStmt.get(playerId, region)?.maxLevel ?? 0)),
     );
-    const speedMultiplier = calculateResearchSpeedMultiplier(assignedAcademics, maxUniversityLevel);
-    if (speedMultiplier <= 0) {
-      continue;
-    }
-    const progressGain = (elapsedSec / 3600) * 120 * speedMultiplier;
-    const currentProgress = Math.max(0, Number(activeResearch.progress ?? 0));
-    const requiredPoints = getResearchProgressPointsRequired(definition);
-    const nextProgress = Math.min(requiredPoints, currentProgress + progressGain);
-    const startedAt = activeResearch.startedAt ? String(activeResearch.startedAt) : tickTimeIso;
 
-    if (nextProgress >= requiredPoints) {
-      clearResearchAssignmentsByPlayerRegionStmt.run(playerId, region);
+    for (const activeResearch of activeResearchRows) {
+      const researchId = String(activeResearch?.researchId ?? '').trim();
+      if (!researchId) {
+        continue;
+      }
+      const definition = getResearchDefinition(researchId);
+      if (!definition) {
+        continue;
+      }
+      const assignedAcademics = Math.max(
+        0,
+        Math.floor(
+          Number(
+            countAssignedAcademicsForResearchByPlayerRegionStmt.get(
+              playerId,
+              region,
+              researchId,
+            )?.total ?? 0,
+          ),
+        ),
+      );
+      if (assignedAcademics <= 0 || elapsedSec <= 0) {
+        continue;
+      }
+      const speedMultiplier = calculateResearchSpeedMultiplier(assignedAcademics, maxUniversityLevel);
+      if (speedMultiplier <= 0) {
+        continue;
+      }
+      const progressGain = (elapsedSec / 3600) * 120 * speedMultiplier;
+      const currentProgress = Math.max(0, Number(activeResearch.progress ?? 0));
+      const requiredPoints = getResearchProgressPointsRequired(definition);
+      const nextProgress = Math.min(requiredPoints, currentProgress + progressGain);
+      const startedAt = activeResearch.startedAt ? String(activeResearch.startedAt) : tickTimeIso;
+
+      if (nextProgress >= requiredPoints) {
+        releaseAllAcademicAssignmentsByResearchForPlayerRegionStmt.run(playerId, region, researchId);
+        upsertResearchProgressStmt.run(
+          playerId,
+          region,
+          String(definition.id),
+          'completed',
+          requiredPoints,
+          0,
+          startedAt,
+          tickTimeIso,
+          tickTimeIso,
+        );
+        ensureResolvedResearchProgressForPlayerRegion(playerId, region, tickTimeIso);
+        completedResearchProjects += 1;
+
+        const playerRow = selectPlayerByIdStmt.get(playerId);
+        if (playerRow && Number(playerRow.isBot ?? 0) !== 1) {
+          createPlayerNotification({
+            playerId,
+            region,
+            category: 'research',
+            eventType: 'research_completed',
+            severity: 'success',
+            title: `Vyzkum dokoncen: ${String(definition.name)}`,
+            summary: `${String(definition.name)} byl uspesne dokoncen.`,
+            payload: {
+              researchId: String(definition.id),
+              completedAt: tickTimeIso,
+            },
+            sourceType: 'research_progress',
+            sourceId: null,
+            createdAt: tickTimeIso,
+          });
+        }
+        continue;
+      }
+
       upsertResearchProgressStmt.run(
         playerId,
         region,
         String(definition.id),
-        'completed',
-        requiredPoints,
-        0,
+        'researching',
+        nextProgress,
+        assignedAcademics,
         startedAt,
-        tickTimeIso,
+        null,
         tickTimeIso,
       );
-      ensureResolvedResearchProgressForPlayerRegion(playerId, region, tickTimeIso);
-      completedResearchProjects += 1;
-
-      const playerRow = selectPlayerByIdStmt.get(playerId);
-      if (playerRow && Number(playerRow.isBot ?? 0) !== 1) {
-        createPlayerNotification({
-          playerId,
-          region,
-          category: 'research',
-          eventType: 'research_completed',
-          severity: 'success',
-          title: `Vyzkum dokoncen: ${String(definition.name)}`,
-          summary: `${String(definition.name)} byl uspesne dokoncen.`,
-          payload: {
-            researchId: String(definition.id),
-            completedAt: tickTimeIso,
-          },
-          sourceType: 'research_progress',
-          sourceId: null,
-          createdAt: tickTimeIso,
-        });
-      }
-      continue;
     }
-
-    upsertResearchProgressStmt.run(
-      playerId,
-      region,
-      String(definition.id),
-      'researching',
-      nextProgress,
-      assignedAcademics,
-      startedAt,
-      null,
-      tickTimeIso,
-    );
   }
 
   for (const villageId of villagesToRecalculatePrestige) {
@@ -7053,6 +8207,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     spawnedReturnMovements,
     generatedBattleReports,
     completedLogisticsRoutes,
+    autoGuildDispatches,
+    botNightEconomy,
     deliveredMercenaryContracts,
     expiredMercenaryContracts,
     completedResearchProjects,
@@ -7174,7 +8330,9 @@ export const getVillageSnapshot = (
   requestedVillageId = null,
   worldId = null,
   spawnDirectionRaw = 'center',
+  options = {},
 ) => {
+  const includeWorldMap = options?.includeWorldMap !== false;
   const { player, village, villages, world } = requireVillageForUser(
     username,
     requestedVillageId,
@@ -7266,6 +8424,16 @@ export const getVillageSnapshot = (
     0,
     Math.floor(Number(countActiveAcademicsByPlayerRegionStmt.get(Number(player.id), Number(world.region))?.total ?? 0)),
   );
+  const regionAcademicCapacity = Math.max(
+    0,
+    Math.floor(
+      Number(
+        selectTotalUniversityAcademicCapacityByPlayerAndRegionStmt.get(Number(player.id), Number(world.region))
+          ?.totalCapacity ?? 0,
+      ),
+    ),
+  );
+  const regionAcademicAvailableSlots = Math.max(0, regionAcademicCapacity - totalAcademicsInRegion);
   const idleAcademicsInRegion = Math.max(
     0,
     Math.floor(Number(countIdleAcademicsByPlayerRegionStmt.get(Number(player.id), Number(world.region))?.total ?? 0)),
@@ -7520,7 +8688,10 @@ export const getVillageSnapshot = (
   }
 
   const activeUpgrade = activeUpgrades.length > 0 ? activeUpgrades[0] : null;
-  const settlements = buildWorldSettlements(village, player.username, Number(player.id), world);
+  const settlements = includeWorldMap
+    ? buildWorldSettlements(village, player.username, Number(player.id), world)
+    : [];
+  const worldKingdoms = includeWorldMap ? buildKingdomStats(settlements) : [];
   const leaderboard = listPlayerLeaderboard(world.id);
   const kingdomHub = buildKingdomHubState(player, village);
   const recentLogisticsRoutes = selectRecentLogisticsByVillageStmt
@@ -7552,9 +8723,18 @@ export const getVillageSnapshot = (
     });
   const marketLevel = Math.max(0, Math.floor(Number(buildingLevels.market ?? 0)));
   const marketCapacity = calculateMarketCapacity(marketLevel);
+  const marketMerchants = calculateMarketMerchantStateByVillage(Number(village.id), marketLevel);
   const hideoutProtection = calculateLootProtectionPocket(buildingLevels);
   const vaultProtection = calculateCurrencyProtectionPocket(buildingLevels);
-  const marketGuildUnlocked = marketLevel >= 4 && completedResearchIds.has('guild-influence');
+  const marketGuildUnlocked = isMarketGuildUnlocked(marketLevel, completedResearchIds);
+  const marketGuildAutomation = buildMarketGuildAutomationState({
+    playerId: Number(player.id),
+    region: Number(world.region),
+    sourceVillageId: Number(village.id),
+    sourceMarketLevel: marketLevel,
+    guildUnlocked: marketGuildUnlocked,
+    referenceIso: nowIso(),
+  });
   const worldSpawnConfig = resolveWorldSpawnConfig(world);
   const villageProtectionRuleDays = Math.max(0, Number(worldSpawnConfig.playerProtectionDays ?? 0));
   const villageProtectionUntil = resolveVillageProtectionUntilIso(village, villageProtectionRuleDays);
@@ -7603,7 +8783,7 @@ export const getVillageSnapshot = (
       originY: Number(worldRegion.originY),
       size: Number(worldRegion.size),
       settlements,
-      kingdoms: buildKingdomStats(settlements),
+      kingdoms: worldKingdoms,
     },
     resources: {
       wood: Math.floor(currentResources.wood),
@@ -7615,11 +8795,11 @@ export const getVillageSnapshot = (
       goldCap: mintGoldCap,
       coinsCap: mintCoinCap,
       productionPerHour: {
-        wood: Number(production.wood.toFixed(2)),
-        stone: Number(production.stone.toFixed(2)),
-        iron: Number(production.iron.toFixed(2)),
-        gold: Number((production.gold ?? 0).toFixed(2)),
-        mintCoins: Number(mintThroughputPerHour.toFixed(2)),
+        wood: Math.max(0, Math.floor(Number(production.wood ?? 0))),
+        stone: Math.max(0, Math.floor(Number(production.stone ?? 0))),
+        iron: Math.max(0, Math.floor(Number(production.iron ?? 0))),
+        gold: Math.max(0, Math.floor(Number(production.gold ?? 0))),
+        mintCoins: Math.max(0, Math.floor(Number(mintThroughputPerHour ?? 0))),
         penalty: Number(production.penalty.toFixed(2)),
       },
       protection: {
@@ -7692,6 +8872,8 @@ export const getVillageSnapshot = (
     research: {
       totalAcademics: totalAcademicsInRegion,
       idleAcademics: idleAcademicsInRegion,
+      regionAcademicCapacity,
+      regionAcademicAvailableSlots,
       villageAcademics: academicCountInVillage,
       villageAcademicCapacity,
       villageAcademicAvailableSlots,
@@ -7703,7 +8885,9 @@ export const getVillageSnapshot = (
       capacity: marketCapacity,
       maxDistance: MARKET_MAX_DISTANCE_TILES,
       guildUnlocked: marketGuildUnlocked,
+      merchants: marketMerchants,
       logisticsRoutes: recentLogisticsRoutes,
+      guildAutomation: marketGuildAutomation,
     },
     mercenaries: {
       contracts: selectMercenaryContractsByVillageStmt.all(Number(village.id)).map((contract) => ({
@@ -7882,15 +9066,18 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
   if (commandType === 'attack') {
     const spawnConfig = resolveWorldSpawnConfig(world);
     const protectionDays = Math.max(0, Number(spawnConfig.playerProtectionDays ?? 0));
+    const targetOwnerUsernameComparable = normalizeUsernameComparable(String(targetVillage.ownerUsername ?? ''));
+    const isTargetAbandonedBot =
+      Number(targetVillage.ownerIsBot) === 1 &&
+      targetOwnerUsernameComparable.startsWith(normalizeUsernameComparable(ABANDONED_BOT_USERNAME_PREFIX));
     if (protectionDays > 0) {
-      const isTargetAbandoned = Number(targetVillage.ownerIsBot) === 1;
-      if (!isTargetAbandoned && isVillageUnderSpawnProtection(village, protectionDays)) {
+      if (!isTargetAbandonedBot && isVillageUnderSpawnProtection(village, protectionDays)) {
         throw new GameRuleError(
           'Jsi pod novackou ochranou. Po dobu 5 dni muzes utocit jen na opustene osady.',
           403,
         );
       }
-      if (!isTargetAbandoned && isVillageUnderSpawnProtection(targetVillage, protectionDays)) {
+      if (!isTargetAbandonedBot && isVillageUnderSpawnProtection(targetVillage, protectionDays)) {
         throw new GameRuleError(
           'Cilovy hrac je pod novackou ochranou. Utok je po dobu 5 dni blokovan.',
           403,
@@ -7898,8 +9085,8 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
       }
     }
 
-    const isTargetNonBotPlayer = Number(targetVillage.ownerIsBot ?? 0) !== 1;
-    if (isTargetNonBotPlayer) {
+    const isTargetSubjectToPrestigeLock = !isTargetAbandonedBot;
+    if (isTargetSubjectToPrestigeLock) {
       const attackerPrestige = getPlayerPrestigeInRegion(Number(player.id), Number(village.region));
       const defenderPrestige = getPlayerPrestigeInRegion(Number(targetVillage.playerId), Number(targetVillage.region));
       const prestigeLock = evaluatePrestigeAttackLock({
@@ -8196,11 +9383,15 @@ const cancelArmyCommandTransaction = db.transaction((username, movementIdRaw, re
 const startUpgradeTransaction = db.transaction((username, buildingId, startedAtIso, requestedVillageId, worldId = null) => {
   const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
   const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(village.id));
+  const activeUpgrades = selectActiveUpgradesByVillageStmt.all(village.id);
+  const projectedBuildingLevels = buildProjectedBuildingLevels(buildingLevels, activeUpgrades);
   const currentLevel = buildingLevels[buildingId];
   if (currentLevel == null) {
     throw new GameRuleError('Neznama budova.');
   }
-  const requirementError = resolveBuildingRequirementError(buildingId, buildingLevels);
+  const requirementError = resolveBuildingRequirementError(buildingId, buildingLevels, {
+    effectiveBuildingLevels: projectedBuildingLevels,
+  });
   if (requirementError) {
     throw new GameRuleError(requirementError, 400);
   }
@@ -8214,7 +9405,9 @@ const startUpgradeTransaction = db.transaction((username, buildingId, startedAtI
     }
   }
   const maxLevel = getMaxBuildingLevel(buildingId);
-  const queuedUpgradesForBuilding = selectActiveUpgradesByVillageAndBuildingStmt.all(village.id, buildingId);
+  const queuedUpgradesForBuilding = activeUpgrades.filter(
+    (upgrade) => String(upgrade.buildingId) === String(buildingId),
+  );
   const queuedHighestLevel = queuedUpgradesForBuilding.reduce(
     (maxQueuedLevel, upgrade) => Math.max(maxQueuedLevel, Number(upgrade.toLevel ?? currentLevel)),
     currentLevel,
@@ -8336,13 +9529,54 @@ const cancelBuildingUpgradeTransaction = db.transaction((username, upgradeIdRaw,
     deleteActiveUpgradeByIdStmt.run(Number(upgrade.id), Number(village.id));
   }
 
-  addResourcesWithoutCap(Number(village.id), refunded);
+  const currentBuildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(Number(village.id)));
+  const cancelByDependency = [];
+  let remainingUpgrades = selectActiveUpgradesByVillageStmt.all(Number(village.id));
+
+  // If prerequisite upgrades were canceled, remove dependent upgrades that are no longer valid.
+  while (remainingUpgrades.length > 0) {
+    const projectedLevels = buildProjectedBuildingLevels(currentBuildingLevels, remainingUpgrades);
+    const invalidUpgrades = remainingUpgrades.filter((upgrade) => {
+      const requirementError = resolveBuildingRequirementError(String(upgrade.buildingId), currentBuildingLevels, {
+        effectiveBuildingLevels: projectedLevels,
+      });
+      return requirementError != null;
+    });
+
+    if (invalidUpgrades.length <= 0) {
+      break;
+    }
+
+    const invalidIds = new Set(invalidUpgrades.map((upgrade) => Number(upgrade.id)));
+    for (const invalidUpgrade of invalidUpgrades) {
+      cancelByDependency.push(invalidUpgrade);
+      deleteActiveUpgradeByIdStmt.run(Number(invalidUpgrade.id), Number(village.id));
+    }
+    remainingUpgrades = remainingUpgrades.filter((upgrade) => !invalidIds.has(Number(upgrade.id)));
+  }
+
+  const dependencyRefunded = cancelByDependency.reduce(
+    (sum, upgrade) => ({
+      wood: sum.wood + Math.max(0, Math.floor(Number(upgrade.woodCost ?? 0))),
+      stone: sum.stone + Math.max(0, Math.floor(Number(upgrade.stoneCost ?? 0))),
+      iron: sum.iron + Math.max(0, Math.floor(Number(upgrade.ironCost ?? 0))),
+    }),
+    { wood: 0, stone: 0, iron: 0 },
+  );
+  const totalRefunded = {
+    wood: refunded.wood + dependencyRefunded.wood,
+    stone: refunded.stone + dependencyRefunded.stone,
+    iron: refunded.iron + dependencyRefunded.iron,
+  };
+
+  addResourcesWithoutCap(Number(village.id), totalRefunded);
 
   return {
     canceledUpgradeId: Number(targetUpgrade.id),
     buildingId: String(targetUpgrade.buildingId),
-    canceledCount: queueSlice.length,
-    refunded,
+    canceledCount: queueSlice.length + cancelByDependency.length,
+    dependencyCanceledCount: cancelByDependency.length,
+    refunded: totalRefunded,
   };
 });
 
@@ -9104,31 +10338,74 @@ const recallKnightTransaction = db.transaction((username, requestedVillageId, wo
 const hireAcademicsTransaction = db.transaction((username, amountRaw, requestedVillageId, worldId = null) => {
   const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
   const hireAmountRequested = requirePositiveInteger(amountRaw, 'amount');
-  const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(Number(village.id)));
-  const universityLevel = Math.max(0, Math.floor(Number(buildingLevels.university ?? 0)));
-  if (universityLevel <= 0) {
-    throw new GameRuleError('Pro najem akademiku je potreba Univerzita alespon na urovni 1.', 400);
+  const selectedVillageBuildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(Number(village.id)));
+  const selectedVillageUniversityLevel = Math.max(0, Math.floor(Number(selectedVillageBuildingLevels.university ?? 0)));
+  const villagesInRegion = selectVillagesByPlayerAndRegionStmt.all(Number(player.id), Number(village.region));
+  if (!Array.isArray(villagesInRegion) || villagesInRegion.length <= 0) {
+    throw new GameRuleError('Hrac nema v regionu zadne osady pro najem akademiku.', 400);
   }
 
-  const villageCapacity = getVillageUniversityCapacity(buildingLevels);
-  const activeInVillage = Math.max(
-    0,
-    Math.floor(Number(countActiveAcademicsByVillageStmt.get(Number(village.id))?.total ?? 0)),
-  );
-  const availableSlots = Math.max(0, villageCapacity - activeInVillage);
-  if (availableSlots <= 0) {
-    throw new GameRuleError('V teto osade je kapacita akademiku vycerpana.', 400);
+  const orderedVillages = [...villagesInRegion].sort((left, right) => {
+    if (Number(left.id) === Number(village.id)) {
+      return -1;
+    }
+    if (Number(right.id) === Number(village.id)) {
+      return 1;
+    }
+    return Number(left.id) - Number(right.id);
+  });
+  let regionUniversityCapacity = 0;
+  const hireCandidates = [];
+
+  for (const candidateVillage of orderedVillages) {
+    const candidateVillageId = Number(candidateVillage.id);
+    if (!Number.isFinite(candidateVillageId) || candidateVillageId <= 0) {
+      continue;
+    }
+    const candidateBuildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(candidateVillageId));
+    const candidateVillageCapacity = getVillageUniversityCapacity(candidateBuildingLevels);
+    regionUniversityCapacity += candidateVillageCapacity;
+    if (candidateVillageCapacity <= 0) {
+      continue;
+    }
+
+    const activeInCandidateVillage = Math.max(
+      0,
+      Math.floor(Number(countActiveAcademicsByVillageStmt.get(candidateVillageId)?.total ?? 0)),
+    );
+    const freeUniversitySlots = Math.max(0, candidateVillageCapacity - activeInCandidateVillage);
+    if (freeUniversitySlots <= 0) {
+      continue;
+    }
+
+    const candidatePopulation = getVillagePopulationStatus(candidateVillageId);
+    const freePopulationSlots = Math.max(
+      0,
+      Math.floor(Number(candidatePopulation.availablePopulation ?? 0) / ACADEMIC_POPULATION_COST),
+    );
+    const hireableSlots = Math.max(0, Math.min(freeUniversitySlots, freePopulationSlots));
+    if (hireableSlots <= 0) {
+      continue;
+    }
+
+    hireCandidates.push({
+      villageId: candidateVillageId,
+      slots: hireableSlots,
+    });
   }
 
-  const hireAmount = Math.min(hireAmountRequested, availableSlots);
+  if (regionUniversityCapacity <= 0) {
+    throw new GameRuleError('Pro najem akademiku je potreba Univerzita alespon na urovni 1 v nekterem z tvych len.', 400);
+  }
+
+  const regionAvailableSlots = hireCandidates.reduce((sum, candidate) => sum + Number(candidate.slots), 0);
+  if (regionAvailableSlots <= 0) {
+    throw new GameRuleError('Kapacita akademiku je v regionu vycerpana nebo chybi volna populace.', 400);
+  }
+
+  const hireAmount = Math.min(hireAmountRequested, regionAvailableSlots);
   if (hireAmount <= 0) {
     throw new GameRuleError('Neni dostupny zadny slot pro akademika.', 400);
-  }
-
-  const population = getVillagePopulationStatus(Number(village.id));
-  const requiredPopulation = hireAmount * ACADEMIC_POPULATION_COST;
-  if (population.availablePopulation < requiredPopulation) {
-    throw new GameRuleError('Nedostatek populace pro najem akademiku.', 400);
   }
 
   const resources = selectResourcesByVillageStmt.get(Number(village.id));
@@ -9151,14 +10428,26 @@ const hireAcademicsTransaction = db.transaction((username, amountRaw, requestedV
   );
 
   const hiredAtIso = nowIso();
-  for (let index = 0; index < hireAmount; index += 1) {
-    insertAcademicStmt.run(Number(player.id), Number(village.id), Number(village.region), hiredAtIso);
+  let remainingToHire = hireAmount;
+  for (const candidate of hireCandidates) {
+    if (remainingToHire <= 0) {
+      break;
+    }
+    const assignAmount = Math.min(remainingToHire, Number(candidate.slots));
+    for (let index = 0; index < assignAmount; index += 1) {
+      insertAcademicStmt.run(Number(player.id), Number(candidate.villageId), Number(village.region), hiredAtIso);
+    }
+    remainingToHire -= assignAmount;
+  }
+
+  if (remainingToHire > 0) {
+    throw new GameRuleError('Nepodarilo se rozmistit vsechny akademiky do dostupnych len.', 500);
   }
 
   return {
     hired: hireAmount,
     villageId: Number(village.id),
-    universityLevel,
+    universityLevel: selectedVillageUniversityLevel,
     totalCoinCost,
     hiredAt: hiredAtIso,
   };
@@ -9174,11 +10463,7 @@ const startResearchProjectTransaction = db.transaction(
     }
 
     const nowTimeIso = nowIso();
-    const researchRows = ensureResolvedResearchProgressForPlayerRegion(
-      Number(player.id),
-      Number(village.region),
-      nowTimeIso,
-    );
+    ensureResolvedResearchProgressForPlayerRegion(Number(player.id), Number(village.region), nowTimeIso);
     const currentRow =
       selectResearchProgressByPlayerRegionAndResearchStmt.get(Number(player.id), Number(village.region), researchId) ??
       null;
@@ -9194,33 +10479,91 @@ const startResearchProjectTransaction = db.transaction(
       0,
       Math.floor(Number(countIdleAcademicsByPlayerRegionStmt.get(Number(player.id), Number(village.region))?.total ?? 0)),
     );
-    if (idleAcademics <= 0) {
-      throw new GameRuleError('Pro zahajeni vyzkumu chybi volni akademici.', 400);
+    const currentAssignedAcademics = Math.max(
+      0,
+      Math.floor(
+        Number(
+          countAssignedAcademicsForResearchByPlayerRegionStmt.get(
+            Number(player.id),
+            Number(village.region),
+            researchId,
+          )?.total ?? 0,
+        ),
+      ),
+    );
+    const freeProjectSlots = Math.max(0, MAX_ACADEMICS_PER_RESEARCH - currentAssignedAcademics);
+    const desiredAssignedAcademics = Math.min(requestedAcademics, freeProjectSlots);
+    if (desiredAssignedAcademics <= 0) {
+      throw new GameRuleError('Projekt uz dosahl maximalniho poctu akademiku.', 400);
     }
-    const assignedAcademics = Math.min(requestedAcademics, idleAcademics);
+    let assignedAcademics = Math.min(desiredAssignedAcademics, idleAcademics);
+    let reassignedAcademics = 0;
 
-    const activeResearch = selectActiveResearchByPlayerRegionStmt.get(Number(player.id), Number(village.region));
-    if (activeResearch && String(activeResearch.researchId ?? '') !== researchId) {
-      const previousResearchId = String(activeResearch.researchId ?? '');
-      const previousRow =
-        selectResearchProgressByPlayerRegionAndResearchStmt.get(
+    if (assignedAcademics < desiredAssignedAcademics) {
+      let academicsStillNeeded = desiredAssignedAcademics - assignedAcademics;
+      const donorRows = selectResearchingProjectsByPlayerRegionStmt
+        .all(Number(player.id), Number(village.region))
+        .filter((row) => {
+          const donorResearchId = String(row?.researchId ?? '').trim();
+          return donorResearchId.length > 0 && donorResearchId !== researchId;
+        });
+
+      for (const donorRow of donorRows) {
+        if (academicsStillNeeded <= 0) {
+          break;
+        }
+        const donorResearchId = String(donorRow.researchId);
+        const donorAssignedAcademics = Math.max(
+          0,
+          Math.floor(
+            Number(
+              countAssignedAcademicsForResearchByPlayerRegionStmt.get(
+                Number(player.id),
+                Number(village.region),
+                donorResearchId,
+              )?.total ?? 0,
+            ),
+          ),
+        );
+        // Keep at least one academic on donor projects so running research does not hard-stop.
+        const donorReleasableAcademics = Math.max(0, donorAssignedAcademics - 1);
+        if (donorReleasableAcademics <= 0) {
+          continue;
+        }
+        const transferredAcademics = Math.min(academicsStillNeeded, donorReleasableAcademics);
+        if (transferredAcademics <= 0) {
+          continue;
+        }
+        releaseAcademicAssignmentByResearchForPlayerRegionStmt.run(
           Number(player.id),
           Number(village.region),
-          previousResearchId,
-        ) ?? null;
-      if (previousRow) {
+          donorResearchId,
+          transferredAcademics,
+        );
+
+        const donorAssignedAfterTransfer = donorAssignedAcademics - transferredAcademics;
+        const donorStartedAt = donorRow?.startedAt ? String(donorRow.startedAt) : nowTimeIso;
         upsertResearchProgressStmt.run(
           Number(player.id),
           Number(village.region),
-          previousResearchId,
-          'available',
-          Math.max(0, Number(previousRow.progress ?? 0)),
-          0,
-          previousRow.startedAt ? String(previousRow.startedAt) : null,
+          donorResearchId,
+          'researching',
+          Math.max(0, Number(donorRow?.progress ?? 0)),
+          donorAssignedAfterTransfer,
+          donorStartedAt,
           null,
           nowTimeIso,
         );
+
+        academicsStillNeeded -= transferredAcademics;
+        reassignedAcademics += transferredAcademics;
       }
+
+      assignedAcademics = Math.min(desiredAssignedAcademics, idleAcademics + reassignedAcademics);
+    }
+
+    if (assignedAcademics <= 0) {
+      throw new GameRuleError('Pro zahajeni vyzkumu chybi volni akademici.', 400);
     }
 
     const shouldPayCoins =
@@ -9248,7 +10591,6 @@ const startResearchProjectTransaction = db.transaction(
       );
     }
 
-    clearResearchAssignmentsByPlayerRegionStmt.run(Number(player.id), Number(village.region));
     updateAcademicAssignmentByPlayerRegionStmt.run(
       'assigned',
       researchId,
@@ -9256,6 +10598,8 @@ const startResearchProjectTransaction = db.transaction(
       Number(village.region),
       assignedAcademics,
     );
+    const updatedAssignedAcademics = currentAssignedAcademics + assignedAcademics;
+    const startedAtIso = currentRow?.startedAt ? String(currentRow.startedAt) : nowTimeIso;
 
     upsertResearchProgressStmt.run(
       Number(player.id),
@@ -9263,8 +10607,8 @@ const startResearchProjectTransaction = db.transaction(
       researchId,
       'researching',
       Math.max(0, Number(currentRow?.progress ?? 0)),
-      assignedAcademics,
-      currentRow?.startedAt ? String(currentRow.startedAt) : nowTimeIso,
+      updatedAssignedAcademics,
+      startedAtIso,
       null,
       nowTimeIso,
     );
@@ -9272,9 +10616,9 @@ const startResearchProjectTransaction = db.transaction(
     return {
       researchId,
       researchName: String(definition.name),
-      assignedAcademics,
+      assignedAcademics: updatedAssignedAcademics,
       coinCostPaid: coinCost,
-      startedAt: nowTimeIso,
+      startedAt: startedAtIso,
     };
   },
 );
@@ -9290,10 +10634,6 @@ const adjustResearchProjectAcademicsTransaction = db.transaction(
 
     const nowTimeIso = nowIso();
     ensureResolvedResearchProgressForPlayerRegion(Number(player.id), Number(village.region), nowTimeIso);
-    const activeResearch = selectActiveResearchByPlayerRegionStmt.get(Number(player.id), Number(village.region));
-    if (!activeResearch || String(activeResearch.researchId ?? '') !== researchId) {
-      throw new GameRuleError('Akademiky lze upravit pouze u aktivne zkoumaneho projektu.', 400);
-    }
 
     const currentRow =
       selectResearchProgressByPlayerRegionAndResearchStmt.get(Number(player.id), Number(village.region), researchId) ?? null;
@@ -9453,6 +10793,342 @@ const hireMercenaryContractTransaction = db.transaction((username, requestedVill
   };
 });
 
+const normalizeMarketGuildTargetVillageIds = (targetVillageIdsRaw) => {
+  if (!Array.isArray(targetVillageIdsRaw)) {
+    return null;
+  }
+  const normalized = [];
+  const seen = new Set();
+  for (const entry of targetVillageIdsRaw) {
+    const villageId = Number(entry);
+    if (!Number.isFinite(villageId) || villageId <= 0) {
+      continue;
+    }
+    const key = String(Math.floor(villageId));
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    normalized.push(Number(Math.floor(villageId)));
+  }
+  return normalized;
+};
+
+const clampMarketGuildShipmentToCapacity = (payloadRaw, capacityRaw) => {
+  const capacity = Math.max(0, Math.floor(Number(capacityRaw ?? 0)));
+  const base = {
+    wood: Math.max(0, Math.floor(Number(payloadRaw?.wood ?? 0))),
+    stone: Math.max(0, Math.floor(Number(payloadRaw?.stone ?? 0))),
+    iron: Math.max(0, Math.floor(Number(payloadRaw?.iron ?? 0))),
+  };
+  const total = base.wood + base.stone + base.iron;
+  if (capacity <= 0 || total <= 0) {
+    return { wood: 0, stone: 0, iron: 0, total: 0 };
+  }
+  if (total <= capacity) {
+    return { ...base, total };
+  }
+
+  const ratio = capacity / total;
+  const scaled = {
+    wood: Math.floor(base.wood * ratio),
+    stone: Math.floor(base.stone * ratio),
+    iron: Math.floor(base.iron * ratio),
+  };
+  let scaledTotal = scaled.wood + scaled.stone + scaled.iron;
+  let remainder = Math.max(0, capacity - scaledTotal);
+  if (remainder > 0) {
+    const order = ['wood', 'stone', 'iron'].sort((left, right) => base[right] - base[left]);
+    while (remainder > 0) {
+      let changed = false;
+      for (const resourceId of order) {
+        if (remainder <= 0) {
+          break;
+        }
+        if (scaled[resourceId] >= base[resourceId]) {
+          continue;
+        }
+        scaled[resourceId] += 1;
+        remainder -= 1;
+        changed = true;
+      }
+      if (!changed) {
+        break;
+      }
+    }
+    scaledTotal = scaled.wood + scaled.stone + scaled.iron;
+  }
+  return {
+    wood: Math.max(0, scaled.wood),
+    stone: Math.max(0, scaled.stone),
+    iron: Math.max(0, scaled.iron),
+    total: Math.max(0, scaledTotal),
+  };
+};
+
+export const getWorldMapSnapshot = (
+  username = 'Hayato',
+  requestedVillageId = null,
+  worldId = null,
+  spawnDirectionRaw = 'center',
+) => {
+  const { player, village, world } = requireVillageForUser(
+    username,
+    requestedVillageId,
+    worldId,
+    spawnDirectionRaw,
+  );
+  const worldRegion = resolveWorldRegionDefinition(world);
+  const settlements = buildWorldSettlements(village, player.username, Number(player.id), world);
+  return {
+    serverTime: nowIso(),
+    world: {
+      id: String(world.id),
+      name: String(world.name),
+      region: Number(worldRegion.id),
+      originX: Number(worldRegion.originX),
+      originY: Number(worldRegion.originY),
+      size: Number(worldRegion.size),
+      settlements,
+      kingdoms: buildKingdomStats(settlements),
+    },
+  };
+};
+
+const resolveMarketGuildAutoShipment = ({
+  sourceResources,
+  sourceCap,
+  targetResources,
+  targetCap,
+  routeCapacity,
+}) => {
+  const normalizedSource = toNonNegativeResourcePocket(sourceResources);
+  const normalizedTarget = toNonNegativeResourcePocket(targetResources);
+  const sourceCapSafe = Math.max(1, Math.floor(Number(sourceCap ?? 0)));
+  const targetCapSafe = Math.max(1, Math.floor(Number(targetCap ?? 0)));
+  const routeCapacitySafe = Math.max(0, Math.floor(Number(routeCapacity ?? 0)));
+  const sourceTotal = normalizedSource.wood + normalizedSource.stone + normalizedSource.iron;
+  const targetTotal = normalizedTarget.wood + normalizedTarget.stone + normalizedTarget.iron;
+  const sourceFill = Math.max(0, Math.min(1, sourceTotal / Math.max(1, sourceCapSafe * 3)));
+  const targetFill = Math.max(0, Math.min(1, targetTotal / Math.max(1, targetCapSafe * 3)));
+  const fillGap = sourceFill - targetFill;
+  const emptyShipment = {
+    wood: 0,
+    stone: 0,
+    iron: 0,
+    total: 0,
+  };
+
+  if (routeCapacitySafe <= 0) {
+    return {
+      shipment: emptyShipment,
+      reasonCode: 'route_capacity_zero',
+      metrics: {
+        sourceFillPct: Number((sourceFill * 100).toFixed(1)),
+        targetFillPct: Number((targetFill * 100).toFixed(1)),
+      },
+    };
+  }
+
+  if (sourceFill < 0.7) {
+    return {
+      shipment: emptyShipment,
+      reasonCode: 'source_fill_too_low',
+      metrics: {
+        sourceFillPct: Number((sourceFill * 100).toFixed(1)),
+        targetFillPct: Number((targetFill * 100).toFixed(1)),
+      },
+    };
+  }
+
+  if (fillGap < 0.06) {
+    return {
+      shipment: emptyShipment,
+      reasonCode: 'fill_gap_too_small',
+      metrics: {
+        sourceFillPct: Number((sourceFill * 100).toFixed(1)),
+        targetFillPct: Number((targetFill * 100).toFixed(1)),
+      },
+    };
+  }
+
+  const sourceReservePct = Math.max(0.45, Math.min(0.82, 0.72 - Math.max(0, sourceFill - 0.7) * 0.55));
+  const targetGoalPct = Math.max(0.55, Math.min(0.86, Math.min(0.82, sourceFill - 0.06)));
+  const draft = { wood: 0, stone: 0, iron: 0 };
+  for (const resourceId of ['wood', 'stone', 'iron']) {
+    const sourceReserve = Math.max(0, Math.floor(sourceCapSafe * sourceReservePct));
+    const targetGoal = Math.max(0, Math.floor(targetCapSafe * targetGoalPct));
+    const available = Math.max(0, Number(normalizedSource[resourceId] ?? 0) - sourceReserve);
+    const needed = Math.max(0, targetGoal - Number(normalizedTarget[resourceId] ?? 0));
+    draft[resourceId] = Math.max(0, Math.floor(Math.min(available, needed)));
+  }
+  const hasSourceSurplus = Object.values(draft).some((value) => Number(value) > 0);
+  if (!hasSourceSurplus) {
+    return {
+      shipment: emptyShipment,
+      reasonCode: 'no_target_need_or_surplus',
+      metrics: {
+        sourceFillPct: Number((sourceFill * 100).toFixed(1)),
+        targetFillPct: Number((targetFill * 100).toFixed(1)),
+        sourceReservePct: Number((sourceReservePct * 100).toFixed(1)),
+        targetGoalPct: Number((targetGoalPct * 100).toFixed(1)),
+      },
+    };
+  }
+
+  const shipment = clampMarketGuildShipmentToCapacity(draft, routeCapacitySafe);
+  const minimumShipment = Math.max(250, Math.floor(Math.min(routeCapacitySafe * 0.08, 2000)));
+  if (
+    shipment.total > 0 &&
+    shipment.total < minimumShipment &&
+    !(targetFill < 0.4 && sourceFill > 0.9)
+  ) {
+    return {
+      shipment: emptyShipment,
+      reasonCode: 'shipment_below_minimum',
+      metrics: {
+        sourceFillPct: Number((sourceFill * 100).toFixed(1)),
+        targetFillPct: Number((targetFill * 100).toFixed(1)),
+        minimumShipment,
+        computedShipment: shipment.total,
+      },
+    };
+  }
+
+  return {
+    shipment,
+    reasonCode: shipment.total > 0 ? 'ok' : 'shipment_zero',
+    metrics: {
+      sourceFillPct: Number((sourceFill * 100).toFixed(1)),
+      targetFillPct: Number((targetFill * 100).toFixed(1)),
+      fillGapPct: Number((fillGap * 100).toFixed(1)),
+      sourceReservePct: Number((sourceReservePct * 100).toFixed(1)),
+      targetGoalPct: Number((targetGoalPct * 100).toFixed(1)),
+      minimumShipment,
+    },
+  };
+};
+
+const configureMarketGuildAutomationTransaction = db.transaction((username, payload, requestedVillageId, worldId = null) => {
+  const { player, village, world } = requireVillageForUser(username, requestedVillageId, worldId);
+  const sourceVillageId = Number(village.id);
+  const sourceBuildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(sourceVillageId));
+  const sourceMarketLevel = Math.max(0, Math.floor(Number(sourceBuildingLevels.market ?? 0)));
+  const researchRows = ensureResolvedResearchProgressForPlayerRegion(Number(player.id), Number(world.region));
+  const completedResearchIds = buildCompletedResearchSet(researchRows);
+  const guildUnlocked = isMarketGuildUnlocked(sourceMarketLevel, completedResearchIds);
+  if (!guildUnlocked) {
+    throw new GameRuleError(
+      'Cech obchodniku vyzaduje Mestsky trh alespon na urovni 4 a vyzkum Vliv cechu.',
+      400,
+    );
+  }
+
+  const existingSetting = selectMarketGuildSettingBySourceVillageStmt.get(sourceVillageId) ?? null;
+  const existingTargets = selectMarketGuildTargetsBySourceVillageStmt.all(sourceVillageId);
+  const existingTargetIdSet = new Set(existingTargets.map((entry) => Number(entry.targetVillageId)));
+  const existingPausedTargetIdSet = new Set(
+    existingTargets
+      .filter((entry) => Number(entry.isPaused ?? 0) === 1)
+      .map((entry) => Number(entry.targetVillageId)),
+  );
+  const requestedTargets = normalizeMarketGuildTargetVillageIds(payload?.targetVillageIds);
+  const requestedPausedTargets = normalizeMarketGuildTargetVillageIds(payload?.pausedTargetVillageIds);
+  const nextTargetVillageIds =
+    requestedTargets == null
+      ? existingTargets.map((entry) => Number(entry.targetVillageId))
+      : requestedTargets.filter((targetVillageId) => Number(targetVillageId) !== sourceVillageId);
+
+  const validatedTargetVillageIds = [];
+  const seen = new Set();
+  for (const targetVillageId of nextTargetVillageIds) {
+    const targetId = Number(targetVillageId);
+    if (!Number.isFinite(targetId) || targetId <= 0) {
+      continue;
+    }
+    if (seen.has(targetId)) {
+      continue;
+    }
+    seen.add(targetId);
+
+    if (!existingTargetIdSet.has(targetId)) {
+      const targetVillage = selectVillageWithOwnerByIdStmt.get(targetId);
+      if (!targetVillage) {
+        continue;
+      }
+      const isOwnVillage =
+        Number(targetVillage.playerId) === Number(player.id) && Number(targetVillage.region) === Number(world.region);
+      if (!isOwnVillage) {
+        throw new GameRuleError('Do Cechu lze pridat pouze tvoje lena v aktualnim svete.', 400);
+      }
+    }
+
+    validatedTargetVillageIds.push(targetId);
+  }
+  const nextPausedTargetIdSet = new Set();
+  if (requestedPausedTargets == null) {
+    for (const targetVillageId of validatedTargetVillageIds) {
+      if (existingPausedTargetIdSet.has(Number(targetVillageId))) {
+        nextPausedTargetIdSet.add(Number(targetVillageId));
+      }
+    }
+  } else {
+    const requestedPausedSet = new Set(requestedPausedTargets.map((targetVillageId) => Number(targetVillageId)));
+    for (const targetVillageId of validatedTargetVillageIds) {
+      if (requestedPausedSet.has(Number(targetVillageId))) {
+        nextPausedTargetIdSet.add(Number(targetVillageId));
+      }
+    }
+  }
+
+  const enabledRaw = payload?.enabled;
+  const enabled =
+    enabledRaw == null
+      ? Boolean(existingSetting?.enabled ?? (validatedTargetVillageIds.length > 0 ? 1 : 0))
+      : Boolean(enabledRaw);
+  const cycleIntervalSec = MARKET_GUILD_CYCLE_INTERVAL_SEC;
+  const nowTimeIso = nowIso();
+  const currentCursor = Math.max(0, Math.floor(Number(existingSetting?.cursorIndex ?? 0)));
+  const normalizedCursor =
+    validatedTargetVillageIds.length <= 0 ? 0 : Math.min(currentCursor, validatedTargetVillageIds.length - 1);
+  const nextDispatchAt =
+    enabled && validatedTargetVillageIds.length > 0
+      ? existingSetting?.nextDispatchAt
+        ? String(existingSetting.nextDispatchAt)
+        : alignMarketGuildDispatchToWindowIso(Date.now())
+      : null;
+  const lastDispatchAt = existingSetting?.lastDispatchAt ? String(existingSetting.lastDispatchAt) : null;
+
+  upsertMarketGuildSettingStmt.run(
+    sourceVillageId,
+    Number(player.id),
+    Number(world.region),
+    enabled ? 1 : 0,
+    cycleIntervalSec,
+    normalizedCursor,
+    nextDispatchAt,
+    lastDispatchAt,
+    nowTimeIso,
+  );
+
+  deleteMarketGuildTargetsBySourceVillageStmt.run(sourceVillageId);
+  for (let index = 0; index < validatedTargetVillageIds.length; index += 1) {
+    const targetVillageId = Number(validatedTargetVillageIds[index]);
+    const isPaused = nextPausedTargetIdSet.has(targetVillageId) ? 1 : 0;
+    insertMarketGuildTargetStmt.run(sourceVillageId, targetVillageId, index, isPaused, nowTimeIso);
+  }
+
+  return {
+    sourceVillageId,
+    enabled,
+    targetCount: validatedTargetVillageIds.length,
+    pausedTargetCount: nextPausedTargetIdSet.size,
+    cycleIntervalSec,
+    nextDispatchAt,
+    updatedAt: nowTimeIso,
+  };
+});
+
 const sendMarketLogisticsTransaction = db.transaction((username, payload, requestedVillageId, worldId = null) => {
   const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
   const targetVillageId = requirePositiveInteger(payload?.targetVillageId, 'targetVillageId');
@@ -9485,6 +11161,10 @@ const sendMarketLogisticsTransaction = db.transaction((username, payload, reques
       `Aktualni trh pojme maximalne ${capacity.toLocaleString('cs-CZ')} surovin na jednu zasilku.`,
       400,
     );
+  }
+  const merchantState = calculateMarketMerchantStateByVillage(Number(village.id), sourceMarketLevel);
+  if (merchantState.available <= 0) {
+    throw new GameRuleError('Vsechny obchodniky jsou aktualne na cestach.', 400);
   }
 
   const distanceTiles = calculateTileDistance(village, targetVillage);
@@ -9534,6 +11214,82 @@ const sendMarketLogisticsTransaction = db.transaction((username, payload, reques
   };
 });
 
+const cancelMarketLogisticsTransaction = db.transaction((username, routeIdRaw, requestedVillageId, worldId = null) => {
+  const { player, village, world } = requireVillageForUser(username, requestedVillageId, worldId);
+  const routeId = requirePositiveInteger(routeIdRaw, 'routeId');
+  const route = selectInProgressLogisticsRouteByIdForPlayerStmt.get(Number(routeId), Number(player.id), Number(world.region));
+  if (!route) {
+    throw new GameRuleError('Logisticka trasa nebyla nalezena nebo uz nelze zrusit.', 404);
+  }
+
+  const startedAtMs = Date.parse(String(route.startedAt));
+  const arriveAtMs = Date.parse(String(route.arriveAt));
+  const nowMs = Date.now();
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(arriveAtMs) || arriveAtMs <= startedAtMs) {
+    throw new GameRuleError('Logisticka trasa ma neplatna casova data a nelze ji zrusit.', 400);
+  }
+
+  const totalDurationSec = Math.max(1, (arriveAtMs - startedAtMs) / 1000);
+  const elapsedSec = Math.max(0, Math.min(totalDurationSec, (nowMs - startedAtMs) / 1000));
+  const maxCancelableSec = totalDurationSec * COMMAND_CANCEL_MAX_PROGRESS;
+  if (elapsedSec > maxCancelableSec) {
+    throw new GameRuleError(
+      `Transport lze zrusit pouze do 1/3 cesty. Aktualni prubeh: ${Math.round((elapsedSec / totalDurationSec) * 100)} %.`,
+      400,
+    );
+  }
+
+  const canceledAt = nowIso();
+  const changed = Number(cancelLogisticsRouteStmt.run(canceledAt, Number(route.id)).changes ?? 0);
+  if (changed <= 0) {
+    throw new GameRuleError('Logisticka trasa uz byla zpracovana.', 400);
+  }
+
+  const refundRequest = {
+    wood: Math.max(0, Math.floor(Number(route.wood ?? 0))),
+    stone: Math.max(0, Math.floor(Number(route.stone ?? 0))),
+    iron: Math.max(0, Math.floor(Number(route.iron ?? 0))),
+    gold: 0,
+    coins: 0,
+  };
+  const refundResult = applyResourceDeltaWithCap(Number(route.sourceVillageId), refundRequest);
+  const refunded = {
+    wood: Math.max(0, Math.floor(Number(refundResult?.applied?.wood ?? 0))),
+    stone: Math.max(0, Math.floor(Number(refundResult?.applied?.stone ?? 0))),
+    iron: Math.max(0, Math.floor(Number(refundResult?.applied?.iron ?? 0))),
+  };
+
+  createPlayerNotification({
+    playerId: Number(player.id),
+    region: Number(world.region),
+    category: 'economy',
+    eventType: 'logistics_canceled',
+    severity: 'info',
+    title: 'Logistika zrusena',
+    summary: `Transport #${Number(route.id)} byl zrusen a suroviny byly vraceny do ${String(village.name)}.`,
+    payload: {
+      routeId: Number(route.id),
+      sourceVillageId: Number(route.sourceVillageId),
+      targetVillageId: Number(route.targetVillageId),
+      refunded,
+      canceledAt,
+    },
+    sourceType: 'logistics_route',
+    sourceId: Number(route.id),
+    createdAt: canceledAt,
+  });
+
+  return {
+    canceledRouteId: Number(route.id),
+    sourceVillageId: Number(route.sourceVillageId),
+    targetVillageId: Number(route.targetVillageId),
+    refunded,
+    elapsedSec: Math.round(elapsedSec),
+    totalDurationSec: Math.round(totalDurationSec),
+    canceledAt,
+  };
+});
+
 export const recruitUnits = (username, unitId, amount, requestedVillageId = null, worldId = null) =>
   recruitTransaction(username, unitId, amount, requestedVillageId, worldId);
 
@@ -9568,6 +11324,12 @@ export const hireMercenaryContract = (username, requestedVillageId = null, world
 
 export const sendMarketLogistics = (username, payload, requestedVillageId = null, worldId = null) =>
   sendMarketLogisticsTransaction(username, payload, requestedVillageId, worldId);
+
+export const cancelMarketLogistics = (username, routeId, requestedVillageId = null, worldId = null) =>
+  cancelMarketLogisticsTransaction(username, routeId, requestedVillageId, worldId);
+
+export const configureMarketGuildAutomation = (username, payload, requestedVillageId = null, worldId = null) =>
+  configureMarketGuildAutomationTransaction(username, payload, requestedVillageId, worldId);
 
 export { GameRuleError };
 

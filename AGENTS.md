@@ -22,3 +22,7 @@
 - Preferred prefixes: `issue:`, `suggestion:`, `question:`, `nitpick:`, `praise:`
 - Keep comments actionable and specific
 
+## Last Dominion Guardrails
+
+- For any new gameplay, UI, map, economy, polling, backend data-flow, or performance-sensitive change in this repository, use `last-dominion-feature-guardrails` first.
+- Pair `last-dominion-feature-guardrails` with another skill only when that second skill adds domain-specific value beyond the guardrails.

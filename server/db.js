@@ -86,11 +86,22 @@ const SPECIAL_PLAYER_ACCOUNT_BY_USERNAME = new Map(
 const KINGDOMS = ['Aurora Pact', 'Iron Dominion', 'Emerald Circle', 'Skywatch Union', 'Obsidian League'];
 const ABANDONED_BOT_VILLAGE_COUNT = 20;
 const ABANDONED_BOT_USERNAME_PREFIX = '__abandoned_ai__';
+const ACTIVE_BOT_USERNAME = 'Bot';
+const ACTIVE_BOT_VILLAGE_COUNT = 3;
+const ACTIVE_BOT_VILLAGE_NAME_PREFIX = 'Bot osada';
+const ACTIVE_BOT_PROTECTION_DAYS = 5;
 const ABANDONED_BOT_VILLAGE_NAME_PREFIX = 'Opuštěná vesnice';
 const STARTING_RESOURCES = {
   wood: 1000,
   stone: 1000,
   iron: 1000,
+};
+const ACTIVE_BOT_STARTING_RESOURCES = {
+  wood: 6000,
+  stone: 6000,
+  iron: 6000,
+  gold: 0,
+  coins: 0,
 };
 const STARTING_BUILDING_LEVELS = {
   townhall: 1,
@@ -131,11 +142,26 @@ const VILLAGE_BUILDING_LEVEL_FLOORS = {
   'residential-quarter': 1,
 };
 const ABANDONED_STARTING_BUILDING_LEVELS = {
+  townhall: 3,
+  warehouse: 3,
+  'residential-quarter': 3,
   woodcutter: 5,
   quarry: 5,
   'iron-mine': 5,
   'gold-mine': 0,
+  market: 3,
+  hideout: 1,
+  barracks: 1,
+};
+const ACTIVE_BOT_STARTING_BUILDING_LEVELS = {
+  townhall: 1,
   warehouse: 1,
+  'residential-quarter': 1,
+  woodcutter: 1,
+  quarry: 1,
+  'iron-mine': 1,
+  hideout: 0,
+  barracks: 1,
 };
 const SPECIAL_PLAYER_BOOSTED_BUILDING_LEVELS = {
   woodcutter: 5,
@@ -145,6 +171,9 @@ const SPECIAL_PLAYER_BOOSTED_BUILDING_LEVELS = {
   warehouse: 1,
 };
 const ABANDONED_MILITIA_COUNT = 100;
+const ACTIVE_BOT_STARTING_UNITS = {
+  militia: 20,
+};
 
 const nowIso = () => new Date().toISOString();
 const resolveSeedPassword = (username, fallbackPassword = '123') =>
@@ -584,6 +613,59 @@ CREATE TABLE IF NOT EXISTS logistics_routes (
 CREATE INDEX IF NOT EXISTS idx_logistics_routes_status_arrive
   ON logistics_routes(status, arrive_at, region);
 
+CREATE TABLE IF NOT EXISTS market_guild_settings (
+  source_village_id INTEGER PRIMARY KEY,
+  owner_player_id INTEGER NOT NULL,
+  region INTEGER NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  cycle_interval_sec INTEGER NOT NULL DEFAULT 18000,
+  cursor_index INTEGER NOT NULL DEFAULT 0,
+  next_dispatch_at TEXT,
+  last_dispatch_at TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (owner_player_id) REFERENCES players(id),
+  FOREIGN KEY (source_village_id) REFERENCES villages(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_guild_settings_due
+  ON market_guild_settings(enabled, next_dispatch_at, region, source_village_id);
+
+CREATE TABLE IF NOT EXISTS market_guild_targets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_village_id INTEGER NOT NULL,
+  target_village_id INTEGER NOT NULL,
+  sort_index INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (source_village_id) REFERENCES villages(id),
+  FOREIGN KEY (target_village_id) REFERENCES villages(id),
+  UNIQUE(source_village_id, target_village_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_guild_targets_source_sort
+  ON market_guild_targets(source_village_id, sort_index ASC, id ASC);
+
+CREATE TABLE IF NOT EXISTS market_guild_audit_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_player_id INTEGER NOT NULL,
+  source_village_id INTEGER NOT NULL,
+  target_village_id INTEGER,
+  region INTEGER NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'info',
+  reason_code TEXT NOT NULL,
+  message TEXT NOT NULL,
+  details_json TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (owner_player_id) REFERENCES players(id),
+  FOREIGN KEY (source_village_id) REFERENCES villages(id),
+  FOREIGN KEY (target_village_id) REFERENCES villages(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_guild_audit_source_created
+  ON market_guild_audit_logs(source_village_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_market_guild_audit_owner_created
+  ON market_guild_audit_logs(owner_player_id, region, created_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS academics (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   player_id INTEGER NOT NULL,
@@ -685,6 +767,12 @@ CREATE TABLE IF NOT EXISTS game_state (
   const hasCarryIronColumn = movementColumns.some((column) => column.name === 'carry_iron');
   if (!hasCarryIronColumn) {
     db.prepare('ALTER TABLE army_movements ADD COLUMN carry_iron INTEGER NOT NULL DEFAULT 0').run();
+  }
+
+  const marketGuildTargetColumns = db.prepare('PRAGMA table_info(market_guild_targets)').all();
+  const hasPausedColumn = marketGuildTargetColumns.some((column) => column.name === 'is_paused');
+  if (!hasPausedColumn) {
+    db.prepare('ALTER TABLE market_guild_targets ADD COLUMN is_paused INTEGER NOT NULL DEFAULT 0').run();
   }
 
   const kingdomInviteColumns = db.prepare('PRAGMA table_info(kingdom_invites)').all();
@@ -805,6 +893,9 @@ DELETE FROM player_sessions;
 DELETE FROM mercenary_contracts;
 DELETE FROM research_progress;
 DELETE FROM academics;
+DELETE FROM market_guild_audit_logs;
+DELETE FROM market_guild_targets;
+DELETE FROM market_guild_settings;
 DELETE FROM logistics_routes;
 DELETE FROM market_offers;
 DELETE FROM units;
@@ -1064,6 +1155,152 @@ const ensureAbandonedVillages = db.transaction(() => {
     for (const unitId of UNIT_ORDER) {
       const amount = unitId === 'militia' ? ABANDONED_MILITIA_COUNT : 0;
       insertUnitStmt.run(villageId, unitId, amount);
+    }
+  }
+});
+
+const ensureActiveBotVillages = db.transaction(() => {
+  const selectNamedBotPlayerStmt = db.prepare(
+    `SELECT
+        id,
+        is_bot AS isBot
+     FROM players
+     WHERE username = ? COLLATE NOCASE
+     LIMIT 1`,
+  );
+  const insertPlayerStmt = db.prepare(
+    'INSERT INTO players (username, password, is_bot, created_at) VALUES (?, ?, ?, ?)',
+  );
+  const updatePlayerToBotStmt = db.prepare('UPDATE players SET is_bot = 1, password = ? WHERE id = ?');
+  const selectBotVillagesStmt = db.prepare(
+    `SELECT
+        id
+     FROM villages
+     WHERE player_id = ? AND region = ?
+     ORDER BY id ASC`,
+  );
+  const insertVillageStmt = db.prepare(
+    `INSERT INTO villages (
+      player_id,
+      name,
+      kingdom,
+      coord_x,
+      coord_y,
+      region,
+      prestige,
+      loyalty,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const upsertResourceStmt = db.prepare(
+    `INSERT INTO resources (village_id, wood, stone, iron, gold, coins)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(village_id) DO UPDATE SET
+       wood = CASE WHEN resources.wood < excluded.wood THEN excluded.wood ELSE resources.wood END,
+       stone = CASE WHEN resources.stone < excluded.stone THEN excluded.stone ELSE resources.stone END,
+       iron = CASE WHEN resources.iron < excluded.iron THEN excluded.iron ELSE resources.iron END,
+       gold = CASE WHEN resources.gold < excluded.gold THEN excluded.gold ELSE resources.gold END,
+       coins = CASE WHEN resources.coins < excluded.coins THEN excluded.coins ELSE resources.coins END`,
+  );
+  const upsertBuildingStmt = db.prepare(
+    `INSERT INTO buildings (village_id, building_id, level)
+     VALUES (?, ?, ?)
+     ON CONFLICT(village_id, building_id) DO UPDATE SET
+       level = CASE WHEN buildings.level < excluded.level THEN excluded.level ELSE buildings.level END`,
+  );
+  const upsertUnitStmt = db.prepare(
+    `INSERT INTO units (village_id, unit_id, amount)
+     VALUES (?, ?, ?)
+     ON CONFLICT(village_id, unit_id) DO UPDATE SET
+       amount = CASE WHEN units.amount < excluded.amount THEN excluded.amount ELSE units.amount END`,
+  );
+  const updateVillagePeaceUntilStmt = db.prepare(
+    `UPDATE villages
+     SET peace_until = ?
+     WHERE id = ?
+       AND (peace_until IS NULL OR TRIM(peace_until) = '')`,
+  );
+
+  let botPlayer = selectNamedBotPlayerStmt.get(ACTIVE_BOT_USERNAME);
+  if (!botPlayer) {
+    const insertion = insertPlayerStmt.run(ACTIVE_BOT_USERNAME, '', 1, nowIso());
+    botPlayer = {
+      id: Number(insertion.lastInsertRowid),
+      isBot: 1,
+    };
+  } else if (Number(botPlayer.isBot ?? 0) !== 1) {
+    updatePlayerToBotStmt.run('', Number(botPlayer.id));
+    botPlayer = {
+      id: Number(botPlayer.id),
+      isBot: 1,
+    };
+  }
+
+  const playerId = Number(botPlayer.id);
+  const existingVillages = selectBotVillagesStmt.all(playerId, WORLD_REGION.id);
+  const missingVillageCount = Math.max(0, ACTIVE_BOT_VILLAGE_COUNT - existingVillages.length);
+  if (missingVillageCount > 0) {
+    const occupied = new Set(
+      db
+        .prepare('SELECT coord_x AS coordX, coord_y AS coordY FROM villages')
+        .all()
+        .map((row) => `${Number(row.coordX)}|${Number(row.coordY)}`),
+    );
+    const allCells = buildSpawnCells(WORLD_REGION.size * WORLD_REGION.size);
+    const freeCells = allCells.filter((cell) => {
+      const coordX = WORLD_REGION.originX + cell.localX - 1;
+      const coordY = WORLD_REGION.originY + cell.localY - 1;
+      return !occupied.has(`${coordX}|${coordY}`);
+    });
+
+    for (let index = 0; index < missingVillageCount; index += 1) {
+      const spawn = freeCells[index];
+      if (!spawn) {
+        break;
+      }
+      const coordX = WORLD_REGION.originX + spawn.localX - 1;
+      const coordY = WORLD_REGION.originY + spawn.localY - 1;
+      const villageOrder = existingVillages.length + index + 1;
+      insertVillageStmt.run(
+        playerId,
+        `${ACTIVE_BOT_VILLAGE_NAME_PREFIX} ${String(villageOrder).padStart(2, '0')}`,
+        'Neutral',
+        coordX,
+        coordY,
+        WORLD_REGION.id,
+        startingPrestige(Math.max(0, Number(ACTIVE_BOT_STARTING_UNITS.militia ?? 0))),
+        100,
+        nowIso(),
+      );
+    }
+  }
+
+  const botVillages = selectBotVillagesStmt
+    .all(playerId, WORLD_REGION.id)
+    .slice(0, ACTIVE_BOT_VILLAGE_COUNT);
+  const activeBotProtectionUntilIso = new Date(
+    Date.now() + ACTIVE_BOT_PROTECTION_DAYS * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  for (const village of botVillages) {
+    const villageId = Number(village.id);
+    updateVillagePeaceUntilStmt.run(activeBotProtectionUntilIso, villageId);
+    upsertResourceStmt.run(
+      villageId,
+      ACTIVE_BOT_STARTING_RESOURCES.wood,
+      ACTIVE_BOT_STARTING_RESOURCES.stone,
+      ACTIVE_BOT_STARTING_RESOURCES.iron,
+      ACTIVE_BOT_STARTING_RESOURCES.gold,
+      ACTIVE_BOT_STARTING_RESOURCES.coins,
+    );
+
+    for (const buildingId of BUILDING_ORDER) {
+      const targetLevel = Math.max(0, Number(ACTIVE_BOT_STARTING_BUILDING_LEVELS[buildingId] ?? 0));
+      upsertBuildingStmt.run(villageId, buildingId, targetLevel);
+    }
+
+    for (const unitId of UNIT_ORDER) {
+      const targetAmount = Math.max(0, Math.floor(Number(ACTIVE_BOT_STARTING_UNITS[unitId] ?? 0)));
+      upsertUnitStmt.run(villageId, unitId, targetAmount);
     }
   }
 });
@@ -1429,6 +1666,38 @@ const ensureVillageBuildingLevelFloors = db.transaction(() => {
   }
 });
 
+const ensureAbandonedVillageTemplateMinimums = db.transaction(() => {
+  const selectAbandonedVillageIdsStmt = db.prepare(
+    `SELECT
+        v.id AS villageId
+     FROM villages v
+     INNER JOIN players p ON p.id = v.player_id
+     WHERE p.is_bot = 1
+       AND p.username LIKE ?`,
+  );
+  const upsertBuildingStmt = db.prepare(
+    `INSERT INTO buildings (village_id, building_id, level)
+     VALUES (?, ?, ?)
+     ON CONFLICT(village_id, building_id) DO UPDATE SET
+       level = CASE WHEN buildings.level < excluded.level THEN excluded.level ELSE buildings.level END`,
+  );
+  const upsertUnitStmt = db.prepare(
+    `INSERT INTO units (village_id, unit_id, amount)
+     VALUES (?, ?, ?)
+     ON CONFLICT(village_id, unit_id) DO UPDATE SET
+       amount = CASE WHEN units.amount < excluded.amount THEN excluded.amount ELSE units.amount END`,
+  );
+  const abandonedVillages = selectAbandonedVillageIdsStmt.all(`${ABANDONED_BOT_USERNAME_PREFIX}%`);
+  for (const row of abandonedVillages) {
+    const villageId = Number(row.villageId);
+    for (const buildingId of BUILDING_ORDER) {
+      const targetLevel = Math.max(0, Number(ABANDONED_STARTING_BUILDING_LEVELS[buildingId] ?? 0));
+      upsertBuildingStmt.run(villageId, buildingId, targetLevel);
+    }
+    upsertUnitStmt.run(villageId, 'militia', ABANDONED_MILITIA_COUNT);
+  }
+});
+
 const ensureVillageBuildingLevelCaps = db.transaction(() => {
   const capBuildingLevelStmt = db.prepare(
     `UPDATE buildings
@@ -1623,6 +1892,39 @@ const ensureReferentialIntegrity = db.transaction(() => {
          )`,
     ),
     db.prepare(
+      `DELETE FROM market_guild_settings
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = market_guild_settings.owner_player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = market_guild_settings.source_village_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM market_guild_targets
+       WHERE NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = market_guild_targets.source_village_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = market_guild_targets.target_village_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM market_guild_audit_logs
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = market_guild_audit_logs.owner_player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = market_guild_audit_logs.source_village_id
+         )
+          OR (
+           market_guild_audit_logs.target_village_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM villages v WHERE v.id = market_guild_audit_logs.target_village_id
+           )
+         )`,
+    ),
+    db.prepare(
       `DELETE FROM academics
        WHERE NOT EXISTS (
            SELECT 1 FROM players p WHERE p.id = academics.player_id
@@ -1796,9 +2098,11 @@ if (shouldReseedWorld()) {
 
 ensureBotFlagConsistency();
 ensureAbandonedVillages();
+ensureActiveBotVillages();
 ensureSpecialPlayerAccounts();
 ensurePriorityPlayerPasswords();
 ensureVillageBuildingLevelFloors();
+ensureAbandonedVillageTemplateMinimums();
 ensureVillageBuildingLevelCaps();
 ensureHayatoOwnsAbandonedVillage13();
 ensureHayatoLocalTestVillageState();

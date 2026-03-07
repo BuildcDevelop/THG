@@ -26,6 +26,15 @@ const ALLOWED_AVATAR_DATA_MIME_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 
 const MAX_AVATAR_DATA_URL_BYTES = 1_200_000;
 const AVATAR_DATA_URL_PATTERN = /^data:(image\/(?:png|jpeg|jpg|webp));base64,([a-z0-9+/=]+)$/i;
 const COMMUNICATION_AVATAR_PUBLIC_PATH = '/api/v1/public/avatars';
+const LEGACY_MANAGED_AVATAR_PATH_PREFIXES = Object.freeze([
+  '/api/public/avatars/',
+  '/public/avatars/',
+  '/avatars/',
+  'api/v1/public/avatars/',
+  'api/public/avatars/',
+  'public/avatars/',
+  'avatars/',
+]);
 const COMMUNICATION_AVATAR_STORAGE_DIR = path.resolve(
   String(process.env.AVATAR_STORAGE_DIR ?? path.join(process.cwd(), 'server', 'storage', 'avatars')).trim(),
 );
@@ -182,7 +191,35 @@ const normalizeAvatarUrl = (value) => {
   if (!(normalized.startsWith('http://') || normalized.startsWith('https://') || normalized.startsWith('/'))) {
     throw new GameRuleError('Avatar URL musi zacinat na http(s):// nebo /.', 400);
   }
-  return normalized;
+  return normalizeManagedAvatarPath(normalized) ?? normalized;
+};
+
+const normalizeManagedAvatarPath = (avatarUrlRaw) => {
+  const avatarUrl = String(avatarUrlRaw ?? '').trim();
+  if (!avatarUrl) {
+    return null;
+  }
+
+  if (avatarUrl.startsWith('data:image/') || avatarUrl.startsWith('http://') || avatarUrl.startsWith('https://')) {
+    return avatarUrl;
+  }
+  if (avatarUrl.startsWith(`${COMMUNICATION_AVATAR_PUBLIC_PATH}/`)) {
+    return avatarUrl;
+  }
+
+  const normalizedPath = avatarUrl.startsWith('/') ? avatarUrl : `/${avatarUrl}`;
+  for (const prefix of LEGACY_MANAGED_AVATAR_PATH_PREFIXES) {
+    if (!normalizedPath.startsWith(prefix)) {
+      continue;
+    }
+    const fileName = path.basename(normalizedPath);
+    if (!/^[a-z0-9._-]+$/i.test(fileName)) {
+      return null;
+    }
+    return `${COMMUNICATION_AVATAR_PUBLIC_PATH}/${fileName}`;
+  }
+
+  return normalizedPath;
 };
 
 const ensureAvatarStorageDir = () => {
@@ -274,8 +311,26 @@ const decodeAvatarDataUrl = (value) => {
 const buildStoredAvatarPublicUrl = (fileName) => `${COMMUNICATION_AVATAR_PUBLIC_PATH}/${fileName}`;
 
 const isManagedAvatarUrl = (avatarUrlRaw) => {
-  const avatarUrl = String(avatarUrlRaw ?? '').trim();
+  const avatarUrl = normalizeManagedAvatarPath(avatarUrlRaw);
+  if (!avatarUrl) {
+    return false;
+  }
   return avatarUrl.startsWith(`${COMMUNICATION_AVATAR_PUBLIC_PATH}/`);
+};
+
+const toPublicAvatarUrl = (avatarUrlRaw) => {
+  const normalized = normalizeManagedAvatarPath(avatarUrlRaw);
+  if (!normalized) {
+    return null;
+  }
+  if (!isManagedAvatarUrl(normalized)) {
+    return normalized;
+  }
+  const absolutePath = resolveManagedAvatarAbsolutePath(normalized);
+  if (!absolutePath || !fs.existsSync(absolutePath)) {
+    return null;
+  }
+  return normalized;
 };
 
 const resolveManagedAvatarAbsolutePath = (avatarUrlRaw) => {
@@ -391,6 +446,36 @@ const upsertPlayerProfileStmt = db.prepare(
      avatar_url = excluded.avatar_url,
      avatar_updated_at = excluded.avatar_updated_at`,
 );
+const selectAllPlayerProfileAvatarUrlsStmt = db.prepare(
+  `SELECT
+      player_id AS playerId,
+      avatar_url AS avatarUrl
+   FROM player_profiles
+   WHERE avatar_url IS NOT NULL
+     AND TRIM(avatar_url) <> ''`,
+);
+const updatePlayerProfileAvatarUrlStmt = db.prepare(
+  `UPDATE player_profiles
+   SET avatar_url = ?,
+       avatar_updated_at = CASE
+         WHEN avatar_updated_at IS NULL OR avatar_updated_at = '' THEN ?
+         ELSE avatar_updated_at
+       END
+   WHERE player_id = ?`,
+);
+
+const normalizeStoredAvatarUrls = () => {
+  const touchedAt = nowIso();
+  const rows = selectAllPlayerProfileAvatarUrlsStmt.all();
+  for (const row of rows) {
+    const normalized = normalizeManagedAvatarPath(row.avatarUrl);
+    if (!normalized || normalized === String(row.avatarUrl)) {
+      continue;
+    }
+    updatePlayerProfileAvatarUrlStmt.run(normalized, touchedAt, Number(row.playerId));
+  }
+};
+normalizeStoredAvatarUrls();
 
 const selectPlayerUiStateStmt = db.prepare(
   `SELECT
@@ -1220,7 +1305,7 @@ const toMessageItem = (row) => ({
   threadId: Number(row.threadId),
   senderPlayerId: Number(row.senderPlayerId),
   senderUsername: String(row.senderUsername),
-  senderAvatarUrl: row.senderAvatarUrl == null ? null : String(row.senderAvatarUrl),
+  senderAvatarUrl: toPublicAvatarUrl(row.senderAvatarUrl),
   body: String(row.body ?? ''),
   payload: parseJsonSafe(row.payloadJson, null),
   createdAt: String(row.createdAt),
@@ -1290,7 +1375,7 @@ const listThreadSummaries = (playerId, threadLimit = MAX_THREAD_COUNT, includeTh
         otherPlayer: {
           id: otherPlayerId,
           username: String(other.username),
-          avatarUrl: other.avatarUrl == null ? null : String(other.avatarUrl),
+          avatarUrl: toPublicAvatarUrl(other.avatarUrl),
           isOnline: visiblePresence.isOnline,
           lastActiveAt: visiblePresence.lastActiveAt,
         },
@@ -1300,7 +1385,7 @@ const listThreadSummaries = (playerId, threadLimit = MAX_THREAD_COUNT, includeTh
                 id: lastMessageId,
                 senderPlayerId: Number(lastMessageRow.senderPlayerId),
                 senderUsername: String(lastMessageRow.senderUsername),
-                senderAvatarUrl: lastMessageRow.senderAvatarUrl == null ? null : String(lastMessageRow.senderAvatarUrl),
+                senderAvatarUrl: toPublicAvatarUrl(lastMessageRow.senderAvatarUrl),
                 body: String(lastMessageRow.body ?? ''),
                 payload: parseJsonSafe(lastMessageRow.payloadJson, null),
                 createdAt: String(lastMessageRow.createdAt),
@@ -1436,7 +1521,7 @@ const sendMessageTransaction = db.transaction((usernameRaw, payload = {}) => {
       threadId,
       senderPlayerId: player.id,
       senderUsername: player.username,
-      senderAvatarUrl: messageRow?.senderAvatarUrl == null ? null : String(messageRow.senderAvatarUrl),
+      senderAvatarUrl: toPublicAvatarUrl(messageRow?.senderAvatarUrl),
       body: String(messageRow?.body ?? ''),
       payload: parseJsonSafe(messageRow?.payloadJson, null),
       createdAt: touchedAt,
@@ -1617,7 +1702,7 @@ const setAvatarTransaction = db.transaction((usernameRaw, avatarUrlRaw) => {
   return {
     playerId: player.id,
     previousAvatarUrl,
-    avatarUrl,
+    avatarUrl: toPublicAvatarUrl(avatarUrl),
     updatedAt: touchedAt,
   };
 });
@@ -1633,7 +1718,7 @@ const setAvatarFromDataUrlTransaction = db.transaction((usernameRaw, avatarDataU
   return {
     playerId: player.id,
     previousAvatarUrl,
-    avatarUrl,
+    avatarUrl: toPublicAvatarUrl(avatarUrl),
     updatedAt: touchedAt,
   };
 });
@@ -1816,7 +1901,7 @@ const listCommunicationTokenSuggestionsInternal = (
           label: String(row.username),
           value: `@${String(row.username)}`,
           playerId: targetPlayerId,
-          avatarUrl: row.avatarUrl == null ? null : String(row.avatarUrl),
+          avatarUrl: toPublicAvatarUrl(row.avatarUrl),
           relation: toFriendRelation(player.id, targetPlayerId, friendSet),
           isFriend,
         };
@@ -1964,7 +2049,7 @@ export const listCommunicationInbox = (usernameRaw, options = {}) => {
           id: Number(row.id),
           senderPlayerId: Number(row.senderPlayerId),
           senderUsername: String(row.senderUsername),
-          senderAvatarUrl: row.senderAvatarUrl == null ? null : String(row.senderAvatarUrl),
+          senderAvatarUrl: toPublicAvatarUrl(row.senderAvatarUrl),
           createdAt: String(row.createdAt),
         }));
   const incomingFriendRequestCount = summaryOnly
@@ -1978,7 +2063,7 @@ export const listCommunicationInbox = (usernameRaw, options = {}) => {
           id: Number(row.id),
           receiverPlayerId: Number(row.receiverPlayerId),
           receiverUsername: String(row.receiverUsername),
-          receiverAvatarUrl: row.receiverAvatarUrl == null ? null : String(row.receiverAvatarUrl),
+          receiverAvatarUrl: toPublicAvatarUrl(row.receiverAvatarUrl),
           createdAt: String(row.createdAt),
         }));
   const friendRows = summaryOnly ? [] : selectFriendRowsByPlayerStmt.all(player.id, player.id, player.id);
@@ -1987,7 +2072,7 @@ export const listCommunicationInbox = (usernameRaw, options = {}) => {
     return {
       playerId: Number(row.playerId),
       username: String(row.username),
-      avatarUrl: row.avatarUrl == null ? null : String(row.avatarUrl),
+      avatarUrl: toPublicAvatarUrl(row.avatarUrl),
       isOnline: presence.isOnline,
       lastActiveAt: presence.lastActiveAt,
     };
@@ -2031,7 +2116,7 @@ export const listCommunicationInbox = (usernameRaw, options = {}) => {
             return {
               playerId: targetPlayerId,
               username: String(row.username),
-              avatarUrl: row.avatarUrl == null ? null : String(row.avatarUrl),
+              avatarUrl: toPublicAvatarUrl(row.avatarUrl),
               isOnline: visiblePresence.isOnline,
               lastActiveAt: visiblePresence.lastActiveAt,
               isFriend,
@@ -2047,7 +2132,7 @@ export const listCommunicationInbox = (usernameRaw, options = {}) => {
     me: {
       playerId: player.id,
       username: player.username,
-      avatarUrl: profile?.avatarUrl == null ? null : String(profile.avatarUrl),
+      avatarUrl: toPublicAvatarUrl(profile?.avatarUrl),
       avatarUpdatedAt: profile?.avatarUpdatedAt == null ? null : String(profile.avatarUpdatedAt),
     },
     uiState: {
