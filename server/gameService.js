@@ -725,6 +725,9 @@ const updateBuildingLevelStmt = db.prepare(
 const completeUpgradeStmt = db.prepare(
   "UPDATE building_upgrades SET status = 'completed', completed_at = ? WHERE id = ?",
 );
+const updateActiveUpgradeTimingByIdStmt = db.prepare(
+  "UPDATE building_upgrades SET started_at = ?, finish_at = ? WHERE id = ? AND village_id = ? AND status = 'in_progress'",
+);
 const deleteActiveUpgradeByIdStmt = db.prepare(
   "DELETE FROM building_upgrades WHERE id = ? AND village_id = ? AND status = 'in_progress'",
 );
@@ -8415,7 +8418,7 @@ export const getVillageSnapshot = (
   const developerResourceBoost = resolveDeveloperResourceBoostForWorld(world);
   const production = applyProductionMultiplier(baseProduction, developerResourceBoost.multiplier);
   const activeUpgrades = selectActiveUpgradesByVillageStmt.all(village.id);
-  const activeUpgradeByBuilding = toActiveUpgradeByBuildingMap(activeUpgrades);
+  const currentlyActiveUpgrade = activeUpgrades.length > 0 ? activeUpgrades[0] : null;
   const highestQueuedUpgradeLevelByBuilding = toHighestQueuedUpgradeLevelByBuildingMap(activeUpgrades);
   const activeRecruitments = selectActiveRecruitmentsByVillageStmt.all(village.id);
   const armyState = buildArmyState(player.id, village.id, world.region);
@@ -8508,7 +8511,10 @@ export const getVillageSnapshot = (
             toLevel: effectiveLevel + 1,
           });
     const workersUsed = (def.workerPerLevel ?? 0) * level;
-    const activeUpgradeForBuilding = activeUpgradeByBuilding.get(buildingId) ?? null;
+    const activeUpgradeForBuilding =
+      currentlyActiveUpgrade && String(currentlyActiveUpgrade.buildingId) === String(buildingId)
+        ? currentlyActiveUpgrade
+        : null;
     const isInProgress = activeUpgradeForBuilding != null;
     let blockedReason = null;
     let canUpgrade = false;
@@ -9431,6 +9437,64 @@ const cancelArmyCommandTransaction = db.transaction((username, movementIdRaw, re
   };
 });
 
+const rebalanceUpgradeQueueTimeline = (villageIdRaw, nowIsoRaw = nowIso()) => {
+  const villageId = Number(villageIdRaw);
+  if (!Number.isFinite(villageId) || villageId <= 0) {
+    return;
+  }
+
+  const nowMsRaw = Date.parse(String(nowIsoRaw));
+  const nowMs = Number.isFinite(nowMsRaw) ? nowMsRaw : Date.now();
+  const activeUpgrades = selectActiveUpgradesByVillageStmt.all(villageId);
+  if (activeUpgrades.length <= 0) {
+    return;
+  }
+
+  let cursorMs = nowMs;
+  for (let index = 0; index < activeUpgrades.length; index += 1) {
+    const upgrade = activeUpgrades[index];
+    const originalStartMs = Date.parse(String(upgrade.startedAt));
+    const originalFinishMs = Date.parse(String(upgrade.finishAt));
+    const originalDurationMs =
+      Number.isFinite(originalStartMs) && Number.isFinite(originalFinishMs)
+        ? Math.max(1000, originalFinishMs - originalStartMs)
+        : 1000;
+
+    let nextStartMs = cursorMs;
+    let nextFinishMs = cursorMs + originalDurationMs;
+
+    if (index === 0) {
+      const isAlreadyActive =
+        Number.isFinite(originalStartMs) &&
+        Number.isFinite(originalFinishMs) &&
+        originalStartMs <= nowMs &&
+        originalFinishMs > nowMs;
+      if (isAlreadyActive) {
+        nextFinishMs = originalFinishMs;
+        nextStartMs = Math.max(nowMs - originalDurationMs, nextFinishMs - originalDurationMs);
+      }
+    }
+
+    cursorMs = nextFinishMs;
+
+    const changed =
+      !Number.isFinite(originalStartMs) ||
+      !Number.isFinite(originalFinishMs) ||
+      Math.abs(originalStartMs - nextStartMs) > 500 ||
+      Math.abs(originalFinishMs - nextFinishMs) > 500;
+    if (!changed) {
+      continue;
+    }
+
+    updateActiveUpgradeTimingByIdStmt.run(
+      new Date(nextStartMs).toISOString(),
+      new Date(nextFinishMs).toISOString(),
+      Number(upgrade.id),
+      villageId,
+    );
+  }
+};
+
 const startUpgradeTransaction = db.transaction((username, buildingId, startedAtIso, requestedVillageId, worldId = null) => {
   const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
   const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(village.id));
@@ -9480,7 +9544,7 @@ const startUpgradeTransaction = db.transaction((username, buildingId, startedAtI
   const townhallLevel = buildingLevels.townhall ?? 0;
   const durationSec = calculateUpgradeDurationSec(buildingId, effectiveFromLevel, townhallLevel);
   const nowMs = Date.parse(startedAtIso);
-  const queueTailFinishMs = queuedUpgradesForBuilding.reduce((latestFinishMs, upgrade) => {
+  const queueTailFinishMs = activeUpgrades.reduce((latestFinishMs, upgrade) => {
     const finishMs = Date.parse(String(upgrade.finishAt));
     if (!Number.isFinite(finishMs)) {
       return latestFinishMs;
@@ -9510,7 +9574,7 @@ const startUpgradeTransaction = db.transaction((username, buildingId, startedAtI
     village.id,
   );
 
-  insertUpgradeStmt.run(
+  const insertedUpgradeResult = insertUpgradeStmt.run(
     village.id,
     buildingId,
     effectiveFromLevel,
@@ -9521,6 +9585,15 @@ const startUpgradeTransaction = db.transaction((username, buildingId, startedAtI
     queueStartIso,
     finishAtIso,
   );
+  const insertedUpgradeId = Number(insertedUpgradeResult.lastInsertRowid ?? 0);
+  rebalanceUpgradeQueueTimeline(Number(village.id), startedAtIso);
+  const rebalancedUpgrade =
+    insertedUpgradeId > 0
+      ? selectActiveUpgradeByIdForVillageStmt.get(insertedUpgradeId, Number(village.id))
+      : null;
+  const resolvedStartedAt = rebalancedUpgrade?.startedAt ?? queueStartIso;
+  const resolvedFinishAt = rebalancedUpgrade?.finishAt ?? finishAtIso;
+  const resolvedRemainingSec = Math.max(0, Math.ceil((Date.parse(String(resolvedFinishAt)) - Date.now()) / 1000));
 
   return {
     buildingId,
@@ -9528,8 +9601,9 @@ const startUpgradeTransaction = db.transaction((username, buildingId, startedAtI
     toLevel: effectiveFromLevel + 1,
     cost,
     durationSec,
-    startedAt: queueStartIso,
-    finishAt: finishAtIso,
+    startedAt: resolvedStartedAt,
+    finishAt: resolvedFinishAt,
+    remainingSec: resolvedRemainingSec,
   };
 });
 
@@ -9622,6 +9696,7 @@ const cancelBuildingUpgradeTransaction = db.transaction((username, upgradeIdRaw,
   };
 
   addResourcesWithoutCap(Number(village.id), totalRefunded);
+  rebalanceUpgradeQueueTimeline(Number(village.id), nowIso());
 
   return {
     canceledUpgradeId: Number(targetUpgrade.id),

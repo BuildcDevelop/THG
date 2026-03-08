@@ -1739,19 +1739,24 @@ app.use((error, _req, res, _next) => {
 let cronTask = null;
 
 if (!isServerlessRuntime) {
-  cronTask = cron.schedule(tickSchedule, () => {
-    executeWithWriteOperation(() => {
-      runGameTick();
-      runCommunicationRetentionCleanup();
-    }).catch((error) => {
-      console.error('[backend] Tick failure:', error);
+  const server = app.listen(port, () => {
+    cronTask = cron.schedule(tickSchedule, () => {
+      executeWithWriteOperation(() => {
+        runGameTick();
+        runCommunicationRetentionCleanup();
+      }).catch((error) => {
+        console.error('[backend] Tick failure:', error);
+      });
     });
-  });
-
-  app.listen(port, () => {
     console.log(`[backend] Listening on http://localhost:${port}`);
     console.log(`[backend] Tick schedule: ${tickSchedule}`);
     console.log('[backend] Storage mode: sqlite');
+  });
+
+  server.on('error', (error) => {
+    console.error('[backend] Server start failed:', error);
+    cronTask?.stop();
+    process.exit(1);
   });
 
   process.on('SIGINT', () => {
