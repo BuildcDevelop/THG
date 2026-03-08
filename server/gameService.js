@@ -482,14 +482,15 @@ const insertVillageForPlayerStmt = db.prepare(
    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 const upsertVillageResourcesStmt = db.prepare(
-  `INSERT INTO resources (village_id, wood, stone, iron, gold, coins)
-   VALUES (?, ?, ?, ?, ?, ?)
+  `INSERT INTO resources (village_id, wood, stone, iron, gold, coins, last_sync_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?)
    ON CONFLICT(village_id) DO UPDATE SET
      wood = excluded.wood,
      stone = excluded.stone,
      iron = excluded.iron,
      gold = excluded.gold,
-     coins = excluded.coins`,
+     coins = excluded.coins,
+     last_sync_at = excluded.last_sync_at`,
 );
 const upsertVillageBuildingLevelStmt = db.prepare(
   `INSERT INTO buildings (village_id, building_id, level)
@@ -532,7 +533,7 @@ const updateVillageToAbandonedOwnerStmt = db.prepare(
   "UPDATE villages SET player_id = ?, name = ?, kingdom = 'Neutral', peace_until = NULL WHERE id = ?",
 );
 const selectResourcesByVillageStmt = db.prepare(
-  'SELECT wood, stone, iron, gold, coins FROM resources WHERE village_id = ? LIMIT 1',
+  'SELECT wood, stone, iron, gold, coins, last_sync_at AS lastSyncAt FROM resources WHERE village_id = ? LIMIT 1',
 );
 const selectBuildingsByVillageStmt = db.prepare(
   `SELECT building_id AS buildingId, level
@@ -617,7 +618,6 @@ const selectActiveRecruitmentByIdForVillageStmt = db.prepare(
    WHERE id = ? AND village_id = ? AND status = 'in_progress'
    LIMIT 1`,
 );
-const selectAllVillageIdsStmt = db.prepare('SELECT id, region, player_id AS playerId FROM villages');
 const selectAllVillagesForWorldStmt = db.prepare(
   `SELECT
       v.id,
@@ -710,7 +710,7 @@ const selectLeaderboardByRegionStmt = db.prepare(
 const selectGameStateStmt = db.prepare('SELECT last_tick_at AS lastTickAt FROM game_state WHERE id = 1');
 const updateGameStateTickStmt = db.prepare('UPDATE game_state SET last_tick_at = ? WHERE id = 1');
 const updateResourcesStmt = db.prepare(
-  'UPDATE resources SET wood = ?, stone = ?, iron = ?, gold = ?, coins = ? WHERE village_id = ?',
+  'UPDATE resources SET wood = ?, stone = ?, iron = ?, gold = ?, coins = ?, last_sync_at = ? WHERE village_id = ?',
 );
 const updateVillagePrestigeStmt = db.prepare('UPDATE villages SET prestige = ? WHERE id = ?');
 const selectDueUpgradesStmt = db.prepare(
@@ -743,7 +743,7 @@ const insertUpgradeStmt = db.prepare(
    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress')`,
 );
 const updateResourcesAfterSpendStmt = db.prepare(
-  'UPDATE resources SET wood = ?, stone = ?, iron = ?, gold = ?, coins = ? WHERE village_id = ?',
+  'UPDATE resources SET wood = ?, stone = ?, iron = ?, gold = ?, coins = ?, last_sync_at = ? WHERE village_id = ?',
 );
 const updateUnitAmountStmt = db.prepare(
   `INSERT INTO units (amount, village_id, unit_id)
@@ -1593,6 +1593,14 @@ const selectResearchingProjectsByPlayerRegionStmt = db.prepare(
      AND status = 'researching'
    ORDER BY updated_at DESC, id DESC`,
 );
+const selectResearchingPlayerRegionPairsStmt = db.prepare(
+  `SELECT DISTINCT
+      player_id AS playerId,
+      region
+   FROM research_progress
+   WHERE status = 'researching'
+   ORDER BY player_id ASC, region ASC`,
+);
 const selectLatestMercenaryContractByPlayerRegionStmt = db.prepare(
   `SELECT
       id,
@@ -2137,7 +2145,14 @@ const selectKingdomEventsByPlayerStmt = db.prepare(
    LIMIT ?`,
 );
 
-const roundResource = (value) => Math.max(0, Math.round(Number(value ?? 0)));
+const RESOURCE_STORAGE_PRECISION = 1000;
+const roundResource = (value) => {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return 0;
+  }
+  return Math.round(numeric * RESOURCE_STORAGE_PRECISION) / RESOURCE_STORAGE_PRECISION;
+};
 
 const POPULATION_CLEANUP_UNIT_PRIORITY = [
   'militia',
@@ -3253,6 +3268,7 @@ const applyVillageTemplate = (villageId, template) => {
     roundResource(Number(resourceTemplate.iron ?? STARTING_RESOURCES.iron)),
     roundResource(Number(resourceTemplate.gold ?? STARTING_RESOURCES.gold)),
     roundResource(Number(resourceTemplate.coins ?? STARTING_RESOURCES.coins)),
+    nowIso(),
   );
 
   const buildingTemplate = template?.buildings ?? {};
@@ -4983,19 +4999,117 @@ const resolveVillageResourceCaps = (buildingLevels) => {
   };
 };
 
-const writeVillageResources = (villageId, pocket) => {
+const writeVillageResources = (villageId, pocket, syncAtIso = nowIso()) => {
   updateResourcesStmt.run(
     roundResource(Number(pocket.wood ?? 0)),
     roundResource(Number(pocket.stone ?? 0)),
     roundResource(Number(pocket.iron ?? 0)),
     roundResource(Number(pocket.gold ?? 0)),
     roundResource(Number(pocket.coins ?? 0)),
+    String(syncAtIso),
     Number(villageId),
   );
 };
 
+const synchronizeVillageEconomyAt = (villageId, referenceIso = nowIso()) => {
+  const numericVillageId = Number(villageId);
+  if (!Number.isFinite(numericVillageId) || numericVillageId <= 0) {
+    return null;
+  }
+
+  const resourceRow = selectResourcesByVillageStmt.get(numericVillageId);
+  if (!resourceRow) {
+    return null;
+  }
+
+  const referenceMs = Date.parse(String(referenceIso));
+  if (!Number.isFinite(referenceMs)) {
+    return resourceRow;
+  }
+
+  const lastSyncMs = resourceRow?.lastSyncAt ? Date.parse(String(resourceRow.lastSyncAt)) : Number.NaN;
+  const effectiveLastSyncMs = Number.isFinite(lastSyncMs) ? lastSyncMs : referenceMs;
+  const elapsedSec = Math.max(0, (referenceMs - effectiveLastSyncMs) / 1000);
+
+  if (elapsedSec <= 0) {
+    if (!Number.isFinite(lastSyncMs)) {
+      writeVillageResources(
+        numericVillageId,
+        {
+          wood: Number(resourceRow.wood ?? 0),
+          stone: Number(resourceRow.stone ?? 0),
+          iron: Number(resourceRow.iron ?? 0),
+          gold: Number(resourceRow.gold ?? 0),
+          coins: Number(resourceRow.coins ?? 0),
+        },
+        referenceIso,
+      );
+      return selectResourcesByVillageStmt.get(numericVillageId);
+    }
+    return resourceRow;
+  }
+
+  const villageRow = selectVillageByIdStmt.get(numericVillageId);
+  const villageRegion = Number(villageRow?.region ?? DEFAULT_WORLD_REGION_ID);
+  const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(numericVillageId));
+  const rawUnitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(numericVillageId));
+  const resourceCaps = resolveVillageResourceCaps(buildingLevels);
+  const activeAcademicsInVillage = Math.max(
+    0,
+    Math.floor(Number(countActiveAcademicsByVillageStmt.get(numericVillageId)?.total ?? 0)),
+  );
+  const populationSnapshot = enforceVillagePopulationBudget(
+    numericVillageId,
+    buildingLevels,
+    rawUnitCounts,
+    activeAcademicsInVillage,
+  );
+  const baseProduction = calculateProductionPerHour(
+    buildingLevels,
+    populationSnapshot.populationUsed,
+    populationSnapshot.populationCap,
+  );
+  const world = resolveWorldByRegion(villageRegion);
+  const developerBoost = resolveDeveloperResourceBoostForWorld(world, referenceMs);
+  const production = applyProductionMultiplier(baseProduction, developerBoost.multiplier);
+
+  let nextWood = clampResourceToCap(Number(resourceRow.wood ?? 0) + (production.wood * elapsedSec) / 3600, resourceCaps.wood);
+  let nextStone = clampResourceToCap(Number(resourceRow.stone ?? 0) + (production.stone * elapsedSec) / 3600, resourceCaps.stone);
+  let nextIron = clampResourceToCap(Number(resourceRow.iron ?? 0) + (production.iron * elapsedSec) / 3600, resourceCaps.iron);
+  let nextGold = clampResourceToCap(
+    Number(resourceRow.gold ?? 0) + (Number(production.gold ?? 0) * elapsedSec) / 3600,
+    resourceCaps.gold,
+  );
+  let nextCoins = clampResourceToCap(Number(resourceRow.coins ?? 0), resourceCaps.coins);
+
+  const mintLevel = Math.max(0, Math.floor(Number(buildingLevels.mint ?? 0)));
+  if (mintLevel > 0 && resourceCaps.coins > 0) {
+    const throughputPerHour = Math.max(0, Number(calculateMintThroughputPerHour(mintLevel) ?? 0));
+    const mintLimitByTime = (throughputPerHour * elapsedSec) / 3600;
+    const coinStorageRemaining = Math.max(0, resourceCaps.coins - nextCoins);
+    const mintable = Math.max(0, Math.min(nextGold, mintLimitByTime, coinStorageRemaining));
+    if (mintable > 0) {
+      nextGold -= mintable;
+      nextCoins += mintable;
+    }
+  }
+
+  writeVillageResources(
+    numericVillageId,
+    {
+      wood: nextWood,
+      stone: nextStone,
+      iron: nextIron,
+      gold: nextGold,
+      coins: nextCoins,
+    },
+    referenceIso,
+  );
+  return selectResourcesByVillageStmt.get(numericVillageId);
+};
+
 const applyResourceDeltaWithCap = (villageId, delta) => {
-  const resourceRow = selectResourcesByVillageStmt.get(Number(villageId));
+  const resourceRow = synchronizeVillageEconomyAt(Number(villageId));
   if (!resourceRow) {
     return { applied: { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 }, next: null };
   }
@@ -5040,7 +5154,7 @@ const applyResourceDeltaWithCap = (villageId, delta) => {
 };
 
 const addResourcesWithoutCap = (villageId, delta) => {
-  const resourceRow = selectResourcesByVillageStmt.get(Number(villageId));
+  const resourceRow = synchronizeVillageEconomyAt(Number(villageId));
   if (!resourceRow) {
     return { added: { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 }, next: null };
   }
@@ -5111,7 +5225,7 @@ const subtractResources = (
   delta,
   minimumRemaining = { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 },
 ) => {
-  const resourceRow = selectResourcesByVillageStmt.get(Number(villageId));
+  const resourceRow = synchronizeVillageEconomyAt(Number(villageId));
   if (!resourceRow) {
     return { taken: { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 }, next: null };
   }
@@ -5664,7 +5778,7 @@ const buildVillageLogisticsEconomySnapshot = (villageRow) => {
   if (!Number.isFinite(villageId) || villageId <= 0) {
     return null;
   }
-  const resourcesRow = selectResourcesByVillageStmt.get(villageId);
+  const resourcesRow = synchronizeVillageEconomyAt(villageId);
   const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(villageId));
   const warehouseLevel = Math.max(0, Math.floor(Number(buildingLevels.warehouse ?? 0)));
   const marketLevel = Math.max(0, Math.floor(Number(buildingLevels.market ?? 0)));
@@ -5880,6 +5994,7 @@ const requireVillageForUser = (
     }
   }
 
+  synchronizeVillageEconomyAt(Number(village.id));
   return { player, village, villages, world: selectedWorld };
 };
 
@@ -6723,7 +6838,7 @@ const processDueMarketGuildDispatches = (tickTimeIso) => {
         continue;
       }
 
-      const sourcePocket = toNonNegativeResourcePocket(selectResourcesByVillageStmt.get(sourceVillageId));
+      const sourcePocket = toNonNegativeResourcePocket(synchronizeVillageEconomyAt(sourceVillageId));
       if (
         shipment.wood > sourcePocket.wood ||
         shipment.stone > sourcePocket.stone ||
@@ -6831,7 +6946,7 @@ const resolveBotAvailableResourcePocket = (resourcePocket) => ({
   coins: Math.max(0, Math.floor(Number(resourcePocket?.coins ?? 0))),
 });
 
-const spendVillageResourcesForBotAction = (villageId, resourcePocket, cost) => {
+const spendVillageResourcesForBotAction = (villageId, resourcePocket, cost, referenceIso = nowIso()) => {
   const safeCost = {
     wood: Math.max(0, Math.floor(Number(cost?.wood ?? 0))),
     stone: Math.max(0, Math.floor(Number(cost?.stone ?? 0))),
@@ -6853,6 +6968,7 @@ const spendVillageResourcesForBotAction = (villageId, resourcePocket, cost) => {
     nextPocket.iron,
     nextPocket.gold,
     nextPocket.coins,
+    String(referenceIso),
     Number(villageId),
   );
   return nextPocket;
@@ -6894,7 +7010,7 @@ const processBotNightEconomyCycle = (tickTimeIso) => {
       }
 
       try {
-        const resourcesRow = selectResourcesByVillageStmt.get(villageId);
+        const resourcesRow = synchronizeVillageEconomyAt(villageId, tickTimeIso);
         if (!resourcesRow) {
           continue;
         }
@@ -6926,7 +7042,7 @@ const processBotNightEconomyCycle = (tickTimeIso) => {
             if (!canAfford(availablePocket, upgradeCost)) {
               continue;
             }
-            const paidPocket = spendVillageResourcesForBotAction(villageId, resourcePocket, upgradeCost);
+            const paidPocket = spendVillageResourcesForBotAction(villageId, resourcePocket, upgradeCost, tickTimeIso);
             if (!paidPocket) {
               continue;
             }
@@ -6979,7 +7095,7 @@ const processBotNightEconomyCycle = (tickTimeIso) => {
               stone: militiaDef.cost.stone * recruitAmount,
               iron: militiaDef.cost.iron * recruitAmount,
             };
-            const paidPocket = spendVillageResourcesForBotAction(villageId, resourcePocket, recruitmentCost);
+            const paidPocket = spendVillageResourcesForBotAction(villageId, resourcePocket, recruitmentCost, tickTimeIso);
             if (paidPocket) {
               resourcePocket = paidPocket;
               const durationSec = calculateRecruitDurationSec('militia', recruitAmount, barracksLevel);
@@ -7014,73 +7130,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
   const parsedLastTick = state?.lastTickAt ? Date.parse(state.lastTickAt) : Number.NaN;
   const lastTickMs = Number.isFinite(parsedLastTick) ? parsedLastTick : tickTimeMs;
   const elapsedSec = Math.max(0, (tickTimeMs - lastTickMs) / 1000);
-  const villageRows = selectAllVillageIdsStmt.all();
-  const playerRegionPairs = new Set();
-
-  for (const villageRow of villageRows) {
-    const villageId = Number(villageRow.id);
-    const villagePlayerId = Number(villageRow.playerId);
-    const villageRegion = Number(villageRow.region);
-    if (Number.isFinite(villagePlayerId) && Number.isFinite(villageRegion)) {
-      playerRegionPairs.add(`${villagePlayerId}|${villageRegion}`);
-    }
-    const resourceRow = selectResourcesByVillageStmt.get(villageId);
-    if (!resourceRow) {
-      continue;
-    }
-
-    const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(villageId));
-    const rawUnitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(villageId));
-    const resourceCaps = resolveVillageResourceCaps(buildingLevels);
-    const activeAcademicsInVillage = Math.max(
-      0,
-      Math.floor(Number(countActiveAcademicsByVillageStmt.get(villageId)?.total ?? 0)),
-    );
-    const populationSnapshot = enforceVillagePopulationBudget(
-      villageId,
-      buildingLevels,
-      rawUnitCounts,
-      activeAcademicsInVillage,
-    );
-    const unitCounts = populationSnapshot.unitCounts;
-    const populationCap = populationSnapshot.populationCap;
-    const populationUsed = populationSnapshot.populationUsed;
-    const baseProduction = calculateProductionPerHour(buildingLevels, populationUsed, populationCap);
-    const world = resolveWorldByRegion(villageRegion);
-    const developerBoost = resolveDeveloperResourceBoostForWorld(world, tickTimeMs);
-    const production = applyProductionMultiplier(baseProduction, developerBoost.multiplier);
-
-    if (elapsedSec > 0) {
-      let nextWood = clampResourceToCap(Number(resourceRow.wood) + (production.wood * elapsedSec) / 3600, resourceCaps.wood);
-      let nextStone = clampResourceToCap(Number(resourceRow.stone) + (production.stone * elapsedSec) / 3600, resourceCaps.stone);
-      let nextIron = clampResourceToCap(Number(resourceRow.iron) + (production.iron * elapsedSec) / 3600, resourceCaps.iron);
-      let nextGold = clampResourceToCap(Number(resourceRow.gold ?? 0) + (Number(production.gold ?? 0) * elapsedSec) / 3600, resourceCaps.gold);
-      let nextCoins = clampResourceToCap(Number(resourceRow.coins ?? 0), resourceCaps.coins);
-
-      const mintLevel = Math.max(0, Math.floor(Number(buildingLevels.mint ?? 0)));
-      if (mintLevel > 0 && resourceCaps.coins > 0) {
-        const throughputPerHour = Math.max(0, Number(calculateMintThroughputPerHour(mintLevel) ?? 0));
-        const mintLimitByTime = (throughputPerHour * elapsedSec) / 3600;
-        const coinStorageRemaining = Math.max(0, resourceCaps.coins - nextCoins);
-        const mintable = Math.max(0, Math.min(nextGold, mintLimitByTime, coinStorageRemaining));
-        if (mintable > 0) {
-          nextGold -= mintable;
-          nextCoins += mintable;
-        }
-      }
-
-      updateResourcesStmt.run(
-        roundResource(nextWood),
-        roundResource(nextStone),
-        roundResource(nextIron),
-        roundResource(nextGold),
-        roundResource(nextCoins),
-        villageId,
-      );
-    }
-
-    updateVillagePrestigeStmt.run(calculateVillagePrestige(buildingLevels, unitCounts), villageId);
-  }
+  const villagesToRecalculatePrestige = new Set();
 
   const dueUpgrades = selectDueUpgradesStmt.all(tickTimeIso);
   for (const upgrade of dueUpgrades) {
@@ -7089,6 +7139,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     const villageId = Number(upgrade.villageId);
     updateBuildingLevelStmt.run(finalLevel, villageId, upgrade.buildingId);
     completeUpgradeStmt.run(tickTimeIso, Number(upgrade.id));
+    villagesToRecalculatePrestige.add(villageId);
     const villageRow = selectVillageWithOwnerByIdStmt.get(villageId);
     if (villageRow && Number(villageRow.ownerIsBot ?? 0) !== 1) {
       const buildingName = String(BUILDING_DEFS[upgrade.buildingId]?.name ?? upgrade.buildingId);
@@ -7125,6 +7176,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
 
     if (finalRecruitAmount > 0) {
       updateUnitAmountStmt.run(currentAmount + finalRecruitAmount, villageId, unitId);
+      villagesToRecalculatePrestige.add(villageId);
     }
 
     completeRecruitmentStmt.run(tickTimeIso, Number(recruitment.id));
@@ -7178,7 +7230,6 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
   let expiredMercenaryContracts = 0;
   let completedResearchProjects = 0;
   let prunedNotifications = 0;
-  const villagesToRecalculatePrestige = new Set();
   for (const movement of dueArmyMovements) {
     const movementId = Number(movement.id);
     const movementUnits = selectMovementUnitsStmt.all(movementId);
@@ -7534,7 +7585,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         const prestigeLootModifier = calculateLootModifier(attackerPrestige, defenderPrestige);
         const effectiveCarryingCapacity = Math.max(0, Math.floor(carryingCapacity * prestigeLootModifier));
         if (effectiveCarryingCapacity > 0) {
-          const defenderResources = selectResourcesByVillageStmt.get(Number(targetVillage.id));
+          const defenderResources = synchronizeVillageEconomyAt(Number(targetVillage.id), tickTimeIso);
           if (defenderResources) {
             const protectedPocket = calculateLootProtectionPocket(defenderBuildingLevels);
             const lootableResourcePocket = calculateLootableResourcePocket(defenderResources, protectedPocket);
@@ -8086,10 +8137,10 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     }
   }
 
-  for (const pair of playerRegionPairs) {
-    const [playerIdRaw, regionRaw] = String(pair).split('|');
-    const playerId = Number(playerIdRaw);
-    const region = Number(regionRaw);
+  const researchingPlayerRegionRows = selectResearchingPlayerRegionPairsStmt.all();
+  for (const row of researchingPlayerRegionRows) {
+    const playerId = Number(row.playerId);
+    const region = Number(row.region);
     if (!Number.isFinite(playerId) || !Number.isFinite(region)) {
       continue;
     }
@@ -8199,7 +8250,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
 
   return {
     elapsedSec,
-    processedVillages: villageRows.length,
+    processedVillages: villagesToRecalculatePrestige.size,
     completedUpgrades: dueUpgrades.length,
     completedRecruitments: dueRecruitments.length,
     completedArmyMovements,
@@ -8340,7 +8391,7 @@ export const getVillageSnapshot = (
     spawnDirectionRaw,
   );
   const worldRegion = resolveWorldRegionDefinition(world);
-  const resourcesRow = selectResourcesByVillageStmt.get(village.id);
+  const resourcesRow = synchronizeVillageEconomyAt(Number(village.id));
   if (!resourcesRow) {
     throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
   }
@@ -9416,7 +9467,7 @@ const startUpgradeTransaction = db.transaction((username, buildingId, startedAtI
     throw new GameRuleError('Budova je na maximalni urovni.');
   }
 
-  const resources = selectResourcesByVillageStmt.get(village.id);
+  const resources = synchronizeVillageEconomyAt(Number(village.id));
   if (!resources) {
     throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
   }
@@ -9455,6 +9506,7 @@ const startUpgradeTransaction = db.transaction((username, buildingId, startedAtI
     roundResource(pocket.iron - cost.iron),
     roundResource(Number(resources.gold ?? 0)),
     roundResource(Number(resources.coins ?? 0)),
+    nowIso(),
     village.id,
   );
 
@@ -10145,7 +10197,7 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
   const recruitAmount = requirePositiveInteger(amount, 'amount');
   const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(village.id));
   const unitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(village.id));
-  const resources = selectResourcesByVillageStmt.get(village.id);
+  const resources = synchronizeVillageEconomyAt(Number(village.id));
   if (!resources) {
     throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
   }
@@ -10248,6 +10300,7 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
     roundResource(pocket.iron - totalCost.iron),
     roundResource(Number(resources.gold ?? 0)),
     roundResource(Number(resources.coins ?? 0)),
+    nowIso(),
     village.id,
   );
   const startedAtIso = nowIso();
@@ -10408,7 +10461,7 @@ const hireAcademicsTransaction = db.transaction((username, amountRaw, requestedV
     throw new GameRuleError('Neni dostupny zadny slot pro akademika.', 400);
   }
 
-  const resources = selectResourcesByVillageStmt.get(Number(village.id));
+  const resources = synchronizeVillageEconomyAt(Number(village.id));
   if (!resources) {
     throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
   }
@@ -10424,6 +10477,7 @@ const hireAcademicsTransaction = db.transaction((username, amountRaw, requestedV
     roundResource(Number(resources.iron ?? 0)),
     roundResource(Number(resources.gold ?? 0)),
     roundResource(currentCoins - totalCoinCost),
+    nowIso(),
     Number(village.id),
   );
 
@@ -10570,7 +10624,7 @@ const startResearchProjectTransaction = db.transaction(
       Math.max(0, Number(currentRow?.progress ?? 0)) <= 0 &&
       String(currentRow?.status ?? '') !== 'researching' &&
       String(currentRow?.status ?? '') !== 'completed';
-    const resources = selectResourcesByVillageStmt.get(Number(village.id));
+    const resources = synchronizeVillageEconomyAt(Number(village.id));
     if (!resources) {
       throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
     }
@@ -10587,6 +10641,7 @@ const startResearchProjectTransaction = db.transaction(
         roundResource(Number(resources.iron ?? 0)),
         roundResource(Number(resources.gold ?? 0)),
         roundResource(currentCoins - coinCost),
+        nowTimeIso,
         Number(village.id),
       );
     }
@@ -10747,7 +10802,7 @@ const hireMercenaryContractTransaction = db.transaction((username, requestedVill
     );
   }
 
-  const resources = selectResourcesByVillageStmt.get(Number(village.id));
+  const resources = synchronizeVillageEconomyAt(Number(village.id));
   if (!resources) {
     throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
   }
@@ -10765,6 +10820,7 @@ const hireMercenaryContractTransaction = db.transaction((username, requestedVill
     roundResource(Number(resources.iron ?? 0)),
     roundResource(Number(resources.gold ?? 0)),
     roundResource(currentCoins - MERCENARY_CONTRACT_COST_COINS),
+    nowTimeIso,
     Number(village.id),
   );
 
@@ -11172,7 +11228,7 @@ const sendMarketLogisticsTransaction = db.transaction((username, payload, reques
     throw new GameRuleError(`Logistika presahuje maximalni dosah ${MARKET_MAX_DISTANCE_TILES} policek.`, 400);
   }
 
-  const sourceResources = selectResourcesByVillageStmt.get(Number(village.id));
+  const sourceResources = synchronizeVillageEconomyAt(Number(village.id));
   if (!sourceResources) {
     throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
   }

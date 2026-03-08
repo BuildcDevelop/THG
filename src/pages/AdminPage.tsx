@@ -53,7 +53,7 @@ export const AdminPage = () => {
       <div className="login-bg-layer" />
       <div className="login-noise-layer" />
 
-      <main className="admin-shell">
+      <main className="admin-shell app-content-container">
         <header>
           <p className="intro-eyebrow">Admin panel</p>
           <h1>Přepnutí mezi účty pro interní správu</h1>

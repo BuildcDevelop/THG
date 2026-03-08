@@ -114,6 +114,9 @@ export const WorldsPage = () => {
     logout();
     navigate('/login', { replace: true });
   };
+  const handleGoToLoginLanding = () => {
+    navigate('/login');
+  };
 
   if (!session) {
     return null;
@@ -124,7 +127,7 @@ export const WorldsPage = () => {
       <div className="login-bg-layer worlds-bg-layer" />
       <div className="login-noise-layer" />
 
-      <main className="worlds-shell">
+      <main className="worlds-shell app-content-container">
         <header className="worlds-header">
           <div>
             <p className="intro-eyebrow">Portál do světů TLD</p>
@@ -135,9 +138,14 @@ export const WorldsPage = () => {
             </p>
           </div>
 
-          <button className="secondary-action" onClick={handleLogout}>
-            Odhlásit se
-          </button>
+          <div className="worlds-header-actions">
+            <button type="button" className="secondary-action" onClick={handleGoToLoginLanding}>
+              Hlavní stránka
+            </button>
+            <button type="button" className="secondary-action" onClick={handleLogout}>
+              Odhlásit se
+            </button>
+          </div>
         </header>
 
         <section className="worlds-achievements-card">

@@ -16482,7 +16482,8 @@ export const GamePage = () => {
       <div className="game-bg-layer" />
       <div className="game-grid-layer" />
 
-      <header className="top-navigation">
+      <div className="app-content-container game-layout-container">
+        <header className="top-navigation">
         <div className="world-indicator-wrap">
           <div className={`world-indicator is-${selectedWorldFlavor}`}>
             <span>Svět:</span> <strong>{selectedWorldName}</strong>
@@ -16988,6 +16989,7 @@ export const GamePage = () => {
               />
             </article>
           ))}
+        </div>
       </div>
     </div>
   );

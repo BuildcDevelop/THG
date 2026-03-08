@@ -22,6 +22,16 @@ html {
   min-height: 100vh;
 }
 
+.app-content-container {
+  width: 100%;
+  max-width: 1800px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 20px;
+  padding-right: 20px;
+  box-sizing: border-box;
+}
+
 .deployment-overlay {
   position: fixed;
   inset: 0;
@@ -6798,6 +6808,13 @@ html {
   align-items: start;
 }
 
+.worlds-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 .worlds-header h1 {
   margin: 0.15rem 0 0.35rem;
   font-size: clamp(1.8rem, 3.7vw, 3rem);
@@ -11309,12 +11326,19 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
 .game-page {
   height: 100dvh;
   min-height: 100dvh;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
 }
 
-.game-page .game-canvas {
+.game-page .game-layout-container {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.game-page .game-layout-container .game-canvas {
   min-height: 0;
   height: 100%;
   overflow: hidden;
@@ -11914,4 +11938,17 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
   .game-page .resource-strip > .research-spotlight-card {
     flex: 1 1 100%;
   }
+}
+
+/* Keep side pin columns above draggable windows and canvas overlays. */
+.game-page .game-canvas .pin-column {
+  z-index: 2147483000;
+}
+
+.game-page .game-canvas .pin-columns-mobile-toggle {
+  z-index: 2147483100;
+}
+
+.game-page .pin-feed-open {
+  z-index: 2147483050;
 }

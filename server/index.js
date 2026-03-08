@@ -77,7 +77,7 @@ import {
 
 const app = express();
 const port = Number(process.env.PORT ?? 3001);
-const tickSchedule = process.env.GAME_TICK_SCHEDULE ?? '*/5 * * * * *';
+const tickSchedule = process.env.GAME_TICK_SCHEDULE ?? '* * * * * *';
 const versionLabel = String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.09').trim() || 'build-0.1.09';
 const buildId =
   String(process.env.TLD_BUILD_ID ?? process.env.NETLIFY_COMMIT_REF ?? process.env.COMMIT_REF ?? versionLabel).trim() ||
@@ -104,6 +104,8 @@ const resolvedCorsOrigin =
 const localCorsOrigins = new Set([
   'http://localhost:5173',
   'http://127.0.0.1:5173',
+  'http://localhost:5174',
+  'http://127.0.0.1:5174',
   'http://localhost:4173',
   'http://127.0.0.1:4173',
   'http://localhost:3000',
@@ -134,7 +136,13 @@ const normalizeComparableUsername = (value) =>
     .toLocaleLowerCase('cs-CZ');
 
 const executeWithReadOperation = async (operation) => operation();
-const executeWithWriteOperation = async (operation) => operation();
+let writeQueue = Promise.resolve();
+const executeWithWriteOperation = async (operation) => {
+  const nextOperation = () => Promise.resolve().then(() => operation());
+  const queued = writeQueue.then(nextOperation, nextOperation);
+  writeQueue = queued.catch(() => {});
+  return queued;
+};
 
 const parseOptionalWorldId = (value) => {
   const normalized = String(value ?? '').trim();
@@ -1732,12 +1740,12 @@ let cronTask = null;
 
 if (!isServerlessRuntime) {
   cronTask = cron.schedule(tickSchedule, () => {
-    try {
+    executeWithWriteOperation(() => {
       runGameTick();
       runCommunicationRetentionCleanup();
-    } catch (error) {
+    }).catch((error) => {
       console.error('[backend] Tick failure:', error);
-    }
+    });
   });
 
   app.listen(port, () => {

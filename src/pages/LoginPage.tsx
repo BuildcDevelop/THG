@@ -234,7 +234,7 @@ export const LoginPage = () => {
       <div className="login-bg-layer" />
       <div className="login-noise-layer" />
 
-      <main className="login-shell">
+      <main className="login-shell app-content-container">
         <section className="intro-panel">
           <p className="intro-eyebrow">TLD Portál</p>
           <h1>Dominion čeká na dalšího velitele.</h1>
