@@ -228,6 +228,18 @@ test('stage6: read models do not progress queued work without explicit tick', ()
   assert.equal(Number(afterTick.inProgressRecruitments ?? -1), 0);
 });
 
+test('stage6: mint coins accumulate across short tick intervals', () => {
+  const result = runScenario('mint-coins-accumulate-short-ticks');
+  const before = result?.before ?? {};
+  const after = result?.after ?? {};
+  const snapshot = result?.snapshot ?? {};
+
+  assert.ok(Number(snapshot.mintCoinsPerHour ?? 0) > 0, 'mint throughput should be active');
+  assert.ok(Number(after.coins ?? 0) > Number(before.coins ?? 0), 'coins should increase over repeated short ticks');
+  assert.ok(Number(after.gold ?? 0) < Number(before.gold ?? Infinity), 'gold should be converted into coins');
+  assert.ok(Number(snapshot.coins ?? 0) >= 1, 'visible coin balance should eventually rise above zero');
+});
+
 test('stage6: map stress culls render scope in dense settlements', () => {
   const result = runScenario('map-render-scope-stress');
   const totalSettlements = Number(result?.totalSettlements ?? 0);

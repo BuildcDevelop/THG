@@ -43,7 +43,7 @@ Spusti se:
 Tick interval lze zmenit pres env promennou:
 
 ```bash
-GAME_TICK_SCHEDULE="*/5 * * * * *"
+GAME_TICK_SCHEDULE="* * * * * *"
 ```
 
 ## Self-host backend (Docker, bez Convexu)

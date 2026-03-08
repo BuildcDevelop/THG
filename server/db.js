@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS resources (
   iron REAL NOT NULL,
   gold REAL NOT NULL DEFAULT 0,
   coins REAL NOT NULL DEFAULT 0,
+  last_sync_at TEXT,
   FOREIGN KEY (village_id) REFERENCES villages(id)
 );
 
@@ -750,6 +751,18 @@ CREATE TABLE IF NOT EXISTS game_state (
   if (!hasCoinsColumn) {
     db.prepare('ALTER TABLE resources ADD COLUMN coins REAL NOT NULL DEFAULT 0').run();
   }
+  const hasLastSyncAtColumn = resourceColumns.some((column) => column.name === 'last_sync_at');
+  if (!hasLastSyncAtColumn) {
+    db.prepare('ALTER TABLE resources ADD COLUMN last_sync_at TEXT').run();
+  }
+  db.prepare(
+    `UPDATE resources
+     SET last_sync_at = COALESCE(
+       last_sync_at,
+       (SELECT last_tick_at FROM game_state WHERE id = 1),
+       ?
+     )`,
+  ).run(nowIso());
 
   const movementColumns = db.prepare('PRAGMA table_info(army_movements)').all();
   const hasLootPriorityColumn = movementColumns.some((column) => column.name === 'loot_priority');

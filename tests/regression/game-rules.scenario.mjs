@@ -70,14 +70,32 @@ const upsertBuildingStmt = db.prepare(
    ON CONFLICT(village_id, building_id)
    DO UPDATE SET level = excluded.level`,
 );
-const upsertResourceStmt = db.prepare(
-  `INSERT INTO resources (village_id, wood, stone, iron)
-   VALUES (?, ?, ?, ?)
+const upsertResourcePocketStmt = db.prepare(
+  `INSERT INTO resources (village_id, wood, stone, iron, gold, coins)
+   VALUES (?, ?, ?, ?, ?, ?)
    ON CONFLICT(village_id)
    DO UPDATE SET
      wood = excluded.wood,
      stone = excluded.stone,
-     iron = excluded.iron`,
+     iron = excluded.iron,
+     gold = excluded.gold,
+     coins = excluded.coins`,
+);
+const selectResourcePocketByVillageStmt = db.prepare(
+  `SELECT wood, stone, iron, gold, coins
+   FROM resources
+   WHERE village_id = ?
+   LIMIT 1`,
+);
+const updateGameStateLastTickAtStmt = db.prepare(
+  `UPDATE game_state
+   SET last_tick_at = ?
+   WHERE id = 1`,
+);
+const updateResourceLastSyncAtByVillageStmt = db.prepare(
+  `UPDATE resources
+   SET last_sync_at = ?
+   WHERE village_id = ?`,
 );
 const updateVillageOwnerStmt = db.prepare(
   `UPDATE villages
@@ -243,10 +261,19 @@ const setVillageBuildings = (villageId, buildingLevels = {}) => {
   }
 };
 const setVillageResources = (villageId, resources) => {
-  const wood = Math.max(0, Math.floor(Number(resources?.wood ?? 0)));
-  const stone = Math.max(0, Math.floor(Number(resources?.stone ?? 0)));
-  const iron = Math.max(0, Math.floor(Number(resources?.iron ?? 0)));
-  upsertResourceStmt.run(Number(villageId), wood, stone, iron);
+  const current = selectResourcePocketByVillageStmt.get(Number(villageId)) ?? {
+    wood: 0,
+    stone: 0,
+    iron: 0,
+    gold: 0,
+    coins: 0,
+  };
+  const wood = Math.max(0, Number(resources?.wood ?? current.wood ?? 0));
+  const stone = Math.max(0, Number(resources?.stone ?? current.stone ?? 0));
+  const iron = Math.max(0, Number(resources?.iron ?? current.iron ?? 0));
+  const gold = Math.max(0, Number(resources?.gold ?? current.gold ?? 0));
+  const coins = Math.max(0, Number(resources?.coins ?? current.coins ?? 0));
+  upsertResourcePocketStmt.run(Number(villageId), wood, stone, iron, gold, coins);
 };
 const findAttackerPayloadByMovement = (username, movementId) => {
   const player = getPlayer(username);
@@ -525,14 +552,14 @@ const runScenarioCaravanBinaryCasualties = () => {
 
   clearTransientState();
   updateVillageOwnerStmt.run(Number(defender.id), KINGDOM_DEFENDER, Number(defenderVillage.villageId));
-  setVillageUnits(attackerVillage.villageId, { militia: 250, caravan: 4 });
+  setVillageUnits(attackerVillage.villageId, { militia: 3000, caravan: 4 });
   setVillageUnits(defenderVillage.villageId, { militia: 25 });
   setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
   const { payload: survivorPayload } = runAttackAndGetPayload({
     username: ATTACKER_USERNAME,
     originVillageId: attackerVillage.villageId,
     targetVillageId: defenderVillage.villageId,
-    units: { militia: 250, caravan: 4 },
+    units: { militia: 3000, caravan: 4 },
     lootPriority: 'balanced',
   });
 
@@ -1060,6 +1087,55 @@ const runScenarioReadModelsNoTickSideEffects = () => {
   };
 };
 
+const runScenarioMintCoinsAccumulateShortTicks = () => {
+  clearTransientState();
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const villageId = Number(attackerVillage.villageId);
+  const tickIntervalSec = 5;
+  const tickCount = 90;
+
+  setVillageBuildings(villageId, { mint: 2, 'gold-mine': 0 });
+  setVillageResources(villageId, {
+    wood: 0,
+    stone: 0,
+    iron: 0,
+    gold: 80,
+    coins: 0,
+  });
+
+  const beforePocket = selectResourcePocketByVillageStmt.get(villageId) ?? { gold: 0, coins: 0 };
+  for (let index = 0; index < tickCount; index += 1) {
+    const forcedLastTickAtIso = new Date(Date.now() - tickIntervalSec * 1000).toISOString();
+    updateGameStateLastTickAtStmt.run(forcedLastTickAtIso);
+    runGameTick();
+  }
+  const forcedLastSyncAtIso = new Date(Date.now() - tickIntervalSec * tickCount * 1000).toISOString();
+  updateResourceLastSyncAtByVillageStmt.run(forcedLastSyncAtIso, villageId);
+
+  const snapshot = getVillageSnapshot(ATTACKER_USERNAME, villageId, WORLD_PRIMARY, 'center', {
+    includeWorldMap: false,
+  });
+  const afterPocket = selectResourcePocketByVillageStmt.get(villageId) ?? { gold: 0, coins: 0 };
+
+  return {
+    tickIntervalSec,
+    tickCount,
+    before: {
+      gold: Number(beforePocket.gold ?? 0),
+      coins: Number(beforePocket.coins ?? 0),
+    },
+    after: {
+      gold: Number(afterPocket.gold ?? 0),
+      coins: Number(afterPocket.coins ?? 0),
+    },
+    snapshot: {
+      gold: Number(snapshot?.resources?.gold ?? 0),
+      coins: Number(snapshot?.resources?.coins ?? 0),
+      mintCoinsPerHour: Number(snapshot?.resources?.productionPerHour?.mintCoins ?? 0),
+    },
+  };
+};
+
 const runScenarioMapRenderScopeStress = () => {
   clearTransientState();
   createAbandonedVillages(50);
@@ -1136,6 +1212,7 @@ const scenarioHandlers = new Map([
   ['prestige-retaliation-unlock', runScenarioPrestigeRetaliationUnlock],
   ['summary-polling-consistency', runScenarioSummaryPollingConsistency],
   ['read-models-no-tick-side-effects', runScenarioReadModelsNoTickSideEffects],
+  ['mint-coins-accumulate-short-ticks', runScenarioMintCoinsAccumulateShortTicks],
   ['map-render-scope-stress', runScenarioMapRenderScopeStress],
 ]);
 
