@@ -10,6 +10,7 @@ import type {
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { getSession, logout, setSelectedWorld } from '../auth';
+import { GAME_VERSION_LABEL } from '../version';
 import {
   acceptKingdomInvite as acceptKingdomInviteRequest,
   cancelArmyCommand as cancelArmyCommandRequest,
@@ -17601,7 +17602,7 @@ export const GamePage = () => {
             })}
           </nav>
           <div className="world-indicator-wrap" ref={worldMenuRef}>
-            <small className="world-version-note">Verze hry 0.1.09</small>
+            <small className="world-version-note">Verze hry {GAME_VERSION_LABEL}</small>
             <button
               type="button"
               className={`world-indicator world-indicator-trigger is-${selectedWorldFlavor}${isWorldMenuOpen ? ' is-open' : ''}`}
