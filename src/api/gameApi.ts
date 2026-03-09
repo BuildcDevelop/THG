@@ -122,6 +122,102 @@ export type RecentAttackTargetState = {
   lastIssuedAt: string;
 };
 
+export type ArmyVillageUnitSummary = {
+  unitId: string;
+  unitName: string;
+  sortOrder: number;
+  ownAmount: number;
+  supportAmount: number;
+  availableForPlanning: number;
+  visibleLabel: string;
+};
+
+export type ArmyVillageSummary = {
+  villageId: number;
+  villageName: string;
+  coordX: number;
+  coordY: number;
+  kingdom: string;
+  sortLabel: string;
+  totalOwnUnits: number;
+  totalSupportUnits: number;
+  plannerSelectable: boolean;
+  plannerSelected: boolean;
+  units: ArmyVillageUnitSummary[];
+};
+
+export type ArmyOverviewResponse = {
+  worldId: string;
+  generatedAt: string;
+  villages: ArmyVillageSummary[];
+};
+
+export type PlannerPlanStatus =
+  | 'scheduled'
+  | 'needs_reconfirmation'
+  | 'dispatching'
+  | 'completed'
+  | 'failed'
+  | 'canceled';
+
+export type PlannerPlanLegStatus = 'scheduled' | 'sent' | 'failed' | 'canceled';
+
+export type PlannerPlanDetail = {
+  plan: {
+    id: string;
+    status: PlannerPlanStatus;
+    revision: number;
+    targetVillageId: number;
+    targetPlayerId: number;
+    targetPlayerUsernameSnapshot: string;
+    targetVillageNameSnapshot: string;
+    targetKingdomSnapshot: string;
+    confirmedAt: string | null;
+    createdAt: string;
+    updatedAt: string;
+    failedAt: string | null;
+    canceledAt: string | null;
+  };
+  legs: Array<{
+    id: string;
+    order: number;
+    status: PlannerPlanLegStatus;
+    originVillageId: number;
+    originVillageNameSnapshot: string;
+    impactAtUtc: string;
+    sendAtUtc: string;
+    travelDurationSec: number;
+    units: Array<{ unitId: string; plannedAmount: number }>;
+    failCode: string | null;
+    failMessage: string | null;
+  }>;
+};
+
+export type PlannerRecentTarget = {
+  targetPlayerId: number;
+  targetPlayerUsername: string;
+  targetVillageId: number;
+  targetVillageName: string;
+  targetKingdom: string;
+  coordX: number;
+  coordY: number;
+  lastUsedAt: string;
+};
+
+export type PlannerOpenResponse = {
+  worldId: string;
+  timezone: 'Europe/Prague';
+  constraints: {
+    maxLegs: 10;
+    minImpactGapMinutes: 1;
+    leadTimeSec: number;
+    activePlansPerPlayerPerWorld: 1;
+  };
+  bannerText: string;
+  activePlan: PlannerPlanDetail | null;
+  recentTargets: PlannerRecentTarget[];
+};
+
 export type LeaderboardRow = {
   rank: number;
   playerId: number;
@@ -1468,6 +1564,30 @@ export const fetchWorldMapSnapshot = async (
     params.set('spawnDirection', String(spawnDirection).trim());
   }
   const payload = await request<ApiOk<WorldMapSnapshotResponse>>(`/api/v1/world-map?${params.toString()}`);
+  return payload.data;
+};
+
+export const fetchArmyOverview = async (
+  username: string,
+  worldId?: string | null,
+): Promise<ArmyOverviewResponse> => {
+  const params = new URLSearchParams({ username });
+  if (worldId != null && String(worldId).trim() !== '') {
+    params.set('worldId', String(worldId).trim());
+  }
+  const payload = await request<ApiOk<ArmyOverviewResponse>>(`/api/v1/army/overview?${params.toString()}`);
+  return payload.data;
+};
+
+export const fetchPlannerOpen = async (
+  username: string,
+  worldId?: string | null,
+): Promise<PlannerOpenResponse> => {
+  const params = new URLSearchParams({ username });
+  if (worldId != null && String(worldId).trim() !== '') {
+    params.set('worldId', String(worldId).trim());
+  }
+  const payload = await request<ApiOk<PlannerOpenResponse>>(`/api/v1/planner/open?${params.toString()}`);
   return payload.data;
 };
 

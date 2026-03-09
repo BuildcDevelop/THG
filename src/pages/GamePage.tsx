@@ -27,7 +27,9 @@ import {
   fetchGameActivitySummary,
   fetchBattleReports,
   fetchBattleReportsSummary,
+  fetchArmyOverview,
   fetchGameState,
+  fetchPlannerOpen,
   fetchWorldMapSnapshot,
   fetchWorlds,
   markAllGameActivityRead,
@@ -57,6 +59,8 @@ import {
   type ArmyCommandType,
   type BattleReportItem,
   type ArmyMovementState,
+  type ArmyOverviewResponse,
+  type ArmyVillageSummary,
   type BattleReportListResponse,
   type BattleReportSummaryResponse,
   type BattleReportPayload,
@@ -70,12 +74,13 @@ import {
   type KingdomHubState,
   type KingdomIncomingInvite,
   type KingdomAvailableSummary,
-    type KingdomAuditLogEntry,
-    type LeaderboardRow,
-    type LootPriority,
-    type MarketGuildVillageEconomyState,
-    type WorldPortalItem,
-  } from '../api/gameApi';
+  type KingdomAuditLogEntry,
+  type LeaderboardRow,
+  type LootPriority,
+  type MarketGuildVillageEconomyState,
+  type PlannerOpenResponse,
+  type WorldPortalItem,
+} from '../api/gameApi';
 import {
   COMMUNICATION_SUMMARY_EVENT,
   openCommunicationHub,
@@ -272,6 +277,35 @@ type Unit = {
   canRecruit: boolean;
   blockedReason: string | null;
   maxRecruitable: number;
+};
+
+type PlannerLegDraft = {
+  originVillageId: number;
+  impactAtUtc: string;
+  units: Partial<Record<CommandUnitId, number>>;
+};
+
+type PlannerDraftState = {
+  targetPlayerUsername: string;
+  targetVillageId: number | null;
+  legs: PlannerLegDraft[];
+  updatedAt: string;
+};
+
+type PlannerValidationIssue = {
+  code: string;
+  severity: 'warning' | 'blocked';
+  message: string;
+  legOriginVillageId?: number;
+};
+
+type PlannerConstraints = PlannerOpenResponse['constraints'];
+
+type PlannerDraftNormalizationMeta = {
+  removedLegCount: number;
+  targetReset: boolean;
+  timelineAdjusted: boolean;
+  unitAmountsAdjusted: boolean;
 };
 
 type RecruitQueueOrder = {
@@ -1733,10 +1767,17 @@ const ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'tld_active_village';
 const LEGACY_ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'thg_active_village';
 const ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX = 'tld_army_target_history';
 const LEGACY_ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX = 'thg_army_target_history';
+const PLANNER_LAST_SESSION_STORAGE_KEY_PREFIX = 'tld_planner_last_session';
+const LEGACY_PLANNER_LAST_SESSION_STORAGE_KEY_PREFIX = 'thg_planner_last_session';
 const GAME_FONT_SCALE_STORAGE_KEY_PREFIX = 'tld_game_font_scale';
 const LEGACY_GAME_FONT_SCALE_STORAGE_KEY_PREFIX = 'thg_game_font_scale';
 const SHORTCUT_SETTINGS_STORAGE_KEY_PREFIX = 'tld_shortcut_settings';
 const LEGACY_SHORTCUT_SETTINGS_STORAGE_KEY_PREFIX = 'thg_shortcut_settings';
+const DEFAULT_PLANNER_BANNER_TEXT = 'Planovac je zatim mozne vyuzit jen pro jeden cil z vice len.';
+const DEFAULT_PLANNER_MAX_LEGS = 10;
+const DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES = 1;
+const DEFAULT_PLANNER_LEAD_TIME_SEC = 5 * 60;
+const PRAGUE_TIMEZONE = 'Europe/Prague';
 const MAP_WINDOW_MIN_WIDTH = 620;
 const MAP_WINDOW_MIN_HEIGHT = 460;
 const STATE_POLL_INTERVAL_MS = 15000;
@@ -3045,6 +3086,128 @@ const saveStoredArmyTargetHistory = (username: string, history: ArmyTargetHistor
   }
 };
 
+const getPlannerLastSessionStorageKey = (username: string, worldId: string): string =>
+  `${PLANNER_LAST_SESSION_STORAGE_KEY_PREFIX}:${username.toLowerCase()}:${worldId.toLowerCase()}`;
+const getLegacyPlannerLastSessionStorageKey = (username: string, worldId: string): string =>
+  `${LEGACY_PLANNER_LAST_SESSION_STORAGE_KEY_PREFIX}:${username.toLowerCase()}:${worldId.toLowerCase()}`;
+
+const normalizePlannerLegDraft = (value: unknown): PlannerLegDraft | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const candidate = value as Partial<PlannerLegDraft>;
+  const originVillageId = Math.floor(Number(candidate.originVillageId ?? 0));
+  const impactAtUtc = String(candidate.impactAtUtc ?? '').trim();
+  if (!Number.isFinite(originVillageId) || originVillageId <= 0 || !impactAtUtc) {
+    return null;
+  }
+
+  const parsedImpact = Date.parse(impactAtUtc);
+  if (!Number.isFinite(parsedImpact)) {
+    return null;
+  }
+
+  const units: Partial<Record<CommandUnitId, number>> = {};
+  const rawUnits =
+    candidate.units && typeof candidate.units === 'object'
+      ? (candidate.units as Partial<Record<CommandUnitId, unknown>>)
+      : {};
+  for (const unitId of COMMAND_UNIT_ORDER) {
+    const amountRaw = Math.floor(Number(rawUnits[unitId] ?? 0));
+    if (!Number.isFinite(amountRaw) || amountRaw <= 0) {
+      continue;
+    }
+    units[unitId] = amountRaw;
+  }
+
+  return {
+    originVillageId,
+    impactAtUtc: new Date(parsedImpact).toISOString(),
+    units,
+  };
+};
+
+const readStoredPlannerLastSessionDraft = (username: string, worldId: string): PlannerDraftState | null => {
+  if (typeof window === 'undefined' || !worldId) {
+    return null;
+  }
+
+  try {
+    const raw =
+      window.localStorage.getItem(getPlannerLastSessionStorageKey(username, worldId)) ??
+      window.localStorage.getItem(getLegacyPlannerLastSessionStorageKey(username, worldId));
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<PlannerDraftState>;
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+
+    const targetPlayerUsername = String(parsed.targetPlayerUsername ?? '').trim();
+    const targetVillageIdRaw = Number(parsed.targetVillageId ?? 0);
+    const targetVillageId =
+      Number.isFinite(targetVillageIdRaw) && targetVillageIdRaw > 0 ? Math.floor(targetVillageIdRaw) : null;
+    const parsedUpdatedAtMs = Date.parse(String(parsed.updatedAt ?? ''));
+    const rawLegs = Array.isArray(parsed.legs) ? parsed.legs : [];
+    const legs = rawLegs
+      .map((leg) => normalizePlannerLegDraft(leg))
+      .filter((leg): leg is PlannerLegDraft => leg != null);
+
+    if (legs.length <= 0 && !targetPlayerUsername && targetVillageId == null) {
+      return null;
+    }
+
+    return {
+      targetPlayerUsername,
+      targetVillageId,
+      legs,
+      updatedAt: Number.isFinite(parsedUpdatedAtMs)
+        ? new Date(parsedUpdatedAtMs).toISOString()
+        : new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const saveStoredPlannerLastSessionDraft = (
+  username: string,
+  worldId: string,
+  draft: PlannerDraftState | null,
+): void => {
+  if (typeof window === 'undefined' || !worldId) {
+    return;
+  }
+
+  const key = getPlannerLastSessionStorageKey(username, worldId);
+  try {
+    if (!draft || (!draft.targetPlayerUsername && draft.targetVillageId == null && draft.legs.length <= 0)) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    const draftUpdatedAtMs = Date.parse(String(draft.updatedAt ?? ''));
+    const normalizedLegs = draft.legs
+      .map((leg) => normalizePlannerLegDraft(leg))
+      .filter((leg): leg is PlannerLegDraft => leg != null);
+    const payload: PlannerDraftState = {
+      targetPlayerUsername: String(draft.targetPlayerUsername ?? '').trim(),
+      targetVillageId:
+        draft.targetVillageId != null && Number.isFinite(Number(draft.targetVillageId))
+          ? Math.floor(Number(draft.targetVillageId))
+          : null,
+      legs: normalizedLegs,
+      updatedAt: Number.isFinite(draftUpdatedAtMs)
+        ? new Date(draftUpdatedAtMs).toISOString()
+        : new Date().toISOString(),
+    };
+    window.localStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
 const getMapZoomStorageKey = (username: string): string =>
   `${MAP_ZOOM_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
 const getLegacyMapZoomStorageKey = (username: string): string =>
@@ -3646,6 +3809,197 @@ const formatDateTimeLabel = (value: string | number | Date | null | undefined): 
   }).format(new Date(timestampMs));
 };
 
+const formatDateTimePragueLabel = (value: string | number | Date | null | undefined): string => {
+  if (value == null) {
+    return '-';
+  }
+  const timestampMs = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  if (!Number.isFinite(timestampMs)) {
+    return '-';
+  }
+  return new Intl.DateTimeFormat('cs-CZ', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZone: PRAGUE_TIMEZONE,
+  }).format(new Date(timestampMs));
+};
+
+const roundIsoToWholeMinute = (isoValue: string): string => {
+  const parsed = Date.parse(String(isoValue));
+  if (!Number.isFinite(parsed)) {
+    return new Date().toISOString();
+  }
+  const roundedMs = Math.ceil(parsed / 60000) * 60000;
+  return new Date(roundedMs).toISOString();
+};
+
+const addMinutesToIso = (isoValue: string, deltaMinutes: number): string => {
+  const parsed = Date.parse(String(isoValue));
+  const safeParsed = Number.isFinite(parsed) ? parsed : Date.now();
+  const deltaMs = Math.round(Number(deltaMinutes ?? 0) * 60_000);
+  return new Date(safeParsed + deltaMs).toISOString();
+};
+
+const calculatePlannerTravelDurationSec = (
+  units: Partial<Record<CommandUnitId, number>>,
+  originVillage: Pick<ArmyVillageSummary, 'coordX' | 'coordY'>,
+  targetVillage: Pick<RegionSettlement, 'globalX' | 'globalY'>,
+): number => {
+  const distanceTiles = Math.max(
+    Math.abs(Number(targetVillage.globalX) - Number(originVillage.coordX)),
+    Math.abs(Number(targetVillage.globalY) - Number(originVillage.coordY)),
+  );
+  if (!Number.isFinite(distanceTiles) || distanceTiles <= 0) {
+    return MIN_ARMY_TRAVEL_DURATION_SEC;
+  }
+
+  let slowestSpeed = Number.POSITIVE_INFINITY;
+  let hasUnits = false;
+  for (const unitId of COMMAND_UNIT_ORDER) {
+    const amount = Math.max(0, Math.floor(Number(units[unitId] ?? 0)));
+    if (amount <= 0) {
+      continue;
+    }
+    const unitSpeed = Math.max(0, Number(UNIT_TRAVEL_SPEED_TILES_PER_HOUR[unitId] ?? 0));
+    if (unitSpeed <= 0) {
+      continue;
+    }
+    hasUnits = true;
+    slowestSpeed = Math.min(slowestSpeed, unitSpeed);
+  }
+
+  if (!hasUnits || !Number.isFinite(slowestSpeed) || slowestSpeed <= 0) {
+    return MIN_ARMY_TRAVEL_DURATION_SEC;
+  }
+
+  const durationSec = (distanceTiles / slowestSpeed) * 3600 * ARMY_TRAVEL_TIME_MULTIPLIER;
+  return Math.max(MIN_ARMY_TRAVEL_DURATION_SEC, Math.round(durationSec));
+};
+
+const normalizePlannerLegTimeline = (
+  legs: PlannerLegDraft[],
+  constraints: PlannerConstraints,
+  referenceMs: number = Date.now(),
+): PlannerLegDraft[] => {
+  if (legs.length <= 0) {
+    return [];
+  }
+  const minGapMinutes = Math.max(1, Math.floor(Number(constraints.minImpactGapMinutes ?? DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES)));
+  const leadTimeSec = Math.max(0, Math.floor(Number(constraints.leadTimeSec ?? DEFAULT_PLANNER_LEAD_TIME_SEC)));
+  const firstAllowedMs = referenceMs + leadTimeSec * 1000;
+
+  const normalized: PlannerLegDraft[] = [];
+  let previousImpactMs = 0;
+  for (let index = 0; index < legs.length; index += 1) {
+    const leg = legs[index];
+    const parsedImpactMs = Date.parse(String(leg.impactAtUtc ?? ''));
+    const fallbackImpactMs = firstAllowedMs + index * minGapMinutes * 60_000;
+    const sourceImpactMs = Number.isFinite(parsedImpactMs) ? parsedImpactMs : fallbackImpactMs;
+    const minAllowedForLegMs =
+      index === 0 ? firstAllowedMs : previousImpactMs + minGapMinutes * 60_000;
+    const nextImpactMs = Math.max(minAllowedForLegMs, sourceImpactMs);
+    previousImpactMs = nextImpactMs;
+    normalized.push({
+      ...leg,
+      impactAtUtc: new Date(nextImpactMs).toISOString(),
+    });
+  }
+
+  return normalized;
+};
+
+const resolvePlannerPlanStatusMeta = (
+  statusRaw: string | null | undefined,
+): { label: string; tone: 'ok' | 'warning' | 'blocked' | 'neutral' } => {
+  const status = String(statusRaw ?? '').toLocaleLowerCase('cs-CZ');
+  if (status === 'scheduled') {
+    return { label: 'Naplánováno', tone: 'ok' };
+  }
+  if (status === 'needs_reconfirmation') {
+    return { label: 'Čeká na potvrzení', tone: 'warning' };
+  }
+  if (status === 'dispatching') {
+    return { label: 'Odesílá se', tone: 'neutral' };
+  }
+  if (status === 'completed') {
+    return { label: 'Dokončeno', tone: 'ok' };
+  }
+  if (status === 'failed') {
+    return { label: 'Selhalo', tone: 'blocked' };
+  }
+  if (status === 'canceled') {
+    return { label: 'Zrušeno', tone: 'blocked' };
+  }
+  return { label: 'Neznámý stav', tone: 'neutral' };
+};
+
+const resolvePlannerLegStatusMeta = (
+  statusRaw: string | null | undefined,
+): { label: string; tone: 'ok' | 'warning' | 'blocked' | 'neutral' } => {
+  const status = String(statusRaw ?? '').toLocaleLowerCase('cs-CZ');
+  if (status === 'scheduled') {
+    return { label: 'Naplánováno', tone: 'ok' };
+  }
+  if (status === 'sent') {
+    return { label: 'Odesláno', tone: 'ok' };
+  }
+  if (status === 'failed') {
+    return { label: 'Selhalo', tone: 'blocked' };
+  }
+  if (status === 'canceled') {
+    return { label: 'Zrušeno', tone: 'blocked' };
+  }
+  return { label: 'Neznámý stav', tone: 'neutral' };
+};
+
+const buildPlannerDraftFromActivePlan = (
+  activePlan: PlannerOpenResponse['activePlan'],
+): PlannerDraftState => {
+  if (!activePlan) {
+    return {
+      targetPlayerUsername: '',
+      targetVillageId: null,
+      legs: [],
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  const legs = [...(activePlan.legs ?? [])]
+    .sort((left, right) => Number(left.order ?? 0) - Number(right.order ?? 0))
+    .map((leg) => {
+      const units: Partial<Record<CommandUnitId, number>> = {};
+      for (const item of leg.units ?? []) {
+        const unitId = String(item.unitId ?? '') as CommandUnitId;
+        if (!COMMAND_UNIT_ORDER.includes(unitId)) {
+          continue;
+        }
+        const plannedAmount = Math.max(0, Math.floor(Number(item.plannedAmount ?? 0)));
+        if (plannedAmount <= 0) {
+          continue;
+        }
+        units[unitId] = plannedAmount;
+      }
+      return {
+        originVillageId: Math.max(0, Math.floor(Number(leg.originVillageId ?? 0))),
+        impactAtUtc: String(leg.impactAtUtc ?? ''),
+        units,
+      };
+    })
+    .filter((leg) => Number.isFinite(leg.originVillageId) && leg.originVillageId > 0);
+
+  const targetVillageId = Math.floor(Number(activePlan.plan.targetVillageId ?? 0));
+  return {
+    targetPlayerUsername: String(activePlan.plan.targetPlayerUsernameSnapshot ?? '').trim(),
+    targetVillageId: Number.isFinite(targetVillageId) && targetVillageId > 0 ? targetVillageId : null,
+    legs,
+    updatedAt: new Date().toISOString(),
+  };
+};
+
 const getErrorMessage = (error: unknown): string => {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -4157,6 +4511,8 @@ const ArmyPanel = ({
   recruitQueueOrders,
   settlements,
   currentUsername,
+  worldId,
+  isExpanded,
   onRecruit,
   onCancelRecruitment,
   onUpgradeBuilding,
@@ -4174,6 +4530,8 @@ const ArmyPanel = ({
   recruitQueueOrders: RecruitQueueOrder[];
   settlements: RegionSettlement[];
   currentUsername: string;
+  worldId: string | null;
+  isExpanded: boolean;
   onRecruit: (unit: Unit, amount: number) => Promise<boolean>;
   onCancelRecruitment: (order: RecruitQueueOrder) => void;
   onUpgradeBuilding: (building: Building) => void;
@@ -4191,12 +4549,33 @@ const ArmyPanel = ({
   noticeUnitId: string | null;
 }) => {
   const [recruitDraftAmounts, setRecruitDraftAmounts] = useState<Record<string, string>>({});
-  const [armyViewMode, setArmyViewMode] = useState<'selectedVillage' | 'multiVillage'>('selectedVillage');
+  const [armyViewMode, setArmyViewMode] = useState<'armadaPlanner' | 'selectedVillage' | 'multiVillage'>(
+    'armadaPlanner',
+  );
   const [multiVillageBuildingDraftById, setMultiVillageBuildingDraftById] = useState<Record<number, string>>({});
   const [multiVillageUnitDraftById, setMultiVillageUnitDraftById] = useState<Record<number, string>>({});
   const [multiVillageAmountDraftById, setMultiVillageAmountDraftById] = useState<Record<number, string>>({});
   const [multiVillageNoticeById, setMultiVillageNoticeById] = useState<Record<number, string>>({});
   const [multiVillagePendingById, setMultiVillagePendingById] = useState<Record<number, boolean>>({});
+  const [armyOverview, setArmyOverview] = useState<ArmyOverviewResponse | null>(null);
+  const [armyOverviewLoading, setArmyOverviewLoading] = useState(false);
+  const [armyOverviewError, setArmyOverviewError] = useState<string | null>(null);
+  const [plannerOpenSnapshot, setPlannerOpenSnapshot] = useState<PlannerOpenResponse | null>(null);
+  const [plannerOpenLoading, setPlannerOpenLoading] = useState(false);
+  const [plannerOpenError, setPlannerOpenError] = useState<string | null>(null);
+  const [plannerRefreshToken, setPlannerRefreshToken] = useState(0);
+  const [plannerDraft, setPlannerDraft] = useState<PlannerDraftState>({
+    targetPlayerUsername: '',
+    targetVillageId: null,
+    legs: [],
+    updatedAt: new Date().toISOString(),
+  });
+  const [plannerDraftDirty, setPlannerDraftDirty] = useState(false);
+  const [storedPlannerDraftAvailable, setStoredPlannerDraftAvailable] = useState<PlannerDraftState | null>(null);
+  const [plannerNoticeMessage, setPlannerNoticeMessage] = useState<string | null>(null);
+  const [plannerForceDraftMode, setPlannerForceDraftMode] = useState(false);
+  const [focusedPlannerLegOriginVillageId, setFocusedPlannerLegOriginVillageId] = useState<number | null>(null);
+  const [draggedPlannerLegOriginVillageId, setDraggedPlannerLegOriginVillageId] = useState<number | null>(null);
   const isRecruitMutationPending = recruitPendingUnitId != null;
 
   const lockedRecruitUnits = useMemo(
@@ -4379,9 +4758,761 @@ const ArmyPanel = ({
     ],
   );
 
+  const plannerConstraints = useMemo<PlannerConstraints>(
+    () => ({
+      maxLegs: Math.max(
+        1,
+        Math.floor(Number(plannerOpenSnapshot?.constraints?.maxLegs ?? DEFAULT_PLANNER_MAX_LEGS)),
+      ) as PlannerConstraints['maxLegs'],
+      minImpactGapMinutes: Math.max(
+        1,
+        Math.floor(
+          Number(plannerOpenSnapshot?.constraints?.minImpactGapMinutes ?? DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES),
+        ),
+      ) as PlannerConstraints['minImpactGapMinutes'],
+      leadTimeSec: Math.max(
+        0,
+        Math.floor(Number(plannerOpenSnapshot?.constraints?.leadTimeSec ?? DEFAULT_PLANNER_LEAD_TIME_SEC)),
+      ),
+      activePlansPerPlayerPerWorld: 1,
+    }),
+    [plannerOpenSnapshot?.constraints?.leadTimeSec, plannerOpenSnapshot?.constraints?.maxLegs, plannerOpenSnapshot?.constraints?.minImpactGapMinutes],
+  );
+  const plannerBannerText = String(plannerOpenSnapshot?.bannerText ?? DEFAULT_PLANNER_BANNER_TEXT);
+  const plannerActivePlan = plannerOpenSnapshot?.activePlan ?? null;
+  const plannerActivePlanStatusMeta = plannerActivePlan
+    ? resolvePlannerPlanStatusMeta(plannerActivePlan.plan.status)
+    : null;
+  const plannerCanReturnToDraftFromActivePlan =
+    plannerActivePlanStatusMeta?.tone === 'warning' || plannerActivePlanStatusMeta?.tone === 'blocked';
+  const plannerIsDraftMode = plannerActivePlan == null || plannerForceDraftMode;
+
+  useEffect(() => {
+    setPlannerDraft({
+      targetPlayerUsername: '',
+      targetVillageId: null,
+      legs: [],
+      updatedAt: new Date().toISOString(),
+    });
+    setPlannerDraftDirty(false);
+    setStoredPlannerDraftAvailable(worldId ? readStoredPlannerLastSessionDraft(currentUsername, worldId) : null);
+    setPlannerNoticeMessage(null);
+    setPlannerForceDraftMode(false);
+    setFocusedPlannerLegOriginVillageId(null);
+    setDraggedPlannerLegOriginVillageId(null);
+  }, [currentUsername, worldId]);
+
+  useEffect(() => {
+    if (!isExpanded || !worldId) {
+      return;
+    }
+
+    let cancelled = false;
+    setArmyOverviewLoading(true);
+    setArmyOverviewError(null);
+    void fetchArmyOverview(currentUsername, worldId)
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+        setArmyOverview(response);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setArmyOverviewError(getErrorMessage(error));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setArmyOverviewLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUsername, isExpanded, plannerRefreshToken, worldId]);
+
+  useEffect(() => {
+    if (!isExpanded || !worldId) {
+      return;
+    }
+
+    let cancelled = false;
+    setPlannerOpenLoading(true);
+    setPlannerOpenError(null);
+    void fetchPlannerOpen(currentUsername, worldId)
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+        setPlannerOpenSnapshot(response);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setPlannerOpenError(getErrorMessage(error));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setPlannerOpenLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUsername, isExpanded, plannerRefreshToken, worldId]);
+
+  const plannerVillageById = useMemo(
+    () => new Map((armyOverview?.villages ?? []).map((village) => [Number(village.villageId), village])),
+    [armyOverview?.villages],
+  );
+  const plannerTargetCandidates = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        username: string;
+        villages: RegionSettlement[];
+      }
+    >();
+    for (const settlement of settlements) {
+      const villageId = Number(settlement.villageId ?? 0);
+      const playerId = Number(settlement.playerId ?? 0);
+      const username = String(settlement.owner ?? '').trim();
+      if (!Number.isFinite(villageId) || villageId <= 0) {
+        continue;
+      }
+      if (!Number.isFinite(playerId) || playerId <= 0) {
+        continue;
+      }
+      if (!username) {
+        continue;
+      }
+      const comparableOwner = username.toLocaleLowerCase('cs-CZ');
+      const comparableCurrent = String(currentUsername ?? '').trim().toLocaleLowerCase('cs-CZ');
+      if (comparableOwner === comparableCurrent) {
+        continue;
+      }
+      if (settlement.kind === 'bot' || settlement.kind === 'abandoned' || settlement.relation === 'self') {
+        continue;
+      }
+      const key = comparableOwner;
+      const bucket = groups.get(key) ?? { username, villages: [] };
+      bucket.villages.push(settlement);
+      groups.set(key, bucket);
+    }
+
+    return [...groups.values()]
+      .filter((group) => group.villages.length === 1)
+      .map((group) => {
+        const village = group.villages[0];
+        return {
+          username: group.username,
+          villageId: Number(village.villageId),
+          villageName: String(village.name ?? ''),
+          playerId: Number(village.playerId ?? 0),
+          kingdom: String(village.kingdom ?? 'Neutral'),
+          coordX: Number(village.globalX ?? 0),
+          coordY: Number(village.globalY ?? 0),
+          settlement: village,
+        };
+      })
+      .sort((left, right) =>
+        left.username.localeCompare(right.username, 'cs-CZ', { sensitivity: 'base', numeric: true }),
+      );
+  }, [currentUsername, settlements]);
+  const plannerTargetByVillageId = useMemo(
+    () => new Map(plannerTargetCandidates.map((candidate) => [Number(candidate.villageId), candidate])),
+    [plannerTargetCandidates],
+  );
+  const plannerTargetByUsername = useMemo(
+    () =>
+      new Map(
+        plannerTargetCandidates.map((candidate) => [
+          candidate.username.toLocaleLowerCase('cs-CZ'),
+          candidate,
+        ]),
+      ),
+    [plannerTargetCandidates],
+  );
+
+  const normalizePlannerDraftStateWithMeta = useCallback(
+    (draft: PlannerDraftState): { draft: PlannerDraftState; meta: PlannerDraftNormalizationMeta } => {
+      const maxLegs = Math.max(1, Number(plannerConstraints.maxLegs ?? DEFAULT_PLANNER_MAX_LEGS));
+      const seenOrigins = new Set<number>();
+      const normalizedLegs: PlannerLegDraft[] = [];
+      let unitAmountsAdjusted = false;
+
+      for (const leg of draft.legs) {
+        if (normalizedLegs.length >= maxLegs) {
+          break;
+        }
+        const originVillageId = Math.floor(Number(leg.originVillageId ?? 0));
+        if (!Number.isFinite(originVillageId) || originVillageId <= 0 || seenOrigins.has(originVillageId)) {
+          continue;
+        }
+        const originVillage = plannerVillageById.get(originVillageId);
+        if (!originVillage) {
+          continue;
+        }
+        seenOrigins.add(originVillageId);
+        const allowedByUnitId = new Map(
+          (originVillage.units ?? []).map((unit) => [
+            String(unit.unitId),
+            Math.max(0, Math.floor(Number(unit.availableForPlanning ?? 0))),
+          ]),
+        );
+        const normalizedUnits: Partial<Record<CommandUnitId, number>> = {};
+        for (const unitId of COMMAND_UNIT_ORDER) {
+          const allowed = Math.max(0, Math.floor(Number(allowedByUnitId.get(unitId) ?? 0)));
+          const amount = Math.max(0, Math.floor(Number(leg.units?.[unitId] ?? 0)));
+          if (amount > 0 && allowed <= 0) {
+            unitAmountsAdjusted = true;
+            continue;
+          }
+          if (amount <= 0 || allowed <= 0) {
+            continue;
+          }
+          const nextAmount = Math.min(allowed, amount);
+          if (nextAmount !== amount) {
+            unitAmountsAdjusted = true;
+          }
+          normalizedUnits[unitId] = nextAmount;
+        }
+        normalizedLegs.push({
+          originVillageId,
+          impactAtUtc: String(leg.impactAtUtc ?? ''),
+          units: normalizedUnits,
+        });
+      }
+
+      const timelineNormalizedLegs = normalizePlannerLegTimeline(normalizedLegs, plannerConstraints);
+      const timelineAdjusted = timelineNormalizedLegs.some(
+        (leg, index) => String(leg.impactAtUtc) !== String(normalizedLegs[index]?.impactAtUtc ?? ''),
+      );
+      const targetVillageIdRaw = Number(draft.targetVillageId ?? 0);
+      const targetVillageId =
+        Number.isFinite(targetVillageIdRaw) && targetVillageIdRaw > 0 ? Math.floor(targetVillageIdRaw) : null;
+      const targetCandidate =
+        (targetVillageId != null ? plannerTargetByVillageId.get(targetVillageId) : null) ??
+        plannerTargetByUsername.get(String(draft.targetPlayerUsername ?? '').trim().toLocaleLowerCase('cs-CZ')) ??
+        null;
+      const sourceHasTarget =
+        (Number.isFinite(targetVillageIdRaw) && targetVillageIdRaw > 0) ||
+        String(draft.targetPlayerUsername ?? '').trim().length > 0;
+      const updatedAtMs = Date.parse(String(draft.updatedAt ?? ''));
+
+      return {
+        draft: {
+          targetPlayerUsername: targetCandidate?.username ?? '',
+          targetVillageId: targetCandidate?.villageId ?? null,
+          legs: timelineNormalizedLegs,
+          updatedAt: Number.isFinite(updatedAtMs)
+            ? new Date(updatedAtMs).toISOString()
+            : new Date().toISOString(),
+        },
+        meta: {
+          removedLegCount: Math.max(0, Number(draft.legs.length ?? 0) - timelineNormalizedLegs.length),
+          targetReset: sourceHasTarget && targetCandidate == null,
+          timelineAdjusted,
+          unitAmountsAdjusted,
+        },
+      };
+    },
+    [plannerConstraints, plannerTargetByUsername, plannerTargetByVillageId, plannerVillageById],
+  );
+
+  const normalizePlannerDraftState = useCallback(
+    (draft: PlannerDraftState): PlannerDraftState => normalizePlannerDraftStateWithMeta(draft).draft,
+    [normalizePlannerDraftStateWithMeta],
+  );
+
+  const buildPlannerNormalizationNoticeMessage = useCallback(
+    (meta: PlannerDraftNormalizationMeta): string | null => {
+      const details: string[] = [];
+      if (meta.removedLegCount > 0) {
+        details.push(`odebráno legů: ${meta.removedLegCount.toLocaleString('cs-CZ')}`);
+      }
+      if (meta.targetReset) {
+        details.push('cíl už není validní');
+      }
+      if (meta.unitAmountsAdjusted) {
+        details.push('počty jednotek byly upraveny podle dostupnosti');
+      }
+      if (meta.timelineAdjusted) {
+        details.push('časová osa byla srovnána podle minimálních mezer');
+      }
+      if (details.length <= 0) {
+        return null;
+      }
+      return `Koncept byl upraven podle aktuálních dat: ${details.join('; ')}.`;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (plannerActivePlan && !plannerForceDraftMode) {
+      return;
+    }
+    setPlannerDraft((previous) => {
+      const normalizedWithMeta = normalizePlannerDraftStateWithMeta(previous);
+      if (JSON.stringify(normalizedWithMeta.draft) === JSON.stringify(previous)) {
+        return previous;
+      }
+      const normalizationNotice = buildPlannerNormalizationNoticeMessage(normalizedWithMeta.meta);
+      if (normalizationNotice) {
+        setPlannerNoticeMessage(normalizationNotice);
+      }
+      return normalizedWithMeta.draft;
+    });
+  }, [
+    buildPlannerNormalizationNoticeMessage,
+    normalizePlannerDraftStateWithMeta,
+    plannerActivePlan,
+    plannerForceDraftMode,
+  ]);
+
+  useEffect(() => {
+    if (!worldId || !plannerDraftDirty || (!plannerIsDraftMode && plannerActivePlan)) {
+      return;
+    }
+    saveStoredPlannerLastSessionDraft(
+      currentUsername,
+      worldId,
+      normalizePlannerDraftState(plannerDraft),
+    );
+  }, [
+    currentUsername,
+    normalizePlannerDraftState,
+    plannerActivePlan,
+    plannerDraft,
+    plannerDraftDirty,
+    plannerIsDraftMode,
+    worldId,
+  ]);
+
+  const applyPlannerDraftMutation = useCallback(
+    (updater: (previous: PlannerDraftState) => PlannerDraftState) => {
+      setPlannerDraft((previous) => normalizePlannerDraftState(updater(previous)));
+      setPlannerDraftDirty(true);
+    },
+    [normalizePlannerDraftState],
+  );
+
+  const plannerSelectedOriginIds = useMemo(
+    () => new Set(plannerDraft.legs.map((leg) => Number(leg.originVillageId)).filter((villageId) => Number.isFinite(villageId) && villageId > 0)),
+    [plannerDraft.legs],
+  );
+  const armyOverviewVillages = useMemo(
+    () =>
+      (armyOverview?.villages ?? []).map((village) => ({
+        ...village,
+        plannerSelected: plannerSelectedOriginIds.has(Number(village.villageId)),
+      })),
+    [armyOverview?.villages, plannerSelectedOriginIds],
+  );
+
+  const plannerLegRows = useMemo(() => {
+    const targetCandidate = plannerDraft.targetVillageId != null ? plannerTargetByVillageId.get(plannerDraft.targetVillageId) ?? null : null;
+    return plannerDraft.legs.map((leg, index) => {
+      const originVillage = plannerVillageById.get(Number(leg.originVillageId)) ?? null;
+      const travelDurationSec =
+        originVillage && targetCandidate
+          ? calculatePlannerTravelDurationSec(
+              leg.units,
+              { coordX: originVillage.coordX, coordY: originVillage.coordY },
+              { globalX: targetCandidate.coordX, globalY: targetCandidate.coordY },
+            )
+          : MIN_ARMY_TRAVEL_DURATION_SEC;
+      const impactAtMs = Date.parse(String(leg.impactAtUtc ?? ''));
+      const sendAtUtc =
+        Number.isFinite(impactAtMs) ? new Date(impactAtMs - travelDurationSec * 1000).toISOString() : null;
+      const unitsTotal = COMMAND_UNIT_ORDER.reduce(
+        (sum, unitId) => sum + Math.max(0, Math.floor(Number(leg.units?.[unitId] ?? 0))),
+        0,
+      );
+      return {
+        key: Number(leg.originVillageId),
+        order: index + 1,
+        originVillage,
+        impactAtUtc: leg.impactAtUtc,
+        sendAtUtc,
+        travelDurationSec,
+        units: leg.units,
+        unitsTotal,
+      };
+    });
+  }, [plannerDraft.legs, plannerDraft.targetVillageId, plannerTargetByVillageId, plannerVillageById]);
+
+  const plannerValidation = useMemo(() => {
+    const issues: PlannerValidationIssue[] = [];
+    const nowMs = Date.now();
+    const leadTimeSec = Math.max(0, Number(plannerConstraints.leadTimeSec ?? DEFAULT_PLANNER_LEAD_TIME_SEC));
+    const minGapMinutes = Math.max(1, Number(plannerConstraints.minImpactGapMinutes ?? DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES));
+    if (!plannerDraft.targetPlayerUsername || plannerDraft.targetVillageId == null) {
+      issues.push({
+        code: 'missing_target',
+        severity: 'blocked',
+        message: 'Vyber cílového hráče s právě jedním lénem.',
+      });
+    }
+    if (plannerLegRows.length <= 0) {
+      issues.push({
+        code: 'missing_legs',
+        severity: 'blocked',
+        message: 'Přidej alespoň jedno vlastní léno do plánu.',
+      });
+    }
+    if (plannerLegRows.length > Number(plannerConstraints.maxLegs ?? DEFAULT_PLANNER_MAX_LEGS)) {
+      issues.push({
+        code: 'legs_over_limit',
+        severity: 'blocked',
+        message: `Maximální počet legů je ${Number(plannerConstraints.maxLegs ?? DEFAULT_PLANNER_MAX_LEGS)}.`,
+      });
+    }
+
+    let previousImpactMs: number | null = null;
+    for (const leg of plannerLegRows) {
+      if (!leg.originVillage) {
+        issues.push({
+          code: `origin_missing_${leg.key}`,
+          severity: 'blocked',
+          message: `Leg #${leg.order} odkazuje na nedostupné léno.`,
+          legOriginVillageId: leg.key,
+        });
+      }
+      if (leg.unitsTotal <= 0) {
+        issues.push({
+          code: `units_missing_${leg.key}`,
+          severity: 'blocked',
+          message: `Leg #${leg.order} musí mít vybrané jednotky.`,
+          legOriginVillageId: leg.key,
+        });
+      }
+      const impactAtMs = Date.parse(String(leg.impactAtUtc ?? ''));
+      if (!Number.isFinite(impactAtMs)) {
+        issues.push({
+          code: `impact_invalid_${leg.key}`,
+          severity: 'blocked',
+          message: `Leg #${leg.order} má neplatný čas dopadu.`,
+          legOriginVillageId: leg.key,
+        });
+        continue;
+      }
+      if (previousImpactMs != null && impactAtMs - previousImpactMs < minGapMinutes * 60_000) {
+        issues.push({
+          code: `impact_gap_${leg.key}`,
+          severity: 'blocked',
+          message: `Mezi dopady musí být minimálně ${minGapMinutes} minuta.`,
+          legOriginVillageId: leg.key,
+        });
+      }
+      previousImpactMs = impactAtMs;
+      if (leg.sendAtUtc) {
+        const sendAtMs = Date.parse(leg.sendAtUtc);
+        if (Number.isFinite(sendAtMs) && sendAtMs < nowMs + leadTimeSec * 1000) {
+          issues.push({
+            code: `lead_time_${leg.key}`,
+            severity: 'blocked',
+            message: `Leg #${leg.order} porušuje lead time (${Math.ceil(leadTimeSec / 60)} min).`,
+            legOriginVillageId: leg.key,
+          });
+        }
+      }
+    }
+
+    const hasBlocked = issues.some((issue) => issue.severity === 'blocked');
+    const hasWarning = issues.some((issue) => issue.severity === 'warning');
+    return {
+      status: hasBlocked ? 'blocked' : hasWarning ? 'warning' : 'ok',
+      issues,
+    };
+  }, [plannerConstraints.leadTimeSec, plannerConstraints.maxLegs, plannerConstraints.minImpactGapMinutes, plannerDraft.targetPlayerUsername, plannerDraft.targetVillageId, plannerLegRows]);
+
+  const plannerValidationIssuesByLegOriginVillageId = useMemo(() => {
+    const byOriginVillageId = new Map<number, PlannerValidationIssue[]>();
+    for (const issue of plannerValidation.issues) {
+      const originVillageId = Number(issue.legOriginVillageId ?? 0);
+      if (!Number.isFinite(originVillageId) || originVillageId <= 0) {
+        continue;
+      }
+      const bucket = byOriginVillageId.get(originVillageId) ?? [];
+      bucket.push(issue);
+      byOriginVillageId.set(originVillageId, bucket);
+    }
+    return byOriginVillageId;
+  }, [plannerValidation.issues]);
+
+  const handleRefreshArmadaAndPlanner = useCallback(() => {
+    setPlannerRefreshToken((previous) => previous + 1);
+  }, []);
+
+  const handleRestorePlannerDraft = useCallback(() => {
+    if (!storedPlannerDraftAvailable || plannerActivePlan) {
+      return;
+    }
+    const restoredWithMeta = normalizePlannerDraftStateWithMeta(storedPlannerDraftAvailable);
+    const restored = restoredWithMeta.draft;
+    setPlannerDraft(restored);
+    setPlannerDraftDirty(true);
+    setPlannerNoticeMessage(
+      buildPlannerNormalizationNoticeMessage(restoredWithMeta.meta) ??
+        'Poslední lokální koncept byl obnoven.',
+    );
+    setPlannerForceDraftMode(true);
+    setFocusedPlannerLegOriginVillageId(restored.legs[0]?.originVillageId ?? null);
+  }, [
+    buildPlannerNormalizationNoticeMessage,
+    normalizePlannerDraftStateWithMeta,
+    plannerActivePlan,
+    storedPlannerDraftAvailable,
+  ]);
+
+  const handlePlannerBackToActivePlan = useCallback(() => {
+    if (!plannerActivePlan) {
+      return;
+    }
+    setPlannerForceDraftMode(false);
+    setPlannerNoticeMessage('Zobrazen je aktivní serverový plán.');
+  }, [plannerActivePlan]);
+
+  const handlePlannerReturnToDraft = useCallback(() => {
+    if (!plannerActivePlan) {
+      return;
+    }
+    const draftFromActivePlan = buildPlannerDraftFromActivePlan(plannerActivePlan);
+    const normalizedWithMeta = normalizePlannerDraftStateWithMeta(draftFromActivePlan);
+    const nextDraft = normalizedWithMeta.draft;
+    setPlannerDraft(nextDraft);
+    setPlannerDraftDirty(true);
+    setPlannerForceDraftMode(true);
+    setFocusedPlannerLegOriginVillageId(nextDraft.legs[0]?.originVillageId ?? null);
+    setPlannerNoticeMessage(
+      buildPlannerNormalizationNoticeMessage(normalizedWithMeta.meta) ??
+        'Do lokálního konceptu byla načtena poslední serverová verze plánu.',
+    );
+  }, [buildPlannerNormalizationNoticeMessage, normalizePlannerDraftStateWithMeta, plannerActivePlan]);
+
+  const handleClearPlannerDraft = useCallback(() => {
+    setPlannerDraft({
+      targetPlayerUsername: '',
+      targetVillageId: null,
+      legs: [],
+      updatedAt: new Date().toISOString(),
+    });
+    setPlannerDraftDirty(true);
+    setPlannerForceDraftMode(true);
+    setFocusedPlannerLegOriginVillageId(null);
+    setPlannerNoticeMessage('Koncept byl vrácen do prázdného stavu.');
+  }, []);
+
+  const handleArmadaVillageCardClick = useCallback(
+    (village: ArmyVillageSummary) => {
+      const villageId = Math.floor(Number(village.villageId));
+      if (!Number.isFinite(villageId) || villageId <= 0) {
+        return;
+      }
+      if (plannerActivePlan && !plannerForceDraftMode) {
+        setPlannerNoticeMessage('Aktivní serverový plán má prioritu. Nejprve dokonči nebo zruš aktivní plán.');
+        return;
+      }
+
+      const existingLegIndex = plannerDraft.legs.findIndex((leg) => Number(leg.originVillageId) === villageId);
+      if (existingLegIndex >= 0) {
+        setFocusedPlannerLegOriginVillageId(villageId);
+        setPlannerNoticeMessage('Toto léno je už v konceptu. Fokus přesunut na existující leg.');
+        return;
+      }
+
+      if (plannerDraft.legs.length >= Number(plannerConstraints.maxLegs ?? DEFAULT_PLANNER_MAX_LEGS)) {
+        setPlannerNoticeMessage(`Maximální počet legů je ${Number(plannerConstraints.maxLegs ?? DEFAULT_PLANNER_MAX_LEGS)}.`);
+        return;
+      }
+
+      const lastImpactAtUtc = plannerDraft.legs[plannerDraft.legs.length - 1]?.impactAtUtc ?? null;
+      const defaultFirstImpactAtUtc = roundIsoToWholeMinute(
+        new Date(Date.now() + Number(plannerConstraints.leadTimeSec ?? DEFAULT_PLANNER_LEAD_TIME_SEC) * 1000).toISOString(),
+      );
+      const nextImpactAtUtc =
+        lastImpactAtUtc != null
+          ? addMinutesToIso(lastImpactAtUtc, Number(plannerConstraints.minImpactGapMinutes ?? DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES))
+          : defaultFirstImpactAtUtc;
+
+      applyPlannerDraftMutation((previous) => ({
+        ...previous,
+        legs: [
+          ...previous.legs,
+          {
+            originVillageId: villageId,
+            impactAtUtc: nextImpactAtUtc,
+            units: {},
+          },
+        ],
+        updatedAt: new Date().toISOString(),
+      }));
+      setFocusedPlannerLegOriginVillageId(villageId);
+      setPlannerNoticeMessage(`Léno ${village.villageName} bylo přidáno do plánovače.`);
+    },
+    [
+      applyPlannerDraftMutation,
+      plannerActivePlan,
+      plannerConstraints.leadTimeSec,
+      plannerConstraints.maxLegs,
+      plannerConstraints.minImpactGapMinutes,
+      plannerDraft.legs,
+      plannerForceDraftMode,
+    ],
+  );
+
+  const handlePlannerTargetChange = useCallback(
+    (targetVillageIdRaw: number | null) => {
+      const targetVillageId =
+        targetVillageIdRaw != null && Number.isFinite(Number(targetVillageIdRaw))
+          ? Math.floor(Number(targetVillageIdRaw))
+          : null;
+      const targetCandidate =
+        targetVillageId != null ? plannerTargetByVillageId.get(targetVillageId) ?? null : null;
+      applyPlannerDraftMutation((previous) => ({
+        ...previous,
+        targetPlayerUsername: targetCandidate?.username ?? '',
+        targetVillageId: targetCandidate?.villageId ?? null,
+        updatedAt: new Date().toISOString(),
+      }));
+    },
+    [applyPlannerDraftMutation, plannerTargetByVillageId],
+  );
+
+  const handlePlannerLegRemove = useCallback(
+    (originVillageIdRaw: number) => {
+      const originVillageId = Math.floor(Number(originVillageIdRaw));
+      if (!Number.isFinite(originVillageId) || originVillageId <= 0) {
+        return;
+      }
+      applyPlannerDraftMutation((previous) => ({
+        ...previous,
+        legs: previous.legs.filter((leg) => Number(leg.originVillageId) !== originVillageId),
+        updatedAt: new Date().toISOString(),
+      }));
+      setFocusedPlannerLegOriginVillageId((previous) =>
+        previous === originVillageId ? null : previous,
+      );
+    },
+    [applyPlannerDraftMutation],
+  );
+
+  const handlePlannerLegImpactShift = useCallback(
+    (originVillageIdRaw: number, deltaMinutes: number) => {
+      const originVillageId = Math.floor(Number(originVillageIdRaw));
+      if (!Number.isFinite(originVillageId) || originVillageId <= 0) {
+        return;
+      }
+      applyPlannerDraftMutation((previous) => ({
+        ...previous,
+        legs: previous.legs.map((leg) =>
+          Number(leg.originVillageId) === originVillageId
+            ? {
+                ...leg,
+                impactAtUtc: addMinutesToIso(leg.impactAtUtc, deltaMinutes),
+              }
+            : leg,
+        ),
+        updatedAt: new Date().toISOString(),
+      }));
+      setFocusedPlannerLegOriginVillageId(originVillageId);
+    },
+    [applyPlannerDraftMutation],
+  );
+
+  const handlePlannerLegUnitAmountChange = useCallback(
+    (originVillageIdRaw: number, unitId: CommandUnitId, value: string) => {
+      const originVillageId = Math.floor(Number(originVillageIdRaw));
+      if (!Number.isFinite(originVillageId) || originVillageId <= 0) {
+        return;
+      }
+      const originVillage = plannerVillageById.get(originVillageId);
+      if (!originVillage) {
+        return;
+      }
+      const unitSummary =
+        originVillage.units.find((unit) => String(unit.unitId) === String(unitId)) ?? null;
+      const maxAllowed = Math.max(0, Math.floor(Number(unitSummary?.availableForPlanning ?? 0)));
+      const requestedAmount = Math.max(0, Math.floor(Number(value)));
+      const nextAmount = Math.min(maxAllowed, requestedAmount);
+      applyPlannerDraftMutation((previous) => ({
+        ...previous,
+        legs: previous.legs.map((leg) => {
+          if (Number(leg.originVillageId) !== originVillageId) {
+            return leg;
+          }
+          const nextUnits: Partial<Record<CommandUnitId, number>> = { ...(leg.units ?? {}) };
+          if (nextAmount <= 0) {
+            delete nextUnits[unitId];
+          } else {
+            nextUnits[unitId] = nextAmount;
+          }
+          return {
+            ...leg,
+            units: nextUnits,
+          };
+        }),
+        updatedAt: new Date().toISOString(),
+      }));
+      setFocusedPlannerLegOriginVillageId(originVillageId);
+    },
+    [applyPlannerDraftMutation, plannerVillageById],
+  );
+
+  const handlePlannerLegDrop = useCallback(
+    (targetOriginVillageIdRaw: number) => {
+      const draggedOriginVillageId = Number(draggedPlannerLegOriginVillageId);
+      const targetOriginVillageId = Number(targetOriginVillageIdRaw);
+      if (
+        !Number.isFinite(draggedOriginVillageId) ||
+        draggedOriginVillageId <= 0 ||
+        !Number.isFinite(targetOriginVillageId) ||
+        targetOriginVillageId <= 0 ||
+        draggedOriginVillageId === targetOriginVillageId
+      ) {
+        return;
+      }
+      applyPlannerDraftMutation((previous) => {
+        const sourceIndex = previous.legs.findIndex(
+          (leg) => Number(leg.originVillageId) === Math.floor(draggedOriginVillageId),
+        );
+        const targetIndex = previous.legs.findIndex(
+          (leg) => Number(leg.originVillageId) === Math.floor(targetOriginVillageId),
+        );
+        if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+          return previous;
+        }
+        const nextLegs = [...previous.legs];
+        const [movedLeg] = nextLegs.splice(sourceIndex, 1);
+        nextLegs.splice(targetIndex, 0, movedLeg);
+        return {
+          ...previous,
+          legs: nextLegs,
+          updatedAt: new Date().toISOString(),
+        };
+      });
+      setFocusedPlannerLegOriginVillageId(Math.floor(draggedOriginVillageId));
+      setDraggedPlannerLegOriginVillageId(null);
+    },
+    [applyPlannerDraftMutation, draggedPlannerLegOriginVillageId],
+  );
+
   return (
     <div className="panel-stack">
       <section className="army-panel-tabs">
+        <button
+          type="button"
+          className={`secondary-action ${armyViewMode === 'armadaPlanner' ? 'is-active' : ''}`}
+          onClick={() => setArmyViewMode('armadaPlanner')}
+        >
+          Armada + plánovač
+        </button>
         <button
           type="button"
           className={`secondary-action ${armyViewMode === 'selectedVillage' ? 'is-active' : ''}`}
@@ -4397,7 +5528,343 @@ const ArmyPanel = ({
           Správa všech lén
         </button>
       </section>
-      {armyViewMode === 'multiVillage' ? (
+      {armyViewMode === 'armadaPlanner' ? (
+        <section className="army-panel-view is-enter armada-planner-view">
+          <header className="armada-planner-header">
+            <div>
+              <h3>Armada</h3>
+              <p>Read-only souhrn vlastních lén v aktuálním světě. Klik na kartu přidá léno do plánovače.</p>
+            </div>
+            <button type="button" className="secondary-action" onClick={handleRefreshArmadaAndPlanner}>
+              Obnovit data
+            </button>
+          </header>
+          <p className="row-help">Utocne a obranne prikazy a presuny jednotek</p>
+          {armyOverviewError ? <p className="panel-feedback">{armyOverviewError}</p> : null}
+          {plannerOpenError ? <p className="panel-feedback">{plannerOpenError}</p> : null}
+          {plannerNoticeMessage ? <p className="panel-feedback">{plannerNoticeMessage}</p> : null}
+          {armyOverviewLoading ? <p>Načítám armádní přehled…</p> : null}
+          {!armyOverviewLoading && armyOverviewVillages.length <= 0 ? (
+            <p>V tomto světě zatím nemáš žádná dostupná léna.</p>
+          ) : null}
+          {armyOverviewVillages.length > 0 ? (
+            <ul className="armada-overview-grid">
+              {armyOverviewVillages.map((village) => (
+                <li key={`armada-overview-${village.villageId}`}>
+                  <button
+                    type="button"
+                    className={`armada-village-card ${
+                      village.plannerSelected ? 'is-selected' : ''
+                    }`}
+                    onClick={() => handleArmadaVillageCardClick(village)}
+                  >
+                    <div className="commands-item-line">
+                      <strong>{village.villageName}</strong>
+                      <span>
+                        {village.coordX}|{village.coordY}
+                      </span>
+                    </div>
+                    <small>
+                      Království: {village.kingdom} · Jednotky {village.totalOwnUnits.toLocaleString('cs-CZ')} (
+                      {village.totalSupportUnits.toLocaleString('cs-CZ')})
+                    </small>
+                    <div className="armada-unit-pill-row">
+                      {village.units.map((unit) => (
+                        <span
+                          key={`armada-pill-${village.villageId}-${unit.unitId}`}
+                          className={`armada-unit-pill ${
+                            Number(unit.availableForPlanning ?? 0) <= 0 ? 'is-passive' : ''
+                          }`}
+                        >
+                          <span>{getUnitMetaById(unit.unitId).fallbackName}</span>
+                          <strong>{unit.visibleLabel}</strong>
+                        </span>
+                      ))}
+                    </div>
+                    <span className="armada-card-action">Přidat do plánovače</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          <section className="planner-v1-shell">
+            <header className="planner-v1-header">
+              <h3>Planovač v1</h3>
+              <small>
+                max legů {Number(plannerConstraints.maxLegs)} · min mezera{' '}
+                {Number(plannerConstraints.minImpactGapMinutes)} min · lead time{' '}
+                {Math.ceil(Number(plannerConstraints.leadTimeSec) / 60)} min
+              </small>
+            </header>
+            <p className="planner-v1-banner">{plannerBannerText}</p>
+            {plannerOpenLoading ? <p>Načítám planner…</p> : null}
+            {!plannerIsDraftMode && plannerActivePlan ? (
+              <article className="planner-active-plan">
+                <h4>Aktivní serverový plán</h4>
+                <p>
+                  Cíl: {plannerActivePlan.plan.targetPlayerUsernameSnapshot} ·{' '}
+                  {plannerActivePlan.plan.targetVillageNameSnapshot}
+                </p>
+                <p className={`planner-plan-status is-${plannerActivePlanStatusMeta?.tone ?? 'neutral'}`}>
+                  Stav: {plannerActivePlanStatusMeta?.label ?? plannerActivePlan.plan.status} · revize{' '}
+                  {plannerActivePlan.plan.revision}
+                </p>
+                <ul className="planner-active-leg-list">
+                  {plannerActivePlan.legs.map((leg) => {
+                    const legStatusMeta = resolvePlannerLegStatusMeta(leg.status);
+                    return (
+                      <li
+                        key={`planner-active-leg-${leg.id}`}
+                        className={`planner-active-leg is-${legStatusMeta.tone}`}
+                      >
+                        <p>
+                          #{leg.order} · {leg.originVillageNameSnapshot} · dopad{' '}
+                          {formatDateTimePragueLabel(leg.impactAtUtc)} · odeslání{' '}
+                          {formatDateTimePragueLabel(leg.sendAtUtc)}
+                        </p>
+                        <p className="planner-active-leg-status">
+                          Stav legu: {legStatusMeta.label}
+                        </p>
+                        {leg.failMessage ? (
+                          <p className="planner-active-leg-fail">
+                            Fail detail: {leg.failMessage}
+                            {leg.failCode ? ` (${leg.failCode})` : ''}
+                          </p>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+                <p className="row-help">
+                  Aktivní serverový plán má prioritu nad lokálním draftem.
+                </p>
+                {plannerCanReturnToDraftFromActivePlan ? (
+                  <div className="activity-item-actions">
+                    <button type="button" className="secondary-action" onClick={handlePlannerReturnToDraft}>
+                      Zpet do konceptu
+                    </button>
+                  </div>
+                ) : null}
+              </article>
+            ) : (
+              <>
+                {plannerActivePlan && plannerForceDraftMode ? (
+                  <div className="planner-restore-callout">
+                    <p>
+                      Pracuješ v lokálním konceptu. Aktivní serverový plán zůstává autoritativní, dokud ho výslovně
+                      nezměníš.
+                    </p>
+                    <div className="activity-item-actions">
+                      <button type="button" className="secondary-action" onClick={handlePlannerBackToActivePlan}>
+                        Zobrazit aktivní plán
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                {storedPlannerDraftAvailable &&
+                plannerDraft.legs.length <= 0 &&
+                plannerDraft.targetVillageId == null &&
+                !plannerDraft.targetPlayerUsername ? (
+                  <div className="planner-restore-callout">
+                    <p>Byl nalezen poslední lokální koncept.</p>
+                    <small className="row-help">
+                      Naposledy uložen: {formatDateTimePragueLabel(storedPlannerDraftAvailable.updatedAt)}
+                    </small>
+                    <button type="button" className="secondary-action" onClick={handleRestorePlannerDraft}>
+                      Obnovit poslední koncept
+                    </button>
+                  </div>
+                ) : null}
+
+                <label className="planner-target-picker">
+                  <span>Cíl (hráč s právě jedním lénem)</span>
+                  <select
+                    value={
+                      plannerDraft.targetVillageId != null && Number.isFinite(plannerDraft.targetVillageId)
+                        ? String(plannerDraft.targetVillageId)
+                        : ''
+                    }
+                    onChange={(event) => {
+                      const nextVillageId = Number(event.target.value);
+                      handlePlannerTargetChange(Number.isFinite(nextVillageId) && nextVillageId > 0 ? nextVillageId : null);
+                    }}
+                  >
+                    <option value="">Vyber cílového hráče</option>
+                    {plannerTargetCandidates.map((candidate) => (
+                      <option key={`planner-target-${candidate.villageId}`} value={candidate.villageId}>
+                        {candidate.username} · {candidate.villageName} ({candidate.coordX}|{candidate.coordY})
+                      </option>
+                    ))}
+                  </select>
+                  {plannerTargetCandidates.length <= 0 ? (
+                    <small className="row-help">
+                      V tomto světě zatím není dostupný hráč s právě jedním lénem.
+                    </small>
+                  ) : null}
+                </label>
+
+                <div className="planner-leg-list-wrap">
+                  <h4>Legy útoku</h4>
+                  {plannerLegRows.length <= 0 ? (
+                    <p>
+                      Prázdný koncept. Klikni na kartu léna v Armadě a přidej první leg.
+                    </p>
+                  ) : (
+                    <ul className="planner-leg-list">
+                      {plannerLegRows.map((legRow) => {
+                        const legIssues =
+                          plannerValidationIssuesByLegOriginVillageId.get(legRow.key) ?? [];
+                        const legIssueTone = legIssues.some((issue) => issue.severity === 'blocked')
+                          ? 'has-blocked'
+                          : legIssues.some((issue) => issue.severity === 'warning')
+                            ? 'has-warning'
+                            : '';
+                        return (
+                          <li
+                            key={`planner-leg-${legRow.key}`}
+                            draggable
+                            onDragStart={() => setDraggedPlannerLegOriginVillageId(legRow.key)}
+                            onDragOver={(event) => event.preventDefault()}
+                            onDrop={(event) => {
+                              event.preventDefault();
+                              handlePlannerLegDrop(legRow.key);
+                            }}
+                            className={`planner-leg-card ${focusedPlannerLegOriginVillageId === legRow.key ? 'is-focused' : ''} ${legIssueTone}`}
+                          >
+                            <header>
+                              <div>
+                                <strong>
+                                  #{legRow.order} · {legRow.originVillage?.villageName ?? `Léno #${legRow.key}`}
+                                </strong>
+                                <small>
+                                  {legRow.originVillage?.coordX ?? 0}|{legRow.originVillage?.coordY ?? 0} ·
+                                  tahem přetáhni pro změnu pořadí
+                                </small>
+                              </div>
+                              <button
+                                type="button"
+                                className="inline-cancel-button"
+                                onClick={() => handlePlannerLegRemove(legRow.key)}
+                                title="Odebrat leg"
+                                aria-label="Odebrat leg"
+                              >
+                                ✕
+                              </button>
+                            </header>
+                            <div className="planner-impact-controls">
+                              <span>Dopad (Praha): {formatDateTimePragueLabel(legRow.impactAtUtc)}</span>
+                              <div>
+                                <button type="button" className="secondary-action compact" onClick={() => handlePlannerLegImpactShift(legRow.key, -5)}>
+                                  -5m
+                                </button>
+                                <button type="button" className="secondary-action compact" onClick={() => handlePlannerLegImpactShift(legRow.key, -1)}>
+                                  -1m
+                                </button>
+                                <button type="button" className="secondary-action compact" onClick={() => handlePlannerLegImpactShift(legRow.key, 1)}>
+                                  +1m
+                                </button>
+                                <button type="button" className="secondary-action compact" onClick={() => handlePlannerLegImpactShift(legRow.key, 5)}>
+                                  +5m
+                                </button>
+                              </div>
+                            </div>
+                            <small>
+                              Odeslání (Praha): {formatDateTimePragueLabel(legRow.sendAtUtc)} · cesta{' '}
+                              {formatDurationLabel(legRow.travelDurationSec)}
+                            </small>
+                            {legIssues.length > 0 ? (
+                              <ul className="planner-leg-issues">
+                                {legIssues.map((issue) => (
+                                  <li key={`planner-leg-issue-${issue.code}`} className={`is-${issue.severity}`}>
+                                    {issue.message}
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : null}
+                            <div className="planner-leg-unit-grid">
+                              {COMMAND_UNIT_ORDER.map((unitId) => {
+                                const unitSummary =
+                                  legRow.originVillage?.units.find((unit) => String(unit.unitId) === unitId) ?? null;
+                                const availableForPlanning = Math.max(
+                                  0,
+                                  Math.floor(Number(unitSummary?.availableForPlanning ?? 0)),
+                                );
+                                if (availableForPlanning <= 0) {
+                                  return null;
+                                }
+                                return (
+                                  <label key={`planner-leg-unit-${legRow.key}-${unitId}`}>
+                                    <span>
+                                      {getUnitMetaById(unitId).fallbackName} · max{' '}
+                                      {availableForPlanning.toLocaleString('cs-CZ')}
+                                    </span>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      max={availableForPlanning}
+                                      step={1}
+                                      value={String(Math.max(0, Math.floor(Number(legRow.units[unitId] ?? 0))))}
+                                      onChange={(event) =>
+                                        handlePlannerLegUnitAmountChange(legRow.key, unitId, event.target.value)
+                                      }
+                                    />
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+
+                <section className="planner-summary-step">
+                  <h4>Souhrn konceptu</h4>
+                  <p className={`planner-summary-status is-${plannerValidation.status}`}>
+                    Stav konceptu: {plannerValidation.status === 'ok' ? 'validní' : plannerValidation.status}
+                  </p>
+                  <p>
+                    Cíl:{' '}
+                    {plannerDraft.targetVillageId != null
+                      ? `${plannerDraft.targetPlayerUsername} (${plannerTargetByVillageId.get(plannerDraft.targetVillageId)?.coordX ?? 0}|${
+                          plannerTargetByVillageId.get(plannerDraft.targetVillageId)?.coordY ?? 0
+                        })`
+                      : 'nevybrán'}
+                  </p>
+                  <ul>
+                    {plannerLegRows.map((leg) => (
+                      <li key={`planner-summary-${leg.key}`}>
+                        #{leg.order} · {leg.originVillage?.villageName ?? `Léno #${leg.key}`} · dopad{' '}
+                        {formatDateTimePragueLabel(leg.impactAtUtc)} · odeslání{' '}
+                        {formatDateTimePragueLabel(leg.sendAtUtc)} · jednotky{' '}
+                        {leg.unitsTotal.toLocaleString('cs-CZ')}
+                      </li>
+                    ))}
+                  </ul>
+                  {plannerValidation.issues.length > 0 ? (
+                    <ul className="planner-validation-list">
+                      {plannerValidation.issues.map((issue) => (
+                        <li key={`planner-issue-${issue.code}`} className={`is-${issue.severity}`}>
+                          {issue.message}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="row-help">Koncept je validní pro v1 guardrails.</p>
+                  )}
+                  <div className="activity-item-actions">
+                    <button type="button" className="secondary-action" onClick={handleClearPlannerDraft}>
+                      Zpet do konceptu
+                    </button>
+                  </div>
+                </section>
+              </>
+            )}
+          </section>
+        </section>
+      ) : armyViewMode === 'multiVillage' ? (
         <section className="army-panel-view is-enter">
           <h3>Správa všech lén</h3>
           <p>
@@ -17026,6 +18493,8 @@ export const GamePage = () => {
             recruitQueueOrders={recruitQueueOrders}
             settlements={mapSettlements}
             currentUsername={username}
+            worldId={selectedWorldId}
+            isExpanded={panel.expanded}
             onRecruit={handleRecruit}
             onCancelRecruitment={handleCancelRecruitment}
             onUpgradeBuilding={handleBuildingUpgrade}

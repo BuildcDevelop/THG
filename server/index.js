@@ -17,7 +17,9 @@ import {
   authenticatePlayer,
   createAbandonedVillages,
   conquerVillage,
+  getArmyOverview,
   getBattleReportSummary,
+  getPlannerOpenSnapshot,
   getPlayerNotificationSummary,
   getVillageSnapshot,
   getWorldMapSnapshot,
@@ -465,6 +467,34 @@ app.use('/api/v1', (req, _res, next) => {
 
   req.authSession = session;
   next();
+});
+
+app.get('/api/v1/army/overview', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.query.worldId);
+    const data = await executeWithReadOperation(() => getArmyOverview(username, worldId));
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.get('/api/v1/planner/open', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.query.worldId);
+    const data = await executeWithReadOperation(() => getPlannerOpenSnapshot(username, worldId));
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
 });
 
 app.get('/api/v1/activity', async (req, res, next) => {

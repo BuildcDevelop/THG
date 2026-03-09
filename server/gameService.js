@@ -112,6 +112,13 @@ const WORLD_REGION_BY_ID = new Map(Object.values(WORLD_REGIONS).map((region) => 
 const KNIGHT_UNIT_ID = 'knight';
 const SCOUT_UNIT_ID = 'scout';
 const MERCENARY_UNIT_ID = 'mercenary';
+const ARMY_OVERVIEW_UNITS_ORDER = UNIT_ORDER.filter((unitId) => unitId !== MERCENARY_UNIT_ID);
+const PLANNER_ALLOWED_ATTACK_UNIT_IDS = new Set(['militia', 'archer', 'cavalry', 'scout', 'knight', 'ram']);
+const PLANNER_BANNER_TEXT = 'Planovac je zatim mozne vyuzit jen pro jeden cil z vice len.';
+const PLANNER_TIMEZONE = 'Europe/Prague';
+const PLANNER_MAX_LEGS = 10;
+const PLANNER_MIN_IMPACT_GAP_MINUTES = 1;
+const PLANNER_LEAD_TIME_SEC = 5 * 60;
 const KNIGHT_RECALL_REFUND = { wood: 1000, stone: 1000, iron: 1000 };
 const COMMAND_CANCEL_MAX_PROGRESS = 1 / 3;
 const NIGHT_MODE_START_HOUR = 0;
@@ -967,6 +974,49 @@ const selectRecentAttackTargetsByPlayerRegionStmt = db.prepare(
      AND julianday(m.started_at) >= julianday('now', '-7 days')
    GROUP BY m.target_village_id, tv.name, tv.coord_x, tv.coord_y
    ORDER BY lastIssuedAt DESC, m.target_village_id DESC
+   LIMIT 24`,
+);
+const selectStationedSupportUnitTotalsByOwnerRegionStmt = db.prepare(
+  `SELECT
+      m.target_village_id AS targetVillageId,
+      mu.unit_id AS unitId,
+      COALESCE(SUM(mu.amount), 0) AS supportAmount
+   FROM army_movements m
+   INNER JOIN villages tv ON tv.id = m.target_village_id
+   INNER JOIN army_movement_units mu ON mu.movement_id = m.id
+   WHERE m.status = 'stationed'
+     AND m.command_type = 'support'
+     AND tv.player_id = ?
+     AND tv.region = ?
+   GROUP BY m.target_village_id, mu.unit_id`,
+);
+const selectRecentPlannerTargetsByPlayerRegionStmt = db.prepare(
+  `SELECT
+      m.target_village_id AS targetVillageId,
+      MAX(m.started_at) AS lastUsedAt,
+      tv.name AS targetVillageName,
+      tv.kingdom AS targetKingdom,
+      tv.coord_x AS targetCoordX,
+      tv.coord_y AS targetCoordY,
+      tv.player_id AS targetPlayerId,
+      tp.username AS targetPlayerUsername
+   FROM army_movements m
+   INNER JOIN villages tv ON tv.id = m.target_village_id
+   INNER JOIN players tp ON tp.id = tv.player_id
+   WHERE m.player_id = ?
+     AND m.command_type = 'attack'
+     AND tv.region = ?
+     AND tp.is_bot = 0
+     AND tp.username NOT GLOB '__abandoned_ai__*'
+   GROUP BY
+      m.target_village_id,
+      tv.name,
+      tv.kingdom,
+      tv.coord_x,
+      tv.coord_y,
+      tv.player_id,
+      tp.username
+   ORDER BY lastUsedAt DESC, m.target_village_id DESC
    LIMIT 24`,
 );
 const selectStationedSupportMovementsByPlayerStmt = db.prepare(
@@ -8377,6 +8427,123 @@ export const listAdminPlayers = () => {
     coordY: player.coordY == null ? 0 : Number(player.coordY),
     createdAt: player.createdAt,
   }));
+};
+
+const buildVillageSortLabel = (village) => {
+  const villageName = String(village?.name ?? '').trim();
+  const coordX = Number(village?.coordX ?? 0);
+  const coordY = Number(village?.coordY ?? 0);
+  return `${villageName} (${coordX}|${coordY})`;
+};
+
+const toPlannerRecentTargets = (playerId, region) =>
+  selectRecentPlannerTargetsByPlayerRegionStmt
+    .all(Number(playerId), Number(region))
+    .map((row) => ({
+      targetPlayerId: Number(row.targetPlayerId),
+      targetPlayerUsername: String(row.targetPlayerUsername ?? ''),
+      targetVillageId: Number(row.targetVillageId),
+      targetVillageName: String(row.targetVillageName ?? ''),
+      targetKingdom: String(row.targetKingdom ?? 'Neutral'),
+      coordX: Number(row.targetCoordX),
+      coordY: Number(row.targetCoordY),
+      lastUsedAt: String(row.lastUsedAt ?? nowIso()),
+    }))
+    .filter(
+      (row) =>
+        Number.isFinite(row.targetPlayerId) &&
+        row.targetPlayerId > 0 &&
+        Number.isFinite(row.targetVillageId) &&
+        row.targetVillageId > 0 &&
+        row.targetPlayerUsername.length > 0,
+    );
+
+export const getArmyOverview = (username = 'Hayato', worldId = null) => {
+  const { player, world } = requireVillageForUser(username, null, worldId, 'center');
+  const ownVillages = selectVillagesByPlayerAndRegionStmt.all(Number(player.id), Number(world.region));
+  const stationedSupportRows = selectStationedSupportUnitTotalsByOwnerRegionStmt.all(
+    Number(player.id),
+    Number(world.region),
+  );
+  const supportAmountByVillageUnitKey = new Map();
+  for (const row of stationedSupportRows) {
+    const targetVillageId = Number(row.targetVillageId);
+    const unitId = String(row.unitId ?? '');
+    const supportAmount = Math.max(0, Math.floor(Number(row.supportAmount ?? 0)));
+    if (!Number.isFinite(targetVillageId) || targetVillageId <= 0 || !unitId) {
+      continue;
+    }
+    supportAmountByVillageUnitKey.set(`${targetVillageId}:${unitId}`, supportAmount);
+  }
+
+  const villages = ownVillages
+    .map((villageRow) => {
+      const villageId = Number(villageRow.id);
+      const unitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(villageId));
+      const units = ARMY_OVERVIEW_UNITS_ORDER.map((unitId, index) => {
+        const ownAmount = Math.max(0, Math.floor(Number(unitCounts[unitId] ?? 0)));
+        const supportAmount = Math.max(
+          0,
+          Math.floor(Number(supportAmountByVillageUnitKey.get(`${villageId}:${unitId}`) ?? 0)),
+        );
+        const availableForPlanning = PLANNER_ALLOWED_ATTACK_UNIT_IDS.has(unitId) ? ownAmount : 0;
+        return {
+          unitId,
+          unitName: String(UNIT_DEFS[unitId]?.name ?? unitId),
+          sortOrder: index + 1,
+          ownAmount,
+          supportAmount,
+          availableForPlanning,
+          visibleLabel: `${ownAmount.toLocaleString('cs-CZ')} (${supportAmount.toLocaleString('cs-CZ')})`,
+        };
+      });
+      const totalOwnUnits = units.reduce((sum, unit) => sum + Number(unit.ownAmount ?? 0), 0);
+      const totalSupportUnits = units.reduce((sum, unit) => sum + Number(unit.supportAmount ?? 0), 0);
+      const sortLabel = buildVillageSortLabel(villageRow);
+      const plannerSelectable = units.some((unit) => Number(unit.availableForPlanning ?? 0) > 0);
+      return {
+        villageId,
+        villageName: String(villageRow.name ?? `Leno #${villageId}`),
+        coordX: Number(villageRow.coordX ?? 0),
+        coordY: Number(villageRow.coordY ?? 0),
+        kingdom: String(villageRow.kingdom ?? 'Neutral'),
+        sortLabel,
+        totalOwnUnits,
+        totalSupportUnits,
+        plannerSelectable,
+        plannerSelected: false,
+        units,
+      };
+    })
+    .sort((left, right) =>
+      String(left.sortLabel ?? '').localeCompare(String(right.sortLabel ?? ''), 'cs', {
+        sensitivity: 'base',
+        numeric: true,
+      }),
+    );
+
+  return {
+    worldId: String(world.id),
+    generatedAt: nowIso(),
+    villages,
+  };
+};
+
+export const getPlannerOpenSnapshot = (username = 'Hayato', worldId = null) => {
+  const { player, world } = requireVillageForUser(username, null, worldId, 'center');
+  return {
+    worldId: String(world.id),
+    timezone: PLANNER_TIMEZONE,
+    constraints: {
+      maxLegs: PLANNER_MAX_LEGS,
+      minImpactGapMinutes: PLANNER_MIN_IMPACT_GAP_MINUTES,
+      leadTimeSec: PLANNER_LEAD_TIME_SEC,
+      activePlansPerPlayerPerWorld: 1,
+    },
+    bannerText: PLANNER_BANNER_TEXT,
+    activePlan: null,
+    recentTargets: toPlannerRecentTargets(Number(player.id), Number(world.region)),
+  };
 };
 
 export const getVillageSnapshot = (

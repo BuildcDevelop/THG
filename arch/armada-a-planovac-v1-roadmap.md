@@ -58,6 +58,11 @@ Planner eventy se mohou zapisovat do backend logu/notifikaci, ale tento dokument
 - Planner je dostupny oddelene pro kazdy svet.
 - Pokud existuje aktivni serverovy plan pro dany svet, ma vzdy prioritu nad lokalnim draftem.
 - Lokalne se uklada pouze `posledni relace` rozpracovaneho konceptu.
+- Planner ma jasne rezimy UI:
+  - `draft`
+  - `confirmation`
+  - `active_plan`
+  - `completed_stub`
 - Planner zobrazi banner:
   - `Planovac je zatim mozne vyuzit jen pro jeden cil z vice len.`
 - Cil se v `v1` vybera pres hrace, ktery ma v danem svete prave jedno leno.
@@ -72,6 +77,27 @@ Planner eventy se mohou zapisovat do backend logu/notifikaci, ale tento dokument
 - Pokud hrac otevrel editaci, ale ulozil ji az pozdeji nebo ji neulozil vubec:
   - stale plati posledni serverove ulozena verze planu
   - neulozeny koncept nesmi prepsat aktivni plan
+- `Stav konceptu: validni` nikdy neznamena, ze se neco samo odesle.
+- Pred ulozenim vzdy existuje krok `Potvrzeni planu`.
+- Po uspesnem potvrzeni a ulozeni se plan prepne do serveroveho stavu `scheduled`.
+- `scheduled` se v UI zobrazuje jako `Potvrzeno / naplanovano`.
+- Aktivni karta planu ukazuje:
+  - cil
+  - impact okno
+  - cas do prvniho odeslani
+  - stav planu
+  - progress pri `dispatching`
+- Planner ukazuje maximalne:
+  - jeden aktivni nebo potvrzeny plan
+  - jeden posledni `completed_stub`
+- Kdyz se dokonci dalsi plan, predchozi `completed_stub` se prepise.
+- Planner umi automaticke srovnani impact casu:
+  - od prvniho legu dopredu
+  - od posledniho legu zpet
+- Planner umi akci `Vyplnit vse` pouze pro utocne jednotky:
+  - `cavalry`
+  - `ram`
+  - `scout`
 - Pri chybe validace nebo dispatch failu musi hra nabidnout navrat zpet do konceptu planu.
 
 ## 3. Klicova rozhodnuti a guardrails
@@ -98,34 +124,50 @@ Planner eventy se mohou zapisovat do backend logu/notifikaci, ale tento dokument
 
 ### Planovac
 
-- 3 rezimy UI:
+- 4 rezimy UI:
   - prazdny koncept
   - editace konceptu
+  - potvrzeni planu
   - aktivni serverovy plan
+- Volitelny doplnkovy read-only blok:
+  - posledni `completed_stub`
 - Pokud existuje lokalni draft a neexistuje aktivni serverovy plan:
   - UI nabidne `Obnovit posledni koncept`
 - Pokud existuje aktivni serverovy plan:
   - UI otevre ten
   - lokalni draft nema prioritu
+  - hrac neni defaultne v konceptu
 - Kazdy leg ukazuje:
   - poradi
   - puvodni leno
   - vybrane jednotky
   - cas dopadu v Praze
   - dopocitany cas odeslani
+- Aktivni karta planu ukazuje:
+  - cil
+  - impact okno `od -> do`
+  - countdown do prvniho odeslani
+  - progress `odeslano N / total` pri `dispatching`
 - Planner musi umet:
   - pridat leg
   - odebrat leg
   - upravit jednotky
   - upravit cas dopadu
   - preskladat poradi drag&drop
-- Summary krok musi ukazat:
+- planner musi umet:
+  - `Vyplnit vse` pro `cavalry + ram + scout`
+  - automaticke srovnani casu dopredu
+  - automaticke srovnani casu zpet od posledniho legu
+- Summary a confirmation krok musi ukazat:
   - cil
   - vsechna lena v poradi
   - dopady
   - send times
   - vybrane jednotky
   - warningy nebo blokace
+- Confirmation krok ma akce:
+  - `Ulozit plan`
+  - `Zpet do konceptu`
 - Kazdy `warning` nebo `blocked` stav musi mit akci:
   - `Zpet do konceptu`
 
@@ -136,6 +178,8 @@ Planner eventy se mohou zapisovat do backend logu/notifikaci, ale tento dokument
 - existuje jen jako `last session draft`
 - uklada se lokalne
 - neni autoritativni
+- `confirmation` neni samostatny persistentni serverovy stav
+- `confirmation` je read-only krok nad poslednim vysledkem `validate`
 
 ### Serverovy plan
 
@@ -151,10 +195,24 @@ Stavy:
 Pravidla:
 
 - aktivni plan na hrace a svet muze byt jen jeden
+- `scheduled` znamena serverove ulozeny a potvrzeny plan
+- `scheduled` se v UI zobrazuje jako `Potvrzeno / naplanovano`
 - `scheduled` a `needs_reconfirmation` lze editovat do lead time
+- pokud `lead time` vyprsi behem editace:
+  - save failne
+  - stale plati posledni serverova verze planu
 - `dispatching` uz nelze editovat
+- `dispatching` zacina ve chvili, kdy prvni leg vstoupi do dispatch okna
+- progress pri `dispatching` se pocita jako `sent legs / total legs`
+- `completed` znamena, ze vsechny legy byly uspesne odeslany
 - `failed` musi vratit jasne duvody
 - `needs_reconfirmation` nastane pri zmene owner/kingdom cile
+
+### Posledni dokonceny plan
+
+- planner muze zobrazit jeden posledni `completed_stub`
+- nejde o archiv
+- po dokonceni dalsiho planu se predchozi `completed_stub` prepise
 
 ## 6. Datovy kontrakt
 
@@ -206,6 +264,7 @@ type PlannerOpenResponse = {
   }
   bannerText: string
   activePlan: PlannerPlanDetail | null
+  lastCompletedPlan: PlannerCompletedStub | null
   recentTargets: PlannerRecentTarget[]
 }
 ```
@@ -254,6 +313,19 @@ type ValidatePlannerResponse = {
 ### Planner Persisted Plan
 
 ```ts
+type PlannerCompletedStub = {
+  planId: string
+  targetPlayerUsernameSnapshot: string
+  targetVillageNameSnapshot: string
+  targetKingdomSnapshot: string
+  legsCount: number
+  firstSendAtUtc: string
+  lastSendAtUtc: string
+  completedAt: string
+}
+```
+
+```ts
 type PlannerPlanDetail = {
   plan: {
     id: string
@@ -286,6 +358,14 @@ type PlannerPlanDetail = {
 }
 ```
 
+Poznamky:
+
+- `confirmedAt` slouzi pro UX vrstvu `Potvrzeno / naplanovano`
+- `confirmed` neni samostatny serverovy lifecycle stav
+- pri budouci navaznosti na reporty ponesou plannerem vytvorene commandy a eventy:
+  - `plan_id`
+  - `plan_leg_id`
+
 ## 7. API roadmap
 
 ### Read
@@ -305,6 +385,9 @@ type PlannerPlanDetail = {
 ### Interni scheduler
 
 - `runDuePlannerDispatch(worldId, nowUtc)`
+- scheduler pri vytvoreni planner commandu zapisuje foresight identifikatory:
+  - `plan_id`
+  - `plan_leg_id`
 
 ## 8. DB roadmap
 
@@ -327,6 +410,9 @@ type PlannerPlanDetail = {
 
 - Army overview v `v1` nepouzije novou tabulku.
 - Bude to lehky read model slozeny nad existujicimi hernimi daty.
+- Planner commandy a planner eventy maji byt pripraveny na budouci vazbu pres:
+  - `plan_id`
+  - `plan_leg_id`
 
 ## 9. Validace a fail pravidla
 
@@ -343,6 +429,7 @@ Pri validate nebo dispatch check musi backend overit:
 - dopady jsou striktne rostouci
 - rozdil mezi sousednimi dopady je min. 1 minuta
 - lead time neni porusen
+- pri editaci aktivniho planu stale plati stejny `lead time` check
 - pri finalnim dispatchi souhlasi presne pocty jednotek v kazdem legu
 
 Pokud failne jeden leg:
@@ -367,6 +454,7 @@ UI musi ukazat:
 
 - noveho hrace
 - nove kralovstvi
+- predchozi snapshot a novy stav
 - odkazy na oba entity
 
 Hrac ma akce:
@@ -378,6 +466,7 @@ Pokud target uz neni validni:
 
 - planner zustane blocked
 - hrac musi upravit cil nebo plan
+- pri navratu do konceptu zustanou duvody reconfirmation viditelne
 
 ## 11. Faze vyvoje
 
@@ -413,6 +502,9 @@ Exit criteria:
 - leg list
 - drag&drop poradi
 - casy dopadu
+- `Vyplnit vse` pro `cavalry + ram + scout`
+- auto srovnani casu dopredu
+- auto srovnani casu zpet od posledniho legu
 - local autosave
 - summary krok
 
@@ -420,6 +512,7 @@ Exit criteria:
 
 - planner lze kompletne vyplnit bez backend persistu
 - dopady jsou v UI vzdy validni
+- hrac umi rychle srovnat cely casovy plan
 
 ### Phase 4 - Planner Backend Persistence
 
@@ -429,15 +522,19 @@ Exit criteria:
 - reconfirm plan
 - revision handling
 - event log
+- active card read model
+- `lastCompletedPlan` stub
 
 Exit criteria:
 
 - jeden aktivni plan na hrace a svet
 - aktivni serverovy plan ma prioritu nad lokalnim draftem
+- planner umi po ulozeni ukazat potvrzeny serverovy plan
 
 ### Phase 5 - Validate + Dispatch
 
 - backend validate
+- confirmation krok pred ulozenim
 - final pre-flight
 - scheduler dispatch
 - all-or-nothing plan execution
@@ -447,18 +544,22 @@ Exit criteria:
 
 - `1 leg fail => nic se neodesle`
 - `all legs pass => vse se odesle`
+- `validni koncept` sam o sobe nic neodesila bez potvrzeni a ulozeni
 
 ### Phase 6 - Polish
 
 - doladeni hlasek
 - detailni per-leg errors
 - edge cases
+- needs reconfirmation diff
+- completed stub UX
 - manual QA
 
 Exit criteria:
 
 - planner je pouzitelny bez ztraty dat posledni relace
 - fail stavy jsou citelne a vratitelne zpet do konceptu
+- aktivni plan a confirmation flow nejsou pro hrace matoucim dojmem
 
 ## 12. Test checklist
 
@@ -470,12 +571,23 @@ Exit criteria:
 - nelze ulozit rozestup mensi nez 1 minuta
 - target player bez lena failne
 - target player s vice leny failne
+- `validni koncept` bez potvrzeni nic neulozi ani neodesle
+- confirmation krok ukazuje finalni read-only souhrn pred save
+- po uspesnem save se zobrazi aktivni karta planu
+- pokud existuje aktivni plan, planner se defaultne neotevre do konceptu
+- `Vyplnit vse` naplni pouze `cavalry + ram + scout`
+- auto srovnani funguje dopredu i zpet od posledniho legu
 - change owner => `needs_reconfirmation`
 - change kingdom => `needs_reconfirmation`
+- `needs_reconfirmation` ukaze diff stareho a noveho stavu
+- navrat z `needs_reconfirmation` do konceptu zachova viditelne duvody
 - jeden leg unit mismatch => fail cely plan
+- edit save po vyprseni lead time failne a vrati posledni serverovou verzi
 - revision conflict pri editaci
 - scheduled plan lze zrusit
 - aktivni plan ma prioritu nad lokalnim draftem
+- `completed` nastane po odeslani vsech legu
+- zobrazuje se jen jeden posledni `completed_stub`
 
 ## 13. Done definition pro novy chat
 
@@ -486,6 +598,13 @@ Az se bude implementovat podle tohoto dokumentu, ber jako `done`:
 - klik v Armade nikdy nemeni aktivni leno hry
 - planner umi jeden cil, max 10 legu, 1 aktivni plan na hrace a svet
 - mezi dopady je vzdy min. 1 minuta
+- planner ma confirmation krok pred ulozenim
+- `validni koncept` nikdy nespousti utok sam o sobe
 - aktivni serverovy plan ma prioritu nad lokalnim draftem
+- aktivni plan se po ulozeni zobrazi jako potvrzeny / naplanovany
+- planner umi `Vyplnit vse` pro `cavalry + ram + scout`
+- planner umi automaticke srovnani casu dopredu i zpet
+- planner umi zobrazit jeden posledni `completed_stub`
 - pri failu existuje navrat zpet do konceptu
+- planner commandy a eventy jsou pripraveny na budouci vazbu pres `plan_id`
 - nova funkcionalita nepridava novy globalni polling ani neexpanduje hlavni `gameState`

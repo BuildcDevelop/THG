@@ -8785,6 +8785,322 @@ html {
   }
 }
 
+.armada-planner-view {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.armada-planner-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.armada-overview-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.64rem;
+}
+
+.armada-village-card {
+  width: 100%;
+  border: 1px solid rgba(114, 138, 186, 0.4);
+  border-radius: 0.64rem;
+  background: linear-gradient(165deg, rgba(9, 14, 24, 0.9), rgba(7, 11, 19, 0.92));
+  color: inherit;
+  text-align: left;
+  padding: 0.7rem 0.78rem;
+  display: grid;
+  gap: 0.42rem;
+}
+
+.armada-village-card.is-selected {
+  border-color: rgba(234, 178, 82, 0.68);
+  box-shadow: 0 0 0 1px rgba(234, 178, 82, 0.3) inset;
+}
+
+.armada-unit-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.34rem;
+}
+
+.armada-unit-pill {
+  border: 1px solid rgba(127, 154, 206, 0.34);
+  border-radius: 999px;
+  padding: 0.2rem 0.45rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: rgba(10, 17, 28, 0.78);
+}
+
+.armada-unit-pill.is-passive {
+  opacity: 0.65;
+}
+
+.armada-unit-pill span {
+  font-size: 0.72rem;
+}
+
+.armada-unit-pill strong {
+  font-size: 0.75rem;
+  color: #f2cc8e;
+}
+
+.armada-card-action {
+  font-size: 0.74rem;
+  color: rgba(228, 209, 165, 0.95);
+}
+
+.planner-v1-shell {
+  border: 1px solid rgba(119, 145, 196, 0.32);
+  border-radius: 0.64rem;
+  padding: 0.72rem;
+  display: grid;
+  gap: 0.64rem;
+  background: rgba(7, 12, 21, 0.76);
+}
+
+.planner-v1-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.planner-v1-banner {
+  margin: 0;
+  padding: 0.5rem 0.56rem;
+  border-radius: 0.5rem;
+  background: rgba(228, 171, 78, 0.16);
+  border: 1px solid rgba(228, 171, 78, 0.4);
+}
+
+.planner-active-plan,
+.planner-restore-callout,
+.planner-summary-step {
+  border: 1px solid rgba(122, 148, 200, 0.26);
+  border-radius: 0.56rem;
+  padding: 0.56rem 0.62rem;
+  background: rgba(9, 14, 22, 0.62);
+}
+
+.planner-target-picker {
+  display: grid;
+  gap: 0.34rem;
+}
+
+.planner-target-picker select {
+  width: 100%;
+}
+
+.planner-plan-status {
+  margin: 0;
+  padding: 0.4rem 0.48rem;
+  border-radius: 0.46rem;
+  border: 1px solid rgba(122, 148, 200, 0.26);
+  background: rgba(10, 16, 25, 0.68);
+}
+
+.planner-plan-status.is-ok {
+  border-color: rgba(108, 190, 138, 0.42);
+  background: rgba(67, 142, 88, 0.15);
+}
+
+.planner-plan-status.is-warning {
+  border-color: rgba(219, 162, 74, 0.42);
+  background: rgba(219, 162, 74, 0.14);
+}
+
+.planner-plan-status.is-blocked {
+  border-color: rgba(206, 92, 74, 0.44);
+  background: rgba(206, 92, 74, 0.16);
+}
+
+.planner-active-leg-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.42rem;
+}
+
+.planner-active-leg {
+  border: 1px solid rgba(122, 148, 200, 0.26);
+  border-radius: 0.48rem;
+  padding: 0.42rem 0.48rem;
+  background: rgba(9, 14, 22, 0.66);
+}
+
+.planner-active-leg p {
+  margin: 0;
+}
+
+.planner-active-leg.is-blocked {
+  border-color: rgba(206, 92, 74, 0.46);
+  background: rgba(206, 92, 74, 0.13);
+}
+
+.planner-active-leg-status {
+  margin-top: 0.2rem !important;
+  font-size: 0.8rem;
+  color: rgba(198, 214, 243, 0.85);
+}
+
+.planner-active-leg-fail {
+  margin-top: 0.2rem !important;
+  font-size: 0.78rem;
+  color: rgba(255, 191, 179, 0.95);
+}
+
+.planner-leg-list-wrap {
+  display: grid;
+  gap: 0.48rem;
+}
+
+.planner-leg-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.52rem;
+}
+
+.planner-leg-card {
+  border: 1px solid rgba(118, 146, 200, 0.3);
+  border-radius: 0.58rem;
+  padding: 0.54rem 0.6rem;
+  display: grid;
+  gap: 0.42rem;
+  background: rgba(8, 14, 22, 0.78);
+}
+
+.planner-leg-card.is-focused {
+  border-color: rgba(236, 182, 89, 0.7);
+  box-shadow: 0 0 0 1px rgba(236, 182, 89, 0.34) inset;
+}
+
+.planner-leg-card.has-warning {
+  border-color: rgba(219, 162, 74, 0.46);
+}
+
+.planner-leg-card.has-blocked {
+  border-color: rgba(206, 92, 74, 0.46);
+}
+
+.planner-leg-card > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.planner-leg-card > header div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.planner-impact-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.44rem;
+}
+
+.planner-impact-controls div {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.28rem;
+}
+
+.planner-leg-unit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.38rem 0.46rem;
+}
+
+.planner-leg-unit-grid label {
+  display: grid;
+  gap: 0.24rem;
+}
+
+.planner-leg-unit-grid input {
+  width: 100%;
+}
+
+.planner-leg-issues {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.24rem;
+}
+
+.planner-leg-issues li {
+  border-radius: 0.38rem;
+  padding: 0.28rem 0.38rem;
+}
+
+.planner-leg-issues li.is-warning {
+  border: 1px solid rgba(219, 162, 74, 0.4);
+  background: rgba(219, 162, 74, 0.13);
+}
+
+.planner-leg-issues li.is-blocked {
+  border: 1px solid rgba(206, 92, 74, 0.46);
+  background: rgba(206, 92, 74, 0.14);
+}
+
+.planner-summary-status {
+  margin: 0;
+  padding: 0.34rem 0.42rem;
+  border-radius: 0.44rem;
+  border: 1px solid rgba(118, 146, 200, 0.32);
+  background: rgba(9, 14, 22, 0.66);
+}
+
+.planner-summary-status.is-ok {
+  border-color: rgba(108, 190, 138, 0.42);
+  background: rgba(67, 142, 88, 0.15);
+}
+
+.planner-summary-status.is-warning {
+  border-color: rgba(219, 162, 74, 0.42);
+  background: rgba(219, 162, 74, 0.14);
+}
+
+.planner-summary-status.is-blocked {
+  border-color: rgba(206, 92, 74, 0.44);
+  background: rgba(206, 92, 74, 0.16);
+}
+
+.planner-validation-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.28rem;
+}
+
+.planner-validation-list li {
+  border-radius: 0.4rem;
+  padding: 0.34rem 0.44rem;
+}
+
+.planner-validation-list li.is-warning {
+  background: rgba(219, 162, 74, 0.15);
+  border: 1px solid rgba(219, 162, 74, 0.36);
+}
+
+.planner-validation-list li.is-blocked {
+  background: rgba(206, 92, 74, 0.16);
+  border: 1px solid rgba(206, 92, 74, 0.4);
+}
+
 .commands-list {
   list-style: none;
   margin: 0;
