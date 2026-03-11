@@ -22,6 +22,13 @@
 - Preferred prefixes: `issue:`, `suggestion:`, `question:`, `nitpick:`, `praise:`
 - Keep comments actionable and specific
 
+## Chat Archive Rule
+
+- After every chat in this repository, append a concise summary entry to `arch/chat-changelog.md`.
+- Never overwrite previous chat entries. Always keep full history.
+- Every entry must include: date, branch, user request, summary of work, touched files, and verification status.
+- This rule applies even when the chat mostly changes documentation or project instructions.
+
 ## Last Dominion Guardrails
 
 - For any new gameplay, UI, map, economy, polling, backend data-flow, or performance-sensitive change in this repository, use `last-dominion-feature-guardrails` first.

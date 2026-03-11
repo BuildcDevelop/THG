@@ -418,55 +418,17 @@ export const CommunicationHub = () => {
     );
   }, []);
 
-  const refreshMessages = useCallback(
-    async (threadIds: number[], requestId: number) => {
-      if (!username || threadIds.length === 0) {
-        return;
-      }
-      const ids = uniqueThreadIds(threadIds);
-      if (ids.length === 0) {
-        return;
-      }
-      const responses = await Promise.allSettled(
-        ids.map((threadId) =>
-          fetchCommunicationInbox(username, {
-            threadId,
-            messageLimit: MAX_MESSAGES,
-          }),
-        ),
-      );
-      if (requestId !== requestIdRef.current) {
-        return;
-      }
-      setMessagesByThreadId((previous) => {
-        const next = { ...previous };
-        for (let index = 0; index < responses.length; index += 1) {
-          const response = responses[index];
-          if (response.status !== 'fulfilled') {
-            continue;
-          }
-          const threadId = ids[index];
-          if (!updateInbox(response.value)) {
-            continue;
-          }
-          next[threadId] = response.value.selectedMessages ?? [];
-        }
-        return next;
-      });
-    },
-    [updateInbox, username],
-  );
-
   const loadInbox = useCallback(async () => {
     if (!username) {
       return;
     }
+    const requestedThreadId = safeThreadId(activeThreadId ?? openThreadIds[openThreadIds.length - 1] ?? null);
     const requestId = ++requestIdRef.current;
     try {
       const data = await fetchCommunicationInbox(username, {
         threadLimit: 80,
         messageLimit: MAX_MESSAGES,
-        threadId: activeThreadId ?? undefined,
+        threadId: requestedThreadId ?? undefined,
       });
       if (requestId !== requestIdRef.current) {
         return;
@@ -480,12 +442,6 @@ export const CommunicationHub = () => {
           [Number(data.selectedThreadId)]: data.selectedMessages ?? [],
         }));
       }
-      const selectedThreadId =
-        data.selectedThreadId != null && Number.isFinite(Number(data.selectedThreadId))
-          ? Number(data.selectedThreadId)
-          : null;
-      const additionalThreadIds = uniqueThreadIds(openThreadIds).filter((threadId) => threadId !== selectedThreadId);
-      await refreshMessages(additionalThreadIds, requestId);
       setError(null);
     } catch (loadError) {
       if (requestId !== requestIdRef.current) {
@@ -499,7 +455,6 @@ export const CommunicationHub = () => {
   }, [
     activeThreadId,
     openThreadIds,
-    refreshMessages,
     resetCommunicationState,
     shouldResetOnAuthorizationError,
     updateInbox,
@@ -612,7 +567,11 @@ export const CommunicationHub = () => {
     if (!username) {
       return;
     }
-    if (hubOpen || openThreadIds.length > 0) {
+    const shouldPollInbox = hubOpen || openThreadIds.length > 0;
+    if (!shouldPollInbox && !isInGame) {
+      return;
+    }
+    if (shouldPollInbox) {
       void loadInbox();
     } else {
       void loadSummary();
@@ -621,14 +580,14 @@ export const CommunicationHub = () => {
       if (typeof document !== 'undefined' && document.hidden) {
         return;
       }
-      if (hubOpen || openThreadIds.length > 0) {
+      if (shouldPollInbox) {
         void loadInbox();
       } else {
         void loadSummary();
       }
-    }, hubOpen || openThreadIds.length > 0 ? POLL_MS : SUMMARY_POLL_MS);
+    }, shouldPollInbox ? POLL_MS : SUMMARY_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [hubOpen, loadInbox, loadSummary, openThreadIds.length, username]);
+  }, [hubOpen, isInGame, loadInbox, loadSummary, openThreadIds.length, username]);
 
   useEffect(() => {
     if (!inbox || initializedRef.current) {

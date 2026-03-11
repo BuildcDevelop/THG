@@ -17,6 +17,18 @@ Mimo scope:
 
 Planner eventy se mohou zapisovat do backend logu/notifikaci, ale tento dokument neresi UI implementaci Zaznamu.
 
+## Navazne specifikace
+
+Detailni navazne dokumenty:
+
+- `arch/planovac-api-spec-v1.md`
+- `arch/planovac-db-spec-v1.md`
+- `arch/planovac-ui-state-machine-v1.md`
+- `arch/planovac-acceptance-scenare-v1.md`
+- `arch/planovac-implementacni-milniky-v1.md`
+- `arch/planovac-budouci-nasazeni-koncept.md`
+- `server/sql-drafts/planner-v1-migration.sql`
+
 ## 1. Cile v1
 
 - Vytvorit novou stranku/panel `Armada` jako read-only souhrn vsech vlastnich len.

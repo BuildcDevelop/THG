@@ -1021,10 +1021,42 @@ html {
 }
 
 .research-spotlight-card {
+  --research-spotlight-progress: 0%;
   flex: 0 1 182px;
   min-width: 156px;
   max-width: 216px;
   margin-left: 0;
+  isolation: isolate;
+}
+
+.research-spotlight-card::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: min(100%, var(--research-spotlight-progress));
+  background:
+    linear-gradient(90deg, rgba(71, 142, 90, 0.14), rgba(108, 201, 130, 0.24)),
+    radial-gradient(circle at 0% 50%, rgba(178, 240, 191, 0.23), transparent 58%);
+  background-size:
+    100% 100%,
+    180% 100%;
+  background-position:
+    0 0,
+    0% 50%;
+  opacity: 0.7;
+  z-index: 0;
+  pointer-events: none;
+  transition: width 280ms ease-out;
+  animation: research-spotlight-progress-wave 3.2s ease-in-out infinite;
+}
+
+.research-spotlight-card.is-empty::after {
+  display: none;
+}
+
+.research-spotlight-card > * {
+  position: relative;
+  z-index: 1;
 }
 
 .research-spotlight-card p {
@@ -1038,19 +1070,7 @@ html {
 .research-spotlight-card span {
   font-size: 0.62rem;
   line-height: 1.15;
-}
-
-.research-spotlight-metrics {
-  display: grid;
-  gap: 0.04rem;
-}
-
-.research-spotlight-metrics span:first-child {
-  font-size: 0.72rem;
-}
-
-.research-spotlight-metrics span:last-child {
-  font-size: 0.66rem;
+  color: rgba(224, 239, 226, 0.9);
 }
 
 .village-menu-overlay {
@@ -2462,6 +2482,14 @@ html {
   width: 1.05rem;
   height: 1.05rem;
   accent-color: #d89c47;
+}
+
+.settings-toggle-row select {
+  border: 1px solid rgba(157, 203, 239, 0.28);
+  border-radius: 8px;
+  padding: 0.3rem 0.5rem;
+  background: rgba(7, 17, 27, 0.92);
+  color: #d8ebfb;
 }
 
 .settings-shortcuts-table-wrap {
@@ -4575,6 +4603,22 @@ html {
   }
 }
 
+@keyframes research-spotlight-progress-wave {
+  0%,
+  100% {
+    background-position:
+      0 0,
+      0% 50%;
+    opacity: 0.58;
+  }
+  50% {
+    background-position:
+      0 0,
+      100% 50%;
+    opacity: 0.78;
+  }
+}
+
 @keyframes research-progress-sweep {
   from {
     transform: translateX(-100%);
@@ -4671,6 +4715,7 @@ html {
   .research-active-emblem span,
   .research-project-card,
   .research-project-card::before,
+  .research-spotlight-card::after,
   .research-progress-track span::after,
   .research-hire-button.is-hire-impact::before,
   .research-hire-button.is-hire-impact::after {
@@ -5933,6 +5978,11 @@ html {
   font-weight: 700;
 }
 
+.map-settlement-type strong {
+  color: #f0d39f;
+  font-weight: 700;
+}
+
 .map-settlement-distance em {
   color: #a8c0d8;
   font-style: normal;
@@ -5942,6 +5992,11 @@ html {
 .map-settlement-distance strong {
   color: #e6f4ff;
   margin-left: 0.1rem;
+}
+
+.map-settlement-travel-hint {
+  color: #9bb8d4;
+  font-size: 0.68rem;
 }
 
 .map-settlement-protection {
@@ -13065,8 +13120,9 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
   max-width: 100%;
 }
 
-.game-page .floating-window.docked-window.map-window .window-body {
+.game-page .floating-window.map-window .window-body {
   overflow: hidden !important;
+  overflow-x: hidden !important;
 }
 
 .game-page .floating-window.docked-window.map-window .map-panel {

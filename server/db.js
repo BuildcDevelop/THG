@@ -7,6 +7,7 @@ import {
   calculateMintCoinStorageCap,
   calculateMintGoldStorageCap,
   calculateResourceCap,
+  convertLegacyResourceBuildingLevelToCurrent,
   getMaxBuildingLevel,
 } from './gameConfig.js';
 
@@ -274,6 +275,8 @@ CREATE INDEX IF NOT EXISTS idx_unit_recruitments_status_finish
 CREATE TABLE IF NOT EXISTS army_movements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   player_id INTEGER NOT NULL,
+  plan_id TEXT,
+  plan_leg_id TEXT,
   command_type TEXT NOT NULL,
   origin_village_id INTEGER NOT NULL,
   target_village_id INTEGER NOT NULL,
@@ -720,9 +723,112 @@ CREATE TABLE IF NOT EXISTS mercenary_contracts (
 CREATE INDEX IF NOT EXISTS idx_mercenary_contracts_status_timing
   ON mercenary_contracts(status, region, arrive_at, expires_at);
 
+CREATE TABLE IF NOT EXISTS planner_plans (
+  id TEXT PRIMARY KEY,
+  player_id INTEGER NOT NULL,
+  world_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN (
+    'scheduled',
+    'needs_reconfirmation',
+    'dispatching',
+    'completed',
+    'failed',
+    'canceled'
+  )),
+  revision INTEGER NOT NULL DEFAULT 1,
+  target_player_id INTEGER NOT NULL,
+  target_village_id INTEGER NOT NULL,
+  target_player_username_snapshot TEXT NOT NULL,
+  target_village_name_snapshot TEXT NOT NULL,
+  target_kingdom_snapshot TEXT NOT NULL,
+  target_snapshot_hash TEXT NOT NULL,
+  confirmed_at TEXT,
+  first_send_at_utc TEXT,
+  last_send_at_utc TEXT,
+  dispatch_started_at_utc TEXT,
+  completed_at TEXT,
+  failed_at TEXT,
+  canceled_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (player_id) REFERENCES players(id),
+  FOREIGN KEY (target_player_id) REFERENCES players(id),
+  FOREIGN KEY (target_village_id) REFERENCES villages(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_planner_plans_player_world_status
+  ON planner_plans(player_id, world_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_planner_plans_world_status_first_send
+  ON planner_plans(world_id, status, first_send_at_utc);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_planner_active_plan_per_player_world
+  ON planner_plans(player_id, world_id)
+  WHERE status IN ('scheduled', 'needs_reconfirmation', 'dispatching');
+
+CREATE TABLE IF NOT EXISTS planner_plan_legs (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL,
+  leg_order INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('scheduled', 'sent', 'failed', 'canceled')),
+  origin_village_id INTEGER NOT NULL,
+  origin_village_name_snapshot TEXT NOT NULL,
+  impact_at_utc TEXT NOT NULL,
+  send_at_utc TEXT NOT NULL,
+  travel_duration_sec INTEGER NOT NULL,
+  sent_at_utc TEXT,
+  fail_code TEXT,
+  fail_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (plan_id) REFERENCES planner_plans(id) ON DELETE CASCADE,
+  FOREIGN KEY (origin_village_id) REFERENCES villages(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_planner_legs_order
+  ON planner_plan_legs(plan_id, leg_order);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_planner_legs_origin
+  ON planner_plan_legs(plan_id, origin_village_id);
+
+CREATE INDEX IF NOT EXISTS idx_planner_plan_legs_plan_send
+  ON planner_plan_legs(plan_id, send_at_utc);
+
+CREATE TABLE IF NOT EXISTS planner_plan_leg_units (
+  id TEXT PRIMARY KEY,
+  plan_leg_id TEXT NOT NULL,
+  unit_id TEXT NOT NULL CHECK (unit_id IN ('cavalry', 'ram', 'scout')),
+  planned_amount INTEGER NOT NULL CHECK (planned_amount > 0),
+  FOREIGN KEY (plan_leg_id) REFERENCES planner_plan_legs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_planner_plan_leg_units_leg
+  ON planner_plan_leg_units(plan_leg_id);
+
+CREATE TABLE IF NOT EXISTS planner_plan_events (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL,
+  plan_leg_id TEXT,
+  event_type TEXT NOT NULL,
+  severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error')),
+  message TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (plan_id) REFERENCES planner_plans(id) ON DELETE CASCADE,
+  FOREIGN KEY (plan_leg_id) REFERENCES planner_plan_legs(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_planner_plan_events_plan_created
+  ON planner_plan_events(plan_id, created_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS game_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   last_tick_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 `);
 
@@ -765,6 +871,14 @@ CREATE TABLE IF NOT EXISTS game_state (
   ).run(nowIso());
 
   const movementColumns = db.prepare('PRAGMA table_info(army_movements)').all();
+  const hasPlanIdColumn = movementColumns.some((column) => column.name === 'plan_id');
+  if (!hasPlanIdColumn) {
+    db.prepare('ALTER TABLE army_movements ADD COLUMN plan_id TEXT').run();
+  }
+  const hasPlanLegIdColumn = movementColumns.some((column) => column.name === 'plan_leg_id');
+  if (!hasPlanLegIdColumn) {
+    db.prepare('ALTER TABLE army_movements ADD COLUMN plan_leg_id TEXT').run();
+  }
   const hasLootPriorityColumn = movementColumns.some((column) => column.name === 'loot_priority');
   if (!hasLootPriorityColumn) {
     db.prepare('ALTER TABLE army_movements ADD COLUMN loot_priority TEXT').run();
@@ -781,6 +895,10 @@ CREATE TABLE IF NOT EXISTS game_state (
   if (!hasCarryIronColumn) {
     db.prepare('ALTER TABLE army_movements ADD COLUMN carry_iron INTEGER NOT NULL DEFAULT 0').run();
   }
+  db.exec(`
+CREATE INDEX IF NOT EXISTS idx_army_movements_plan_refs
+  ON army_movements(plan_id, plan_leg_id, started_at DESC, id DESC);
+`);
 
   const marketGuildTargetColumns = db.prepare('PRAGMA table_info(market_guild_targets)').all();
   const hasPausedColumn = marketGuildTargetColumns.some((column) => column.name === 'is_paused');
@@ -917,6 +1035,7 @@ DELETE FROM resources;
 DELETE FROM villages;
 DELETE FROM players;
 DELETE FROM game_state;
+DELETE FROM app_meta;
 `);
 });
 
@@ -1042,6 +1161,11 @@ const seedWorld = db.transaction(() => {
   }
 
   db.prepare('INSERT INTO game_state (id, last_tick_at) VALUES (1, ?)').run(nowIso());
+  db.prepare(
+    `INSERT INTO app_meta (key, value)
+     VALUES ('resource_building_scale_version', 'resource-buildings-max-10')
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run();
 });
 
 const ensureAbandonedVillages = db.transaction(() => {
@@ -1724,6 +1848,42 @@ const ensureVillageBuildingLevelCaps = db.transaction(() => {
   }
 });
 
+const ensureResourceBuildingScaleMigration = db.transaction(() => {
+  const migrationKey = 'resource_building_scale_version';
+  const migrationVersion = 'resource-buildings-max-10';
+  const currentVersion = String(
+    db.prepare('SELECT value FROM app_meta WHERE key = ? LIMIT 1').get(migrationKey)?.value ?? '',
+  );
+  if (currentVersion === migrationVersion) {
+    return;
+  }
+
+  const resourceBuildingRows = db
+    .prepare(
+      `SELECT village_id AS villageId, building_id AS buildingId, level
+       FROM buildings
+       WHERE building_id IN ('woodcutter', 'quarry', 'iron-mine')`,
+    )
+    .all();
+  const updateBuildingLevelStmt = db.prepare(
+    `UPDATE buildings
+     SET level = ?
+     WHERE village_id = ? AND building_id = ?`,
+  );
+
+  for (const row of resourceBuildingRows) {
+    const buildingId = String(row.buildingId ?? '');
+    const nextLevel = convertLegacyResourceBuildingLevelToCurrent(buildingId, Number(row.level ?? 0));
+    updateBuildingLevelStmt.run(nextLevel, Number(row.villageId), buildingId);
+  }
+
+  db.prepare(
+    `INSERT INTO app_meta (key, value)
+     VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(migrationKey, migrationVersion);
+});
+
 const ensureReferentialIntegrity = db.transaction(() => {
   const cleanupStatements = [
     db.prepare(
@@ -1938,6 +2098,45 @@ const ensureReferentialIntegrity = db.transaction(() => {
          )`,
     ),
     db.prepare(
+      `DELETE FROM planner_plan_events
+       WHERE NOT EXISTS (
+           SELECT 1 FROM planner_plans p WHERE p.id = planner_plan_events.plan_id
+         )
+          OR (
+           planner_plan_events.plan_leg_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM planner_plan_legs l WHERE l.id = planner_plan_events.plan_leg_id
+           )
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM planner_plan_leg_units
+       WHERE NOT EXISTS (
+         SELECT 1 FROM planner_plan_legs l WHERE l.id = planner_plan_leg_units.plan_leg_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM planner_plan_legs
+       WHERE NOT EXISTS (
+           SELECT 1 FROM planner_plans p WHERE p.id = planner_plan_legs.plan_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = planner_plan_legs.origin_village_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM planner_plans
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = planner_plans.player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = planner_plans.target_player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = planner_plans.target_village_id
+         )`,
+    ),
+    db.prepare(
       `DELETE FROM academics
        WHERE NOT EXISTS (
            SELECT 1 FROM players p WHERE p.id = academics.player_id
@@ -2116,6 +2315,7 @@ ensureSpecialPlayerAccounts();
 ensurePriorityPlayerPasswords();
 ensureVillageBuildingLevelFloors();
 ensureAbandonedVillageTemplateMinimums();
+ensureResourceBuildingScaleMigration();
 ensureVillageBuildingLevelCaps();
 ensureHayatoOwnsAbandonedVillage13();
 ensureHayatoLocalTestVillageState();

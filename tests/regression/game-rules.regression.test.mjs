@@ -5,6 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import {
+  calculateProductionPerHour,
+  convertLegacyResourceBuildingLevelToCurrent,
+  getMaxBuildingLevel,
+} from '../../server/gameConfig.js';
 
 const testFileDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testFileDir, '../..');
@@ -231,13 +236,66 @@ test('stage6: read models do not progress queued work without explicit tick', ()
 test('stage6: mint coins accumulate across short tick intervals', () => {
   const result = runScenario('mint-coins-accumulate-short-ticks');
   const before = result?.before ?? {};
-  const after = result?.after ?? {};
+  const storedAfterRead = result?.storedAfterRead ?? {};
   const snapshot = result?.snapshot ?? {};
 
   assert.ok(Number(snapshot.mintCoinsPerHour ?? 0) > 0, 'mint throughput should be active');
-  assert.ok(Number(after.coins ?? 0) > Number(before.coins ?? 0), 'coins should increase over repeated short ticks');
-  assert.ok(Number(after.gold ?? 0) < Number(before.gold ?? Infinity), 'gold should be converted into coins');
+  assert.ok(Number(snapshot.coins ?? 0) > Number(before.coins ?? 0), 'visible coins should increase over repeated short ticks');
+  assert.ok(Number(snapshot.gold ?? 0) < Number(before.gold ?? Infinity), 'visible gold should be converted into coins');
   assert.ok(Number(snapshot.coins ?? 0) >= 1, 'visible coin balance should eventually rise above zero');
+  assert.equal(
+    Number(storedAfterRead.coins ?? -1),
+    Number(before.coins ?? -2),
+    'read-only snapshot should not persist coins back into storage',
+  );
+});
+
+test('economy: resource production curves use integer hourly values on 10 levels', () => {
+  assert.equal(getMaxBuildingLevel('woodcutter'), 10);
+  assert.equal(getMaxBuildingLevel('quarry'), 10);
+  assert.equal(getMaxBuildingLevel('iron-mine'), 10);
+
+  const expectedWood = [50, 80, 127, 204, 326, 522, 834, 1336, 2139, 3424];
+  const expectedStone = [38, 60, 96, 154, 246, 394, 631, 1009, 1615, 2587];
+  const expectedIron = [31, 50, 80, 127, 203, 325, 520, 831, 1330, 2130];
+  const expectedGold = [1, 2, 4, 7, 11, 15, 21, 27, 34, 42];
+
+  for (let level = 1; level <= 10; level += 1) {
+    assert.equal(
+      Number(calculateProductionPerHour({ woodcutter: level }, 0, 999999).wood ?? -1),
+      expectedWood[level - 1],
+      `woodcutter L${level} production mismatch`,
+    );
+    assert.equal(
+      Number(calculateProductionPerHour({ quarry: level }, 0, 999999).stone ?? -1),
+      expectedStone[level - 1],
+      `quarry L${level} production mismatch`,
+    );
+    assert.equal(
+      Number(calculateProductionPerHour({ 'iron-mine': level }, 0, 999999).iron ?? -1),
+      expectedIron[level - 1],
+      `iron-mine L${level} production mismatch`,
+    );
+    assert.equal(
+      Number(calculateProductionPerHour({ 'gold-mine': level }, 0, 999999).gold ?? -1),
+      expectedGold[level - 1],
+      `gold-mine L${level} production mismatch`,
+    );
+  }
+});
+
+test('economy: legacy resource levels remap onto the 10-level scale without dropping endpoints', () => {
+  assert.equal(convertLegacyResourceBuildingLevelToCurrent('woodcutter', 0), 0);
+  assert.equal(convertLegacyResourceBuildingLevelToCurrent('woodcutter', 1), 1);
+  assert.equal(convertLegacyResourceBuildingLevelToCurrent('woodcutter', 5), 5);
+  assert.equal(convertLegacyResourceBuildingLevelToCurrent('woodcutter', 10), 7);
+  assert.equal(convertLegacyResourceBuildingLevelToCurrent('woodcutter', 30), 10);
+});
+
+test('economy: level 1 gold mine yields visible integer income after hourly sync', () => {
+  const result = runScenario('gold-mine-integer-production-tick');
+  assert.equal(Number(result.productionPerHour ?? -1), 1);
+  assert.ok(Number(result.visibleGold ?? 0) >= Number(result.beforeGold ?? 0) + 1);
 });
 
 test('stage6: map stress culls render scope in dense settlements', () => {

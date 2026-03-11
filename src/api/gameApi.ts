@@ -193,6 +193,17 @@ export type PlannerPlanDetail = {
   }>;
 };
 
+export type PlannerCompletedStub = {
+  planId: string;
+  targetPlayerUsernameSnapshot: string;
+  targetVillageNameSnapshot: string;
+  targetKingdomSnapshot: string;
+  legsCount: number;
+  firstSendAtUtc: string;
+  lastSendAtUtc: string;
+  completedAt: string;
+};
+
 export type PlannerRecentTarget = {
   targetPlayerId: number;
   targetPlayerUsername: string;
@@ -215,7 +226,145 @@ export type PlannerOpenResponse = {
   };
   bannerText: string;
   activePlan: PlannerPlanDetail | null;
+  lastCompletedPlan: PlannerCompletedStub | null;
   recentTargets: PlannerRecentTarget[];
+};
+
+export type PlannerUnitId = 'militia' | 'archer' | 'cavalry' | 'scout' | 'knight' | 'ram' | 'caravan';
+
+export type PlannerUnitAmount = {
+  unitId: PlannerUnitId;
+  amount: number;
+};
+
+export type PlannerLegInput = {
+  order: number;
+  originVillageId: number;
+  impactAtPrague: string;
+  units: PlannerUnitAmount[];
+};
+
+export type PlannerValidationIssue = {
+  code: string;
+  severity: 'warning' | 'blocked';
+  message: string;
+  scope: 'plan' | 'target' | 'leg';
+  legOrder?: number;
+  legOriginVillageId?: number;
+};
+
+export type PlannerValidationResponse = {
+  resolvedTarget: {
+    targetPlayerId: number;
+    targetPlayerUsername: string;
+    targetVillageId: number;
+    targetVillageName: string;
+    targetKingdom: string;
+    coordX: number;
+    coordY: number;
+    snapshotHash: string;
+  } | null;
+  normalizedLegs: Array<{
+    order: number;
+    originVillageId: number;
+    impactAtPrague: string;
+    impactAtUtc: string;
+    sendAtUtc: string;
+    travelDurationSec: number;
+    units: PlannerUnitAmount[];
+  }>;
+  validation: {
+    status: 'ok' | 'warning' | 'blocked';
+    issues: PlannerValidationIssue[];
+  };
+};
+
+export type ValidatePlannerPlanRequest = {
+  username: string;
+  worldId: string;
+  targetPlayerUsername: string;
+  targetVillageId?: number | null;
+  legs: PlannerLegInput[];
+};
+
+export type PlannerPlanMutationSummary = {
+  id: string;
+  status: PlannerPlanStatus;
+  revision: number;
+  confirmedAt?: string | null;
+  updatedAt?: string | null;
+  canceledAt?: string | null;
+};
+
+export type CreatePlannerPlanRequest = {
+  username: string;
+  worldId: string;
+  targetPlayerUsername: string;
+  targetVillageId?: number | null;
+  legs: PlannerLegInput[];
+  confirmation: {
+    confirmedByPlayer: boolean;
+    clientValidatedAt?: string | null;
+  };
+};
+
+export type CreatePlannerPlanResponse = {
+  plan: PlannerPlanMutationSummary;
+  activePlan: PlannerPlanDetail | null;
+  lastCompletedPlan: PlannerCompletedStub | null;
+};
+
+export type UpdatePlannerPlanRequest = {
+  username: string;
+  worldId: string;
+  expectedRevision: number;
+  targetPlayerUsername: string;
+  targetVillageId?: number | null;
+  legs: PlannerLegInput[];
+};
+
+export type UpdatePlannerPlanResponse = {
+  plan: PlannerPlanMutationSummary;
+  activePlan: PlannerPlanDetail | null;
+};
+
+export type ReconfirmPlannerPlanRequest = {
+  username: string;
+  worldId: string;
+  expectedRevision: number;
+  confirmWithConsequences: boolean;
+};
+
+export type ReconfirmPlannerPlanResponse = {
+  plan: PlannerPlanMutationSummary;
+  activePlan: PlannerPlanDetail | null;
+};
+
+export type CancelPlannerPlanRequest = {
+  username: string;
+  worldId: string;
+  expectedRevision: number;
+};
+
+export type CancelPlannerPlanResponse = {
+  plan: PlannerPlanMutationSummary;
+  activePlan: PlannerPlanDetail | null;
+};
+
+export type PlannerPlanEventItem = {
+  id: string;
+  planId: string;
+  planLegId: string | null;
+  eventType: string;
+  severity: 'info' | 'warning' | 'error';
+  message: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type PlannerPlanEventsResponse = {
+  items: PlannerPlanEventItem[];
+  nextCursor: string | null;
 };
 
 export type LeaderboardRow = {
@@ -420,6 +569,8 @@ export type WorldMapSnapshotResponse = {
   world: {
     id?: string;
     name?: string;
+    snapshotKey?: string;
+    version?: string | null;
     region: number;
     originX: number;
     originY: number;
@@ -442,6 +593,7 @@ export type MercenaryContractState = {
 
 export type GameStateResponse = {
   serverTime: string;
+  stateVersion?: string;
   player: {
     id: number;
     username: string;
@@ -477,6 +629,8 @@ export type GameStateResponse = {
   world: {
     id?: string;
     name?: string;
+    snapshotKey?: string;
+    version?: string | null;
     region: number;
     originX: number;
     originY: number;
@@ -1387,6 +1541,8 @@ type ApiOk<T> = {
 type ApiError = {
   ok: false;
   error: string;
+  errorCode?: string;
+  details?: Record<string, unknown>;
 };
 
 const rawBaseUrl = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/+$/, '') ?? '';
@@ -1589,6 +1745,87 @@ export const fetchPlannerOpen = async (
   }
   const payload = await request<ApiOk<PlannerOpenResponse>>(`/api/v1/planner/open?${params.toString()}`);
   return payload.data;
+};
+
+export const validatePlannerPlan = async (
+  payload: ValidatePlannerPlanRequest,
+): Promise<PlannerValidationResponse> => {
+  const response = await request<ApiOk<PlannerValidationResponse>>('/api/v1/planner/validate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return response.data;
+};
+
+export const createPlannerPlan = async (
+  payload: CreatePlannerPlanRequest,
+): Promise<CreatePlannerPlanResponse> => {
+  const response = await request<ApiOk<CreatePlannerPlanResponse>>('/api/v1/planner/plans', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return response.data;
+};
+
+export const updatePlannerPlan = async (
+  planId: string,
+  payload: UpdatePlannerPlanRequest,
+): Promise<UpdatePlannerPlanResponse> => {
+  const response = await request<ApiOk<UpdatePlannerPlanResponse>>(
+    `/api/v1/planner/plans/${encodeURIComponent(String(planId))}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  );
+  return response.data;
+};
+
+export const reconfirmPlannerPlan = async (
+  planId: string,
+  payload: ReconfirmPlannerPlanRequest,
+): Promise<ReconfirmPlannerPlanResponse> => {
+  const response = await request<ApiOk<ReconfirmPlannerPlanResponse>>(
+    `/api/v1/planner/plans/${encodeURIComponent(String(planId))}/reconfirm`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+  return response.data;
+};
+
+export const cancelPlannerPlan = async (
+  planId: string,
+  payload: CancelPlannerPlanRequest,
+): Promise<CancelPlannerPlanResponse> => {
+  const response = await request<ApiOk<CancelPlannerPlanResponse>>(
+    `/api/v1/planner/plans/${encodeURIComponent(String(planId))}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+  return response.data;
+};
+
+export const fetchPlannerPlanEvents = async (
+  username: string,
+  worldId: string,
+  planId: string,
+  options?: { limit?: number; cursor?: string | null },
+): Promise<PlannerPlanEventsResponse> => {
+  const params = new URLSearchParams({ username, worldId });
+  if (options?.limit != null && Number.isFinite(options.limit) && options.limit > 0) {
+    params.set('limit', String(Math.floor(options.limit)));
+  }
+  if (options?.cursor != null && String(options.cursor).trim() !== '') {
+    params.set('cursor', String(options.cursor).trim());
+  }
+  const response = await request<ApiOk<PlannerPlanEventsResponse>>(
+    `/api/v1/planner/plans/${encodeURIComponent(String(planId))}/events?${params.toString()}`,
+  );
+  return response.data;
 };
 
 export const upgradeBuilding = async (

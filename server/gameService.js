@@ -1,4 +1,5 @@
 ﻿import { db } from './db.js';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   BUILDING_DEFS,
   BUILDING_ORDER,
@@ -113,12 +114,20 @@ const KNIGHT_UNIT_ID = 'knight';
 const SCOUT_UNIT_ID = 'scout';
 const MERCENARY_UNIT_ID = 'mercenary';
 const ARMY_OVERVIEW_UNITS_ORDER = UNIT_ORDER.filter((unitId) => unitId !== MERCENARY_UNIT_ID);
-const PLANNER_ALLOWED_ATTACK_UNIT_IDS = new Set(['militia', 'archer', 'cavalry', 'scout', 'knight', 'ram']);
+const PLANNER_ALLOWED_ATTACK_UNIT_IDS = Object.freeze(
+  UNIT_ORDER.filter((unitId) => unitId !== MERCENARY_UNIT_ID),
+);
+const PLANNER_ALLOWED_ATTACK_UNIT_ID_SET = new Set(PLANNER_ALLOWED_ATTACK_UNIT_IDS);
 const PLANNER_BANNER_TEXT = 'Planovac je zatim mozne vyuzit jen pro jeden cil z vice len.';
 const PLANNER_TIMEZONE = 'Europe/Prague';
 const PLANNER_MAX_LEGS = 10;
 const PLANNER_MIN_IMPACT_GAP_MINUTES = 1;
 const PLANNER_LEAD_TIME_SEC = 5 * 60;
+const PLANNER_EDITABLE_PLAN_STATUSES = new Set(['scheduled', 'needs_reconfirmation']);
+const PLANNER_CANCELABLE_PLAN_STATUSES = new Set(['scheduled', 'needs_reconfirmation']);
+const PLANNER_NEEDS_RECONFIRMATION_STATUS = 'needs_reconfirmation';
+const PLANNER_DEFAULT_EVENTS_LIMIT = 50;
+const PLANNER_MAX_EVENTS_LIMIT = 200;
 const KNIGHT_RECALL_REFUND = { wood: 1000, stone: 1000, iron: 1000 };
 const COMMAND_CANCEL_MAX_PROGRESS = 1 / 3;
 const NIGHT_MODE_START_HOUR = 0;
@@ -336,14 +345,20 @@ const BUILDING_RESEARCH_REQUIREMENTS = Object.freeze({
 });
 
 class GameRuleError extends Error {
-  constructor(message, statusCode = 400) {
+  constructor(message, statusCode = 400, errorCode = null, details = null) {
     super(message);
     this.name = 'GameRuleError';
     this.statusCode = statusCode;
+    this.errorCode = errorCode == null ? null : String(errorCode);
+    this.details = details && typeof details === 'object' ? details : null;
   }
 }
 
 const nowIso = () => new Date().toISOString();
+const STATE_READ_MODEL_BUCKET_MS = 15 * 1000;
+const WORLD_MAP_READ_MODEL_BUCKET_MS = 30 * 1000;
+const WORLD_MAP_CACHE_LIMIT = 48;
+const worldMapReadModelCache = new Map();
 
 const selectPlayerByUsernameStmt = db.prepare(
   `SELECT
@@ -716,6 +731,7 @@ const selectLeaderboardByRegionStmt = db.prepare(
 );
 const selectGameStateStmt = db.prepare('SELECT last_tick_at AS lastTickAt FROM game_state WHERE id = 1');
 const updateGameStateTickStmt = db.prepare('UPDATE game_state SET last_tick_at = ? WHERE id = 1');
+const selectDatabaseChangeCounterStmt = db.prepare('SELECT total_changes() AS totalChanges');
 const updateResourcesStmt = db.prepare(
   'UPDATE resources SET wood = ?, stone = ?, iron = ?, gold = ?, coins = ?, last_sync_at = ? WHERE village_id = ?',
 );
@@ -857,6 +873,24 @@ const insertArmyMovementStmt = db.prepare(
       arrive_at,
       status
    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+);
+const insertArmyMovementWithPlannerRefsStmt = db.prepare(
+  `INSERT INTO army_movements (
+      player_id,
+      plan_id,
+      plan_leg_id,
+      command_type,
+      origin_village_id,
+      target_village_id,
+      home_village_id,
+      loot_priority,
+      carry_wood,
+      carry_stone,
+      carry_iron,
+      started_at,
+      arrive_at,
+      status
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 const insertArmyMovementUnitStmt = db.prepare(
   'INSERT INTO army_movement_units (movement_id, unit_id, amount) VALUES (?, ?, ?)',
@@ -1018,6 +1052,348 @@ const selectRecentPlannerTargetsByPlayerRegionStmt = db.prepare(
       tp.username
    ORDER BY lastUsedAt DESC, m.target_village_id DESC
    LIMIT 24`,
+);
+const selectActivePlannerPlanByPlayerAndWorldStmt = db.prepare(
+  `SELECT
+      id,
+      player_id AS playerId,
+      world_id AS worldId,
+      status,
+      revision,
+      target_player_id AS targetPlayerId,
+      target_village_id AS targetVillageId,
+      target_player_username_snapshot AS targetPlayerUsernameSnapshot,
+      target_village_name_snapshot AS targetVillageNameSnapshot,
+      target_kingdom_snapshot AS targetKingdomSnapshot,
+      target_snapshot_hash AS targetSnapshotHash,
+      confirmed_at AS confirmedAt,
+      first_send_at_utc AS firstSendAtUtc,
+      last_send_at_utc AS lastSendAtUtc,
+      dispatch_started_at_utc AS dispatchStartedAtUtc,
+      completed_at AS completedAt,
+      failed_at AS failedAt,
+      canceled_at AS canceledAt,
+      created_at AS createdAt,
+      updated_at AS updatedAt
+   FROM planner_plans
+   WHERE player_id = ?
+     AND world_id = ?
+     AND status IN ('scheduled', 'needs_reconfirmation', 'dispatching')
+   ORDER BY updated_at DESC, created_at DESC
+   LIMIT 1`,
+);
+const selectLatestCompletedPlannerPlanByPlayerAndWorldStmt = db.prepare(
+  `SELECT
+      id,
+      player_id AS playerId,
+      world_id AS worldId,
+      status,
+      revision,
+      target_player_id AS targetPlayerId,
+      target_village_id AS targetVillageId,
+      target_player_username_snapshot AS targetPlayerUsernameSnapshot,
+      target_village_name_snapshot AS targetVillageNameSnapshot,
+      target_kingdom_snapshot AS targetKingdomSnapshot,
+      target_snapshot_hash AS targetSnapshotHash,
+      confirmed_at AS confirmedAt,
+      first_send_at_utc AS firstSendAtUtc,
+      last_send_at_utc AS lastSendAtUtc,
+      dispatch_started_at_utc AS dispatchStartedAtUtc,
+      completed_at AS completedAt,
+      failed_at AS failedAt,
+      canceled_at AS canceledAt,
+      created_at AS createdAt,
+      updated_at AS updatedAt
+   FROM planner_plans
+   WHERE player_id = ?
+     AND world_id = ?
+     AND status = 'completed'
+   ORDER BY completed_at DESC, updated_at DESC
+   LIMIT 1`,
+);
+const selectPlannerPlanByIdForPlayerAndWorldStmt = db.prepare(
+  `SELECT
+      id,
+      player_id AS playerId,
+      world_id AS worldId,
+      status,
+      revision,
+      target_player_id AS targetPlayerId,
+      target_village_id AS targetVillageId,
+      target_player_username_snapshot AS targetPlayerUsernameSnapshot,
+      target_village_name_snapshot AS targetVillageNameSnapshot,
+      target_kingdom_snapshot AS targetKingdomSnapshot,
+      target_snapshot_hash AS targetSnapshotHash,
+      confirmed_at AS confirmedAt,
+      first_send_at_utc AS firstSendAtUtc,
+      last_send_at_utc AS lastSendAtUtc,
+      dispatch_started_at_utc AS dispatchStartedAtUtc,
+      completed_at AS completedAt,
+      failed_at AS failedAt,
+      canceled_at AS canceledAt,
+      created_at AS createdAt,
+      updated_at AS updatedAt
+   FROM planner_plans
+   WHERE id = ?
+     AND player_id = ?
+     AND world_id = ?
+   LIMIT 1`,
+);
+const selectPlannerPlansByStatusStmt = db.prepare(
+  `SELECT
+      id,
+      player_id AS playerId,
+      world_id AS worldId,
+      status,
+      revision,
+      target_player_id AS targetPlayerId,
+      target_village_id AS targetVillageId,
+      target_player_username_snapshot AS targetPlayerUsernameSnapshot,
+      target_village_name_snapshot AS targetVillageNameSnapshot,
+      target_kingdom_snapshot AS targetKingdomSnapshot,
+      first_send_at_utc AS firstSendAtUtc,
+      last_send_at_utc AS lastSendAtUtc,
+      dispatch_started_at_utc AS dispatchStartedAtUtc,
+      updated_at AS updatedAt
+   FROM planner_plans
+   WHERE status = ?
+   ORDER BY COALESCE(first_send_at_utc, updated_at) ASC, updated_at ASC, id ASC`,
+);
+const selectPlannerLegsByPlanIdStmt = db.prepare(
+  `SELECT
+      id,
+      plan_id AS planId,
+      leg_order AS legOrder,
+      status,
+      origin_village_id AS originVillageId,
+      origin_village_name_snapshot AS originVillageNameSnapshot,
+      impact_at_utc AS impactAtUtc,
+      send_at_utc AS sendAtUtc,
+      travel_duration_sec AS travelDurationSec,
+      sent_at_utc AS sentAtUtc,
+      fail_code AS failCode,
+      fail_message AS failMessage,
+      created_at AS createdAt,
+      updated_at AS updatedAt
+   FROM planner_plan_legs
+   WHERE plan_id = ?
+   ORDER BY leg_order ASC, id ASC`,
+);
+const selectPlannerLegUnitsByPlanIdStmt = db.prepare(
+  `SELECT
+      u.id,
+      u.plan_leg_id AS planLegId,
+      u.unit_id AS unitId,
+      u.planned_amount AS plannedAmount
+   FROM planner_plan_leg_units u
+   INNER JOIN planner_plan_legs l ON l.id = u.plan_leg_id
+   WHERE l.plan_id = ?
+   ORDER BY l.leg_order ASC, u.unit_id ASC`,
+);
+const selectPlannerEventsByPlanIdStmt = db.prepare(
+  `SELECT
+      id,
+      plan_id AS planId,
+      plan_leg_id AS planLegId,
+      event_type AS eventType,
+      severity,
+      message,
+      payload_json AS payloadJson,
+      created_at AS createdAt
+   FROM planner_plan_events
+   WHERE plan_id = ?
+   ORDER BY created_at DESC, id DESC
+   LIMIT ?
+   OFFSET ?`,
+);
+const countPlannerEventsByPlanIdStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM planner_plan_events
+   WHERE plan_id = ?`,
+);
+const insertPlannerPlanStmt = db.prepare(
+  `INSERT INTO planner_plans (
+      id,
+      player_id,
+      world_id,
+      status,
+      revision,
+      target_player_id,
+      target_village_id,
+      target_player_username_snapshot,
+      target_village_name_snapshot,
+      target_kingdom_snapshot,
+      target_snapshot_hash,
+      confirmed_at,
+      first_send_at_utc,
+      last_send_at_utc,
+      created_at,
+      updated_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+);
+const updatePlannerPlanForPatchStmt = db.prepare(
+  `UPDATE planner_plans
+   SET
+     status = ?,
+     revision = revision + 1,
+     target_player_id = ?,
+     target_village_id = ?,
+     target_player_username_snapshot = ?,
+     target_village_name_snapshot = ?,
+     target_kingdom_snapshot = ?,
+     target_snapshot_hash = ?,
+     first_send_at_utc = ?,
+     last_send_at_utc = ?,
+     updated_at = ?
+   WHERE id = ?
+     AND player_id = ?
+     AND world_id = ?
+     AND revision = ?`,
+);
+const updatePlannerPlanForReconfirmStmt = db.prepare(
+  `UPDATE planner_plans
+   SET
+     status = 'scheduled',
+     revision = revision + 1,
+     confirmed_at = ?,
+     updated_at = ?
+   WHERE id = ?
+     AND player_id = ?
+     AND world_id = ?
+     AND revision = ?`,
+);
+const updatePlannerPlanForCancelStmt = db.prepare(
+  `UPDATE planner_plans
+   SET
+     status = 'canceled',
+     revision = revision + 1,
+     canceled_at = ?,
+     updated_at = ?
+   WHERE id = ?
+     AND player_id = ?
+     AND world_id = ?
+     AND revision = ?`,
+);
+const updatePlannerPlanToNeedsReconfirmationStmt = db.prepare(
+  `UPDATE planner_plans
+   SET
+     status = 'needs_reconfirmation',
+     revision = revision + 1,
+     updated_at = ?
+   WHERE id = ?
+     AND status = 'scheduled'`,
+);
+const updatePlannerPlanToDispatchingStmt = db.prepare(
+  `UPDATE planner_plans
+   SET
+     status = 'dispatching',
+     revision = revision + 1,
+     dispatch_started_at_utc = COALESCE(dispatch_started_at_utc, ?),
+     updated_at = ?
+   WHERE id = ?
+     AND status = 'scheduled'`,
+);
+const updatePlannerPlanToCompletedStmt = db.prepare(
+  `UPDATE planner_plans
+   SET
+     status = 'completed',
+     revision = revision + 1,
+     completed_at = ?,
+     updated_at = ?
+   WHERE id = ?
+     AND status = 'dispatching'`,
+);
+const updatePlannerPlanToFailedStmt = db.prepare(
+  `UPDATE planner_plans
+   SET
+     status = 'failed',
+     revision = revision + 1,
+     failed_at = ?,
+     updated_at = ?
+   WHERE id = ?
+     AND status IN ('scheduled', 'dispatching')`,
+);
+const updatePlannerLegStatusesByPlanIdStmt = db.prepare(
+  `UPDATE planner_plan_legs
+   SET
+     status = ?,
+     updated_at = ?
+   WHERE plan_id = ?`,
+);
+const updatePlannerLegToSentStmt = db.prepare(
+  `UPDATE planner_plan_legs
+   SET
+     status = 'sent',
+     sent_at_utc = ?,
+     fail_code = NULL,
+     fail_message = NULL,
+     updated_at = ?
+   WHERE id = ?
+     AND status = 'scheduled'`,
+);
+const updatePlannerLegToFailedStmt = db.prepare(
+  `UPDATE planner_plan_legs
+   SET
+     status = 'failed',
+     fail_code = ?,
+     fail_message = ?,
+     updated_at = ?
+   WHERE id = ?`,
+);
+const updatePlannerScheduledLegsToCanceledByPlanStmt = db.prepare(
+  `UPDATE planner_plan_legs
+   SET
+     status = 'canceled',
+     updated_at = ?
+   WHERE plan_id = ?
+     AND status = 'scheduled'`,
+);
+const insertPlannerPlanLegStmt = db.prepare(
+  `INSERT INTO planner_plan_legs (
+      id,
+      plan_id,
+      leg_order,
+      status,
+      origin_village_id,
+      origin_village_name_snapshot,
+      impact_at_utc,
+      send_at_utc,
+      travel_duration_sec,
+      created_at,
+      updated_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+);
+const insertPlannerPlanLegUnitStmt = db.prepare(
+  `INSERT INTO planner_plan_leg_units (
+      id,
+      plan_leg_id,
+      unit_id,
+      planned_amount
+   ) VALUES (?, ?, ?, ?)`,
+);
+const insertPlannerPlanEventStmt = db.prepare(
+  `INSERT INTO planner_plan_events (
+      id,
+      plan_id,
+      plan_leg_id,
+      event_type,
+      severity,
+      message,
+      payload_json,
+      created_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+);
+const deletePlannerPlanLegUnitsByPlanIdStmt = db.prepare(
+  `DELETE FROM planner_plan_leg_units
+   WHERE plan_leg_id IN (
+     SELECT id
+     FROM planner_plan_legs
+     WHERE plan_id = ?
+   )`,
+);
+const deletePlannerPlanLegsByPlanIdStmt = db.prepare(
+  `DELETE FROM planner_plan_legs
+   WHERE plan_id = ?`,
 );
 const selectStationedSupportMovementsByPlayerStmt = db.prepare(
   `SELECT
@@ -2428,56 +2804,8 @@ const resolveResearchStatusForDefinition = (definition, progressRow, completedId
   return prerequisitesMet ? 'available' : 'locked';
 };
 
-const ensureResolvedResearchProgressForPlayerRegion = (playerId, region, updatedAtIso = nowIso()) => {
-  ensureResearchRowsForPlayerRegion(playerId, region, updatedAtIso);
-  const rows = selectResearchProgressByPlayerRegionStmt.all(Number(playerId), Number(region));
-  const byId = new Map(rows.map((row) => [String(row.researchId), row]));
-  const completedIds = buildCompletedResearchSet(rows);
-
-  for (const definition of RESEARCH_DEFS) {
-    const row = byId.get(String(definition.id)) ?? null;
-    const nextStatus = resolveResearchStatusForDefinition(definition, row, completedIds);
-    const progress = Math.max(0, Number(row?.progress ?? 0));
-    const assignedAcademics =
-      nextStatus === 'researching'
-        ? Math.max(
-            0,
-            Math.floor(
-              Number(
-                countAssignedAcademicsForResearchByPlayerRegionStmt.get(
-                  Number(playerId),
-                  Number(region),
-                  String(definition.id),
-                )?.total ?? 0,
-              ),
-            ),
-          )
-        : 0;
-    const startedAt = nextStatus === 'researching' ? String(row?.startedAt ?? updatedAtIso) : row?.startedAt ?? null;
-    const completedAt = nextStatus === 'completed' ? String(row?.completedAt ?? updatedAtIso) : row?.completedAt ?? null;
-
-    if (
-      row == null ||
-      String(row.status) !== nextStatus ||
-      Number(row.assignedAcademics ?? 0) !== assignedAcademics ||
-      String(row.updatedAt ?? '') !== String(updatedAtIso)
-    ) {
-      upsertResearchProgressStmt.run(
-        Number(playerId),
-        Number(region),
-        String(definition.id),
-        nextStatus,
-        progress,
-        assignedAcademics,
-        startedAt,
-        completedAt,
-        String(updatedAtIso),
-      );
-    }
-  }
-
-  return selectResearchProgressByPlayerRegionStmt.all(Number(playerId), Number(region));
-};
+const ensureResolvedResearchProgressForPlayerRegion = (playerId, region, updatedAtIso = nowIso()) =>
+  resolveResearchProgressForPlayerRegion(playerId, region, updatedAtIso, { persist: true });
 
 const buildResearchViewModel = (researchRows, options = {}) => {
   const playerId = Number(options?.playerId ?? 0);
@@ -3908,7 +4236,7 @@ const calculateBuildingEffect = (buildingId, level) => {
   }
   if (buildingId === 'gold-mine') {
     const valuePerHour = Math.max(0, Number(calculateProductionPerHour({ 'gold-mine': level }, 0, 1).gold ?? 0));
-    return `+${valuePerHour.toFixed(2)} zlata / h`;
+    return `+${Math.floor(valuePerHour).toLocaleString('cs-CZ')} zlata / h`;
   }
   if (buildingId === 'warehouse') {
     return `Kapacita skladu: ${calculateResourceCap(level).toLocaleString('cs-CZ')}`;
@@ -4066,10 +4394,10 @@ const buildBuildingNextLevelPreview = ({
   } else if (buildingId === 'gold-mine') {
     const currentGold = Math.max(0, Number(calculateProductionPerHour({ 'gold-mine': currentLevel }, 0, 1).gold ?? 0));
     const nextGold = Math.max(0, Number(calculateProductionPerHour({ 'gold-mine': nextLevel }, 0, 1).gold ?? 0));
-    const delta = Number((nextGold - currentGold).toFixed(2));
+    const delta = Math.floor(nextGold - currentGold);
     const sign = delta >= 0 ? '+' : '-';
     deltas.push(
-      `Zlato/h: ${currentGold.toFixed(2)} -> ${nextGold.toFixed(2)} (${sign}${Math.abs(delta).toFixed(2)}).`,
+      `Zlato/h: ${Math.floor(currentGold).toLocaleString('cs-CZ')} -> ${Math.floor(nextGold).toLocaleString('cs-CZ')} (${sign}${Math.abs(delta).toLocaleString('cs-CZ')}).`,
     );
   } else if (buildingId === 'warehouse') {
     const currentCap = calculateResourceCap(currentLevel);
@@ -5064,7 +5392,40 @@ const writeVillageResources = (villageId, pocket, syncAtIso = nowIso()) => {
   );
 };
 
-const synchronizeVillageEconomyAt = (villageId, referenceIso = nowIso()) => {
+const getReadModelRevision = () =>
+  Math.max(0, Math.floor(Number(selectDatabaseChangeCounterStmt.get()?.totalChanges ?? 0)));
+
+const getReadModelTimeBucket = (referenceIso, bucketMs) => {
+  const referenceMs = Date.parse(String(referenceIso ?? nowIso()));
+  if (!Number.isFinite(referenceMs)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(referenceMs / Math.max(1, Number(bucketMs) || 1)));
+};
+
+const buildStateReadModelVersion = (referenceIso = nowIso()) =>
+  `state:r${getReadModelRevision()}:t${getReadModelTimeBucket(referenceIso, STATE_READ_MODEL_BUCKET_MS)}`;
+
+const buildWorldMapReadModelVersion = (referenceIso = nowIso()) =>
+  `world:r${getReadModelRevision()}:t${getReadModelTimeBucket(referenceIso, WORLD_MAP_READ_MODEL_BUCKET_MS)}`;
+
+const cacheWorldMapReadModel = (cacheKey, value) => {
+  if (worldMapReadModelCache.has(cacheKey)) {
+    worldMapReadModelCache.delete(cacheKey);
+  }
+  worldMapReadModelCache.set(cacheKey, value);
+  while (worldMapReadModelCache.size > WORLD_MAP_CACHE_LIMIT) {
+    const oldestKey = worldMapReadModelCache.keys().next().value;
+    if (oldestKey == null) {
+      break;
+    }
+    worldMapReadModelCache.delete(oldestKey);
+  }
+  return value;
+};
+
+const synchronizeVillageEconomyAt = (villageId, referenceIso = nowIso(), options = {}) => {
+  const persist = options?.persist !== false;
   const numericVillageId = Number(villageId);
   if (!Number.isFinite(numericVillageId) || numericVillageId <= 0) {
     return null;
@@ -5086,15 +5447,20 @@ const synchronizeVillageEconomyAt = (villageId, referenceIso = nowIso()) => {
 
   if (elapsedSec <= 0) {
     if (!Number.isFinite(lastSyncMs)) {
+      const snapshot = {
+        wood: Number(resourceRow.wood ?? 0),
+        stone: Number(resourceRow.stone ?? 0),
+        iron: Number(resourceRow.iron ?? 0),
+        gold: Number(resourceRow.gold ?? 0),
+        coins: Number(resourceRow.coins ?? 0),
+        lastSyncAt: String(referenceIso),
+      };
+      if (!persist) {
+        return snapshot;
+      }
       writeVillageResources(
         numericVillageId,
-        {
-          wood: Number(resourceRow.wood ?? 0),
-          stone: Number(resourceRow.stone ?? 0),
-          iron: Number(resourceRow.iron ?? 0),
-          gold: Number(resourceRow.gold ?? 0),
-          coins: Number(resourceRow.coins ?? 0),
-        },
+        snapshot,
         referenceIso,
       );
       return selectResourcesByVillageStmt.get(numericVillageId);
@@ -5147,15 +5513,21 @@ const synchronizeVillageEconomyAt = (villageId, referenceIso = nowIso()) => {
     }
   }
 
+  const snapshot = {
+    wood: nextWood,
+    stone: nextStone,
+    iron: nextIron,
+    gold: nextGold,
+    coins: nextCoins,
+    lastSyncAt: String(referenceIso),
+  };
+  if (!persist) {
+    return snapshot;
+  }
+
   writeVillageResources(
     numericVillageId,
-    {
-      wood: nextWood,
-      stone: nextStone,
-      iron: nextIron,
-      gold: nextGold,
-      coins: nextCoins,
-    },
+    snapshot,
     referenceIso,
   );
   return selectResourcesByVillageStmt.get(numericVillageId);
@@ -5826,12 +6198,15 @@ const getVillageProtectionRemainingSec = (village, protectionDaysRaw = 0, refere
 const isVillageUnderSpawnProtection = (village, protectionDaysRaw = 0, referenceMs = Date.now()) =>
   getVillageProtectionRemainingSec(village, protectionDaysRaw, referenceMs) > 0;
 
-const buildVillageLogisticsEconomySnapshot = (villageRow) => {
+const buildVillageLogisticsEconomySnapshot = (villageRow, options = {}) => {
   const villageId = Number(villageRow?.id ?? 0);
   if (!Number.isFinite(villageId) || villageId <= 0) {
     return null;
   }
-  const resourcesRow = synchronizeVillageEconomyAt(villageId);
+  const referenceIso = String(options?.referenceIso ?? nowIso());
+  const resourcesRow = synchronizeVillageEconomyAt(villageId, referenceIso, {
+    persist: options?.persist,
+  });
   const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(villageId));
   const warehouseLevel = Math.max(0, Math.floor(Number(buildingLevels.warehouse ?? 0)));
   const marketLevel = Math.max(0, Math.floor(Number(buildingLevels.market ?? 0)));
@@ -5934,6 +6309,7 @@ const buildMarketGuildAutomationState = ({
   sourceMarketLevel,
   guildUnlocked,
   referenceIso = nowIso(),
+  persist = true,
 }) => {
   const setting = selectMarketGuildSettingBySourceVillageStmt.get(Number(sourceVillageId)) ?? null;
   const targetRows = selectMarketGuildTargetsBySourceVillageStmt.all(Number(sourceVillageId));
@@ -5941,7 +6317,7 @@ const buildMarketGuildAutomationState = ({
     .all(Number(playerId), Number(region))
     .filter((entry) => Number(entry.id) !== Number(sourceVillageId));
   const ownVillageSnapshots = ownVillages
-    .map((village) => buildVillageLogisticsEconomySnapshot(village))
+    .map((village) => buildVillageLogisticsEconomySnapshot(village, { referenceIso, persist }))
     .filter((entry) => entry != null);
   const ownVillageSnapshotById = new Map(
     ownVillageSnapshots.map((entry) => [Number(entry.villageId), entry]),
@@ -5956,7 +6332,7 @@ const buildMarketGuildAutomationState = ({
       Number(targetVillage.region) === Number(region);
     const economySnapshot =
       (isOwnedActive ? ownVillageSnapshotById.get(targetVillageId) : null) ??
-      (isOwnedActive ? buildVillageLogisticsEconomySnapshot(targetVillage) : null);
+      (isOwnedActive ? buildVillageLogisticsEconomySnapshot(targetVillage, { referenceIso, persist }) : null);
     let warning = null;
     if (!targetVillage) {
       warning = 'Leno uz neexistuje.';
@@ -6007,6 +6383,7 @@ const requireVillageForUser = (
   requestedVillageId = null,
   worldId = null,
   spawnDirectionRaw = 'center',
+  options = {},
 ) => {
   const player = selectPlayerByUsernameStmt.get(username);
   if (!player) {
@@ -6047,7 +6424,9 @@ const requireVillageForUser = (
     }
   }
 
-  synchronizeVillageEconomyAt(Number(village.id));
+  if (options?.syncEconomy !== false) {
+    synchronizeVillageEconomyAt(Number(village.id));
+  }
   return { player, village, villages, world: selectedWorld };
 };
 
@@ -6063,10 +6442,11 @@ const normalizeSettlementKind = (isOwn, isBotSettlement, isAbandonedBot) => {
   return isBotSettlement ? 'bot' : 'player';
 };
 
-const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, world) => {
+const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, world, referenceIso = nowIso()) => {
   const region = resolveWorldRegionDefinition(world);
   const spawnConfig = resolveWorldSpawnConfig(world);
   const villageProtectionRuleDays = Math.max(0, Number(spawnConfig.playerProtectionDays ?? 0));
+  const referenceMs = Date.parse(String(referenceIso));
   const villages = selectAllVillagesForWorldStmt.all(Number(world.region));
   const viewerKingdom = viewerVillage.kingdom;
   const numericViewerPlayerId = Number(viewerPlayerId);
@@ -6118,7 +6498,7 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
       : resolveVillageProtectionUntilIso(row, villageProtectionRuleDays);
     const protectionRemainingSec = isAbandonedBot
       ? 0
-      : getVillageProtectionRemainingSec(row, villageProtectionRuleDays);
+      : getVillageProtectionRemainingSec(row, villageProtectionRuleDays, referenceMs);
     const ownerTotalPrestige = Math.max(
       0,
       Math.floor(Number(playerPrestigeByPlayerId.get(playerId) ?? row.prestige ?? 0)),
@@ -6192,6 +6572,40 @@ const buildKingdomStats = (settlements) => {
   }
 
   return [...bucket.values()].sort((a, b) => b.prestige - a.prestige);
+};
+
+const buildWorldMapReadModel = ({
+  player,
+  village,
+  world,
+  referenceIso = nowIso(),
+}) => {
+  const worldRegion = resolveWorldRegionDefinition(world);
+  const version = buildWorldMapReadModelVersion(referenceIso);
+  const cacheKey = [
+    version,
+    String(world.id),
+    Number(player?.id ?? 0),
+    Number(village?.id ?? 0),
+  ].join(':');
+  const cached = worldMapReadModelCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const settlements = buildWorldSettlements(village, player?.username, Number(player?.id), world, referenceIso);
+  return cacheWorldMapReadModel(cacheKey, {
+    id: String(world.id),
+    name: String(world.name),
+    region: Number(worldRegion.id),
+    originX: Number(worldRegion.originX),
+    originY: Number(worldRegion.originY),
+    size: Number(worldRegion.size),
+    version,
+    snapshotKey: version,
+    settlements,
+    kingdoms: buildKingdomStats(settlements),
+  });
 };
 
 const toActiveUpgradeByBuildingMap = (rows) => {
@@ -7265,6 +7679,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     }
   }
 
+  const plannerDispatch = processPlannerDispatches(tickTimeIso);
   const dueArmyMovements = selectDueArmyMovementsStmt.all(tickTimeIso);
   let stationedSupports = 0;
   let completedArmyMovements = 0;
@@ -8317,6 +8732,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     expiredMercenaryContracts,
     completedResearchProjects,
     prunedNotifications,
+    plannerDispatch,
     tickedAt: tickTimeIso,
   };
 });
@@ -8458,8 +8874,1880 @@ const toPlannerRecentTargets = (playerId, region) =>
         row.targetPlayerUsername.length > 0,
     );
 
+const createPlannerEntityId = (prefix) =>
+  `${String(prefix ?? 'pln')}_${Date.now().toString(36)}_${randomBytes(8).toString('hex')}`;
+
+const throwPlannerError = (message, errorCode, statusCode = 400, details = null) => {
+  throw new GameRuleError(
+    String(message ?? 'Planner request selhal.'),
+    statusCode,
+    errorCode,
+    details && typeof details === 'object' ? details : null,
+  );
+};
+
+const resolvePlannerWorldOrThrow = (worldIdRaw) => {
+  const normalizedWorldId = String(worldIdRaw ?? '').trim();
+  if (!normalizedWorldId) {
+    throwPlannerError("Pole 'worldId' je povinne.", 'PLANNER_WORLD_REQUIRED', 400);
+  }
+
+  try {
+    return resolveWorldById(normalizedWorldId);
+  } catch (error) {
+    if (error instanceof GameRuleError && Number(error.statusCode) === 404) {
+      throwPlannerError(`Svet '${normalizedWorldId}' nebyl nalezen.`, 'PLANNER_WORLD_NOT_FOUND', 404, {
+        worldId: normalizedWorldId,
+      });
+    }
+    throw error;
+  }
+};
+
+const resolvePlannerContext = (username, worldIdRaw) => {
+  const normalizedUsername = normalizeUsername(username);
+  const world = resolvePlannerWorldOrThrow(worldIdRaw);
+  const { player } = requireVillageForUser(normalizedUsername, null, String(world.id), 'center', {
+    syncEconomy: false,
+  });
+  return {
+    player,
+    world,
+  };
+};
+
+const parsePlannerExpectedRevision = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throwPlannerError('Chybi nebo je neplatne expectedRevision.', 'PLANNER_REVISION_CONFLICT', 400);
+  }
+  return parsed;
+};
+
+const toPlannerResolvedTargetSnapshotHash = (target) => {
+  const stablePayload = {
+    targetPlayerId: Number(target.targetPlayerId),
+    targetPlayerUsername: String(target.targetPlayerUsername ?? ''),
+    targetVillageId: Number(target.targetVillageId),
+    targetVillageName: String(target.targetVillageName ?? ''),
+    targetKingdom: String(target.targetKingdom ?? 'Neutral'),
+    coordX: Number(target.coordX ?? 0),
+    coordY: Number(target.coordY ?? 0),
+  };
+  return `sha256:${createHash('sha256').update(JSON.stringify(stablePayload)).digest('hex')}`;
+};
+
+const toPublicPlannerIssue = (issue) => ({
+  code: String(issue.code ?? 'PLANNER_VALIDATION_ERROR'),
+  severity: String(issue.severity ?? 'blocked') === 'warning' ? 'warning' : 'blocked',
+  message: String(issue.message ?? 'Neplatny planner koncept.'),
+  scope: String(issue.scope ?? 'plan'),
+  ...(Number.isFinite(Number(issue.legOrder)) ? { legOrder: Number(issue.legOrder) } : {}),
+  ...(Number.isFinite(Number(issue.legOriginVillageId))
+    ? { legOriginVillageId: Number(issue.legOriginVillageId) }
+    : {}),
+});
+
+const pushPlannerIssue = (issues, issue) => {
+  issues.push({
+    code: String(issue.code ?? 'PLANNER_VALIDATION_ERROR'),
+    severity: String(issue.severity ?? 'blocked') === 'warning' ? 'warning' : 'blocked',
+    message: String(issue.message ?? 'Neplatny planner koncept.'),
+    scope: String(issue.scope ?? 'plan'),
+    legOrder: issue.legOrder == null ? null : Number(issue.legOrder),
+    legOriginVillageId: issue.legOriginVillageId == null ? null : Number(issue.legOriginVillageId),
+    httpStatus: Number.isInteger(Number(issue.httpStatus)) ? Number(issue.httpStatus) : 400,
+  });
+};
+
+const resolvePlannerValidationStatus = (issues) => {
+  if (issues.some((issue) => String(issue.severity ?? 'blocked') === 'blocked')) {
+    return 'blocked';
+  }
+  if (issues.some((issue) => String(issue.severity ?? 'blocked') === 'warning')) {
+    return 'warning';
+  }
+  return 'ok';
+};
+
+const resolvePlannerTarget = ({
+  actorPlayerId,
+  world,
+  targetPlayerUsernameRaw,
+  targetVillageIdRaw,
+}) => {
+  const targetPlayerUsername = String(targetPlayerUsernameRaw ?? '').trim();
+  if (!targetPlayerUsername) {
+    throwPlannerError("Pole 'targetPlayerUsername' je povinne.", 'PLANNER_TARGET_REQUIRED', 400);
+  }
+
+  const targetPlayer = selectNonBotPlayerByUsernameStmt.get(targetPlayerUsername);
+  if (!targetPlayer) {
+    throwPlannerError(`Cilovy hrac '${targetPlayerUsername}' nebyl nalezen.`, 'PLANNER_TARGET_NOT_FOUND', 404, {
+      targetPlayerUsername,
+    });
+  }
+
+  if (Number(targetPlayer.id) === Number(actorPlayerId)) {
+    throwPlannerError('Planovac neumoznuje cilit vlastniho hrace.', 'PLANNER_TARGET_NOT_VALID', 400, {
+      targetPlayerUsername,
+    });
+  }
+
+  const candidateVillages = selectVillagesByPlayerAndRegionStmt.all(
+    Number(targetPlayer.id),
+    Number(world.region),
+  );
+  if (candidateVillages.length !== 1) {
+    throwPlannerError(
+      `Cilovy hrac musi mit v tomto svete prave jedno leno (nalezena: ${candidateVillages.length}).`,
+      'PLANNER_TARGET_NOT_SINGLE_VILLAGE',
+      409,
+      {
+        targetPlayerId: Number(targetPlayer.id),
+        targetPlayerUsername: String(targetPlayer.username ?? targetPlayerUsername),
+        worldId: String(world.id),
+        villagesInWorld: candidateVillages.length,
+      },
+    );
+  }
+
+  const targetVillage = candidateVillages[0];
+  const requestedTargetVillageId =
+    targetVillageIdRaw == null || String(targetVillageIdRaw).trim() === ''
+      ? null
+      : Number(targetVillageIdRaw);
+  if (
+    requestedTargetVillageId != null &&
+    (!Number.isInteger(requestedTargetVillageId) ||
+      requestedTargetVillageId <= 0 ||
+      requestedTargetVillageId !== Number(targetVillage.id))
+  ) {
+    throwPlannerError('Cilove leno neodpovida zvolenemu hraci.', 'PLANNER_TARGET_NOT_FOUND', 404, {
+      targetPlayerId: Number(targetPlayer.id),
+      requestedTargetVillageId,
+    });
+  }
+
+  const resolvedTarget = {
+    targetPlayerId: Number(targetPlayer.id),
+    targetPlayerUsername: String(targetPlayer.username ?? targetPlayerUsername),
+    targetVillageId: Number(targetVillage.id),
+    targetVillageName: String(targetVillage.name ?? `Leno #${Number(targetVillage.id)}`),
+    targetKingdom: String(targetVillage.kingdom ?? 'Neutral'),
+    coordX: Number(targetVillage.coordX ?? 0),
+    coordY: Number(targetVillage.coordY ?? 0),
+  };
+  resolvedTarget.snapshotHash = toPlannerResolvedTargetSnapshotHash(resolvedTarget);
+  return resolvedTarget;
+};
+
+const toPlannerPlanStatusSummary = (planRow) => ({
+  id: String(planRow?.id ?? ''),
+  status: String(planRow?.status ?? 'scheduled'),
+  revision: Math.max(1, Math.floor(Number(planRow?.revision ?? 1))),
+  confirmedAt: planRow?.confirmedAt ? String(planRow.confirmedAt) : null,
+  updatedAt: planRow?.updatedAt ? String(planRow.updatedAt) : null,
+  canceledAt: planRow?.canceledAt ? String(planRow.canceledAt) : null,
+});
+
+const buildPlannerPlanDetailFromRow = (planRow) => {
+  if (!planRow) {
+    return null;
+  }
+
+  const planId = String(planRow.id ?? '');
+  if (!planId) {
+    return null;
+  }
+
+  const legRows = selectPlannerLegsByPlanIdStmt.all(planId);
+  const legUnitRows = selectPlannerLegUnitsByPlanIdStmt.all(planId);
+  const unitsByLegId = new Map();
+  for (const row of legUnitRows) {
+    const legId = String(row.planLegId ?? '');
+    if (!legId) {
+      continue;
+    }
+    const units = unitsByLegId.get(legId) ?? [];
+    units.push({
+      unitId: String(row.unitId ?? ''),
+      plannedAmount: Math.max(0, Math.floor(Number(row.plannedAmount ?? 0))),
+    });
+    unitsByLegId.set(legId, units);
+  }
+
+  return {
+    plan: {
+      id: planId,
+      status: String(planRow.status ?? 'scheduled'),
+      revision: Math.max(1, Math.floor(Number(planRow.revision ?? 1))),
+      targetVillageId: Math.max(0, Math.floor(Number(planRow.targetVillageId ?? 0))),
+      targetPlayerId: Math.max(0, Math.floor(Number(planRow.targetPlayerId ?? 0))),
+      targetPlayerUsernameSnapshot: String(planRow.targetPlayerUsernameSnapshot ?? ''),
+      targetVillageNameSnapshot: String(planRow.targetVillageNameSnapshot ?? ''),
+      targetKingdomSnapshot: String(planRow.targetKingdomSnapshot ?? 'Neutral'),
+      confirmedAt: planRow.confirmedAt ? String(planRow.confirmedAt) : null,
+      createdAt: String(planRow.createdAt ?? nowIso()),
+      updatedAt: String(planRow.updatedAt ?? nowIso()),
+      failedAt: planRow.failedAt ? String(planRow.failedAt) : null,
+      canceledAt: planRow.canceledAt ? String(planRow.canceledAt) : null,
+    },
+    legs: legRows.map((legRow) => ({
+      id: String(legRow.id ?? ''),
+      order: Math.max(1, Math.floor(Number(legRow.legOrder ?? 1))),
+      status: String(legRow.status ?? 'scheduled'),
+      originVillageId: Math.max(0, Math.floor(Number(legRow.originVillageId ?? 0))),
+      originVillageNameSnapshot: String(legRow.originVillageNameSnapshot ?? ''),
+      impactAtUtc: String(legRow.impactAtUtc ?? nowIso()),
+      sendAtUtc: String(legRow.sendAtUtc ?? nowIso()),
+      travelDurationSec: Math.max(1, Math.floor(Number(legRow.travelDurationSec ?? 1))),
+      units: unitsByLegId.get(String(legRow.id ?? '')) ?? [],
+      failCode: legRow.failCode == null ? null : String(legRow.failCode),
+      failMessage: legRow.failMessage == null ? null : String(legRow.failMessage),
+    })),
+  };
+};
+
+const buildPlannerCompletedStubFromRow = (planRow) => {
+  if (!planRow) {
+    return null;
+  }
+
+  const planId = String(planRow.id ?? '');
+  if (!planId) {
+    return null;
+  }
+
+  const legsCount = selectPlannerLegsByPlanIdStmt.all(planId).length;
+  return {
+    planId,
+    targetPlayerUsernameSnapshot: String(planRow.targetPlayerUsernameSnapshot ?? ''),
+    targetVillageNameSnapshot: String(planRow.targetVillageNameSnapshot ?? ''),
+    targetKingdomSnapshot: String(planRow.targetKingdomSnapshot ?? 'Neutral'),
+    legsCount: Math.max(0, Math.floor(Number(legsCount))),
+    firstSendAtUtc: planRow.firstSendAtUtc ? String(planRow.firstSendAtUtc) : null,
+    lastSendAtUtc: planRow.lastSendAtUtc ? String(planRow.lastSendAtUtc) : null,
+    completedAt: String(planRow.completedAt ?? planRow.updatedAt ?? nowIso()),
+  };
+};
+
+const buildPlannerReadModelForPlayerWorld = (playerId, worldId) => {
+  const activeRow = selectActivePlannerPlanByPlayerAndWorldStmt.get(Number(playerId), String(worldId));
+  const lastCompletedRow = selectLatestCompletedPlannerPlanByPlayerAndWorldStmt.get(
+    Number(playerId),
+    String(worldId),
+  );
+  return {
+    activePlan: buildPlannerPlanDetailFromRow(activeRow),
+    lastCompletedPlan: buildPlannerCompletedStubFromRow(lastCompletedRow),
+  };
+};
+
+const insertPlannerPlanEvent = ({
+  planId,
+  planLegId = null,
+  eventType,
+  severity = 'info',
+  message,
+  payload = {},
+  createdAt = nowIso(),
+}) => {
+  insertPlannerPlanEventStmt.run(
+    createPlannerEntityId('plev'),
+    String(planId),
+    planLegId == null ? null : String(planLegId),
+    String(eventType ?? 'plan_event'),
+    String(severity ?? 'info'),
+    String(message ?? 'Planner event'),
+    JSON.stringify(payload ?? {}),
+    String(createdAt),
+  );
+};
+
+const persistPlannerLegsForPlan = (planId, normalizedLegs, createdAtIso) => {
+  for (const leg of normalizedLegs) {
+    const legId = createPlannerEntityId('pll');
+    insertPlannerPlanLegStmt.run(
+      legId,
+      String(planId),
+      Math.max(1, Math.floor(Number(leg.order ?? 1))),
+      'scheduled',
+      Math.max(1, Math.floor(Number(leg.originVillageId ?? 1))),
+      String(leg.originVillageNameSnapshot ?? ''),
+      String(leg.impactAtUtc),
+      String(leg.sendAtUtc),
+      Math.max(1, Math.floor(Number(leg.travelDurationSec ?? 1))),
+      String(createdAtIso),
+      String(createdAtIso),
+    );
+    for (const unit of leg.units ?? []) {
+      insertPlannerPlanLegUnitStmt.run(
+        createPlannerEntityId('plu'),
+        legId,
+        String(unit.unitId ?? ''),
+        Math.max(1, Math.floor(Number(unit.amount ?? 1))),
+      );
+    }
+  }
+};
+
+const replacePlannerLegsForPlan = (planId, normalizedLegs, updatedAtIso) => {
+  deletePlannerPlanLegUnitsByPlanIdStmt.run(String(planId));
+  deletePlannerPlanLegsByPlanIdStmt.run(String(planId));
+  persistPlannerLegsForPlan(planId, normalizedLegs, updatedAtIso);
+};
+
+const readPlannerLegsWithUnits = (planId) => {
+  const rows = selectPlannerLegsByPlanIdStmt.all(String(planId));
+  const unitRows = selectPlannerLegUnitsByPlanIdStmt.all(String(planId));
+  const unitsByLegId = new Map();
+  for (const unitRow of unitRows) {
+    const legId = String(unitRow.planLegId ?? '');
+    if (!legId) {
+      continue;
+    }
+    const bucket = unitsByLegId.get(legId) ?? [];
+    bucket.push({
+      unitId: String(unitRow.unitId ?? ''),
+      plannedAmount: Math.max(0, Math.floor(Number(unitRow.plannedAmount ?? 0))),
+    });
+    unitsByLegId.set(legId, bucket);
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    units: unitsByLegId.get(String(row.id ?? '')) ?? [],
+  }));
+};
+
+const toPlannerLegUnitSelection = (leg) => {
+  const selection = toCompleteUnitSelection({});
+  for (const item of leg?.units ?? []) {
+    const unitId = String(item?.unitId ?? '').trim().toLowerCase();
+    if (!PLANNER_ALLOWED_ATTACK_UNIT_ID_SET.has(unitId)) {
+      continue;
+    }
+    const amount = Math.max(0, Math.floor(Number(item?.plannedAmount ?? 0)));
+    if (amount <= 0) {
+      continue;
+    }
+    selection[unitId] = amount;
+  }
+  return selection;
+};
+
+const resolvePlannerTargetReconfirmationInfo = ({ planRow, targetVillage, world }) => {
+  const playerId = Number(planRow?.playerId ?? 0);
+  const targetVillageId = Number(planRow?.targetVillageId ?? 0);
+  const expectedTargetPlayerId = Number(planRow?.targetPlayerId ?? 0);
+  const expectedUsername = String(planRow?.targetPlayerUsernameSnapshot ?? '').trim();
+  const expectedKingdom = normalizeKingdomValue(planRow?.targetKingdomSnapshot ?? 'Neutral');
+
+  const targetExists = targetVillage != null && Number(targetVillage.id ?? 0) === targetVillageId;
+  const targetInWorld = targetExists && Number(targetVillage.region ?? 0) === Number(world?.region ?? 0);
+  const currentTargetPlayerId = targetExists ? Number(targetVillage.playerId ?? 0) : 0;
+  const currentUsername = targetExists ? String(targetVillage.ownerUsername ?? '').trim() : '';
+  const currentKingdom = targetExists
+    ? normalizeKingdomValue(targetVillage.kingdom ?? 'Neutral')
+    : normalizeKingdomValue('Neutral');
+  const ownerChanged =
+    targetExists &&
+    (currentTargetPlayerId !== expectedTargetPlayerId ||
+      normalizeUsernameComparable(currentUsername) !== normalizeUsernameComparable(expectedUsername));
+  const kingdomChanged = targetExists && currentKingdom !== expectedKingdom;
+  const targetStillValid = targetInWorld && currentTargetPlayerId > 0 && currentTargetPlayerId !== playerId;
+
+  if (targetStillValid && !ownerChanged && !kingdomChanged) {
+    return null;
+  }
+
+  const reasonCode = !targetExists || !targetInWorld || !targetStillValid
+    ? 'PLANNER_TARGET_NO_LONGER_VALID'
+    : ownerChanged
+      ? 'PLANNER_TARGET_OWNER_CHANGED'
+      : 'PLANNER_TARGET_KINGDOM_CHANGED';
+
+  const message =
+    reasonCode === 'PLANNER_TARGET_NO_LONGER_VALID'
+      ? 'Cil uz neni validni pro planner utok. Plan vyzaduje upravu.'
+      : ownerChanged && kingdomChanged
+        ? 'Cil zmenil majitele i kralovstvi. Plan vyzaduje reconfirm.'
+        : ownerChanged
+          ? 'Cil zmenil majitele. Plan vyzaduje reconfirm.'
+          : 'Cil zmenil kralovstvi. Plan vyzaduje reconfirm.';
+
+  return {
+    reasonCode,
+    message,
+    payload: {
+      previous: {
+        targetPlayerId: expectedTargetPlayerId,
+        targetPlayerUsername: expectedUsername,
+        targetVillageId,
+        targetVillageName: String(planRow?.targetVillageNameSnapshot ?? ''),
+        targetKingdom: expectedKingdom,
+      },
+      current: targetExists
+        ? {
+            targetPlayerId: currentTargetPlayerId,
+            targetPlayerUsername: currentUsername,
+            targetVillageId: Number(targetVillage.id),
+            targetVillageName: String(targetVillage.name ?? ''),
+            targetKingdom: currentKingdom,
+          }
+        : null,
+      targetStillValid,
+      worldId: String(world?.id ?? planRow?.worldId ?? ''),
+    },
+  };
+};
+
+const refundPlannerLegUnits = (legs) => {
+  for (const leg of legs) {
+    const originVillageId = Number(leg?.originVillageId ?? 0);
+    if (!Number.isFinite(originVillageId) || originVillageId <= 0) {
+      continue;
+    }
+    for (const item of leg?.units ?? []) {
+      const unitId = String(item?.unitId ?? '').trim().toLowerCase();
+      if (!PLANNER_ALLOWED_ATTACK_UNIT_ID_SET.has(unitId)) {
+        continue;
+      }
+      const plannedAmount = Math.max(0, Math.floor(Number(item?.plannedAmount ?? 0)));
+      if (plannedAmount <= 0) {
+        continue;
+      }
+      const currentAmount = Math.max(
+        0,
+        Math.floor(Number(selectUnitAmountByVillageAndUnitStmt.get(originVillageId, unitId)?.amount ?? 0)),
+      );
+      updateUnitAmountStmt.run(currentAmount + plannedAmount, originVillageId, unitId);
+    }
+  }
+};
+
+const failPlannerPlanNow = ({
+  planRow,
+  tickTimeIso,
+  failCode,
+  failMessage,
+  failedLeg = null,
+  refundLegs = [],
+  payload = {},
+}) => {
+  if (Array.isArray(refundLegs) && refundLegs.length > 0) {
+    refundPlannerLegUnits(refundLegs);
+  }
+
+  if (failedLeg) {
+    updatePlannerLegToFailedStmt.run(
+      String(failCode ?? 'PLANNER_DISPATCH_FAILED'),
+      String(failMessage ?? 'Planner leg selhal.'),
+      String(tickTimeIso),
+      String(failedLeg.id),
+    );
+  }
+  updatePlannerScheduledLegsToCanceledByPlanStmt.run(String(tickTimeIso), String(planRow.id));
+  updatePlannerPlanToFailedStmt.run(String(tickTimeIso), String(tickTimeIso), String(planRow.id));
+
+  insertPlannerPlanEvent({
+    planId: String(planRow.id),
+    planLegId: failedLeg ? String(failedLeg.id) : null,
+    eventType: 'plan_failed',
+    severity: 'error',
+    message: String(failMessage ?? 'Planner plan selhal.'),
+    payload: {
+      planId: String(planRow.id),
+      planStatus: String(planRow.status ?? ''),
+      failCode: String(failCode ?? 'PLANNER_DISPATCH_FAILED'),
+      failedLegOrder: failedLeg ? Number(failedLeg.legOrder ?? 0) : null,
+      ...payload,
+    },
+    createdAt: String(tickTimeIso),
+  });
+};
+
+const movePlannerPlanToNeedsReconfirmation = ({ planRow, reconfirmation, tickTimeIso }) => {
+  const updated = updatePlannerPlanToNeedsReconfirmationStmt.run(String(tickTimeIso), String(planRow.id));
+  if (Number(updated?.changes ?? 0) <= 0) {
+    return false;
+  }
+
+  insertPlannerPlanEvent({
+    planId: String(planRow.id),
+    eventType: 'plan_needs_reconfirmation',
+    severity: 'warning',
+    message: String(reconfirmation?.message ?? 'Plan vyzaduje reconfirm.'),
+    payload: {
+      planId: String(planRow.id),
+      reasonCode: String(reconfirmation?.reasonCode ?? 'PLANNER_TARGET_CHANGED'),
+      ...(reconfirmation?.payload ?? {}),
+    },
+    createdAt: String(tickTimeIso),
+  });
+  return true;
+};
+
+const preflightPlannerPlanDispatch = ({ planRow, world, legs, targetVillage }) => {
+  const scheduledLegs = legs.filter((leg) => String(leg.status ?? '') === 'scheduled');
+  if (scheduledLegs.length <= 0) {
+    return {
+      ok: false,
+      failure: {
+        code: 'PLANNER_LEGS_REQUIRED',
+        message: 'Plan nema zadne planovane legy.',
+        leg: null,
+      },
+      reservations: [],
+    };
+  }
+
+  if (!targetVillage || Number(targetVillage.region ?? 0) !== Number(world?.region ?? 0)) {
+    return {
+      ok: false,
+      failure: {
+        code: 'PLANNER_TARGET_NO_LONGER_VALID',
+        message: 'Cil uz neni v tomto svete dostupny.',
+        leg: null,
+      },
+      reservations: [],
+    };
+  }
+
+  if (Number(targetVillage.playerId ?? 0) === Number(planRow.playerId ?? 0)) {
+    return {
+      ok: false,
+      failure: {
+        code: 'PLANNER_TARGET_NO_LONGER_VALID',
+        message: 'Cil uz patri tobe, plan nelze odeslat.',
+        leg: null,
+      },
+      reservations: [],
+    };
+  }
+
+  const spawnConfig = resolveWorldSpawnConfig(world);
+  const protectionDays = Math.max(0, Number(spawnConfig.playerProtectionDays ?? 0));
+  const targetOwnerUsernameComparable = normalizeUsernameComparable(String(targetVillage.ownerUsername ?? ''));
+  const isTargetAbandonedBot =
+    Number(targetVillage.ownerIsBot ?? 0) === 1 &&
+    targetOwnerUsernameComparable.startsWith(normalizeUsernameComparable(ABANDONED_BOT_USERNAME_PREFIX));
+
+  const attackerPrestige = getPlayerPrestigeInRegion(Number(planRow.playerId), Number(world.region));
+  const defenderPrestige = getPlayerPrestigeInRegion(Number(targetVillage.playerId), Number(targetVillage.region));
+  const prestigeLock = evaluatePrestigeAttackLock({
+    attackerPrestige,
+    defenderPrestige,
+    attackerPlayerId: Number(planRow.playerId),
+    defenderPlayerId: Number(targetVillage.playerId),
+    region: Number(world.region),
+  });
+  if (!isTargetAbandonedBot && !prestigeLock.canAttack) {
+    return {
+      ok: false,
+      failure: {
+        code: 'PLANNER_ATTACK_BLOCKED_PRESTIGE',
+        message:
+          `Balanc prestize blokuje utok: cil ma ${Math.floor(defenderPrestige).toLocaleString('cs-CZ')} prestize, ` +
+          `potrebuje alespon ${prestigeLock.minimumDefenderPrestige.toLocaleString('cs-CZ')}.`,
+        leg: null,
+      },
+      reservations: [],
+    };
+  }
+
+  const reservationsByVillageUnit = new Map();
+  const originVillageById = new Map();
+  const reserve = (originVillageId, unitId, amount) => {
+    const key = `${originVillageId}:${unitId}`;
+    const current = Math.max(0, Math.floor(Number(reservationsByVillageUnit.get(key) ?? 0)));
+    reservationsByVillageUnit.set(key, current + amount);
+  };
+
+  for (const leg of scheduledLegs) {
+    const originVillageId = Number(leg.originVillageId ?? 0);
+    const legOrder = Math.max(1, Math.floor(Number(leg.legOrder ?? 1)));
+    if (!Number.isFinite(originVillageId) || originVillageId <= 0) {
+      return {
+        ok: false,
+        failure: {
+          code: 'PLANNER_ORIGIN_NOT_OWNED',
+          message: `Leg #${legOrder} ma neplatny puvod.`,
+          leg,
+        },
+        reservations: [],
+      };
+    }
+
+    const originVillage =
+      originVillageById.get(originVillageId) ?? selectVillageWithOwnerByIdStmt.get(originVillageId) ?? null;
+    if (!originVillageById.has(originVillageId)) {
+      originVillageById.set(originVillageId, originVillage);
+    }
+    if (
+      !originVillage ||
+      Number(originVillage.playerId ?? 0) !== Number(planRow.playerId ?? 0) ||
+      Number(originVillage.region ?? 0) !== Number(world?.region ?? 0)
+    ) {
+      return {
+        ok: false,
+        failure: {
+          code: 'PLANNER_ORIGIN_NOT_OWNED',
+          message: `Leg #${legOrder} uz nema validni puvodni leno.`,
+          leg,
+        },
+        reservations: [],
+      };
+    }
+
+    if (Number(originVillage.id ?? 0) === Number(targetVillage.id ?? 0)) {
+      return {
+        ok: false,
+        failure: {
+          code: 'PLANNER_TARGET_NO_LONGER_VALID',
+          message: `Leg #${legOrder} miri na stejne leno jako puvod.`,
+          leg,
+        },
+        reservations: [],
+      };
+    }
+
+    if (protectionDays > 0 && !isTargetAbandonedBot) {
+      if (isVillageUnderSpawnProtection(originVillage, protectionDays)) {
+        return {
+          ok: false,
+          failure: {
+            code: 'PLANNER_ATTACK_BLOCKED_SPAWN_PROTECTION',
+            message:
+              `Leg #${legOrder} je blokovan: puvodni leno je pod novackou ochranou (max ${protectionDays} dni).`,
+            leg,
+          },
+          reservations: [],
+        };
+      }
+      if (isVillageUnderSpawnProtection(targetVillage, protectionDays)) {
+        return {
+          ok: false,
+          failure: {
+            code: 'PLANNER_ATTACK_BLOCKED_SPAWN_PROTECTION',
+            message:
+              `Leg #${legOrder} je blokovan: cil je pod novackou ochranou (max ${protectionDays} dni).`,
+            leg,
+          },
+          reservations: [],
+        };
+      }
+    }
+
+    const selectedUnits = toPlannerLegUnitSelection(leg);
+    const totalUnits = sumSelectedUnits(selectedUnits);
+    if (totalUnits <= 0) {
+      return {
+        ok: false,
+        failure: {
+          code: 'PLANNER_UNIT_AMOUNT_INVALID',
+          message: `Leg #${legOrder} nema validni jednotky.`,
+          leg,
+        },
+        reservations: [],
+      };
+    }
+
+    for (const unitId of PLANNER_ALLOWED_ATTACK_UNIT_IDS) {
+      const requestedAmount = Math.max(0, Math.floor(Number(selectedUnits[unitId] ?? 0)));
+      if (requestedAmount <= 0) {
+        continue;
+      }
+      const availableAmount = Math.max(
+        0,
+        Math.floor(Number(selectUnitAmountByVillageAndUnitStmt.get(originVillageId, unitId)?.amount ?? 0)),
+      );
+      if (requestedAmount > availableAmount) {
+        return {
+          ok: false,
+          failure: {
+            code: 'PLANNER_UNIT_AMOUNT_INVALID',
+            message: `Leg #${legOrder} nema dostatek jednotek '${unitId}'.`,
+            leg,
+          },
+          reservations: [],
+        };
+      }
+      reserve(originVillageId, unitId, requestedAmount);
+    }
+  }
+
+  const reservations = [];
+  for (const [key, amount] of reservationsByVillageUnit.entries()) {
+    if (amount <= 0) {
+      continue;
+    }
+    const [originVillageIdRaw, unitId] = key.split(':');
+    const originVillageId = Number(originVillageIdRaw);
+    if (!Number.isFinite(originVillageId) || originVillageId <= 0 || !unitId) {
+      continue;
+    }
+    reservations.push({
+      originVillageId,
+      unitId,
+      amount: Math.max(0, Math.floor(Number(amount))),
+    });
+  }
+
+  return { ok: true, reservations, failure: null };
+};
+
+const reservePlannerUnitsForDispatch = (reservations) => {
+  for (const entry of reservations) {
+    const originVillageId = Number(entry.originVillageId);
+    const unitId = String(entry.unitId ?? '');
+    const amount = Math.max(0, Math.floor(Number(entry.amount ?? 0)));
+    if (!Number.isFinite(originVillageId) || originVillageId <= 0 || !unitId || amount <= 0) {
+      continue;
+    }
+    const availableAmount = Math.max(
+      0,
+      Math.floor(Number(selectUnitAmountByVillageAndUnitStmt.get(originVillageId, unitId)?.amount ?? 0)),
+    );
+    if (amount > availableAmount) {
+      return {
+        ok: false,
+        code: 'PLANNER_UNIT_AMOUNT_INVALID',
+        message: `Pri rezervaci chybi jednotky '${unitId}' v lenu #${originVillageId}.`,
+      };
+    }
+    updateUnitAmountStmt.run(availableAmount - amount, originVillageId, unitId);
+  }
+  return { ok: true };
+};
+
+const finalizePlannerPlanIfDispatched = (planId, tickTimeIso) => {
+  const pendingLegs = selectPlannerLegsByPlanIdStmt
+    .all(String(planId))
+    .filter((leg) => String(leg.status ?? '') === 'scheduled');
+  if (pendingLegs.length > 0) {
+    return false;
+  }
+  const updated = updatePlannerPlanToCompletedStmt.run(String(tickTimeIso), String(tickTimeIso), String(planId));
+  if (Number(updated?.changes ?? 0) <= 0) {
+    return false;
+  }
+  insertPlannerPlanEvent({
+    planId: String(planId),
+    eventType: 'plan_completed',
+    severity: 'info',
+    message: 'Plan byl kompletne odeslan.',
+    payload: {
+      planId: String(planId),
+      completedAt: String(tickTimeIso),
+    },
+    createdAt: String(tickTimeIso),
+  });
+  return true;
+};
+
+const processPlannerDispatches = (tickTimeIso) => {
+  const tickTimeMs = Date.parse(String(tickTimeIso));
+  const safeTickMs = Number.isFinite(tickTimeMs) ? tickTimeMs : Date.now();
+  const stats = {
+    plansNeedsReconfirmation: 0,
+    plansDispatchingStarted: 0,
+    plansFailed: 0,
+    plansCompleted: 0,
+    legsSent: 0,
+  };
+
+  const scheduledPlans = selectPlannerPlansByStatusStmt.all('scheduled');
+  for (const planRow of scheduledPlans) {
+    const planId = String(planRow.id ?? '');
+    if (!planId) {
+      continue;
+    }
+
+    let world = null;
+    try {
+      world = resolveWorldById(String(planRow.worldId ?? ''));
+    } catch {
+      failPlannerPlanNow({
+        planRow,
+        tickTimeIso,
+        failCode: 'PLANNER_WORLD_NOT_FOUND',
+        failMessage: `Plan ${planId} ma neplatny world.`,
+        failedLeg: null,
+      });
+      stats.plansFailed += 1;
+      continue;
+    }
+
+    const targetVillage = selectVillageWithOwnerByIdStmt.get(Number(planRow.targetVillageId ?? 0));
+    const reconfirmation = resolvePlannerTargetReconfirmationInfo({
+      planRow,
+      targetVillage,
+      world,
+    });
+    if (reconfirmation) {
+      if (
+        movePlannerPlanToNeedsReconfirmation({
+          planRow,
+          reconfirmation,
+          tickTimeIso,
+        })
+      ) {
+        stats.plansNeedsReconfirmation += 1;
+      }
+      continue;
+    }
+
+    const firstSendAtMs = Date.parse(String(planRow.firstSendAtUtc ?? ''));
+    if (!Number.isFinite(firstSendAtMs) || firstSendAtMs > safeTickMs) {
+      continue;
+    }
+
+    const legs = readPlannerLegsWithUnits(planId);
+    const preflight = preflightPlannerPlanDispatch({
+      planRow,
+      world,
+      legs,
+      targetVillage,
+    });
+    if (!preflight.ok) {
+      failPlannerPlanNow({
+        planRow,
+        tickTimeIso,
+        failCode: String(preflight.failure?.code ?? 'PLANNER_DISPATCH_FAILED'),
+        failMessage: String(preflight.failure?.message ?? 'Planner dispatch selhal.'),
+        failedLeg: preflight.failure?.leg ?? null,
+        payload: {
+          stage: 'preflight',
+        },
+      });
+      stats.plansFailed += 1;
+      continue;
+    }
+
+    const reservationResult = reservePlannerUnitsForDispatch(preflight.reservations);
+    if (!reservationResult.ok) {
+      failPlannerPlanNow({
+        planRow,
+        tickTimeIso,
+        failCode: String(reservationResult.code ?? 'PLANNER_DISPATCH_FAILED'),
+        failMessage: String(reservationResult.message ?? 'Planner rezervace jednotek selhala.'),
+        failedLeg: null,
+        payload: {
+          stage: 'reserve',
+        },
+      });
+      stats.plansFailed += 1;
+      continue;
+    }
+
+    const updated = updatePlannerPlanToDispatchingStmt.run(String(tickTimeIso), String(tickTimeIso), planId);
+    if (Number(updated?.changes ?? 0) <= 0) {
+      const notSentLegs = legs.filter((leg) => String(leg.status ?? '') === 'scheduled');
+      if (notSentLegs.length > 0) {
+        refundPlannerLegUnits(notSentLegs);
+      }
+      continue;
+    }
+
+    insertPlannerPlanEvent({
+      planId,
+      eventType: 'plan_dispatch_started',
+      severity: 'info',
+      message: 'Planner pre-flight uspesny, plan prechazi do dispatchingu.',
+      payload: {
+        planId,
+        legsCount: legs.length,
+      },
+      createdAt: String(tickTimeIso),
+    });
+    stats.plansDispatchingStarted += 1;
+  }
+
+  const dispatchingPlans = selectPlannerPlansByStatusStmt.all('dispatching');
+  for (const planRow of dispatchingPlans) {
+    const planId = String(planRow.id ?? '');
+    if (!planId) {
+      continue;
+    }
+
+    let world = null;
+    try {
+      world = resolveWorldById(String(planRow.worldId ?? ''));
+    } catch {
+      const allLegs = readPlannerLegsWithUnits(planId);
+      const pendingLegs = allLegs.filter((leg) => String(leg.status ?? '') === 'scheduled');
+      failPlannerPlanNow({
+        planRow,
+        tickTimeIso,
+        failCode: 'PLANNER_WORLD_NOT_FOUND',
+        failMessage: `Plan ${planId} ma neplatny world.`,
+        failedLeg: null,
+        refundLegs: pendingLegs,
+      });
+      stats.plansFailed += 1;
+      continue;
+    }
+
+    const targetVillage = selectVillageWithOwnerByIdStmt.get(Number(planRow.targetVillageId ?? 0));
+    const allLegs = readPlannerLegsWithUnits(planId);
+    const pendingLegs = allLegs.filter((leg) => String(leg.status ?? '') === 'scheduled');
+
+    if (
+      !targetVillage ||
+      Number(targetVillage.region ?? 0) !== Number(world.region ?? 0) ||
+      Number(targetVillage.playerId ?? 0) === Number(planRow.playerId ?? 0)
+    ) {
+      failPlannerPlanNow({
+        planRow,
+        tickTimeIso,
+        failCode: 'PLANNER_TARGET_NO_LONGER_VALID',
+        failMessage: 'Cil uz neni validni v dobe dispatchingu.',
+        failedLeg: null,
+        refundLegs: pendingLegs,
+      });
+      stats.plansFailed += 1;
+      continue;
+    }
+
+    if (pendingLegs.length <= 0) {
+      if (finalizePlannerPlanIfDispatched(planId, tickTimeIso)) {
+        stats.plansCompleted += 1;
+      }
+      continue;
+    }
+
+    const dueLegs = pendingLegs.filter((leg) => {
+      const sendAtMs = Date.parse(String(leg.sendAtUtc ?? ''));
+      return Number.isFinite(sendAtMs) && sendAtMs <= safeTickMs;
+    });
+    if (dueLegs.length <= 0) {
+      continue;
+    }
+
+    const commander = selectPlayerByIdStmt.get(Number(planRow.playerId ?? 0));
+    let planFailed = false;
+    for (const leg of dueLegs) {
+      if (planFailed) {
+        break;
+      }
+      const originVillage = selectVillageByIdStmt.get(Number(leg.originVillageId ?? 0));
+      if (!originVillage || Number(originVillage.playerId ?? 0) !== Number(planRow.playerId ?? 0)) {
+        failPlannerPlanNow({
+          planRow,
+          tickTimeIso,
+          failCode: 'PLANNER_ORIGIN_NOT_OWNED',
+          failMessage: `Leg #${Math.max(1, Math.floor(Number(leg.legOrder ?? 1)))} uz nema validni puvodni leno.`,
+          failedLeg: leg,
+          refundLegs: pendingLegs,
+          payload: {
+            stage: 'dispatch',
+          },
+        });
+        stats.plansFailed += 1;
+        planFailed = true;
+        break;
+      }
+
+      const legSelection = toPlannerLegUnitSelection(leg);
+      const totalUnits = sumSelectedUnits(legSelection);
+      if (totalUnits <= 0) {
+        failPlannerPlanNow({
+          planRow,
+          tickTimeIso,
+          failCode: 'PLANNER_UNIT_AMOUNT_INVALID',
+          failMessage: `Leg #${Math.max(1, Math.floor(Number(leg.legOrder ?? 1)))} nema validni jednotky.`,
+          failedLeg: leg,
+          refundLegs: pendingLegs,
+          payload: {
+            stage: 'dispatch',
+          },
+        });
+        stats.plansFailed += 1;
+        planFailed = true;
+        break;
+      }
+
+      const parsedSendAtMs = Date.parse(String(leg.sendAtUtc ?? ''));
+      const startedAtIso = Number.isFinite(parsedSendAtMs) ? String(leg.sendAtUtc) : String(tickTimeIso);
+      const parsedImpactAtMs = Date.parse(String(leg.impactAtUtc ?? ''));
+      const fallbackArriveAtMs =
+        (Number.isFinite(parsedSendAtMs) ? parsedSendAtMs : safeTickMs) +
+        Math.max(1, Math.floor(Number(leg.travelDurationSec ?? 1))) * 1000;
+      const arriveAtIso =
+        Number.isFinite(parsedImpactAtMs) && parsedImpactAtMs > (Number.isFinite(parsedSendAtMs) ? parsedSendAtMs : 0)
+          ? String(leg.impactAtUtc)
+          : new Date(fallbackArriveAtMs).toISOString();
+
+      try {
+        const inserted = insertArmyMovementWithPlannerRefsStmt.run(
+          Number(planRow.playerId),
+          planId,
+          String(leg.id),
+          'attack',
+          Number(originVillage.id),
+          Number(targetVillage.id),
+          Number(originVillage.id),
+          null,
+          0,
+          0,
+          0,
+          startedAtIso,
+          arriveAtIso,
+          'in_progress',
+        );
+        const movementId = Number(inserted.lastInsertRowid);
+        for (const unitId of PLANNER_ALLOWED_ATTACK_UNIT_IDS) {
+          const amount = Math.max(0, Math.floor(Number(legSelection[unitId] ?? 0)));
+          if (amount <= 0) {
+            continue;
+          }
+          insertArmyMovementUnitStmt.run(movementId, unitId, amount);
+        }
+
+        updatePlannerLegToSentStmt.run(String(tickTimeIso), String(tickTimeIso), String(leg.id));
+        insertPlannerPlanEvent({
+          planId,
+          planLegId: String(leg.id),
+          eventType: 'leg_sent',
+          severity: 'info',
+          message: `Leg #${Math.max(1, Math.floor(Number(leg.legOrder ?? 1)))} byl odeslan.`,
+          payload: {
+            planId,
+            planLegId: String(leg.id),
+            movementId,
+            originVillageId: Number(originVillage.id),
+            targetVillageId: Number(targetVillage.id),
+            totalUnits,
+            sendAtUtc: String(leg.sendAtUtc ?? tickTimeIso),
+            impactAtUtc: String(leg.impactAtUtc ?? arriveAtIso),
+          },
+          createdAt: String(tickTimeIso),
+        });
+
+        if (Number(targetVillage.ownerIsBot ?? 0) !== 1) {
+          registerCombatRetaliationFlag({
+            aggressorPlayerId: Number(planRow.playerId),
+            defenderPlayerId: Number(targetVillage.playerId),
+            region: Number(world.region),
+            attackedAtIso: String(tickTimeIso),
+          });
+        }
+
+        const remainingSec = Math.max(0, Math.ceil((Date.parse(arriveAtIso) - safeTickMs) / 1000));
+        createPlayerNotification({
+          playerId: Number(planRow.playerId),
+          region: Number(world.region),
+          category: 'command',
+          eventType: 'army_command_sent',
+          severity: 'info',
+          title: 'Plánovaný útok odeslán',
+          summary:
+            `Plánovaný útok z osady ${String(originVillage.name)} na ${String(targetVillage.name)} ` +
+            `dorazí za ${formatRemaining(remainingSec)}.`,
+          payload: {
+            movementId,
+            planId,
+            planLegId: String(leg.id),
+            commandType: 'attack',
+            originVillageId: Number(originVillage.id),
+            originVillageName: String(originVillage.name ?? ''),
+            targetVillageId: Number(targetVillage.id),
+            targetVillageName: String(targetVillage.name ?? ''),
+            totalUnits,
+            arriveAt: arriveAtIso,
+          },
+          sourceType: 'army_movement',
+          sourceId: movementId,
+          createdAt: String(tickTimeIso),
+        });
+        if (Number(targetVillage.playerId) !== Number(planRow.playerId) && Number(targetVillage.ownerIsBot ?? 0) !== 1) {
+          createPlayerNotification({
+            playerId: Number(targetVillage.playerId),
+            region: Number(targetVillage.region),
+            category: 'combat',
+            eventType: 'incoming_attack',
+            severity: 'critical',
+            title: `Příchozí útok na ${String(targetVillage.name)}`,
+            summary:
+              `${String(commander?.username ?? 'Neznamy velitel')} vyslal plánovaný útok z ` +
+              `${String(originVillage.name)}. ETA ${formatRemaining(remainingSec)}.`,
+            payload: {
+              movementId,
+              planId,
+              planLegId: String(leg.id),
+              commandType: 'attack',
+              commanderUsername: String(commander?.username ?? 'Neznamy velitel'),
+              originVillageId: Number(originVillage.id),
+              originVillageName: String(originVillage.name ?? ''),
+              targetVillageId: Number(targetVillage.id),
+              targetVillageName: String(targetVillage.name ?? ''),
+              totalUnits,
+              arriveAt: arriveAtIso,
+            },
+            sourceType: 'army_movement',
+            sourceId: movementId,
+            createdAt: String(tickTimeIso),
+          });
+        }
+
+        stats.legsSent += 1;
+      } catch {
+        const refreshedLegs = readPlannerLegsWithUnits(planId);
+        const notSentLegs = refreshedLegs.filter((item) => String(item.status ?? '') === 'scheduled');
+        failPlannerPlanNow({
+          planRow,
+          tickTimeIso,
+          failCode: 'PLANNER_DISPATCH_FAILED',
+          failMessage: `Leg #${Math.max(1, Math.floor(Number(leg.legOrder ?? 1)))} se nepodarilo odeslat.`,
+          failedLeg: leg,
+          refundLegs: notSentLegs,
+          payload: {
+            stage: 'dispatch',
+          },
+        });
+        stats.plansFailed += 1;
+        planFailed = true;
+        break;
+      }
+    }
+
+    if (planFailed) {
+      continue;
+    }
+
+    if (finalizePlannerPlanIfDispatched(planId, tickTimeIso)) {
+      stats.plansCompleted += 1;
+    }
+  }
+
+  return stats;
+};
+
+const validatePlannerPayloadCore = (username, worldIdRaw, payload, options = {}) => {
+  const throwOnBlocked = options.throwOnBlocked === true;
+  const leadTimeBlockedStatusCode = Number(options.leadTimeBlockedStatusCode ?? 400);
+  const { player, world } = resolvePlannerContext(username, worldIdRaw);
+  const resolvedTarget = resolvePlannerTarget({
+    actorPlayerId: Number(player.id),
+    world,
+    targetPlayerUsernameRaw: payload?.targetPlayerUsername,
+    targetVillageIdRaw: payload?.targetVillageId,
+  });
+
+  const legs = payload?.legs;
+  if (!Array.isArray(legs) || legs.length <= 0) {
+    throwPlannerError('Koncept planu musi obsahovat alespon jeden leg.', 'PLANNER_LEGS_REQUIRED', 400);
+  }
+  if (legs.length > PLANNER_MAX_LEGS) {
+    throwPlannerError(
+      `Planovac podporuje maximalne ${PLANNER_MAX_LEGS} legu.`,
+      'PLANNER_MAX_LEGS_EXCEEDED',
+      400,
+      {
+        maxLegs: PLANNER_MAX_LEGS,
+        receivedLegs: legs.length,
+      },
+    );
+  }
+
+  const ownVillages = selectVillagesByPlayerAndRegionStmt.all(Number(player.id), Number(world.region));
+  const ownVillageById = new Map(ownVillages.map((village) => [Number(village.id), village]));
+  const unitCountsByVillageId = new Map();
+  const readVillageUnits = (villageId) => {
+    const numericVillageId = Number(villageId);
+    if (unitCountsByVillageId.has(numericVillageId)) {
+      return unitCountsByVillageId.get(numericVillageId);
+    }
+    const counts = toUnitCountMap(selectUnitsByVillageStmt.all(numericVillageId));
+    unitCountsByVillageId.set(numericVillageId, counts);
+    return counts;
+  };
+
+  const issues = [];
+  const normalizedLegs = [];
+  const seenOrigins = new Set();
+  const seenOrders = new Set();
+  const nowMs = Date.now();
+  const minAllowedSendAtMs = nowMs + PLANNER_LEAD_TIME_SEC * 1000;
+  const minImpactGapMs = PLANNER_MIN_IMPACT_GAP_MINUTES * 60 * 1000;
+
+  for (let index = 0; index < legs.length; index += 1) {
+    const legRaw = legs[index] ?? {};
+    const parsedOrder = Number(legRaw.order);
+    const parsedOriginVillageId = Number(legRaw.originVillageId);
+    const legOrder = Number.isInteger(parsedOrder) && parsedOrder > 0 ? parsedOrder : null;
+    const legOriginVillageId =
+      Number.isInteger(parsedOriginVillageId) && parsedOriginVillageId > 0 ? parsedOriginVillageId : null;
+    let legHasBlockingIssue = false;
+
+    if (legOrder == null) {
+      pushPlannerIssue(issues, {
+        code: 'PLANNER_IMPACT_ORDER_INVALID',
+        message: `Leg #${index + 1} ma neplatne poradi.`,
+        scope: 'leg',
+        legOrder: index + 1,
+      });
+      legHasBlockingIssue = true;
+    } else if (seenOrders.has(legOrder)) {
+      pushPlannerIssue(issues, {
+        code: 'PLANNER_IMPACT_ORDER_INVALID',
+        message: `Poradi legu musi byt unikatni (duplicitni poradi ${legOrder}).`,
+        scope: 'leg',
+        legOrder,
+      });
+      legHasBlockingIssue = true;
+    } else {
+      seenOrders.add(legOrder);
+    }
+
+    if (legOriginVillageId == null || !ownVillageById.has(legOriginVillageId)) {
+      pushPlannerIssue(issues, {
+        code: 'PLANNER_ORIGIN_NOT_OWNED',
+        message: `Leg #${legOrder ?? index + 1} pouziva neplatne nebo cizi puvodni leno.`,
+        scope: 'leg',
+        legOrder: legOrder ?? index + 1,
+        legOriginVillageId,
+      });
+      legHasBlockingIssue = true;
+    } else if (seenOrigins.has(legOriginVillageId)) {
+      pushPlannerIssue(issues, {
+        code: 'PLANNER_DUPLICATE_ORIGIN',
+        message: `Puvodni leno ${legOriginVillageId} lze v planu pouzit jen jednou.`,
+        scope: 'leg',
+        legOrder: legOrder ?? index + 1,
+        legOriginVillageId,
+      });
+      legHasBlockingIssue = true;
+    } else {
+      seenOrigins.add(legOriginVillageId);
+    }
+
+    const impactAtPrague = String(legRaw.impactAtPrague ?? '').trim();
+    const impactAtMs = Date.parse(impactAtPrague);
+    if (!impactAtPrague || !Number.isFinite(impactAtMs)) {
+      pushPlannerIssue(issues, {
+        code: 'PLANNER_IMPACT_ORDER_INVALID',
+        message: `Leg #${legOrder ?? index + 1} ma neplatny impactAtPrague.`,
+        scope: 'leg',
+        legOrder: legOrder ?? index + 1,
+        legOriginVillageId,
+      });
+      legHasBlockingIssue = true;
+    }
+
+    const unitsRaw = Array.isArray(legRaw.units) ? legRaw.units : [];
+    const unitAmountById = new Map();
+    if (unitsRaw.length <= 0) {
+      pushPlannerIssue(issues, {
+        code: 'PLANNER_UNIT_AMOUNT_INVALID',
+        message: `Leg #${legOrder ?? index + 1} nema zadane jednotky.`,
+        scope: 'leg',
+        legOrder: legOrder ?? index + 1,
+        legOriginVillageId,
+      });
+      legHasBlockingIssue = true;
+    }
+
+    for (const unitRaw of unitsRaw) {
+      const unitId = String(unitRaw?.unitId ?? '')
+        .trim()
+        .toLowerCase();
+      const amount = Number(unitRaw?.amount);
+      if (!PLANNER_ALLOWED_ATTACK_UNIT_ID_SET.has(unitId)) {
+        pushPlannerIssue(issues, {
+          code: 'PLANNER_UNIT_TYPE_NOT_ALLOWED',
+          message: `Jednotka '${unitId || 'unknown'}' neni v planovaci povolena.`,
+          scope: 'leg',
+          legOrder: legOrder ?? index + 1,
+          legOriginVillageId,
+        });
+        legHasBlockingIssue = true;
+        continue;
+      }
+      if (!Number.isInteger(amount) || amount <= 0) {
+        pushPlannerIssue(issues, {
+          code: 'PLANNER_UNIT_AMOUNT_INVALID',
+          message: `Leg #${legOrder ?? index + 1} ma neplatny pocet jednotek '${unitId}'.`,
+          scope: 'leg',
+          legOrder: legOrder ?? index + 1,
+          legOriginVillageId,
+        });
+        legHasBlockingIssue = true;
+        continue;
+      }
+      const nextAmount = Math.max(0, Math.floor(Number(unitAmountById.get(unitId) ?? 0))) + amount;
+      unitAmountById.set(unitId, nextAmount);
+    }
+
+    if (legOriginVillageId != null && ownVillageById.has(legOriginVillageId)) {
+      const availableUnits = readVillageUnits(legOriginVillageId);
+      for (const [unitId, plannedAmount] of unitAmountById.entries()) {
+        const availableAmount = Math.max(0, Math.floor(Number(availableUnits?.[unitId] ?? 0)));
+        if (plannedAmount > availableAmount) {
+          pushPlannerIssue(issues, {
+            code: 'PLANNER_UNIT_AMOUNT_INVALID',
+            message: `Leg #${legOrder ?? index + 1} nema dostatek jednotek '${unitId}' v puvodnim lenu.`,
+            scope: 'leg',
+            legOrder: legOrder ?? index + 1,
+            legOriginVillageId,
+          });
+          legHasBlockingIssue = true;
+        }
+      }
+    }
+
+    if (unitAmountById.size <= 0) {
+      legHasBlockingIssue = true;
+    }
+
+    if (legHasBlockingIssue) {
+      continue;
+    }
+
+    const originVillage = ownVillageById.get(legOriginVillageId);
+    const selectedUnits = toCompleteUnitSelection({});
+    for (const [unitId, amount] of unitAmountById.entries()) {
+      selectedUnits[unitId] = amount;
+    }
+    const distanceTiles = calculateTileDistance(originVillage, resolvedTarget);
+    const travelDurationSec = Math.max(
+      1,
+      Math.floor(Number(calculateArmyTravelDurationSec(selectedUnits, distanceTiles))),
+    );
+    if (!Number.isFinite(travelDurationSec) || travelDurationSec <= 0) {
+      pushPlannerIssue(issues, {
+        code: 'PLANNER_UNIT_AMOUNT_INVALID',
+        message: `Leg #${legOrder} nema validni slozeni pro vypocet cesty.`,
+        scope: 'leg',
+        legOrder,
+        legOriginVillageId,
+      });
+      continue;
+    }
+
+    const sendAtMs = impactAtMs - travelDurationSec * 1000;
+    if (!Number.isFinite(sendAtMs)) {
+      pushPlannerIssue(issues, {
+        code: 'PLANNER_IMPACT_ORDER_INVALID',
+        message: `Leg #${legOrder} ma neplatny impact cas.`,
+        scope: 'leg',
+        legOrder,
+        legOriginVillageId,
+      });
+      continue;
+    }
+
+    if (sendAtMs < minAllowedSendAtMs) {
+      pushPlannerIssue(issues, {
+        code: 'PLANNER_LEAD_TIME_EXPIRED',
+        message: `Lead time vyprsel pro leg #${legOrder}.`,
+        scope: 'leg',
+        legOrder,
+        legOriginVillageId,
+        httpStatus: leadTimeBlockedStatusCode,
+      });
+      continue;
+    }
+
+    normalizedLegs.push({
+      order: legOrder,
+      originVillageId: legOriginVillageId,
+      originVillageNameSnapshot: String(originVillage?.name ?? `Leno #${legOriginVillageId}`),
+      impactAtPrague,
+      impactAtUtc: new Date(impactAtMs).toISOString(),
+      impactAtMs,
+      sendAtUtc: new Date(sendAtMs).toISOString(),
+      sendAtMs,
+      travelDurationSec,
+      units: PLANNER_ALLOWED_ATTACK_UNIT_IDS.map((unitId) => ({
+        unitId,
+        amount: Math.max(0, Math.floor(Number(unitAmountById.get(unitId) ?? 0))),
+      })).filter((unit) => unit.amount > 0),
+    });
+  }
+
+  normalizedLegs.sort((left, right) => Number(left.order) - Number(right.order));
+  for (let index = 1; index < normalizedLegs.length; index += 1) {
+    const previous = normalizedLegs[index - 1];
+    const current = normalizedLegs[index];
+    if (Number(current.impactAtMs) <= Number(previous.impactAtMs)) {
+      pushPlannerIssue(issues, {
+        code: 'PLANNER_IMPACT_ORDER_INVALID',
+        message: `Leg #${current.order} musi mit pozdejsi impact nez leg #${previous.order}.`,
+        scope: 'leg',
+        legOrder: current.order,
+        legOriginVillageId: current.originVillageId,
+      });
+      continue;
+    }
+    const gapMs = Number(current.impactAtMs) - Number(previous.impactAtMs);
+    if (gapMs < minImpactGapMs) {
+      pushPlannerIssue(issues, {
+        code: 'PLANNER_IMPACT_GAP_TOO_SMALL',
+        message: `Mezi legy #${previous.order} a #${current.order} musi byt alespon ${PLANNER_MIN_IMPACT_GAP_MINUTES} minuta.`,
+        scope: 'plan',
+      });
+    }
+  }
+
+  const validationStatus = resolvePlannerValidationStatus(issues);
+  const publicIssues = issues.map((issue) => toPublicPlannerIssue(issue));
+  const response = {
+    resolvedTarget,
+    normalizedLegs: normalizedLegs.map(({ impactAtMs: _impactAtMs, sendAtMs: _sendAtMs, ...leg }) => leg),
+    validation: {
+      status: validationStatus,
+      issues: publicIssues,
+    },
+  };
+
+  if (throwOnBlocked && validationStatus === 'blocked') {
+    const blockingIssue = issues.find((issue) => String(issue.severity) === 'blocked') ?? issues[0];
+    const blockedStatusCode =
+      String(blockingIssue.code ?? '') === 'PLANNER_LEAD_TIME_EXPIRED'
+        ? leadTimeBlockedStatusCode
+        : Number(blockingIssue.httpStatus ?? 400);
+    throwPlannerError(
+      String(blockingIssue.message ?? 'Planner koncept je blokovany.'),
+      String(blockingIssue.code ?? 'PLANNER_VALIDATION_ERROR'),
+      blockedStatusCode,
+      {
+        issues: publicIssues,
+      },
+    );
+  }
+
+  return {
+    player,
+    world,
+    validation: response,
+  };
+};
+
+const createPlannerPlanTransaction = db.transaction((username, payload = {}, worldIdRaw = null) => {
+  const confirmation = payload?.confirmation;
+  if (!confirmation || confirmation.confirmedByPlayer !== true) {
+    throwPlannerError('Pred ulozenim je nutne potvrzeni planu.', 'PLANNER_CONFIRMATION_REQUIRED', 400);
+  }
+
+  const { player, world } = resolvePlannerContext(username, worldIdRaw);
+  const existingActivePlan = selectActivePlannerPlanByPlayerAndWorldStmt.get(Number(player.id), String(world.id));
+  if (existingActivePlan) {
+    throwPlannerError('V tomto svete uz mas aktivni planner plan.', 'PLANNER_ACTIVE_PLAN_ALREADY_EXISTS', 409, {
+      activePlanId: String(existingActivePlan.id),
+      activePlanStatus: String(existingActivePlan.status),
+    });
+  }
+
+  const { validation } = validatePlannerPayloadCore(username, String(world.id), payload, {
+    throwOnBlocked: true,
+    leadTimeBlockedStatusCode: 400,
+  });
+  const nowTimeIso = nowIso();
+  const firstSendAtUtc = validation.normalizedLegs[0]?.sendAtUtc ?? null;
+  const lastSendAtUtc = validation.normalizedLegs[validation.normalizedLegs.length - 1]?.sendAtUtc ?? null;
+  const planId = createPlannerEntityId('pln');
+
+  try {
+    insertPlannerPlanStmt.run(
+      planId,
+      Number(player.id),
+      String(world.id),
+      'scheduled',
+      1,
+      Number(validation.resolvedTarget.targetPlayerId),
+      Number(validation.resolvedTarget.targetVillageId),
+      String(validation.resolvedTarget.targetPlayerUsername),
+      String(validation.resolvedTarget.targetVillageName),
+      String(validation.resolvedTarget.targetKingdom),
+      String(validation.resolvedTarget.snapshotHash),
+      nowTimeIso,
+      firstSendAtUtc,
+      lastSendAtUtc,
+      nowTimeIso,
+      nowTimeIso,
+    );
+    persistPlannerLegsForPlan(planId, validation.normalizedLegs, nowTimeIso);
+    insertPlannerPlanEvent({
+      planId,
+      eventType: 'plan_confirmed',
+      severity: 'info',
+      message: 'Plan byl potvrzen a ulozen.',
+      payload: {
+        planId,
+        status: 'scheduled',
+        legsCount: validation.normalizedLegs.length,
+      },
+      createdAt: nowTimeIso,
+    });
+  } catch (error) {
+    if (error instanceof GameRuleError) {
+      throw error;
+    }
+    throwPlannerError('Plan se nepodarilo ulozit.', 'PLANNER_SAVE_FAILED', 500);
+  }
+
+  const activePlan = buildPlannerPlanDetailFromRow(
+    selectPlannerPlanByIdForPlayerAndWorldStmt.get(planId, Number(player.id), String(world.id)),
+  );
+  const lastCompletedPlan = buildPlannerCompletedStubFromRow(
+    selectLatestCompletedPlannerPlanByPlayerAndWorldStmt.get(Number(player.id), String(world.id)),
+  );
+  return {
+    plan: {
+      id: planId,
+      status: 'scheduled',
+      revision: 1,
+      confirmedAt: nowTimeIso,
+    },
+    activePlan,
+    lastCompletedPlan,
+  };
+});
+
+const updatePlannerPlanTransaction = db.transaction(
+  (username, planIdRaw, payload = {}, worldIdRaw = null) => {
+    const planId = String(planIdRaw ?? '').trim();
+    if (!planId) {
+      throwPlannerError('Planner plan nebyl nalezen.', 'PLANNER_PLAN_NOT_FOUND', 404);
+    }
+
+    const expectedRevision = parsePlannerExpectedRevision(payload?.expectedRevision);
+    const { player, world } = resolvePlannerContext(username, worldIdRaw);
+    const existingPlan = selectPlannerPlanByIdForPlayerAndWorldStmt.get(
+      planId,
+      Number(player.id),
+      String(world.id),
+    );
+    if (!existingPlan) {
+      throwPlannerError('Planner plan nebyl nalezen.', 'PLANNER_PLAN_NOT_FOUND', 404, {
+        planId,
+      });
+    }
+    if (!PLANNER_EDITABLE_PLAN_STATUSES.has(String(existingPlan.status ?? ''))) {
+      throwPlannerError('Tento plan uz nelze upravit.', 'PLANNER_PLAN_NOT_EDITABLE', 409, {
+        planId,
+        status: String(existingPlan.status ?? ''),
+      });
+    }
+    if (Number(existingPlan.revision) !== expectedRevision) {
+      throwPlannerError('Plan byl mezitim zmenen v jine relaci.', 'PLANNER_REVISION_CONFLICT', 409, {
+        planId,
+        expectedRevision,
+        actualRevision: Number(existingPlan.revision ?? 0),
+      });
+    }
+
+    const { validation } = validatePlannerPayloadCore(username, String(world.id), payload, {
+      throwOnBlocked: true,
+      leadTimeBlockedStatusCode: 409,
+    });
+    const nowTimeIso = nowIso();
+    const firstSendAtUtc = validation.normalizedLegs[0]?.sendAtUtc ?? null;
+    const lastSendAtUtc = validation.normalizedLegs[validation.normalizedLegs.length - 1]?.sendAtUtc ?? null;
+
+    try {
+      const updated = updatePlannerPlanForPatchStmt.run(
+        'scheduled',
+        Number(validation.resolvedTarget.targetPlayerId),
+        Number(validation.resolvedTarget.targetVillageId),
+        String(validation.resolvedTarget.targetPlayerUsername),
+        String(validation.resolvedTarget.targetVillageName),
+        String(validation.resolvedTarget.targetKingdom),
+        String(validation.resolvedTarget.snapshotHash),
+        firstSendAtUtc,
+        lastSendAtUtc,
+        nowTimeIso,
+        planId,
+        Number(player.id),
+        String(world.id),
+        expectedRevision,
+      );
+      if (Number(updated.changes ?? 0) <= 0) {
+        throwPlannerError('Plan byl mezitim zmenen v jine relaci.', 'PLANNER_REVISION_CONFLICT', 409, {
+          planId,
+          expectedRevision,
+        });
+      }
+
+      replacePlannerLegsForPlan(planId, validation.normalizedLegs, nowTimeIso);
+      insertPlannerPlanEvent({
+        planId,
+        eventType: 'plan_updated',
+        severity: 'info',
+        message: 'Plan byl aktualizovan.',
+        payload: {
+          planId,
+          expectedRevision,
+          nextRevision: expectedRevision + 1,
+        },
+        createdAt: nowTimeIso,
+      });
+    } catch (error) {
+      if (error instanceof GameRuleError) {
+        throw error;
+      }
+      throwPlannerError('Plan se nepodarilo aktualizovat.', 'PLANNER_UPDATE_FAILED', 500);
+    }
+
+    const reloadedPlan = selectPlannerPlanByIdForPlayerAndWorldStmt.get(
+      planId,
+      Number(player.id),
+      String(world.id),
+    );
+    return {
+      plan: toPlannerPlanStatusSummary(reloadedPlan),
+      activePlan: buildPlannerPlanDetailFromRow(reloadedPlan),
+    };
+  },
+);
+
+const reconfirmPlannerPlanTransaction = db.transaction(
+  (username, planIdRaw, payload = {}, worldIdRaw = null) => {
+    const planId = String(planIdRaw ?? '').trim();
+    if (!planId) {
+      throwPlannerError('Planner plan nebyl nalezen.', 'PLANNER_PLAN_NOT_FOUND', 404);
+    }
+
+    const expectedRevision = parsePlannerExpectedRevision(payload?.expectedRevision);
+    const confirmWithConsequences = payload?.confirmWithConsequences === true;
+    if (!confirmWithConsequences) {
+      throwPlannerError(
+        'Pro reconfirm je nutne potvrdit nasledky.',
+        'PLANNER_RECONFIRM_NOT_ALLOWED',
+        409,
+      );
+    }
+
+    const { player, world } = resolvePlannerContext(username, worldIdRaw);
+    const existingPlan = selectPlannerPlanByIdForPlayerAndWorldStmt.get(
+      planId,
+      Number(player.id),
+      String(world.id),
+    );
+    if (!existingPlan) {
+      throwPlannerError('Planner plan nebyl nalezen.', 'PLANNER_PLAN_NOT_FOUND', 404, {
+        planId,
+      });
+    }
+    if (String(existingPlan.status ?? '') !== PLANNER_NEEDS_RECONFIRMATION_STATUS) {
+      throwPlannerError('Plan neni ve stavu vyzadujicim reconfirm.', 'PLANNER_RECONFIRM_NOT_ALLOWED', 409, {
+        planId,
+        status: String(existingPlan.status ?? ''),
+      });
+    }
+    if (Number(existingPlan.revision) !== expectedRevision) {
+      throwPlannerError('Plan byl mezitim zmenen v jine relaci.', 'PLANNER_REVISION_CONFLICT', 409, {
+        planId,
+        expectedRevision,
+        actualRevision: Number(existingPlan.revision ?? 0),
+      });
+    }
+
+    const currentTargetVillage = selectVillageWithOwnerByIdStmt.get(Number(existingPlan.targetVillageId));
+    const targetStillValid =
+      currentTargetVillage &&
+      Number(currentTargetVillage.region) === Number(world.region) &&
+      Number(currentTargetVillage.playerId) !== Number(player.id);
+    if (!targetStillValid) {
+      throwPlannerError(
+        'Cil uz neni validni pro planner utok.',
+        'PLANNER_TARGET_NO_LONGER_VALID',
+        409,
+        {
+          planId,
+          targetVillageId: Number(existingPlan.targetVillageId ?? 0),
+        },
+      );
+    }
+
+    const nowTimeIso = nowIso();
+    const updated = updatePlannerPlanForReconfirmStmt.run(
+      nowTimeIso,
+      nowTimeIso,
+      planId,
+      Number(player.id),
+      String(world.id),
+      expectedRevision,
+    );
+    if (Number(updated.changes ?? 0) <= 0) {
+      throwPlannerError('Plan byl mezitim zmenen v jine relaci.', 'PLANNER_REVISION_CONFLICT', 409, {
+        planId,
+        expectedRevision,
+      });
+    }
+
+    insertPlannerPlanEvent({
+      planId,
+      eventType: 'plan_reconfirmed',
+      severity: 'warning',
+      message: 'Plan byl znovu potvrzen i se zmenenym cilem.',
+      payload: {
+        planId,
+        expectedRevision,
+        nextRevision: expectedRevision + 1,
+      },
+      createdAt: nowTimeIso,
+    });
+
+    const reloadedPlan = selectPlannerPlanByIdForPlayerAndWorldStmt.get(
+      planId,
+      Number(player.id),
+      String(world.id),
+    );
+    return {
+      plan: toPlannerPlanStatusSummary(reloadedPlan),
+      activePlan: buildPlannerPlanDetailFromRow(reloadedPlan),
+    };
+  },
+);
+
+const cancelPlannerPlanTransaction = db.transaction((username, planIdRaw, payload = {}, worldIdRaw = null) => {
+  const planId = String(planIdRaw ?? '').trim();
+  if (!planId) {
+    throwPlannerError('Planner plan nebyl nalezen.', 'PLANNER_PLAN_NOT_FOUND', 404);
+  }
+
+  const expectedRevision = parsePlannerExpectedRevision(payload?.expectedRevision);
+  const { player, world } = resolvePlannerContext(username, worldIdRaw);
+  const existingPlan = selectPlannerPlanByIdForPlayerAndWorldStmt.get(
+    planId,
+    Number(player.id),
+    String(world.id),
+  );
+  if (!existingPlan) {
+    throwPlannerError('Planner plan nebyl nalezen.', 'PLANNER_PLAN_NOT_FOUND', 404, {
+      planId,
+    });
+  }
+  if (!PLANNER_CANCELABLE_PLAN_STATUSES.has(String(existingPlan.status ?? ''))) {
+    throwPlannerError('Tento plan uz nelze zrusit.', 'PLANNER_CANCEL_NOT_ALLOWED', 409, {
+      planId,
+      status: String(existingPlan.status ?? ''),
+    });
+  }
+  if (Number(existingPlan.revision) !== expectedRevision) {
+    throwPlannerError('Plan byl mezitim zmenen v jine relaci.', 'PLANNER_REVISION_CONFLICT', 409, {
+      planId,
+      expectedRevision,
+      actualRevision: Number(existingPlan.revision ?? 0),
+    });
+  }
+
+  const nowTimeIso = nowIso();
+  const updated = updatePlannerPlanForCancelStmt.run(
+    nowTimeIso,
+    nowTimeIso,
+    planId,
+    Number(player.id),
+    String(world.id),
+    expectedRevision,
+  );
+  if (Number(updated.changes ?? 0) <= 0) {
+    throwPlannerError('Plan byl mezitim zmenen v jine relaci.', 'PLANNER_REVISION_CONFLICT', 409, {
+      planId,
+      expectedRevision,
+    });
+  }
+  updatePlannerLegStatusesByPlanIdStmt.run('canceled', nowTimeIso, planId);
+  insertPlannerPlanEvent({
+    planId,
+    eventType: 'plan_canceled',
+    severity: 'info',
+    message: 'Plan byl zrusen.',
+    payload: {
+      planId,
+      expectedRevision,
+      nextRevision: expectedRevision + 1,
+    },
+    createdAt: nowTimeIso,
+  });
+
+  const reloadedPlan = selectPlannerPlanByIdForPlayerAndWorldStmt.get(
+    planId,
+    Number(player.id),
+    String(world.id),
+  );
+  return {
+    plan: toPlannerPlanStatusSummary(reloadedPlan),
+    activePlan: buildPlannerReadModelForPlayerWorld(Number(player.id), String(world.id)).activePlan,
+  };
+});
+
+const listPlannerPlanEventsCore = (username, planIdRaw, options = {}, worldIdRaw = null) => {
+  const planId = String(planIdRaw ?? '').trim();
+  if (!planId) {
+    throwPlannerError('Planner plan nebyl nalezen.', 'PLANNER_PLAN_NOT_FOUND', 404);
+  }
+  const { player, world } = resolvePlannerContext(username, worldIdRaw);
+  const existingPlan = selectPlannerPlanByIdForPlayerAndWorldStmt.get(
+    planId,
+    Number(player.id),
+    String(world.id),
+  );
+  if (!existingPlan) {
+    throwPlannerError('Planner plan nebyl nalezen.', 'PLANNER_PLAN_NOT_FOUND', 404, {
+      planId,
+    });
+  }
+
+  const requestedLimit = Number(options?.limit ?? PLANNER_DEFAULT_EVENTS_LIMIT);
+  const limit = Math.max(
+    1,
+    Math.min(
+      PLANNER_MAX_EVENTS_LIMIT,
+      Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : PLANNER_DEFAULT_EVENTS_LIMIT,
+    ),
+  );
+  const requestedCursor = Number(options?.cursor ?? 0);
+  const cursor = Math.max(0, Number.isFinite(requestedCursor) ? Math.floor(requestedCursor) : 0);
+  const rows = selectPlannerEventsByPlanIdStmt.all(planId, limit, cursor);
+  const total = Math.max(0, Math.floor(Number(countPlannerEventsByPlanIdStmt.get(planId)?.total ?? 0)));
+  const nextOffset = cursor + rows.length;
+  const nextCursor = nextOffset < total ? String(nextOffset) : null;
+
+  return {
+    items: rows.map((row) => ({
+      id: String(row.id ?? ''),
+      planId: String(row.planId ?? planId),
+      planLegId: row.planLegId == null ? null : String(row.planLegId),
+      eventType: String(row.eventType ?? ''),
+      severity: String(row.severity ?? 'info'),
+      message: String(row.message ?? ''),
+      payload: parseJsonSafe(row.payloadJson, {}),
+      createdAt: String(row.createdAt ?? nowIso()),
+    })),
+    nextCursor,
+  };
+};
+
+export const validatePlannerPlan = (username, payload = {}, worldIdRaw = null) =>
+  validatePlannerPayloadCore(username, worldIdRaw, payload, {
+    throwOnBlocked: false,
+    leadTimeBlockedStatusCode: 400,
+  }).validation;
+
+export const createPlannerPlan = (username, payload = {}, worldIdRaw = null) =>
+  createPlannerPlanTransaction(username, payload, worldIdRaw);
+
+export const updatePlannerPlan = (username, planId, payload = {}, worldIdRaw = null) =>
+  updatePlannerPlanTransaction(username, planId, payload, worldIdRaw);
+
+export const reconfirmPlannerPlan = (username, planId, payload = {}, worldIdRaw = null) =>
+  reconfirmPlannerPlanTransaction(username, planId, payload, worldIdRaw);
+
+export const cancelPlannerPlan = (username, planId, payload = {}, worldIdRaw = null) =>
+  cancelPlannerPlanTransaction(username, planId, payload, worldIdRaw);
+
+export const listPlannerPlanEvents = (username, planId, options = {}, worldIdRaw = null) =>
+  listPlannerPlanEventsCore(username, planId, options, worldIdRaw);
+
 export const getArmyOverview = (username = 'Hayato', worldId = null) => {
-  const { player, world } = requireVillageForUser(username, null, worldId, 'center');
+  const { player, world } = requireVillageForUser(username, null, worldId, 'center', {
+    syncEconomy: false,
+  });
   const ownVillages = selectVillagesByPlayerAndRegionStmt.all(Number(player.id), Number(world.region));
   const stationedSupportRows = selectStationedSupportUnitTotalsByOwnerRegionStmt.all(
     Number(player.id),
@@ -8486,7 +10774,7 @@ export const getArmyOverview = (username = 'Hayato', worldId = null) => {
           0,
           Math.floor(Number(supportAmountByVillageUnitKey.get(`${villageId}:${unitId}`) ?? 0)),
         );
-        const availableForPlanning = PLANNER_ALLOWED_ATTACK_UNIT_IDS.has(unitId) ? ownAmount : 0;
+        const availableForPlanning = ownAmount;
         return {
           unitId,
           unitName: String(UNIT_DEFS[unitId]?.name ?? unitId),
@@ -8530,7 +10818,8 @@ export const getArmyOverview = (username = 'Hayato', worldId = null) => {
 };
 
 export const getPlannerOpenSnapshot = (username = 'Hayato', worldId = null) => {
-  const { player, world } = requireVillageForUser(username, null, worldId, 'center');
+  const { player, world } = resolvePlannerContext(username, worldId);
+  const plannerReadModel = buildPlannerReadModelForPlayerWorld(Number(player.id), String(world.id));
   return {
     worldId: String(world.id),
     timezone: PLANNER_TIMEZONE,
@@ -8541,7 +10830,8 @@ export const getPlannerOpenSnapshot = (username = 'Hayato', worldId = null) => {
       activePlansPerPlayerPerWorld: 1,
     },
     bannerText: PLANNER_BANNER_TEXT,
-    activePlan: null,
+    activePlan: plannerReadModel.activePlan,
+    lastCompletedPlan: plannerReadModel.lastCompletedPlan,
     recentTargets: toPlannerRecentTargets(Number(player.id), Number(world.region)),
   };
 };
@@ -8554,14 +10844,16 @@ export const getVillageSnapshot = (
   options = {},
 ) => {
   const includeWorldMap = options?.includeWorldMap !== false;
+  const snapshotIso = nowIso();
   const { player, village, villages, world } = requireVillageForUser(
     username,
     requestedVillageId,
     worldId,
     spawnDirectionRaw,
+    { syncEconomy: false },
   );
   const worldRegion = resolveWorldRegionDefinition(world);
-  const resourcesRow = synchronizeVillageEconomyAt(Number(village.id));
+  const resourcesRow = synchronizeVillageEconomyAt(Number(village.id), snapshotIso, { persist: false });
   if (!resourcesRow) {
     throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
   }
@@ -8634,12 +10926,17 @@ export const getVillageSnapshot = (
   const knightCapacity = getPlayerKnightCapacity(Number(player.id), Number(world.region));
   const playerKnightTotal = getPlayerKnightTotalInWorld(Number(player.id), Number(world.region));
   const remainingKnightCapacity = Math.max(0, knightCapacity - playerKnightTotal);
-  const researchRows = ensureResolvedResearchProgressForPlayerRegion(Number(player.id), Number(world.region));
+  const researchRows = resolveResearchProgressForPlayerRegion(
+    Number(player.id),
+    Number(world.region),
+    snapshotIso,
+    { persist: false },
+  );
   const completedResearchIds = buildCompletedResearchSet(researchRows);
   const researchView = buildResearchViewModel(researchRows, {
     playerId: Number(player.id),
     region: Number(world.region),
-    snapshotIso: nowIso(),
+    snapshotIso,
   });
   const totalAcademicsInRegion = Math.max(
     0,
@@ -8912,10 +11209,14 @@ export const getVillageSnapshot = (
   }
 
   const activeUpgrade = activeUpgrades.length > 0 ? activeUpgrades[0] : null;
-  const settlements = includeWorldMap
-    ? buildWorldSettlements(village, player.username, Number(player.id), world)
-    : [];
-  const worldKingdoms = includeWorldMap ? buildKingdomStats(settlements) : [];
+  const worldReadModel = includeWorldMap
+    ? buildWorldMapReadModel({
+        player,
+        village,
+        world,
+        referenceIso: snapshotIso,
+      })
+    : null;
   const leaderboard = listPlayerLeaderboard(world.id);
   const kingdomHub = buildKingdomHubState(player, village);
   const recentLogisticsRoutes = selectRecentLogisticsByVillageStmt
@@ -8957,7 +11258,8 @@ export const getVillageSnapshot = (
     sourceVillageId: Number(village.id),
     sourceMarketLevel: marketLevel,
     guildUnlocked: marketGuildUnlocked,
-    referenceIso: nowIso(),
+    referenceIso: snapshotIso,
+    persist: false,
   });
   const worldSpawnConfig = resolveWorldSpawnConfig(world);
   const villageProtectionRuleDays = Math.max(0, Number(worldSpawnConfig.playerProtectionDays ?? 0));
@@ -8966,7 +11268,8 @@ export const getVillageSnapshot = (
   const isVillageUnderProtection = villageProtectionRemainingSec > 0;
 
   return {
-    serverTime: nowIso(),
+    serverTime: snapshotIso,
+    stateVersion: buildStateReadModelVersion(snapshotIso),
     player: {
       id: Number(player.id),
       username: player.username,
@@ -9002,12 +11305,14 @@ export const getVillageSnapshot = (
     world: {
       id: String(world.id),
       name: String(world.name),
+      version: worldReadModel?.version ?? null,
+      snapshotKey: worldReadModel?.snapshotKey ?? null,
       region: Number(worldRegion.id),
       originX: Number(worldRegion.originX),
       originY: Number(worldRegion.originY),
       size: Number(worldRegion.size),
-      settlements,
-      kingdoms: worldKingdoms,
+      settlements: worldReadModel?.settlements ?? [],
+      kingdoms: worldReadModel?.kingdoms ?? [],
     },
     resources: {
       wood: Math.floor(currentResources.wood),
@@ -9660,6 +11965,81 @@ const rebalanceUpgradeQueueTimeline = (villageIdRaw, nowIsoRaw = nowIso()) => {
       villageId,
     );
   }
+};
+
+const resolveResearchProgressForPlayerRegion = (
+  playerId,
+  region,
+  updatedAtIso = nowIso(),
+  options = {},
+) => {
+  const persist = options?.persist !== false;
+  if (persist) {
+    ensureResearchRowsForPlayerRegion(playerId, region, updatedAtIso);
+  }
+  const rows = selectResearchProgressByPlayerRegionStmt.all(Number(playerId), Number(region));
+  const byId = new Map(rows.map((row) => [String(row.researchId), row]));
+  const completedIds = buildCompletedResearchSet(rows);
+  const resolvedRows = [];
+
+  for (const definition of RESEARCH_DEFS) {
+    const row = byId.get(String(definition.id)) ?? null;
+    const nextStatus = resolveResearchStatusForDefinition(definition, row, completedIds);
+    const progress = Math.max(0, Number(row?.progress ?? 0));
+    const assignedAcademics =
+      nextStatus === 'researching'
+        ? Math.max(
+            0,
+            Math.floor(
+              Number(
+                countAssignedAcademicsForResearchByPlayerRegionStmt.get(
+                  Number(playerId),
+                  Number(region),
+                  String(definition.id),
+                )?.total ?? 0,
+              ),
+            ),
+          )
+        : 0;
+    const startedAt = nextStatus === 'researching' ? String(row?.startedAt ?? updatedAtIso) : row?.startedAt ?? null;
+    const completedAt = nextStatus === 'completed' ? String(row?.completedAt ?? updatedAtIso) : row?.completedAt ?? null;
+    const resolvedRow =
+      row == null ||
+      String(row.status) !== nextStatus ||
+      Number(row.assignedAcademics ?? 0) !== assignedAcademics ||
+      String(row.updatedAt ?? '') !== String(updatedAtIso)
+        ? {
+            id: Number(row?.id ?? 0),
+            playerId: Number(playerId),
+            region: Number(region),
+            researchId: String(definition.id),
+            status: nextStatus,
+            progress,
+            assignedAcademics,
+            startedAt,
+            completedAt,
+            updatedAt: String(updatedAtIso),
+          }
+        : row;
+
+    if (persist && resolvedRow !== row) {
+      upsertResearchProgressStmt.run(
+        Number(playerId),
+        Number(region),
+        String(definition.id),
+        nextStatus,
+        progress,
+        assignedAcademics,
+        startedAt,
+        completedAt,
+        String(updatedAtIso),
+      );
+    }
+
+    resolvedRows.push(resolvedRow);
+  }
+
+  return persist ? selectResearchProgressByPlayerRegionStmt.all(Number(playerId), Number(region)) : resolvedRows;
 };
 
 const startUpgradeTransaction = db.transaction((username, buildingId, startedAtIso, requestedVillageId, worldId = null) => {
@@ -11170,26 +13550,22 @@ export const getWorldMapSnapshot = (
   worldId = null,
   spawnDirectionRaw = 'center',
 ) => {
+  const snapshotIso = nowIso();
   const { player, village, world } = requireVillageForUser(
     username,
     requestedVillageId,
     worldId,
     spawnDirectionRaw,
+    { syncEconomy: false },
   );
-  const worldRegion = resolveWorldRegionDefinition(world);
-  const settlements = buildWorldSettlements(village, player.username, Number(player.id), world);
   return {
-    serverTime: nowIso(),
-    world: {
-      id: String(world.id),
-      name: String(world.name),
-      region: Number(worldRegion.id),
-      originX: Number(worldRegion.originX),
-      originY: Number(worldRegion.originY),
-      size: Number(worldRegion.size),
-      settlements,
-      kingdoms: buildKingdomStats(settlements),
-    },
+    serverTime: snapshotIso,
+    world: buildWorldMapReadModel({
+      player,
+      village,
+      world,
+      referenceIso: snapshotIso,
+    }),
   };
 };
 

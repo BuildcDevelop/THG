@@ -6,10 +6,12 @@ import {
   acceptKingdomInvite,
   archivePlayerNotification,
   cancelArmyCommand,
+  cancelPlannerPlan,
   cancelBuildingUpgrade,
   cancelMarketLogistics,
   cancelRecruitment,
   configureMarketGuildAutomation,
+  createPlannerPlan,
   createPlayerAccount,
   createKingdom,
   deletePlayerNotification,
@@ -29,6 +31,7 @@ import {
   hireMercenaryContract,
   kickKingdomMember,
   leaveKingdom,
+  listPlannerPlanEvents,
   listPlayerNotifications,
   listAdminPlayers,
   listBattleReports,
@@ -47,6 +50,9 @@ import {
   startBuildingUpgrade,
   transferKingdomLeadership,
   unarchivePlayerNotification,
+  updatePlannerPlan,
+  validatePlannerPlan,
+  reconfirmPlannerPlan,
 } from './gameService.js';
 import {
   archiveCommunicationThread,
@@ -151,6 +157,13 @@ const parseOptionalWorldId = (value) => {
   const normalized = String(value ?? '').trim();
   return normalized.length > 0 ? normalized : null;
 };
+const parseRequiredPlannerWorldId = (value) => {
+  const worldId = parseOptionalWorldId(value);
+  if (!worldId) {
+    throw new GameRuleError("Pole 'worldId' je povinne.", 400, 'PLANNER_WORLD_REQUIRED');
+  }
+  return worldId;
+};
 const parseOptionalSpawnDirection = (value) => {
   const normalized = String(value ?? '')
     .trim()
@@ -167,6 +180,17 @@ const parseOptionalPositiveNumber = (value) => {
   }
   const parsed = Number(normalized);
   if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
+};
+const parseOptionalNonNegativeInteger = (value) => {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) {
+    return null;
+  }
+  const parsed = Number(normalized);
+  if (!Number.isInteger(parsed) || parsed < 0) {
     return null;
   }
   return parsed;
@@ -195,10 +219,13 @@ const toGameRuleError = (error) => {
 
   const message = error instanceof Error ? error.message : String(error ?? 'Interni chyba serveru.');
   if (message.includes('Neplatne prihlasovaci udaje')) {
-    return new GameRuleError('Neplatne prihlasovaci udaje.', 401);
+    return new GameRuleError('Neplatne prihlasovaci udaje.', 401, 'AUTH_REQUIRED');
   }
   if (message.includes('Tento ucet nema zalozene leno')) {
     return new GameRuleError('Tento ucet nema zalozene leno.', 404);
+  }
+  if (message.includes('Ucet v requestu neodpovida prihlasene session')) {
+    return new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH');
   }
   if (message.includes("Hrac '") && message.includes('neexistuje')) {
     return new GameRuleError(message, 404);
@@ -435,7 +462,7 @@ app.use('/api/v1', (req, _res, next) => {
 
   const session = resolveSessionFromRequest(req);
   if (!session) {
-    next(new GameRuleError('Neplatne prihlasovaci udaje.', 401));
+    next(new GameRuleError('Neplatne prihlasovaci udaje.', 401, 'AUTH_REQUIRED'));
     return;
   }
 
@@ -449,12 +476,12 @@ app.use('/api/v1', (req, _res, next) => {
   const sessionComparable = normalizeComparableUsername(session.username);
 
   if (bodyUsername && normalizeComparableUsername(bodyUsername) !== sessionComparable) {
-    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403));
+    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH'));
     return;
   }
 
   if (queryUsername && normalizeComparableUsername(queryUsername) !== sessionComparable) {
-    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403));
+    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH'));
     return;
   }
 
@@ -486,8 +513,110 @@ app.get('/api/v1/army/overview', async (req, res, next) => {
 app.get('/api/v1/planner/open', async (req, res, next) => {
   try {
     const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
-    const worldId = parseOptionalWorldId(req.query.worldId);
+    const worldId = parseRequiredPlannerWorldId(req.query.worldId);
     const data = await executeWithReadOperation(() => getPlannerOpenSnapshot(username, worldId));
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/planner/validate', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseRequiredPlannerWorldId(req.body?.worldId);
+    const data = await executeWithReadOperation(() => validatePlannerPlan(username, req.body ?? {}, worldId));
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/planner/plans', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseRequiredPlannerWorldId(req.body?.worldId);
+    const data = await executeWithWriteOperation(() => createPlannerPlan(username, req.body ?? {}, worldId));
+    res.status(201).json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.patch('/api/v1/planner/plans/:planId', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseRequiredPlannerWorldId(req.body?.worldId);
+    const planId = String(req.params.planId ?? '').trim();
+    const data = await executeWithWriteOperation(() => updatePlannerPlan(username, planId, req.body ?? {}, worldId));
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/planner/plans/:planId/reconfirm', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseRequiredPlannerWorldId(req.body?.worldId);
+    const planId = String(req.params.planId ?? '').trim();
+    const data = await executeWithWriteOperation(() =>
+      reconfirmPlannerPlan(username, planId, req.body ?? {}, worldId),
+    );
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/planner/plans/:planId/cancel', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseRequiredPlannerWorldId(req.body?.worldId);
+    const planId = String(req.params.planId ?? '').trim();
+    const data = await executeWithWriteOperation(() => cancelPlannerPlan(username, planId, req.body ?? {}, worldId));
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.get('/api/v1/planner/plans/:planId/events', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseRequiredPlannerWorldId(req.query.worldId);
+    const planId = String(req.params.planId ?? '').trim();
+    const limitRaw = parseOptionalPositiveNumber(req.query.limit);
+    const cursor = parseOptionalNonNegativeInteger(req.query.cursor);
+    const data = await executeWithReadOperation(() =>
+      listPlannerPlanEvents(
+        username,
+        planId,
+        {
+          ...(limitRaw == null ? {} : { limit: Math.floor(Number(limitRaw)) }),
+          ...(cursor == null ? {} : { cursor }),
+        },
+        worldId,
+      ),
+    );
     res.json({
       ok: true,
       data,
@@ -1753,10 +1882,17 @@ app.use((error, _req, res, _next) => {
   }
 
   if (error instanceof GameRuleError) {
-    res.status(error.statusCode ?? 400).json({
+    const payload = {
       ok: false,
       error: error.message,
-    });
+    };
+    if (error.errorCode) {
+      payload.errorCode = String(error.errorCode);
+    }
+    if (error.details && typeof error.details === 'object') {
+      payload.details = error.details;
+    }
+    res.status(error.statusCode ?? 400).json(payload);
     return;
   }
 

@@ -16,17 +16,17 @@ import {
   cancelArmyCommand as cancelArmyCommandRequest,
   cancelBuildingUpgrade as cancelBuildingUpgradeRequest,
   cancelMarketLogistics as cancelMarketLogisticsRequest,
+  cancelPlannerPlan as cancelPlannerPlanRequest,
   cancelRecruitment as cancelRecruitmentRequest,
   configureMarketGuildAutomation as configureMarketGuildAutomationRequest,
+  createPlannerPlan as createPlannerPlanRequest,
   createCommunicationNotificationShare,
   createKingdom as createKingdomRequest,
   fetchCommunicationInbox,
   fetchCommunicationNotificationSharePreview,
   fetchCommunicationTokenSuggestions,
   fetchGameActivity,
-  fetchGameActivitySummary,
   fetchBattleReports,
-  fetchBattleReportsSummary,
   fetchArmyOverview,
   fetchGameState,
   fetchPlannerOpen,
@@ -46,6 +46,7 @@ import {
   leaveKingdom as leaveKingdomRequest,
   rejectKingdomInvite as rejectKingdomInviteRequest,
   recallKnight as recallKnightRequest,
+  reconfirmPlannerPlan as reconfirmPlannerPlanRequest,
   recruitUnit,
   renameVillage as renameVillageRequest,
   restartVillageProgress as restartVillageProgressRequest,
@@ -55,7 +56,9 @@ import {
   startResearchProject as startResearchProjectRequest,
   setCommunicationAvatarRequest,
   transferKingdomLeadership as transferKingdomLeadershipRequest,
+  updatePlannerPlan as updatePlannerPlanRequest,
   upgradeBuilding,
+  validatePlannerPlan as validatePlannerPlanRequest,
   type ArmyCommandType,
   type BattleReportItem,
   type ArmyMovementState,
@@ -199,8 +202,13 @@ type TownhallDeveloperBoostNotice = {
   isActive: boolean;
   label: string;
   reason: string;
-  remainingSec: number;
+  endsAt: string;
   endsAtLabel: string;
+};
+
+type ActiveVillageProtectionNotice = {
+  protectionUntil: string;
+  formattedUntil: string;
 };
 
 type WorldSwitchOption = {
@@ -296,10 +304,12 @@ type PlannerValidationIssue = {
   code: string;
   severity: 'warning' | 'blocked';
   message: string;
+  scope?: 'plan' | 'target' | 'leg';
   legOriginVillageId?: number;
 };
 
 type PlannerConstraints = PlannerOpenResponse['constraints'];
+type PlannerDraftStage = 'draft' | 'confirmation';
 
 type PlannerDraftNormalizationMeta = {
   removedLegCount: number;
@@ -704,6 +714,19 @@ const canPanelUseDockLayout = (panelType: PanelType): boolean =>
   isStaticPanelType(panelType) && MENU_DOCK_PANEL_TYPES.has(panelType);
 
 const canPanelUsePinColumns = (panelType: PanelType): boolean => !canPanelUseDockLayout(panelType);
+
+const resolvePanelDockLayoutMode = (
+  panel: Pick<PanelWindow, 'type' | 'layoutMode' | 'side'>,
+): PanelLayoutMode => {
+  if (panel.layoutMode !== 'floating') {
+    return panel.layoutMode;
+  }
+  if (!canPanelUseDockLayout(panel.type)) {
+    return 'floating';
+  }
+  return panel.side === 'right' ? 'split-right' : 'split-left';
+};
+
 const BUILDING_ICON_BASE_PATH = '/assets/buildings';
 const getBuildingIconPath = (fileName: string): string => `${BUILDING_ICON_BASE_PATH}/${fileName}`;
 const DEFAULT_BUILDING_ICON = getBuildingIconPath('warehouse.png');
@@ -1623,9 +1646,11 @@ type ShortcutBinding = {
   shift: boolean;
   meta: boolean;
 };
+type MapPreviewTravelModifierKey = 'ctrl' | 'alt' | 'shift' | 'meta';
 type PersistedShortcutSettings = {
   autoHidePinColumns?: unknown;
   bindings?: Partial<Record<ShortcutActionId, unknown>>;
+  mapPreviewTravelModifier?: unknown;
 };
 
 const MAP_ORDER_ICON_LABELS: Record<MapOrderCommandType, string> = {
@@ -1635,6 +1660,17 @@ const MAP_ORDER_ICON_LABELS: Record<MapOrderCommandType, string> = {
 };
 
 const MAP_ORDER_COMMAND_TYPES: MapOrderCommandType[] = ['attack', 'support', 'move'];
+const MAP_SETTLEMENT_KIND_LABELS: Record<MapSettlementKind, string> = {
+  active: 'Aktuální osada',
+  own: 'Moje osada',
+  bot: 'Bot',
+  royal: 'Královská',
+  allied: 'Spojenecká',
+  nap: 'Dohoda o neútočení',
+  opponent: 'Protivník',
+  enemy: 'Nepřítel',
+  abandoned: 'Opuštěná',
+};
 
 const getArmyCommandSymbol = (commandType: ArmyCommandType | MapOrderCommandType): string => {
   if (commandType === 'attack') {
@@ -1773,20 +1809,37 @@ const GAME_FONT_SCALE_STORAGE_KEY_PREFIX = 'tld_game_font_scale';
 const LEGACY_GAME_FONT_SCALE_STORAGE_KEY_PREFIX = 'thg_game_font_scale';
 const SHORTCUT_SETTINGS_STORAGE_KEY_PREFIX = 'tld_shortcut_settings';
 const LEGACY_SHORTCUT_SETTINGS_STORAGE_KEY_PREFIX = 'thg_shortcut_settings';
+const DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER: MapPreviewTravelModifierKey = 'ctrl';
+const MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS: Array<{
+  value: MapPreviewTravelModifierKey;
+  label: string;
+  keyboardEventKey: 'Control' | 'Alt' | 'Shift' | 'Meta';
+}> = [
+  { value: 'ctrl', label: 'Ctrl', keyboardEventKey: 'Control' },
+  { value: 'alt', label: 'Alt', keyboardEventKey: 'Alt' },
+  { value: 'shift', label: 'Shift', keyboardEventKey: 'Shift' },
+  { value: 'meta', label: 'Meta (Win/Cmd)', keyboardEventKey: 'Meta' },
+];
 const DEFAULT_PLANNER_BANNER_TEXT = 'Planovac je zatim mozne vyuzit jen pro jeden cil z vice len.';
 const DEFAULT_PLANNER_MAX_LEGS = 10;
 const DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES = 1;
 const DEFAULT_PLANNER_LEAD_TIME_SEC = 5 * 60;
+const RESEARCH_SPOTLIGHT_SIMILAR_PROGRESS_DELTA_PERCENT = 1;
 const PRAGUE_TIMEZONE = 'Europe/Prague';
 const MAP_WINDOW_MIN_WIDTH = 620;
 const MAP_WINDOW_MIN_HEIGHT = 460;
 const STATE_POLL_INTERVAL_MS = 15000;
 const REPORTS_POLL_INTERVAL_MS = 25000;
-const REPORTS_IDLE_POLL_INTERVAL_MS = 120000;
-const ACTIVITY_IDLE_POLL_INTERVAL_MS = 120000;
 const MAP_OPEN_POLL_INTERVAL_MS = 30000;
-const MAP_IDLE_POLL_INTERVAL_MS = 180000;
 const MAP_RENDER_MARGIN_CELLS = 2;
+const WORLD_MAP_DEPENDENT_PANEL_TYPES = new Set<PanelType>([
+  'map',
+  'army',
+  'commands',
+  'village',
+  'kingdomProfile',
+  'playerProfile',
+]);
 const PANEL_DEFAULT_MIN_WIDTH = 360;
 const PANEL_DEFAULT_MIN_HEIGHT = 280;
 const PANEL_CITY_MIN_WIDTH = 1080;
@@ -2206,12 +2259,6 @@ const normalizeGameStateForUi = (state: GameStateResponse): GameStateResponse =>
   };
 };
 
-const buildStableGameStateSignature = (state: GameStateResponse): string => {
-  const stableState = { ...state } as Record<string, unknown>;
-  delete stableState.serverTime;
-  return JSON.stringify(stableState);
-};
-
 const clampAvatarValue = (value: number, min: number, max: number): number => Math.min(Math.max(value, min), max);
 
 const computeAvatarCropMetrics = (
@@ -2556,10 +2603,21 @@ const hasVillageContext = (panel: Pick<PanelWindow, 'type' | 'buildingId'>): boo
   return false;
 };
 
+const getSettlementProtectionRemainingSec = (
+  settlement: Pick<RegionSettlement, 'protectionUntil' | 'protectionRemainingSec'>,
+  referenceMs = Date.now(),
+): number => {
+  const remainingFromIso = getRemainingSecondsToIso(settlement.protectionUntil, referenceMs);
+  if (remainingFromIso > 0 || settlement.protectionUntil) {
+    return remainingFromIso;
+  }
+  return Math.max(0, Number(settlement.protectionRemainingSec ?? 0));
+};
+
 const getSettlementMapKind = (
   settlement: Pick<
     RegionSettlement,
-    'kind' | 'relation' | 'owner' | 'villageId' | 'protectionRemainingSec' | 'note' | 'kingdom'
+    'kind' | 'relation' | 'owner' | 'villageId' | 'protectionRemainingSec' | 'protectionUntil' | 'note' | 'kingdom'
   >,
   activeVillageId: number | null = null,
 ): MapSettlementKind => {
@@ -2599,7 +2657,7 @@ const getSettlementMapKind = (
     return 'opponent';
   }
 
-  const protectionRemainingSec = Math.max(0, Number(settlement.protectionRemainingSec ?? 0));
+  const protectionRemainingSec = getSettlementProtectionRemainingSec(settlement);
   const noteNormalized = String(settlement.note ?? '').toLowerCase();
   if (protectionRemainingSec > 0 || /(nap|neútočení|neutoceni|pakt|příměří|primiri|dohoda)/i.test(noteNormalized)) {
     return 'nap';
@@ -2624,7 +2682,7 @@ const canTargetSettlementForArmyCommand = ({
 }: {
   settlement: Pick<
     RegionSettlement,
-    'villageId' | 'owner' | 'relation' | 'protectionRemainingSec' | 'prestigeAttackBlockedForViewer'
+    'villageId' | 'owner' | 'relation' | 'protectionRemainingSec' | 'protectionUntil' | 'prestigeAttackBlockedForViewer'
   >;
   commandType: ArmyCommandSelectableType;
   currentVillageId: number | null;
@@ -2655,7 +2713,7 @@ const canTargetSettlementForArmyCommand = ({
     return isOwnSettlement;
   }
 
-  const targetProtectionRemainingSec = Math.max(0, Number(settlement.protectionRemainingSec ?? 0));
+  const targetProtectionRemainingSec = getSettlementProtectionRemainingSec(settlement);
   if (targetProtectionRemainingSec > 0) {
     return false;
   }
@@ -3318,13 +3376,27 @@ const getShortcutSettingsStorageKey = (username: string): string =>
 const getLegacyShortcutSettingsStorageKey = (username: string): string =>
   `${LEGACY_SHORTCUT_SETTINGS_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
 
+const normalizeMapPreviewTravelModifier = (value: unknown): MapPreviewTravelModifierKey => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLocaleLowerCase('cs-CZ');
+  return MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS.some((item) => item.value === normalized)
+    ? (normalized as MapPreviewTravelModifierKey)
+    : DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER;
+};
+
 const readStoredShortcutSettings = (
   username: string,
-): { autoHidePinColumns: boolean; customBindings: Partial<Record<ShortcutActionId, ShortcutBinding>> } => {
+): {
+  autoHidePinColumns: boolean;
+  customBindings: Partial<Record<ShortcutActionId, ShortcutBinding>>;
+  mapPreviewTravelModifier: MapPreviewTravelModifierKey;
+} => {
   if (typeof window === 'undefined') {
     return {
       autoHidePinColumns: false,
       customBindings: {},
+      mapPreviewTravelModifier: DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER,
     };
   }
 
@@ -3336,6 +3408,7 @@ const readStoredShortcutSettings = (
       return {
         autoHidePinColumns: false,
         customBindings: {},
+        mapPreviewTravelModifier: DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER,
       };
     }
 
@@ -3352,18 +3425,24 @@ const readStoredShortcutSettings = (
     return {
       autoHidePinColumns: parsed?.autoHidePinColumns === true,
       customBindings,
+      mapPreviewTravelModifier: normalizeMapPreviewTravelModifier(parsed?.mapPreviewTravelModifier),
     };
   } catch {
     return {
       autoHidePinColumns: false,
       customBindings: {},
+      mapPreviewTravelModifier: DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER,
     };
   }
 };
 
 const saveStoredShortcutSettings = (
   username: string,
-  settings: { autoHidePinColumns: boolean; customBindings: Partial<Record<ShortcutActionId, ShortcutBinding>> },
+  settings: {
+    autoHidePinColumns: boolean;
+    customBindings: Partial<Record<ShortcutActionId, ShortcutBinding>>;
+    mapPreviewTravelModifier: MapPreviewTravelModifierKey;
+  },
 ): void => {
   if (typeof window === 'undefined') {
     return;
@@ -3384,6 +3463,7 @@ const saveStoredShortcutSettings = (
       JSON.stringify({
         autoHidePinColumns: settings.autoHidePinColumns === true,
         bindings: bindingsPayload,
+        mapPreviewTravelModifier: normalizeMapPreviewTravelModifier(settings.mapPreviewTravelModifier),
       }),
     );
   } catch {
@@ -3809,6 +3889,53 @@ const formatDateTimeLabel = (value: string | number | Date | null | undefined): 
   }).format(new Date(timestampMs));
 };
 
+const getRemainingSecondsToIso = (value: string | null | undefined, referenceMs = Date.now()): number => {
+  if (!value) {
+    return 0;
+  }
+  const targetMs = Date.parse(String(value));
+  if (!Number.isFinite(targetMs)) {
+    return 0;
+  }
+  return Math.max(0, Math.ceil((targetMs - referenceMs) / 1000));
+};
+
+const getWorldSnapshotVersion = (
+  world: Pick<GameStateResponse['world'], 'snapshotKey' | 'version'> | null | undefined,
+): string | null => {
+  const snapshotKey = String(world?.snapshotKey ?? '').trim();
+  if (snapshotKey) {
+    return snapshotKey;
+  }
+  const version = String(world?.version ?? '').trim();
+  return version || null;
+};
+
+const useSecondClock = (enabled = true): number => {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [enabled]);
+
+  useEffect(() => {
+    if (enabled) {
+      setNowMs(Date.now());
+    }
+  }, [enabled]);
+
+  return nowMs;
+};
+
 const formatDateTimePragueLabel = (value: string | number | Date | null | undefined): string => {
   if (value == null) {
     return '-';
@@ -3911,6 +4038,96 @@ const normalizePlannerLegTimeline = (
 
   return normalized;
 };
+
+const normalizePlannerLegTimelineForwardOneMinute = (
+  legs: PlannerLegDraft[],
+  constraints: PlannerConstraints,
+  referenceMs: number = Date.now(),
+): PlannerLegDraft[] => {
+  if (legs.length <= 0) {
+    return [];
+  }
+
+  const leadTimeSec = Math.max(0, Math.floor(Number(constraints.leadTimeSec ?? DEFAULT_PLANNER_LEAD_TIME_SEC)));
+  const firstAllowedMs = referenceMs + leadTimeSec * 1000;
+  const parsedFirstImpactMs = Date.parse(String(legs[0]?.impactAtUtc ?? ''));
+  const firstImpactMs = Math.max(
+    firstAllowedMs,
+    Number.isFinite(parsedFirstImpactMs) ? parsedFirstImpactMs : firstAllowedMs,
+  );
+
+  return legs.map((leg, index) => ({
+    ...leg,
+    impactAtUtc: new Date(firstImpactMs + index * 60_000).toISOString(),
+  }));
+};
+
+const normalizePlannerLegTimelineFromLast = (
+  legs: PlannerLegDraft[],
+  constraints: PlannerConstraints,
+  referenceMs: number = Date.now(),
+): PlannerLegDraft[] => {
+  if (legs.length <= 0) {
+    return [];
+  }
+
+  const minGapMinutes = Math.max(
+    1,
+    Math.floor(Number(constraints.minImpactGapMinutes ?? DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES)),
+  );
+  const gapMs = minGapMinutes * 60_000;
+  const leadTimeSec = Math.max(0, Math.floor(Number(constraints.leadTimeSec ?? DEFAULT_PLANNER_LEAD_TIME_SEC)));
+  const firstAllowedMs = referenceMs + leadTimeSec * 1000;
+  const lastIndex = legs.length - 1;
+  const minimumLastImpactMs = firstAllowedMs + lastIndex * gapMs;
+  const parsedLastImpactMs = Date.parse(String(legs[lastIndex]?.impactAtUtc ?? ''));
+  const anchorLastImpactMs = Math.max(
+    minimumLastImpactMs,
+    Number.isFinite(parsedLastImpactMs) ? parsedLastImpactMs : minimumLastImpactMs,
+  );
+
+  const impactByIndex: number[] = new Array(legs.length).fill(0);
+  impactByIndex[lastIndex] = anchorLastImpactMs;
+  for (let index = lastIndex - 1; index >= 0; index -= 1) {
+    const parsedImpactMs = Date.parse(String(legs[index]?.impactAtUtc ?? ''));
+    const fallbackImpactMs = anchorLastImpactMs - (lastIndex - index) * gapMs;
+    const sourceImpactMs = Number.isFinite(parsedImpactMs) ? parsedImpactMs : fallbackImpactMs;
+    const maxAllowedMs = impactByIndex[index + 1] - gapMs;
+    impactByIndex[index] = Math.min(sourceImpactMs, maxAllowedMs);
+  }
+
+  if (impactByIndex[0] < firstAllowedMs) {
+    const shiftMs = firstAllowedMs - impactByIndex[0];
+    for (let index = 0; index < impactByIndex.length; index += 1) {
+      impactByIndex[index] += shiftMs;
+    }
+  }
+
+  return legs.map((leg, index) => ({
+    ...leg,
+    impactAtUtc: new Date(impactByIndex[index]).toISOString(),
+  }));
+};
+
+const toPlannerRequestLegs = (
+  legRows: Array<{
+    order: number;
+    key: number;
+    impactAtUtc: string;
+    units: Partial<Record<CommandUnitId, number>>;
+  }>,
+) =>
+  legRows.map((legRow) => ({
+    order: Math.max(1, Math.floor(Number(legRow.order ?? 1))),
+    originVillageId: Math.max(1, Math.floor(Number(legRow.key ?? 1))),
+    impactAtPrague: String(legRow.impactAtUtc),
+    units: COMMAND_UNIT_ORDER
+      .map((unitId) => ({
+        unitId,
+        amount: Math.max(0, Math.floor(Number(legRow.units?.[unitId] ?? 0))),
+      }))
+      .filter((item) => item.amount > 0),
+  }));
 
 const resolvePlannerPlanStatusMeta = (
   statusRaw: string | null | undefined,
@@ -4054,7 +4271,7 @@ const extractVillageBaseName = (label: string): string => {
     .trim();
 };
 
-const CityPanel = ({
+const CityPanel = memo(({
   villageLabel,
   regionLabel,
   prestige,
@@ -4503,9 +4720,9 @@ const CityPanel = ({
       </div>
     </div>
   );
-};
+});
 
-const ArmyPanel = ({
+const ArmyPanel = memo(({
   units,
   buildings,
   recruitQueueOrders,
@@ -4570,12 +4787,14 @@ const ArmyPanel = ({
     legs: [],
     updatedAt: new Date().toISOString(),
   });
+  const [plannerDraftStage, setPlannerDraftStage] = useState<PlannerDraftStage>('draft');
   const [plannerDraftDirty, setPlannerDraftDirty] = useState(false);
   const [storedPlannerDraftAvailable, setStoredPlannerDraftAvailable] = useState<PlannerDraftState | null>(null);
   const [plannerNoticeMessage, setPlannerNoticeMessage] = useState<string | null>(null);
   const [plannerForceDraftMode, setPlannerForceDraftMode] = useState(false);
   const [focusedPlannerLegOriginVillageId, setFocusedPlannerLegOriginVillageId] = useState<number | null>(null);
   const [draggedPlannerLegOriginVillageId, setDraggedPlannerLegOriginVillageId] = useState<number | null>(null);
+  const [plannerMutationPending, setPlannerMutationPending] = useState(false);
   const isRecruitMutationPending = recruitPendingUnitId != null;
 
   const lockedRecruitUnits = useMemo(
@@ -4780,6 +4999,7 @@ const ArmyPanel = ({
   );
   const plannerBannerText = String(plannerOpenSnapshot?.bannerText ?? DEFAULT_PLANNER_BANNER_TEXT);
   const plannerActivePlan = plannerOpenSnapshot?.activePlan ?? null;
+  const plannerLastCompletedPlan = plannerOpenSnapshot?.lastCompletedPlan ?? null;
   const plannerActivePlanStatusMeta = plannerActivePlan
     ? resolvePlannerPlanStatusMeta(plannerActivePlan.plan.status)
     : null;
@@ -4788,18 +5008,26 @@ const ArmyPanel = ({
   const plannerIsDraftMode = plannerActivePlan == null || plannerForceDraftMode;
 
   useEffect(() => {
+    if (!plannerIsDraftMode) {
+      setPlannerDraftStage('draft');
+    }
+  }, [plannerIsDraftMode]);
+
+  useEffect(() => {
     setPlannerDraft({
       targetPlayerUsername: '',
       targetVillageId: null,
       legs: [],
       updatedAt: new Date().toISOString(),
     });
+    setPlannerDraftStage('draft');
     setPlannerDraftDirty(false);
     setStoredPlannerDraftAvailable(worldId ? readStoredPlannerLastSessionDraft(currentUsername, worldId) : null);
     setPlannerNoticeMessage(null);
     setPlannerForceDraftMode(false);
     setFocusedPlannerLegOriginVillageId(null);
     setDraggedPlannerLegOriginVillageId(null);
+    setPlannerMutationPending(false);
   }, [currentUsername, worldId]);
 
   useEffect(() => {
@@ -5098,6 +5326,7 @@ const ArmyPanel = ({
     (updater: (previous: PlannerDraftState) => PlannerDraftState) => {
       setPlannerDraft((previous) => normalizePlannerDraftState(updater(previous)));
       setPlannerDraftDirty(true);
+      setPlannerDraftStage('draft');
     },
     [normalizePlannerDraftState],
   );
@@ -5246,6 +5475,42 @@ const ArmyPanel = ({
     return byOriginVillageId;
   }, [plannerValidation.issues]);
 
+  const plannerRequestLegs = useMemo(() => toPlannerRequestLegs(plannerLegRows), [plannerLegRows]);
+  const plannerCanOpenConfirmation =
+    plannerValidation.status === 'ok' &&
+    plannerRequestLegs.length > 0 &&
+    plannerDraft.targetVillageId != null &&
+    plannerDraft.targetPlayerUsername.length > 0 &&
+    !plannerMutationPending;
+
+  const plannerActivePlanProgress = useMemo(() => {
+    if (!plannerActivePlan) {
+      return null;
+    }
+    const totalLegs = Math.max(0, plannerActivePlan.legs.length);
+    const sentLegs = plannerActivePlan.legs.reduce(
+      (sum, leg) => sum + (String(leg.status ?? '') === 'sent' ? 1 : 0),
+      0,
+    );
+    const firstSendAtMs = Date.parse(
+      String(
+        [...plannerActivePlan.legs]
+          .sort((left, right) => Number(left.order ?? 0) - Number(right.order ?? 0))
+          .at(0)?.sendAtUtc ?? '',
+      ),
+    );
+    const countdownSec = Number.isFinite(firstSendAtMs)
+      ? Math.max(0, Math.ceil((firstSendAtMs - Date.now()) / 1000))
+      : null;
+
+    return {
+      totalLegs,
+      sentLegs,
+      percent: totalLegs > 0 ? Math.round((sentLegs / totalLegs) * 100) : 0,
+      countdownSec,
+    };
+  }, [plannerActivePlan]);
+
   const handleRefreshArmadaAndPlanner = useCallback(() => {
     setPlannerRefreshToken((previous) => previous + 1);
   }, []);
@@ -5258,6 +5523,7 @@ const ArmyPanel = ({
     const restored = restoredWithMeta.draft;
     setPlannerDraft(restored);
     setPlannerDraftDirty(true);
+    setPlannerDraftStage('draft');
     setPlannerNoticeMessage(
       buildPlannerNormalizationNoticeMessage(restoredWithMeta.meta) ??
         'Poslední lokální koncept byl obnoven.',
@@ -5276,6 +5542,7 @@ const ArmyPanel = ({
       return;
     }
     setPlannerForceDraftMode(false);
+    setPlannerDraftStage('draft');
     setPlannerNoticeMessage('Zobrazen je aktivní serverový plán.');
   }, [plannerActivePlan]);
 
@@ -5288,6 +5555,7 @@ const ArmyPanel = ({
     const nextDraft = normalizedWithMeta.draft;
     setPlannerDraft(nextDraft);
     setPlannerDraftDirty(true);
+    setPlannerDraftStage('draft');
     setPlannerForceDraftMode(true);
     setFocusedPlannerLegOriginVillageId(nextDraft.legs[0]?.originVillageId ?? null);
     setPlannerNoticeMessage(
@@ -5304,13 +5572,280 @@ const ArmyPanel = ({
       updatedAt: new Date().toISOString(),
     });
     setPlannerDraftDirty(true);
+    setPlannerDraftStage('draft');
     setPlannerForceDraftMode(true);
     setFocusedPlannerLegOriginVillageId(null);
     setPlannerNoticeMessage('Koncept byl vrácen do prázdného stavu.');
   }, []);
 
+  const handlePlannerAutoAlignForward = useCallback(() => {
+    applyPlannerDraftMutation((previous) => ({
+      ...previous,
+      legs: normalizePlannerLegTimelineForwardOneMinute(previous.legs, plannerConstraints),
+      updatedAt: new Date().toISOString(),
+    }));
+    setPlannerNoticeMessage('Časy dopadů byly srovnány od prvního legu po jedné minutě.');
+  }, [applyPlannerDraftMutation, plannerConstraints]);
+
+  const handlePlannerAutoAlignBackward = useCallback(() => {
+    applyPlannerDraftMutation((previous) => ({
+      ...previous,
+      legs: normalizePlannerLegTimelineFromLast(previous.legs, plannerConstraints),
+      updatedAt: new Date().toISOString(),
+    }));
+    setPlannerNoticeMessage('Časy dopadů byly srovnány od posledního legu zpět.');
+  }, [applyPlannerDraftMutation, plannerConstraints]);
+
+  const handlePlannerFillLegAll = useCallback(
+    (originVillageIdRaw: number) => {
+      const originVillageId = Math.floor(Number(originVillageIdRaw));
+      if (!Number.isFinite(originVillageId) || originVillageId <= 0) {
+        return;
+      }
+      const originVillage = plannerVillageById.get(originVillageId);
+      if (!originVillage) {
+        return;
+      }
+      const amountByUnitId = new Map(
+        originVillage.units.map((unit) => [
+          String(unit.unitId),
+          Math.max(0, Math.floor(Number(unit.availableForPlanning ?? 0))),
+        ]),
+      );
+      applyPlannerDraftMutation((previous) => ({
+        ...previous,
+        legs: previous.legs.map((leg) => {
+          if (Number(leg.originVillageId) !== originVillageId) {
+            return leg;
+          }
+          const nextUnits: Partial<Record<CommandUnitId, number>> = {};
+          (['cavalry', 'ram', 'scout'] as const).forEach((unitId) => {
+            const nextAmount = Math.max(0, Math.floor(Number(amountByUnitId.get(unitId) ?? 0)));
+            if (nextAmount > 0) {
+              nextUnits[unitId] = nextAmount;
+            }
+          });
+          return {
+            ...leg,
+            units: nextUnits,
+          };
+        }),
+        updatedAt: new Date().toISOString(),
+      }));
+      setPlannerNoticeMessage('Leg byl vyplněn útočnými jednotkami (Jezdec, Zvěd, Beranidlo).');
+    },
+    [applyPlannerDraftMutation, plannerVillageById],
+  );
+
+  const handlePlannerOpenConfirmation = useCallback(() => {
+    if (!plannerCanOpenConfirmation) {
+      setPlannerNoticeMessage('Koncept není validní. Nejprve oprav blokace a poté otevři potvrzení.');
+      return;
+    }
+    setPlannerDraftStage('confirmation');
+    setPlannerNoticeMessage('Potvrzení plánu: zkontroluj souhrn a potvrď uložení.');
+  }, [plannerCanOpenConfirmation]);
+
+  const handlePlannerBackToDraftFromConfirmation = useCallback(() => {
+    setPlannerDraftStage('draft');
+    setPlannerNoticeMessage('Vráceno do konceptu plánu.');
+  }, []);
+
+  const handlePlannerSaveConfirmed = useCallback(async () => {
+    if (!worldId) {
+      setPlannerNoticeMessage('Chybí worldId pro planner akci.');
+      return;
+    }
+    if (plannerMutationPending) {
+      return;
+    }
+    if (plannerDraftStage !== 'confirmation') {
+      setPlannerNoticeMessage('Nejprve otevři krok Potvrzení plánu.');
+      return;
+    }
+    if (!plannerCanOpenConfirmation) {
+      setPlannerDraftStage('draft');
+      setPlannerNoticeMessage('Koncept není validní. Oprav blokace a potvrď plán znovu.');
+      return;
+    }
+
+    setPlannerMutationPending(true);
+    try {
+      const validationResponse = await validatePlannerPlanRequest({
+        username: currentUsername,
+        worldId,
+        targetPlayerUsername: plannerDraft.targetPlayerUsername,
+        targetVillageId: plannerDraft.targetVillageId,
+        legs: plannerRequestLegs,
+      });
+      if (validationResponse.validation.status === 'blocked') {
+        const messages = validationResponse.validation.issues
+          .slice(0, 3)
+          .map((issue) => String(issue.message ?? '').trim())
+          .filter(Boolean);
+        const summaryMessage =
+          messages.length > 0
+            ? `Server validace: ${messages.join(' | ')}`
+            : 'Server validace zablokovala koncept plánu.';
+        setPlannerDraftStage('draft');
+        setPlannerNoticeMessage(summaryMessage);
+        return;
+      }
+
+      if (plannerActivePlan && plannerForceDraftMode) {
+        const updated = await updatePlannerPlanRequest(String(plannerActivePlan.plan.id), {
+          username: currentUsername,
+          worldId,
+          expectedRevision: Math.max(1, Math.floor(Number(plannerActivePlan.plan.revision ?? 1))),
+          targetPlayerUsername: plannerDraft.targetPlayerUsername,
+          targetVillageId: plannerDraft.targetVillageId,
+          legs: plannerRequestLegs,
+        });
+        setPlannerOpenSnapshot((previous) =>
+          previous
+            ? {
+                ...previous,
+                activePlan: updated.activePlan ?? previous.activePlan,
+              }
+            : null,
+        );
+        setPlannerNoticeMessage('Plán byl potvrzen a aktualizován.');
+      } else {
+        const created = await createPlannerPlanRequest({
+          username: currentUsername,
+          worldId,
+          targetPlayerUsername: plannerDraft.targetPlayerUsername,
+          targetVillageId: plannerDraft.targetVillageId,
+          legs: plannerRequestLegs,
+          confirmation: {
+            confirmedByPlayer: true,
+            clientValidatedAt: new Date().toISOString(),
+          },
+        });
+        setPlannerOpenSnapshot((previous) =>
+          previous
+            ? {
+                ...previous,
+                activePlan: created.activePlan,
+                lastCompletedPlan: created.lastCompletedPlan,
+              }
+            : null,
+        );
+        setPlannerNoticeMessage('Plán byl potvrzen a uložen.');
+      }
+
+      setPlannerDraftStage('draft');
+      setPlannerForceDraftMode(false);
+      setPlannerDraftDirty(false);
+      saveStoredPlannerLastSessionDraft(currentUsername, worldId, null);
+      setStoredPlannerDraftAvailable(null);
+      setPlannerRefreshToken((previous) => previous + 1);
+    } catch (error) {
+      setPlannerDraftStage('draft');
+      setPlannerNoticeMessage(getErrorMessage(error));
+    } finally {
+      setPlannerMutationPending(false);
+    }
+  }, [
+    currentUsername,
+    plannerActivePlan,
+    plannerCanOpenConfirmation,
+    plannerDraft.targetPlayerUsername,
+    plannerDraft.targetVillageId,
+    plannerDraftStage,
+    plannerForceDraftMode,
+    plannerMutationPending,
+    plannerRequestLegs,
+    worldId,
+  ]);
+
+  const handlePlannerCancelActivePlan = useCallback(async () => {
+    if (!plannerActivePlan || !worldId || plannerMutationPending) {
+      return;
+    }
+    const status = String(plannerActivePlan.plan.status ?? '');
+    if (status !== 'scheduled' && status !== 'needs_reconfirmation') {
+      setPlannerNoticeMessage('Tento plán už nelze zrušit.');
+      return;
+    }
+    const confirmed = window.confirm('Opravdu chceš aktivní plán zrušit?');
+    if (!confirmed) {
+      return;
+    }
+
+    setPlannerMutationPending(true);
+    try {
+      const response = await cancelPlannerPlanRequest(String(plannerActivePlan.plan.id), {
+        username: currentUsername,
+        worldId,
+        expectedRevision: Math.max(1, Math.floor(Number(plannerActivePlan.plan.revision ?? 1))),
+      });
+      setPlannerOpenSnapshot((previous) =>
+        previous
+          ? {
+              ...previous,
+              activePlan: response.activePlan,
+            }
+          : null,
+      );
+      setPlannerForceDraftMode(true);
+      setPlannerDraftStage('draft');
+      setPlannerNoticeMessage('Aktivní plán byl zrušen.');
+      setPlannerRefreshToken((previous) => previous + 1);
+    } catch (error) {
+      setPlannerNoticeMessage(getErrorMessage(error));
+    } finally {
+      setPlannerMutationPending(false);
+    }
+  }, [currentUsername, plannerActivePlan, plannerMutationPending, worldId]);
+
+  const handlePlannerReconfirmActivePlan = useCallback(async () => {
+    if (!plannerActivePlan || !worldId || plannerMutationPending) {
+      return;
+    }
+    if (String(plannerActivePlan.plan.status ?? '') !== 'needs_reconfirmation') {
+      setPlannerNoticeMessage('Reconfirm je dostupný jen pro plán ve stavu needs_reconfirmation.');
+      return;
+    }
+    const confirmed = window.confirm(
+      'Cíl se změnil. Potvrdit plán i s následky?',
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setPlannerMutationPending(true);
+    try {
+      const response = await reconfirmPlannerPlanRequest(String(plannerActivePlan.plan.id), {
+        username: currentUsername,
+        worldId,
+        expectedRevision: Math.max(1, Math.floor(Number(plannerActivePlan.plan.revision ?? 1))),
+        confirmWithConsequences: true,
+      });
+      setPlannerOpenSnapshot((previous) =>
+        previous
+          ? {
+              ...previous,
+              activePlan: response.activePlan,
+            }
+          : null,
+      );
+      setPlannerForceDraftMode(false);
+      setPlannerDraftStage('draft');
+      setPlannerNoticeMessage('Plán byl znovu potvrzen i se změněným cílem.');
+      setPlannerRefreshToken((previous) => previous + 1);
+    } catch (error) {
+      setPlannerNoticeMessage(getErrorMessage(error));
+    } finally {
+      setPlannerMutationPending(false);
+    }
+  }, [currentUsername, plannerActivePlan, plannerMutationPending, worldId]);
+
   const handleArmadaVillageCardClick = useCallback(
     (village: ArmyVillageSummary) => {
+      if (plannerMutationPending) {
+        return;
+      }
       const villageId = Math.floor(Number(village.villageId));
       if (!Number.isFinite(villageId) || villageId <= 0) {
         return;
@@ -5364,6 +5899,7 @@ const ArmyPanel = ({
       plannerConstraints.minImpactGapMinutes,
       plannerDraft.legs,
       plannerForceDraftMode,
+      plannerMutationPending,
     ],
   );
 
@@ -5599,6 +6135,21 @@ const ArmyPanel = ({
             </header>
             <p className="planner-v1-banner">{plannerBannerText}</p>
             {plannerOpenLoading ? <p>Načítám planner…</p> : null}
+            {plannerLastCompletedPlan ? (
+              <article className="planner-active-plan planner-completed-stub">
+                <h4>Poslední dokončený plán</h4>
+                <p>
+                  Cíl: {plannerLastCompletedPlan.targetPlayerUsernameSnapshot} ·{' '}
+                  {plannerLastCompletedPlan.targetVillageNameSnapshot}
+                </p>
+                <p className="row-help">
+                  Legy: {plannerLastCompletedPlan.legsCount} · první odeslání{' '}
+                  {formatDateTimePragueLabel(plannerLastCompletedPlan.firstSendAtUtc)} · poslední odeslání{' '}
+                  {formatDateTimePragueLabel(plannerLastCompletedPlan.lastSendAtUtc)}
+                </p>
+                <p className="row-help">Dokončeno: {formatDateTimePragueLabel(plannerLastCompletedPlan.completedAt)}</p>
+              </article>
+            ) : null}
             {!plannerIsDraftMode && plannerActivePlan ? (
               <article className="planner-active-plan">
                 <h4>Aktivní serverový plán</h4>
@@ -5609,6 +6160,13 @@ const ArmyPanel = ({
                 <p className={`planner-plan-status is-${plannerActivePlanStatusMeta?.tone ?? 'neutral'}`}>
                   Stav: {plannerActivePlanStatusMeta?.label ?? plannerActivePlan.plan.status} · revize{' '}
                   {plannerActivePlan.plan.revision}
+                </p>
+                <p className="row-help">
+                  Progress: {plannerActivePlanProgress?.sentLegs ?? 0}/{plannerActivePlanProgress?.totalLegs ?? 0}
+                  {' '}({plannerActivePlanProgress?.percent ?? 0}%)
+                  {plannerActivePlanProgress?.countdownSec != null
+                    ? ` · start za ${formatDurationLabel(plannerActivePlanProgress.countdownSec)}`
+                    : ''}
                 </p>
                 <ul className="planner-active-leg-list">
                   {plannerActivePlan.legs.map((leg) => {
@@ -5641,8 +6199,38 @@ const ArmyPanel = ({
                 </p>
                 {plannerCanReturnToDraftFromActivePlan ? (
                   <div className="activity-item-actions">
-                    <button type="button" className="secondary-action" onClick={handlePlannerReturnToDraft}>
+                    <button
+                      type="button"
+                      className="secondary-action"
+                      onClick={handlePlannerReturnToDraft}
+                      disabled={plannerMutationPending}
+                    >
                       Zpet do konceptu
+                    </button>
+                  </div>
+                ) : null}
+                {String(plannerActivePlan.plan.status ?? '') === 'needs_reconfirmation' ? (
+                  <div className="activity-item-actions">
+                    <button
+                      type="button"
+                      className="secondary-action"
+                      onClick={() => void handlePlannerReconfirmActivePlan()}
+                      disabled={plannerMutationPending}
+                    >
+                      {plannerMutationPending ? 'Potvrzuji...' : 'Potvrdit i s následky'}
+                    </button>
+                  </div>
+                ) : null}
+                {(String(plannerActivePlan.plan.status ?? '') === 'scheduled' ||
+                  String(plannerActivePlan.plan.status ?? '') === 'needs_reconfirmation') ? (
+                  <div className="activity-item-actions">
+                    <button
+                      type="button"
+                      className="secondary-action"
+                      onClick={() => void handlePlannerCancelActivePlan()}
+                      disabled={plannerMutationPending}
+                    >
+                      {plannerMutationPending ? 'Ruším...' : 'Zrušit plán'}
                     </button>
                   </div>
                 ) : null}
@@ -5677,189 +6265,315 @@ const ArmyPanel = ({
                   </div>
                 ) : null}
 
-                <label className="planner-target-picker">
-                  <span>Cíl (hráč s právě jedním lénem)</span>
-                  <select
-                    value={
-                      plannerDraft.targetVillageId != null && Number.isFinite(plannerDraft.targetVillageId)
-                        ? String(plannerDraft.targetVillageId)
-                        : ''
-                    }
-                    onChange={(event) => {
-                      const nextVillageId = Number(event.target.value);
-                      handlePlannerTargetChange(Number.isFinite(nextVillageId) && nextVillageId > 0 ? nextVillageId : null);
-                    }}
-                  >
-                    <option value="">Vyber cílového hráče</option>
-                    {plannerTargetCandidates.map((candidate) => (
-                      <option key={`planner-target-${candidate.villageId}`} value={candidate.villageId}>
-                        {candidate.username} · {candidate.villageName} ({candidate.coordX}|{candidate.coordY})
-                      </option>
-                    ))}
-                  </select>
-                  {plannerTargetCandidates.length <= 0 ? (
-                    <small className="row-help">
-                      V tomto světě zatím není dostupný hráč s právě jedním lénem.
-                    </small>
-                  ) : null}
-                </label>
-
-                <div className="planner-leg-list-wrap">
-                  <h4>Legy útoku</h4>
-                  {plannerLegRows.length <= 0 ? (
-                    <p>
-                      Prázdný koncept. Klikni na kartu léna v Armadě a přidej první leg.
+                {plannerDraftStage === 'confirmation' ? (
+                  <section className="planner-summary-step">
+                    <h4>Potvrzení plánu</h4>
+                    <p className={`planner-summary-status is-${plannerValidation.status}`}>
+                      Stav konceptu: {plannerValidation.status === 'ok' ? 'validní' : plannerValidation.status}
                     </p>
-                  ) : (
-                    <ul className="planner-leg-list">
-                      {plannerLegRows.map((legRow) => {
-                        const legIssues =
-                          plannerValidationIssuesByLegOriginVillageId.get(legRow.key) ?? [];
-                        const legIssueTone = legIssues.some((issue) => issue.severity === 'blocked')
-                          ? 'has-blocked'
-                          : legIssues.some((issue) => issue.severity === 'warning')
-                            ? 'has-warning'
-                            : '';
-                        return (
-                          <li
-                            key={`planner-leg-${legRow.key}`}
-                            draggable
-                            onDragStart={() => setDraggedPlannerLegOriginVillageId(legRow.key)}
-                            onDragOver={(event) => event.preventDefault()}
-                            onDrop={(event) => {
-                              event.preventDefault();
-                              handlePlannerLegDrop(legRow.key);
-                            }}
-                            className={`planner-leg-card ${focusedPlannerLegOriginVillageId === legRow.key ? 'is-focused' : ''} ${legIssueTone}`}
-                          >
-                            <header>
-                              <div>
-                                <strong>
-                                  #{legRow.order} · {legRow.originVillage?.villageName ?? `Léno #${legRow.key}`}
-                                </strong>
-                                <small>
-                                  {legRow.originVillage?.coordX ?? 0}|{legRow.originVillage?.coordY ?? 0} ·
-                                  tahem přetáhni pro změnu pořadí
-                                </small>
-                              </div>
-                              <button
-                                type="button"
-                                className="inline-cancel-button"
-                                onClick={() => handlePlannerLegRemove(legRow.key)}
-                                title="Odebrat leg"
-                                aria-label="Odebrat leg"
-                              >
-                                ✕
-                              </button>
-                            </header>
-                            <div className="planner-impact-controls">
-                              <span>Dopad (Praha): {formatDateTimePragueLabel(legRow.impactAtUtc)}</span>
-                              <div>
-                                <button type="button" className="secondary-action compact" onClick={() => handlePlannerLegImpactShift(legRow.key, -5)}>
-                                  -5m
-                                </button>
-                                <button type="button" className="secondary-action compact" onClick={() => handlePlannerLegImpactShift(legRow.key, -1)}>
-                                  -1m
-                                </button>
-                                <button type="button" className="secondary-action compact" onClick={() => handlePlannerLegImpactShift(legRow.key, 1)}>
-                                  +1m
-                                </button>
-                                <button type="button" className="secondary-action compact" onClick={() => handlePlannerLegImpactShift(legRow.key, 5)}>
-                                  +5m
-                                </button>
-                              </div>
-                            </div>
-                            <small>
-                              Odeslání (Praha): {formatDateTimePragueLabel(legRow.sendAtUtc)} · cesta{' '}
-                              {formatDurationLabel(legRow.travelDurationSec)}
-                            </small>
-                            {legIssues.length > 0 ? (
-                              <ul className="planner-leg-issues">
-                                {legIssues.map((issue) => (
-                                  <li key={`planner-leg-issue-${issue.code}`} className={`is-${issue.severity}`}>
-                                    {issue.message}
-                                  </li>
-                                ))}
-                              </ul>
-                            ) : null}
-                            <div className="planner-leg-unit-grid">
-                              {COMMAND_UNIT_ORDER.map((unitId) => {
-                                const unitSummary =
-                                  legRow.originVillage?.units.find((unit) => String(unit.unitId) === unitId) ?? null;
-                                const availableForPlanning = Math.max(
-                                  0,
-                                  Math.floor(Number(unitSummary?.availableForPlanning ?? 0)),
-                                );
-                                if (availableForPlanning <= 0) {
-                                  return null;
-                                }
-                                return (
-                                  <label key={`planner-leg-unit-${legRow.key}-${unitId}`}>
-                                    <span>
-                                      {getUnitMetaById(unitId).fallbackName} · max{' '}
-                                      {availableForPlanning.toLocaleString('cs-CZ')}
-                                    </span>
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      max={availableForPlanning}
-                                      step={1}
-                                      value={String(Math.max(0, Math.floor(Number(legRow.units[unitId] ?? 0))))}
-                                      onChange={(event) =>
-                                        handlePlannerLegUnitAmountChange(legRow.key, unitId, event.target.value)
-                                      }
-                                    />
-                                  </label>
-                                );
-                              })}
-                            </div>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </div>
-
-                <section className="planner-summary-step">
-                  <h4>Souhrn konceptu</h4>
-                  <p className={`planner-summary-status is-${plannerValidation.status}`}>
-                    Stav konceptu: {plannerValidation.status === 'ok' ? 'validní' : plannerValidation.status}
-                  </p>
-                  <p>
-                    Cíl:{' '}
-                    {plannerDraft.targetVillageId != null
-                      ? `${plannerDraft.targetPlayerUsername} (${plannerTargetByVillageId.get(plannerDraft.targetVillageId)?.coordX ?? 0}|${
-                          plannerTargetByVillageId.get(plannerDraft.targetVillageId)?.coordY ?? 0
-                        })`
-                      : 'nevybrán'}
-                  </p>
-                  <ul>
-                    {plannerLegRows.map((leg) => (
-                      <li key={`planner-summary-${leg.key}`}>
-                        #{leg.order} · {leg.originVillage?.villageName ?? `Léno #${leg.key}`} · dopad{' '}
-                        {formatDateTimePragueLabel(leg.impactAtUtc)} · odeslání{' '}
-                        {formatDateTimePragueLabel(leg.sendAtUtc)} · jednotky{' '}
-                        {leg.unitsTotal.toLocaleString('cs-CZ')}
-                      </li>
-                    ))}
-                  </ul>
-                  {plannerValidation.issues.length > 0 ? (
-                    <ul className="planner-validation-list">
-                      {plannerValidation.issues.map((issue) => (
-                        <li key={`planner-issue-${issue.code}`} className={`is-${issue.severity}`}>
-                          {issue.message}
+                    <p>
+                      Cíl:{' '}
+                      {plannerDraft.targetVillageId != null
+                        ? `${plannerDraft.targetPlayerUsername} (${plannerTargetByVillageId.get(plannerDraft.targetVillageId)?.coordX ?? 0}|${
+                            plannerTargetByVillageId.get(plannerDraft.targetVillageId)?.coordY ?? 0
+                          })`
+                        : 'nevybrán'}
+                    </p>
+                    <ul>
+                      {plannerLegRows.map((leg) => (
+                        <li key={`planner-confirm-summary-${leg.key}`}>
+                          #{leg.order} · {leg.originVillage?.villageName ?? `Léno #${leg.key}`} · dopad{' '}
+                          {formatDateTimePragueLabel(leg.impactAtUtc)} · odeslání{' '}
+                          {formatDateTimePragueLabel(leg.sendAtUtc)} · jednotky{' '}
+                          {leg.unitsTotal.toLocaleString('cs-CZ')}
                         </li>
                       ))}
                     </ul>
-                  ) : (
-                    <p className="row-help">Koncept je validní pro v1 guardrails.</p>
-                  )}
-                  <div className="activity-item-actions">
-                    <button type="button" className="secondary-action" onClick={handleClearPlannerDraft}>
-                      Zpet do konceptu
-                    </button>
-                  </div>
-                </section>
+                    {plannerValidation.issues.length > 0 ? (
+                      <ul className="planner-validation-list">
+                        {plannerValidation.issues.map((issue) => (
+                          <li key={`planner-confirm-issue-${issue.code}`} className={`is-${issue.severity}`}>
+                            {issue.message}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="row-help">Kliknutím na Uložit plán vznikne serverový stav Potvrzeno/naplánováno.</p>
+                    )}
+                    <div className="activity-item-actions">
+                      <button
+                        type="button"
+                        className="secondary-action"
+                        onClick={() => void handlePlannerSaveConfirmed()}
+                        disabled={plannerMutationPending || !plannerCanOpenConfirmation}
+                      >
+                        {plannerMutationPending ? 'Ukládám...' : 'Uložit plán'}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-action"
+                        onClick={handlePlannerBackToDraftFromConfirmation}
+                        disabled={plannerMutationPending}
+                      >
+                        Zpět do konceptu
+                      </button>
+                    </div>
+                  </section>
+                ) : (
+                  <>
+                    <div className="activity-item-actions">
+                      <button
+                        type="button"
+                        className="secondary-action"
+                        onClick={handlePlannerAutoAlignForward}
+                        disabled={plannerMutationPending || plannerLegRows.length <= 0}
+                        title="Synchronizuje útoky všech lén po sobě jdoucích v dopadu po každé jedné minutě."
+                      >
+                        Srovnat časy dopředu
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-action"
+                        onClick={handlePlannerAutoAlignBackward}
+                        disabled={plannerMutationPending || plannerLegRows.length <= 0}
+                      >
+                        Srovnat od posledního
+                      </button>
+                    </div>
+
+                    <label className="planner-target-picker">
+                      <span>Cíl (hráč s právě jedním lénem)</span>
+                      <select
+                        value={
+                          plannerDraft.targetVillageId != null && Number.isFinite(plannerDraft.targetVillageId)
+                            ? String(plannerDraft.targetVillageId)
+                            : ''
+                        }
+                        onChange={(event) => {
+                          const nextVillageId = Number(event.target.value);
+                          handlePlannerTargetChange(
+                            Number.isFinite(nextVillageId) && nextVillageId > 0 ? nextVillageId : null,
+                          );
+                        }}
+                        disabled={plannerMutationPending}
+                      >
+                        <option value="">Vyber cílového hráče</option>
+                        {plannerTargetCandidates.map((candidate) => (
+                          <option key={`planner-target-${candidate.villageId}`} value={candidate.villageId}>
+                            {candidate.username} · {candidate.villageName} ({candidate.coordX}|{candidate.coordY})
+                          </option>
+                        ))}
+                      </select>
+                      {plannerTargetCandidates.length <= 0 ? (
+                        <small className="row-help">
+                          V tomto světě zatím není dostupný hráč s právě jedním lénem.
+                        </small>
+                      ) : null}
+                    </label>
+
+                    <div className="planner-leg-list-wrap">
+                      <h4>Legy útoku</h4>
+                      {plannerLegRows.length <= 0 ? (
+                        <p>
+                          Prázdný koncept. Klikni na kartu léna v Armadě a přidej první leg.
+                        </p>
+                      ) : (
+                        <ul className="planner-leg-list">
+                          {plannerLegRows.map((legRow) => {
+                            const legIssues = plannerValidationIssuesByLegOriginVillageId.get(legRow.key) ?? [];
+                            const legIssueTone = legIssues.some((issue) => issue.severity === 'blocked')
+                              ? 'has-blocked'
+                              : legIssues.some((issue) => issue.severity === 'warning')
+                                ? 'has-warning'
+                                : '';
+                            return (
+                              <li
+                                key={`planner-leg-${legRow.key}`}
+                                draggable={!plannerMutationPending}
+                                onDragStart={() => setDraggedPlannerLegOriginVillageId(legRow.key)}
+                                onDragOver={(event) => event.preventDefault()}
+                                onDrop={(event) => {
+                                  event.preventDefault();
+                                  handlePlannerLegDrop(legRow.key);
+                                }}
+                                className={`planner-leg-card ${focusedPlannerLegOriginVillageId === legRow.key ? 'is-focused' : ''} ${legIssueTone}`}
+                              >
+                                <header>
+                                  <div>
+                                    <strong>
+                                      #{legRow.order} · {legRow.originVillage?.villageName ?? `Léno #${legRow.key}`}
+                                    </strong>
+                                    <small>
+                                      {legRow.originVillage?.coordX ?? 0}|{legRow.originVillage?.coordY ?? 0} ·
+                                      tahem přetáhni pro změnu pořadí
+                                    </small>
+                                  </div>
+                                  <div className="activity-item-actions">
+                                    <button
+                                      type="button"
+                                      className="secondary-action compact"
+                                      onClick={() => handlePlannerFillLegAll(legRow.key)}
+                                      disabled={plannerMutationPending}
+                                      title="Složení nejlepší kombinace k útoku se špionáží: Jezdec, Zvěd a Beranidlo."
+                                    >
+                                      Vyplnit útočnými jednotkami
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-action compact"
+                                      onClick={() => handlePlannerLegRemove(legRow.key)}
+                                      title="Odebrat léno z plánovače"
+                                      aria-label="Odebrat léno z plánovače"
+                                      disabled={plannerMutationPending}
+                                    >
+                                      Odebrat léno
+                                    </button>
+                                  </div>
+                                </header>
+                                <div className="planner-impact-controls">
+                                  <span>Dopad (Praha): {formatDateTimePragueLabel(legRow.impactAtUtc)}</span>
+                                  <div>
+                                    <button
+                                      type="button"
+                                      className="secondary-action compact"
+                                      onClick={() => handlePlannerLegImpactShift(legRow.key, -5)}
+                                      disabled={plannerMutationPending}
+                                    >
+                                      -5m
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-action compact"
+                                      onClick={() => handlePlannerLegImpactShift(legRow.key, -1)}
+                                      disabled={plannerMutationPending}
+                                    >
+                                      -1m
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-action compact"
+                                      onClick={() => handlePlannerLegImpactShift(legRow.key, 1)}
+                                      disabled={plannerMutationPending}
+                                    >
+                                      +1m
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-action compact"
+                                      onClick={() => handlePlannerLegImpactShift(legRow.key, 5)}
+                                      disabled={plannerMutationPending}
+                                    >
+                                      +5m
+                                    </button>
+                                  </div>
+                                </div>
+                                <small>
+                                  Odeslání (Praha): {formatDateTimePragueLabel(legRow.sendAtUtc)} · cesta{' '}
+                                  {formatDurationLabel(legRow.travelDurationSec)}
+                                </small>
+                                {legIssues.length > 0 ? (
+                                  <ul className="planner-leg-issues">
+                                    {legIssues.map((issue) => (
+                                      <li key={`planner-leg-issue-${issue.code}`} className={`is-${issue.severity}`}>
+                                        {issue.message}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : null}
+                                <div className="planner-leg-unit-grid">
+                                  {COMMAND_UNIT_ORDER.map((unitId) => {
+                                    const unitSummary =
+                                      legRow.originVillage?.units.find((unit) => String(unit.unitId) === unitId) ?? null;
+                                    const availableForPlanning = Math.max(
+                                      0,
+                                      Math.floor(Number(unitSummary?.availableForPlanning ?? 0)),
+                                    );
+                                    if (availableForPlanning <= 0) {
+                                      return null;
+                                    }
+                                    return (
+                                      <label key={`planner-leg-unit-${legRow.key}-${unitId}`}>
+                                        <span>
+                                          {getUnitMetaById(unitId).fallbackName} · max{' '}
+                                          {availableForPlanning.toLocaleString('cs-CZ')}
+                                        </span>
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          max={availableForPlanning}
+                                          step={1}
+                                          value={String(Math.max(0, Math.floor(Number(legRow.units[unitId] ?? 0))))}
+                                          onChange={(event) =>
+                                            handlePlannerLegUnitAmountChange(legRow.key, unitId, event.target.value)
+                                          }
+                                          disabled={plannerMutationPending}
+                                        />
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
+
+                    <section className="planner-summary-step">
+                      <h4>Souhrn konceptu</h4>
+                      <p className={`planner-summary-status is-${plannerValidation.status}`}>
+                        Stav konceptu: {plannerValidation.status === 'ok' ? 'validní' : plannerValidation.status}
+                      </p>
+                      <p>
+                        Cíl:{' '}
+                        {plannerDraft.targetVillageId != null
+                          ? `${plannerDraft.targetPlayerUsername} (${plannerTargetByVillageId.get(plannerDraft.targetVillageId)?.coordX ?? 0}|${
+                              plannerTargetByVillageId.get(plannerDraft.targetVillageId)?.coordY ?? 0
+                            })`
+                          : 'nevybrán'}
+                      </p>
+                      <ul>
+                        {plannerLegRows.map((leg) => (
+                          <li key={`planner-summary-${leg.key}`}>
+                            #{leg.order} · {leg.originVillage?.villageName ?? `Léno #${leg.key}`} · dopad{' '}
+                            {formatDateTimePragueLabel(leg.impactAtUtc)} · odeslání{' '}
+                            {formatDateTimePragueLabel(leg.sendAtUtc)} · jednotky{' '}
+                            {leg.unitsTotal.toLocaleString('cs-CZ')}
+                          </li>
+                        ))}
+                      </ul>
+                      {plannerValidation.issues.length > 0 ? (
+                        <ul className="planner-validation-list">
+                          {plannerValidation.issues.map((issue) => (
+                            <li key={`planner-issue-${issue.code}`} className={`is-${issue.severity}`}>
+                              {issue.message}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="row-help">Koncept je validní pro v1 guardrails.</p>
+                      )}
+                      <div className="activity-item-actions">
+                        <button
+                          type="button"
+                          className="secondary-action"
+                          onClick={handlePlannerOpenConfirmation}
+                          disabled={!plannerCanOpenConfirmation || plannerMutationPending}
+                        >
+                          Potvrzení plánu
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-action"
+                          onClick={handleClearPlannerDraft}
+                          disabled={plannerMutationPending}
+                        >
+                          Vyčistit koncept
+                        </button>
+                      </div>
+                    </section>
+                  </>
+                )}
               </>
             )}
           </section>
@@ -6238,7 +6952,7 @@ const ArmyPanel = ({
       )}
     </div>
   );
-};
+});
 
 const MilitaryPanel = ({
   units,
@@ -8861,9 +9575,16 @@ const CommandsPanel = ({
                     key={`history-${historyItem.commandType}-${historyItem.targetVillageId}`}
                     type="button"
                     className={`secondary-action army-command-history-item ${historyItem.commandType} ${historyItem.isSelectable ? '' : 'is-disabled'}`}
-                    onClick={() => handleApplyHistoryTarget(historyItem)}
+                    onMouseDown={(event) => {
+                      event.stopPropagation();
+                    }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleApplyHistoryTarget(historyItem);
+                    }}
                     onContextMenu={(event) => {
                       event.preventDefault();
+                      event.stopPropagation();
                       if (!historyItem.settlement) {
                         return;
                       }
@@ -11279,12 +12000,14 @@ const SettingsPanel = ({
   shortcutBindings,
   customShortcutBindings,
   autoHidePinColumns,
+  mapPreviewTravelModifier,
   shortcutNotice,
   isTouchDevice,
   onCaptureShortcut,
   onResetShortcutBinding,
   onResetAllShortcuts,
   onAutoHidePinColumnsChange,
+  onMapPreviewTravelModifierChange,
 }: {
   username: string;
   avatarUrl: string | null;
@@ -11300,12 +12023,14 @@ const SettingsPanel = ({
   shortcutBindings: Record<ShortcutActionId, ShortcutBinding>;
   customShortcutBindings: Partial<Record<ShortcutActionId, ShortcutBinding>>;
   autoHidePinColumns: boolean;
+  mapPreviewTravelModifier: MapPreviewTravelModifierKey;
   shortcutNotice: string | null;
   isTouchDevice: boolean;
   onCaptureShortcut: (actionId: ShortcutActionId, binding: ShortcutBinding) => void;
   onResetShortcutBinding: (actionId: ShortcutActionId) => void;
   onResetAllShortcuts: () => void;
   onAutoHidePinColumnsChange: (enabled: boolean) => void;
+  onMapPreviewTravelModifierChange: (modifier: MapPreviewTravelModifierKey) => void;
 }) => {
   const [settingsTab, setSettingsTab] = useState<'account' | 'interface' | 'shortcuts' | 'world'>('account');
   const [avatarSource, setAvatarSource] = useState<AvatarCropSource | null>(null);
@@ -11315,6 +12040,8 @@ const SettingsPanel = ({
   const [avatarNotice, setAvatarNotice] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const holdPinColumnsShortcutLabel = formatShortcutBindingLabel(shortcutBindings.peekPinColumnsWhileHeld);
+  const mapPreviewTravelModifierLabel =
+    MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS.find((item) => item.value === mapPreviewTravelModifier)?.label ?? 'Ctrl';
 
   const avatarMetrics = useMemo(
     () => computeAvatarCropMetrics(avatarSource, avatarZoom),
@@ -11643,6 +12370,23 @@ const SettingsPanel = ({
             Nezávisle na režimu: stisknutím <strong>{holdPinColumnsShortcutLabel}</strong> přepneš overlay pin
             sloupců (zapnuto/vypnuto).
           </small>
+          <label className="settings-toggle-row">
+            <span>Náhled časů přesunu na mapě (podržet klávesu)</span>
+            <select
+              value={mapPreviewTravelModifier}
+              onChange={(event) => onMapPreviewTravelModifierChange(normalizeMapPreviewTravelModifier(event.target.value))}
+            >
+              {MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS.map((option) => (
+                <option key={`map-preview-modifier-${option.value}`} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <small className="row-help">
+            Na mapě se detail „Časy přesunu jednotek“ zobrazí při najetí na léno a podržení{' '}
+            <strong>{mapPreviewTravelModifierLabel}</strong>.
+          </small>
           {isTouchDevice ? (
             <small className="row-help">
               Dotykové zařízení: klávesové zkratky jsou vypnuté, sloupce vyvoláš tlačítkem v herním GUI.
@@ -11738,6 +12482,7 @@ const MapPanel = memo(({
   focusedSettlementId,
   activeVillageId,
   currentUsername,
+  previewTravelModifier,
   zoomPercent,
   orderMarkersByVillageId,
   onZoomChange,
@@ -11755,6 +12500,7 @@ const MapPanel = memo(({
   focusedSettlementId: string | null;
   activeVillageId: number | null;
   currentUsername: string;
+  previewTravelModifier: MapPreviewTravelModifierKey;
   zoomPercent: number;
   orderMarkersByVillageId: Map<number, SettlementOrderMarkerCounts>;
   onZoomChange: (zoomPercent: number) => void;
@@ -11766,7 +12512,13 @@ const MapPanel = memo(({
 }) => {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [pinnedSettlementId, setPinnedSettlementId] = useState<string | null>(null);
+  const [isPreviewTravelModifierPressed, setIsPreviewTravelModifierPressed] = useState(false);
   const [isMapFullscreen, setIsMapFullscreen] = useState(false);
+  const previewTravelModifierMeta =
+    MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS.find((item) => item.value === previewTravelModifier) ??
+    MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS[0];
+  const previewTravelModifierLabel = previewTravelModifierMeta.label;
+  const previewTravelModifierEventKey = previewTravelModifierMeta.keyboardEventKey;
   const mapPanelRef = useRef<HTMLDivElement | null>(null);
   const gridWrapRef = useRef<HTMLDivElement | null>(null);
   const miniMapRef = useRef<HTMLDivElement | null>(null);
@@ -12069,7 +12821,7 @@ const MapPanel = memo(({
     ? getSettlementMapKind(previewSettlement, activeVillageId)
     : null;
   const previewTargetUnderProtection =
-    previewSettlement != null && Math.max(0, Number(previewSettlement.protectionRemainingSec ?? 0)) > 0;
+    previewSettlement != null && getSettlementProtectionRemainingSec(previewSettlement) > 0;
   const previewTargetPrestigeBlocked =
     previewSettlement != null && previewSettlement.prestigeAttackBlockedForViewer === true;
   const previewRetaliationUnlocked =
@@ -12243,6 +12995,9 @@ const MapPanel = memo(({
       Math.floor(Number(kingdomPrestigeByName.get(key) ?? previewSettlement.prestige ?? 0)),
     );
   }, [kingdomPrestigeByName, normalizeKey, previewSettlement]);
+  const previewSettlementTypeLabel =
+    previewSettlementKind != null ? MAP_SETTLEMENT_KIND_LABELS[previewSettlementKind] : '-';
+  const showPreviewTravelDurations = previewDistanceTiles != null && isPreviewTravelModifierPressed;
   const previewTravelRows = useMemo(() => {
     if (previewDistanceTiles == null) {
       return [];
@@ -12409,6 +13164,35 @@ const MapPanel = memo(({
     document.addEventListener('fullscreenchange', onFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, [updateMiniViewport]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== previewTravelModifierEventKey) {
+        return;
+      }
+      setIsPreviewTravelModifierPressed(true);
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key !== previewTravelModifierEventKey) {
+        return;
+      }
+      setIsPreviewTravelModifierPressed(false);
+    };
+
+    const handleWindowBlur = () => {
+      setIsPreviewTravelModifierPressed(false);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleWindowBlur);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+  }, [previewTravelModifierEventKey]);
 
   useEffect(
     () => () => {
@@ -12750,12 +13534,12 @@ const MapPanel = memo(({
     event.preventDefault();
   };
 
-  const handleRegionWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+  const handleRegionWheel = (event: ReactWheelEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
     if (event.deltaY === 0) {
       return;
     }
-
-    event.preventDefault();
     const wheelDelta = clamp(
       Math.abs(event.deltaY) * MAP_ZOOM_WHEEL_SENSITIVITY,
       MAP_ZOOM_WHEEL_MIN_DELTA,
@@ -13016,6 +13800,7 @@ const MapPanel = memo(({
       style={cardStyle}
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
+      onWheel={handleRegionWheel}
     >
       <header>
         <h4>
@@ -13070,12 +13855,15 @@ const MapPanel = memo(({
                 </em>
               ) : null}
             </p>
+            <p className="map-settlement-type">
+              Typ osady <strong>{previewSettlementTypeLabel}</strong>
+            </p>
             <p className="map-settlement-prestige-total">
-              Prestiž hráče celkem{' '}
+              Prestiž hráče{' '}
               <strong>{previewPlayerTotalPrestige == null ? '-' : previewPlayerTotalPrestige.toLocaleString('cs-CZ')}</strong>
             </p>
             <p className="map-settlement-prestige-total">
-              Prestiž království celkem{' '}
+              Prestiž království{' '}
               <strong>
                 {previewKingdomTotalPrestige == null ? '-' : previewKingdomTotalPrestige.toLocaleString('cs-CZ')}
               </strong>
@@ -13091,15 +13879,22 @@ const MapPanel = memo(({
                   }
                 }}
               >
-                {previewSettlement?.kingdom}
+                <span className="map-settlement-owner-label">Království:</span> {previewSettlement?.kingdom}
               </button>
             ) : (
-              <p className="map-settlement-kingdom">{previewSettlement?.kingdom}</p>
+              <p className="map-settlement-kingdom">
+                <span className="map-settlement-owner-label">Království:</span> {previewSettlement?.kingdom}
+              </p>
             )}
             <p className="map-settlement-distance">
               Vzdálenost od <em>{distanceOriginSettlement?.name ?? 'aktivního léna'}</em>{' '}
               <strong>{previewDistanceTiles == null ? '-' : `${previewDistanceTiles} polí`}</strong>
             </p>
+            {previewDistanceTiles != null && !showPreviewTravelDurations ? (
+              <p className="map-settlement-travel-hint">
+                Podrž {previewTravelModifierLabel} pro zobrazení časů přesunu jednotek.
+              </p>
+            ) : null}
             {previewTargetUnderProtection ? (
               <p className="map-settlement-protection">
                 Nováčkovská ochrana: {formatDurationLabel(Number(previewSettlement?.protectionRemainingSec ?? 0))}
@@ -13131,7 +13926,7 @@ const MapPanel = memo(({
               </p>
             ) : null}
           </div>
-          {previewDistanceTiles != null ? (
+          {showPreviewTravelDurations ? (
             <div className="map-settlement-travel">
               <p className="map-settlement-travel-title">
                 Časy přesunu jednotek ({previewDistanceTiles.toLocaleString('cs-CZ')} polí)
@@ -13359,6 +14154,7 @@ const MapPanel = memo(({
               Zoom mapy: kolečko myši po {MAP_ZOOM_STEP} %. Rozsah je od {MAP_ZOOM_MIN} % do +
               {MAP_ZOOM_MAX} %.
             </p>
+            <p>Náhled časů přesunu: podrž {previewTravelModifierLabel} při najetí na léno.</p>
             <p>Značky rozkazů: <strong className="order-legend attack">⌖ útok</strong>, <strong className="order-legend support">🛡 podpora</strong>, <strong className="order-legend move">➜ přesun</strong>, <strong className="order-legend knight">♞ pohyb rytíře</strong>.</p>
           </div>
         </section>
@@ -13670,6 +14466,48 @@ const VillagePanel = memo(({
   );
 });
 
+const TownhallDeveloperBoostCallout = memo(({ boost }: { boost: TownhallDeveloperBoostNotice | null }) => {
+  const nowMs = useSecondClock(boost != null);
+  if (!boost) {
+    return null;
+  }
+
+  const remainingSec = getRemainingSecondsToIso(boost.endsAt, nowMs);
+  const isActive = boost.isActive && remainingSec > 0;
+
+  return (
+    <div className={`townhall-dev-boost ${isActive ? 'is-active' : 'is-inactive'}`}>
+      <p className="townhall-dev-boost-title">
+        {isActive ? `Boost od vývojáře: ${boost.label}` : 'Boost od vývojáře je ukončen'}
+      </p>
+      <p className="townhall-dev-boost-meta">
+        {isActive
+          ? `Trvání: ${formatDurationLabel(remainingSec)} (konec ${boost.endsAtLabel})`
+          : `Boost skončil ${boost.endsAtLabel}.`}
+      </p>
+      <p className="townhall-dev-boost-reason">{boost.reason}</p>
+    </div>
+  );
+});
+
+const ActiveVillageProtectionTimer = memo(({ notice }: { notice: ActiveVillageProtectionNotice | null }) => {
+  const nowMs = useSecondClock(notice != null);
+  if (!notice) {
+    return null;
+  }
+
+  const remainingSec = getRemainingSecondsToIso(notice.protectionUntil, nowMs);
+  if (remainingSec <= 0) {
+    return null;
+  }
+
+  return (
+    <div className="village-protection-timer">
+      {`Nováčkovská ochrana: ${formatDurationLabel(remainingSec)} (do ${notice.formattedUntil})`}
+    </div>
+  );
+});
+
 const BuildingPanel = memo(({
   building,
   onBackToCity,
@@ -13755,21 +14593,7 @@ const BuildingPanel = memo(({
             >
               {isRecallKnightPending ? 'Odvolávám rytíře...' : 'Odvolat rytíře (+1000 dřevo/kámen/železo)'}
             </button>
-            {developerBoost ? (
-              <div className={`townhall-dev-boost ${developerBoost.isActive ? 'is-active' : 'is-inactive'}`}>
-                <p className="townhall-dev-boost-title">
-                  {developerBoost.isActive
-                    ? `Boost od vývojáře: ${developerBoost.label}`
-                    : 'Boost od vývojáře je ukončen'}
-                </p>
-                <p className="townhall-dev-boost-meta">
-                  {developerBoost.isActive
-                    ? `Trvání: ${formatDurationLabel(developerBoost.remainingSec)} (konec ${developerBoost.endsAtLabel})`
-                    : `Boost skončil ${developerBoost.endsAtLabel}.`}
-                </p>
-                <p className="townhall-dev-boost-reason">{developerBoost.reason}</p>
-              </div>
-            ) : null}
+            <TownhallDeveloperBoostCallout boost={developerBoost} />
           </>
         ) : null}
         {notice ? <p className="panel-feedback">{notice}</p> : null}
@@ -13798,9 +14622,7 @@ export const GamePage = () => {
   const stateRequestPromiseRef = useRef<Promise<void> | null>(null);
   const worldMapRequestPromiseRef = useRef<Promise<void> | null>(null);
   const reportsRequestPromiseRef = useRef<Promise<void> | null>(null);
-  const reportsSummaryRequestPromiseRef = useRef<Promise<void> | null>(null);
   const activityRequestPromiseRef = useRef<Promise<void> | null>(null);
-  const activitySummaryRequestPromiseRef = useRef<Promise<void> | null>(null);
   const mutationPendingRef = useRef(false);
   const villageIntelRequestByVillageIdRef = useRef<Record<number, Promise<void> | null>>({});
   const hasStoredPanelLayoutRef = useRef(false);
@@ -13872,6 +14694,9 @@ export const GamePage = () => {
     return [createPanelWindow('city', 40, 0, { layoutMode: 'split-left' })];
   });
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
+  const [activeFullDockPanelId, setActiveFullDockPanelId] = useState<string | null>(null);
+  const [activeLeftDockPanelId, setActiveLeftDockPanelId] = useState<string | null>(null);
+  const [activeRightDockPanelId, setActiveRightDockPanelId] = useState<string | null>(null);
   const [gameState, setGameState] = useState<GameStateResponse | null>(null);
   const [worldMapState, setWorldMapState] = useState<GameStateResponse['world'] | null>(null);
   const [villageIntelByVillageId, setVillageIntelByVillageId] = useState<Record<number, VillageIntelEntry>>({});
@@ -13968,6 +14793,9 @@ export const GamePage = () => {
   const [autoHidePinColumns, setAutoHidePinColumns] = useState<boolean>(
     () => readStoredShortcutSettings(username).autoHidePinColumns,
   );
+  const [mapPreviewTravelModifier, setMapPreviewTravelModifier] = useState<MapPreviewTravelModifierKey>(
+    () => readStoredShortcutSettings(username).mapPreviewTravelModifier,
+  );
   const [shortcutNotice, setShortcutNotice] = useState<string | null>(null);
   const [isPinColumnsTemporarilyHidden, setIsPinColumnsTemporarilyHidden] = useState(false);
   const [isPinColumnsOverlayVisible, setIsPinColumnsOverlayVisible] = useState(false);
@@ -13985,7 +14813,6 @@ export const GamePage = () => {
     () => readStoredArmyTargetHistory(username),
   );
   const [armyQuickSelection, setArmyQuickSelection] = useState<ArmyQuickSelection | null>(null);
-  const [protectionClockMs, setProtectionClockMs] = useState(() => Date.now());
 
   useEffect(() => {
     mutationPendingRef.current = Boolean(
@@ -14031,6 +14858,7 @@ export const GamePage = () => {
     setGameFontScaleDraft(storedFontScale);
     setShortcutCustomBindings(storedShortcutSettings.customBindings);
     setAutoHidePinColumns(storedShortcutSettings.autoHidePinColumns);
+    setMapPreviewTravelModifier(storedShortcutSettings.mapPreviewTravelModifier);
     setShortcutNotice(null);
     setIsPinColumnsTemporarilyHidden(false);
     setIsPinColumnsOverlayVisible(false);
@@ -14039,12 +14867,14 @@ export const GamePage = () => {
     setMyAvatarUrl(null);
     setPlayerAvatarByUsername({});
     setWorldMapState(null);
+    latestAppliedWorldMapKeyRef.current = null;
     setBattleReportsSummary(null);
     setActivitySummary(null);
   }, [username]);
 
   useEffect(() => {
     setWorldMapState(null);
+    latestAppliedWorldMapKeyRef.current = null;
     setBattleReportsSummary(null);
     setActivitySummary(null);
   }, [selectedWorldId]);
@@ -14067,8 +14897,9 @@ export const GamePage = () => {
     saveStoredShortcutSettings(username, {
       autoHidePinColumns,
       customBindings: shortcutCustomBindings,
+      mapPreviewTravelModifier,
     });
-  }, [autoHidePinColumns, shortcutCustomBindings, shortcutSettingsLoadedForUser, username]);
+  }, [autoHidePinColumns, mapPreviewTravelModifier, shortcutCustomBindings, shortcutSettingsLoadedForUser, username]);
 
   const activeGameFontScalePercent = GAME_FONT_SCALE_PERCENT_BY_OPTION[gameFontScaleOption];
   useEffect(() => {
@@ -14091,16 +14922,6 @@ export const GamePage = () => {
       }
     };
   }, [activeGameFontScalePercent, gameFontScaleOption]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setProtectionClockMs(Date.now());
-    }, 1000);
-
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, []);
 
   useEffect(() => {
     const handleCommunicationSummary = (event: Event) => {
@@ -14206,8 +15027,8 @@ export const GamePage = () => {
   }, [username]);
 
   const latestAppliedStateServerTimeMsRef = useRef(0);
-  const latestAppliedStateSignatureRef = useRef<string | null>(null);
-  const latestAppliedWorldMapSignatureRef = useRef<string | null>(null);
+  const latestAppliedStateVersionRef = useRef<string | null>(null);
+  const latestAppliedWorldMapKeyRef = useRef<string | null>(null);
   const applyIncomingGameState = useCallback((nextState: GameStateResponse): boolean => {
     const normalizedState = normalizeGameStateForUi(nextState);
     const parsedServerTimeMs = Date.parse(normalizedState.serverTime);
@@ -14216,23 +15037,24 @@ export const GamePage = () => {
       return false;
     }
 
-    const signature = buildStableGameStateSignature(normalizedState);
-    const stateChanged = latestAppliedStateSignatureRef.current !== signature;
+    const nextStateVersion = String(normalizedState.stateVersion ?? '').trim() || null;
+    const didStateChange =
+      nextStateVersion == null || latestAppliedStateVersionRef.current !== nextStateVersion;
     latestAppliedStateServerTimeMsRef.current = nextServerTimeMs;
-    latestAppliedStateSignatureRef.current = signature;
-    if (stateChanged) {
+    latestAppliedStateVersionRef.current = nextStateVersion;
+    if (didStateChange) {
       setGameState(normalizedState);
     }
     if ((normalizedState.world?.settlements?.length ?? 0) > 0) {
-      const worldMapSignature = JSON.stringify(normalizedState.world);
-      if (latestAppliedWorldMapSignatureRef.current !== worldMapSignature) {
-        latestAppliedWorldMapSignatureRef.current = worldMapSignature;
+      const worldSnapshotKey = getWorldSnapshotVersion(normalizedState.world);
+      if (worldSnapshotKey == null || latestAppliedWorldMapKeyRef.current !== worldSnapshotKey) {
+        latestAppliedWorldMapKeyRef.current = worldSnapshotKey;
         setWorldMapState(normalizedState.world);
       }
     }
     setActiveVillageId((previous) => (previous === normalizedState.village.id ? previous : normalizedState.village.id));
     setStateError(null);
-    return stateChanged;
+    return didStateChange;
   }, []);
 
   const buildings = useMemo<Building[]>(() => {
@@ -14434,25 +15256,66 @@ export const GamePage = () => {
     if (!Number.isFinite(endsAtMs)) {
       return null;
     }
-    const remainingSec = Math.max(0, Math.ceil((endsAtMs - protectionClockMs) / 1000));
-    const isActive = Boolean(developerBoost.isActive) && remainingSec > 0;
 
     return {
-      isActive,
+      isActive: Boolean(developerBoost.isActive),
       label: String(developerBoost.label),
       reason: String(developerBoost.reason),
-      remainingSec,
+      endsAt: new Date(endsAtMs).toISOString(),
       endsAtLabel: formatDateTimeLabel(endsAtMs),
     };
-  }, [gameState?.resources?.developerBoost, protectionClockMs]);
+  }, [gameState?.resources?.developerBoost]);
 
-  const currentResearchTask = useMemo(
-    () =>
-      gameState?.research?.projects?.find((project) => project.status === 'researching') ??
-      gameState?.research?.projects?.find((project) => project.status === 'available') ??
-      null,
-    [gameState?.research?.projects],
-  );
+  const currentResearchTask = useMemo(() => {
+    const projects = gameState?.research?.projects ?? [];
+    const researchingProjects = projects.filter((project) => project.status === 'researching');
+    const availableProjects = projects.filter((project) => project.status === 'available');
+    const candidates = researchingProjects.length > 0 ? researchingProjects : availableProjects;
+    if (candidates.length <= 0) {
+      return null;
+    }
+
+    const sortedCandidates = [...candidates].sort((left, right) => {
+      const leftProgress = Math.max(0, Math.min(100, Number(left.progressPercent ?? 0)));
+      const rightProgress = Math.max(0, Math.min(100, Number(right.progressPercent ?? 0)));
+      const progressDiff = rightProgress - leftProgress;
+      if (Math.abs(progressDiff) > RESEARCH_SPOTLIGHT_SIMILAR_PROGRESS_DELTA_PERCENT) {
+        return progressDiff;
+      }
+
+      const leftCoinCost = Math.max(0, Math.floor(Number(left.coinCost ?? 0)));
+      const rightCoinCost = Math.max(0, Math.floor(Number(right.coinCost ?? 0)));
+      if (leftCoinCost !== rightCoinCost) {
+        return leftCoinCost - rightCoinCost;
+      }
+
+      const leftRemainingSec = Math.max(0, Number(left.remainingSec ?? Number.POSITIVE_INFINITY));
+      const rightRemainingSec = Math.max(0, Number(right.remainingSec ?? Number.POSITIVE_INFINITY));
+      if (leftRemainingSec !== rightRemainingSec) {
+        return leftRemainingSec - rightRemainingSec;
+      }
+
+      return String(left.id).localeCompare(String(right.id), 'cs');
+    });
+
+    return sortedCandidates[0] ?? null;
+  }, [gameState?.research?.projects]);
+  const currentResearchProgressPercent = currentResearchTask
+    ? Math.max(0, Math.min(100, Number(currentResearchTask.progressPercent ?? 0)))
+    : 0;
+  const currentResearchAssignedAcademics = currentResearchTask
+    ? Math.max(0, Math.floor(Number(currentResearchTask.assignedAcademics ?? 0)))
+    : 0;
+  const currentResearchCompletionTimeLabel = currentResearchTask
+    ? currentResearchTask.estimatedCompletionAt
+      ? formatDateTimeLabel(currentResearchTask.estimatedCompletionAt)
+      : currentResearchTask.completedAt
+        ? formatDateTimeLabel(currentResearchTask.completedAt)
+        : 'Neurčeno'
+    : 'Neurčeno';
+  const currentResearchTooltipLabel = currentResearchTask
+    ? `Dokončení: ${Math.round(currentResearchProgressPercent)} %\nČas dokončení: ${currentResearchCompletionTimeLabel}\nAkademici: ${currentResearchAssignedAcademics.toLocaleString('cs-CZ')}`
+    : '';
 
   const villageLabel = gameState
     ? `${gameState.village.name} (${gameState.village.coordX}|${gameState.village.coordY})`
@@ -14574,7 +15437,7 @@ export const GamePage = () => {
       resizeObserver?.disconnect();
     };
   }, [gameCanvasClassName]);
-  const activeVillageProtection = useMemo(() => {
+  const activeVillageProtection = useMemo<ActiveVillageProtectionNotice | null>(() => {
     const protectionRuleDays = Math.max(0, Number(gameState?.village.protectionRuleDays ?? 0));
     const protectionUntil = gameState?.village.protectionUntil;
     if (protectionRuleDays <= 0 || !protectionUntil) {
@@ -14583,11 +15446,6 @@ export const GamePage = () => {
 
     const protectionUntilMs = Date.parse(protectionUntil);
     if (!Number.isFinite(protectionUntilMs)) {
-      return null;
-    }
-
-    const remainingSec = Math.max(0, Math.ceil((protectionUntilMs - protectionClockMs) / 1000));
-    if (remainingSec <= 0) {
       return null;
     }
     const formattedUntil = new Intl.DateTimeFormat('cs-CZ', {
@@ -14600,11 +15458,10 @@ export const GamePage = () => {
     }).format(new Date(protectionUntilMs));
 
     return {
-      isActive: true,
-      remainingSec,
+      protectionUntil: new Date(protectionUntilMs).toISOString(),
       formattedUntil,
     };
-  }, [gameState?.village.protectionRuleDays, gameState?.village.protectionUntil, protectionClockMs]);
+  }, [gameState?.village.protectionRuleDays, gameState?.village.protectionUntil]);
   const currentVillageName = gameState?.village.name ?? 'Neznámé léno';
   useEffect(() => {
     if (isVillageRenameOpen) {
@@ -14712,8 +15569,8 @@ export const GamePage = () => {
     () => worldMapState?.settlements ?? gameState?.world.settlements ?? REGION_SETTLEMENTS,
     [gameState?.world.settlements, worldMapState?.settlements],
   );
-  const isMapPanelExpanded = useMemo(
-    () => panels.some((panel) => panel.type === 'map' && panel.expanded),
+  const hasExpandedWorldMapConsumerPanel = useMemo(
+    () => panels.some((panel) => panel.expanded && WORLD_MAP_DEPENDENT_PANEL_TYPES.has(panel.type)),
     [panels],
   );
   const isReportsPanelExpanded = useMemo(
@@ -14745,6 +15602,64 @@ export const GamePage = () => {
   );
 
   const buildingsById = useMemo(() => new Map(buildings.map((building) => [building.id, building])), [buildings]);
+  const cityPanelResourceSnapshot = useMemo<CityPanelResourceSnapshot>(
+    () => ({
+      wood: gameState?.resources.wood ?? 0,
+      stone: gameState?.resources.stone ?? 0,
+      iron: gameState?.resources.iron ?? 0,
+      gold: gameState?.resources.gold ?? 0,
+      coins: gameState?.resources.coins ?? 0,
+      cap: gameState?.resources.cap ?? 0,
+      goldCap: gameState?.resources.goldCap ?? 0,
+      coinsCap: gameState?.resources.coinsCap ?? 0,
+      populationUsed: gameState?.population.used ?? 0,
+      populationCap: gameState?.population.cap ?? 0,
+      productionPerHour: {
+        wood: gameState?.resources.productionPerHour.wood ?? 0,
+        stone: gameState?.resources.productionPerHour.stone ?? 0,
+        iron: gameState?.resources.productionPerHour.iron ?? 0,
+        gold: gameState?.resources.productionPerHour.gold ?? 0,
+        mintCoins: gameState?.resources.productionPerHour.mintCoins ?? 0,
+      },
+      protection: {
+        wood: gameState?.resources.protection.wood ?? 0,
+        stone: gameState?.resources.protection.stone ?? 0,
+        iron: gameState?.resources.protection.iron ?? 0,
+        gold: gameState?.resources.protection.gold ?? 0,
+        coins: gameState?.resources.protection.coins ?? 0,
+      },
+    }),
+    [
+      gameState?.population.cap,
+      gameState?.population.used,
+      gameState?.resources.cap,
+      gameState?.resources.coins,
+      gameState?.resources.coinsCap,
+      gameState?.resources.gold,
+      gameState?.resources.goldCap,
+      gameState?.resources.iron,
+      gameState?.resources.productionPerHour.gold,
+      gameState?.resources.productionPerHour.iron,
+      gameState?.resources.productionPerHour.mintCoins,
+      gameState?.resources.productionPerHour.stone,
+      gameState?.resources.productionPerHour.wood,
+      gameState?.resources.protection.coins,
+      gameState?.resources.protection.gold,
+      gameState?.resources.protection.iron,
+      gameState?.resources.protection.stone,
+      gameState?.resources.protection.wood,
+      gameState?.resources.stone,
+      gameState?.resources.wood,
+    ],
+  );
+  const cityPanelAvailableResources = useMemo<ResourceCost>(
+    () => ({
+      wood: gameState?.resources.wood ?? 0,
+      stone: gameState?.resources.stone ?? 0,
+      iron: gameState?.resources.iron ?? 0,
+    }),
+    [gameState?.resources.iron, gameState?.resources.stone, gameState?.resources.wood],
+  );
 
   const loadGameState = useCallback(
     async (silent = false, forceFresh = false) => {
@@ -14818,9 +15733,9 @@ export const GamePage = () => {
             selectedSpawnDirection,
           );
           if (snapshot?.world) {
-            const worldMapSignature = JSON.stringify(snapshot.world);
-            if (latestAppliedWorldMapSignatureRef.current !== worldMapSignature) {
-              latestAppliedWorldMapSignatureRef.current = worldMapSignature;
+            const worldSnapshotKey = getWorldSnapshotVersion(snapshot.world);
+            if (worldSnapshotKey == null || latestAppliedWorldMapKeyRef.current !== worldSnapshotKey) {
+              latestAppliedWorldMapKeyRef.current = worldSnapshotKey;
               setWorldMapState(snapshot.world);
             }
           }
@@ -14904,41 +15819,6 @@ export const GamePage = () => {
     [battleReportsPage, selectedWorldId, session, username],
   );
 
-  const loadBattleReportsSummary = useCallback(
-    async (silent = true) => {
-      if (!session) {
-        return;
-      }
-      if (reportsSummaryRequestPromiseRef.current) {
-        return reportsSummaryRequestPromiseRef.current;
-      }
-
-      const requestPromise = (async () => {
-        try {
-          const summary = await fetchBattleReportsSummary(username, selectedWorldId);
-          setBattleReportsSummary(summary);
-          if (!silent) {
-            setBattleReportsError(null);
-          }
-        } catch (error) {
-          if (!silent) {
-            setBattleReportsError(getErrorMessage(error));
-          }
-        }
-      })();
-
-      reportsSummaryRequestPromiseRef.current = requestPromise;
-      try {
-        await requestPromise;
-      } finally {
-        if (reportsSummaryRequestPromiseRef.current === requestPromise) {
-          reportsSummaryRequestPromiseRef.current = null;
-        }
-      }
-    },
-    [selectedWorldId, session, username],
-  );
-
   const loadActivity = useCallback(
     async (silent = false) => {
       if (!session || !selectedWorldId) {
@@ -14992,41 +15872,6 @@ export const GamePage = () => {
     [activityIncludeArchived, activityPage, selectedWorldId, session, username],
   );
 
-  const loadActivitySummary = useCallback(
-    async (silent = true) => {
-      if (!session || !selectedWorldId) {
-        return;
-      }
-      if (activitySummaryRequestPromiseRef.current) {
-        return activitySummaryRequestPromiseRef.current;
-      }
-
-      const requestPromise = (async () => {
-        try {
-          const summary = await fetchGameActivitySummary(username, selectedWorldId);
-          setActivitySummary(summary);
-          if (!silent) {
-            setActivityError(null);
-          }
-        } catch (error) {
-          if (!silent) {
-            setActivityError(getErrorMessage(error));
-          }
-        }
-      })();
-
-      activitySummaryRequestPromiseRef.current = requestPromise;
-      try {
-        await requestPromise;
-      } finally {
-        if (activitySummaryRequestPromiseRef.current === requestPromise) {
-          activitySummaryRequestPromiseRef.current = null;
-        }
-      }
-    },
-    [selectedWorldId, session, username],
-  );
-
   useEffect(() => {
     if (!session) {
       navigate('/login', { replace: true });
@@ -15061,7 +15906,7 @@ export const GamePage = () => {
   }, [loadGameState, navigate, selectedWorldId, session]);
 
   useEffect(() => {
-    if (!session || !selectedWorldId) {
+    if (!session || !selectedWorldId || !hasExpandedWorldMapConsumerPanel) {
       return;
     }
 
@@ -15077,20 +15922,18 @@ export const GamePage = () => {
         void loadWorldMapSnapshot(true);
       }
     };
-
-    const intervalMs = isMapPanelExpanded ? MAP_OPEN_POLL_INTERVAL_MS : MAP_IDLE_POLL_INTERVAL_MS;
     void loadWorldMapSnapshot(true);
-    const worldMapTimer = window.setInterval(pollWorldMap, intervalMs);
+    const worldMapTimer = window.setInterval(pollWorldMap, MAP_OPEN_POLL_INTERVAL_MS);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.clearInterval(worldMapTimer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [isMapPanelExpanded, loadWorldMapSnapshot, selectedWorldId, session]);
+  }, [hasExpandedWorldMapConsumerPanel, loadWorldMapSnapshot, selectedWorldId, session]);
 
   useEffect(() => {
-    if (!session || !selectedWorldId) {
+    if (!session || !selectedWorldId || !isReportsPanelExpanded) {
       return;
     }
 
@@ -15098,40 +15941,27 @@ export const GamePage = () => {
       if (document.hidden || mutationPendingRef.current) {
         return;
       }
-      if (isReportsPanelExpanded) {
-        void loadBattleReports(true);
-      } else {
-        void loadBattleReportsSummary(true);
-      }
+      void loadBattleReports(true);
     };
 
     const handleVisibilityChange = () => {
       if (!document.hidden) {
-        if (isReportsPanelExpanded) {
-          void loadBattleReports(true);
-        } else {
-          void loadBattleReportsSummary(true);
-        }
+        void loadBattleReports(true);
       }
     };
 
-    if (isReportsPanelExpanded) {
-      void loadBattleReports(false);
-    } else {
-      void loadBattleReportsSummary(true);
-    }
-    const intervalMs = isReportsPanelExpanded ? REPORTS_POLL_INTERVAL_MS : REPORTS_IDLE_POLL_INTERVAL_MS;
-    const reportsTimer = window.setInterval(pollBattleReports, intervalMs);
+    void loadBattleReports(false);
+    const reportsTimer = window.setInterval(pollBattleReports, REPORTS_POLL_INTERVAL_MS);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.clearInterval(reportsTimer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [isReportsPanelExpanded, loadBattleReports, loadBattleReportsSummary, selectedWorldId, session]);
+  }, [isReportsPanelExpanded, loadBattleReports, selectedWorldId, session]);
 
   useEffect(() => {
-    if (!session || !selectedWorldId) {
+    if (!session || !selectedWorldId || !isActivityPanelExpanded) {
       return;
     }
 
@@ -15139,33 +15969,23 @@ export const GamePage = () => {
       if (document.hidden || mutationPendingRef.current) {
         return;
       }
-      if (isActivityPanelExpanded) {
-        if (activityActionPending) {
-          return;
-        }
-        void loadActivity(true);
-      } else {
-        void loadActivitySummary(true);
+      if (activityActionPending) {
+        return;
       }
+      void loadActivity(true);
     };
 
     const handleVisibilityChange = () => {
       if (!document.hidden) {
-        if (isActivityPanelExpanded) {
-          void loadActivity(true);
-        } else {
-          void loadActivitySummary(true);
+        if (activityActionPending) {
+          return;
         }
+        void loadActivity(true);
       }
     };
 
-    if (isActivityPanelExpanded) {
-      void loadActivity(false);
-    } else {
-      void loadActivitySummary(true);
-    }
-    const intervalMs = isActivityPanelExpanded ? REPORTS_POLL_INTERVAL_MS : ACTIVITY_IDLE_POLL_INTERVAL_MS;
-    const activityTimer = window.setInterval(pollActivity, intervalMs);
+    void loadActivity(false);
+    const activityTimer = window.setInterval(pollActivity, REPORTS_POLL_INTERVAL_MS);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
@@ -15176,7 +15996,6 @@ export const GamePage = () => {
     activityActionPending,
     isActivityPanelExpanded,
     loadActivity,
-    loadActivitySummary,
     selectedWorldId,
     session,
   ]);
@@ -17959,7 +18778,8 @@ export const GamePage = () => {
 
   const handleShortcutResetAll = useCallback(() => {
     setShortcutCustomBindings({});
-    setShortcutNotice('Všechny vlastní zkratky byly vráceny na výchozí nastavení.');
+    setMapPreviewTravelModifier(DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER);
+    setShortcutNotice('Všechny vlastní zkratky včetně mapového modifikátoru byly vráceny na výchozí nastavení.');
   }, []);
 
   const handleAutoHidePinColumnsChange = useCallback((enabled: boolean) => {
@@ -17971,6 +18791,15 @@ export const GamePage = () => {
         ? 'Mizející režim aktivní. Pin sloupce jsou skryté a zobrazují se jako overlay.'
         : 'Mizející režim vypnut. Pin sloupce jsou opět statické.',
     );
+  }, []);
+
+  const handleMapPreviewTravelModifierChange = useCallback((modifier: MapPreviewTravelModifierKey) => {
+    const normalizedModifier = normalizeMapPreviewTravelModifier(modifier);
+    setMapPreviewTravelModifier(normalizedModifier);
+    const label =
+      MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS.find((item) => item.value === normalizedModifier)?.label ??
+      DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER.toUpperCase();
+    setShortcutNotice(`Mapa: časy přesunu zobrazíš podržením ${label}.`);
   }, []);
 
   const handleSaveAvatar = useCallback(
@@ -18423,37 +19252,8 @@ export const GamePage = () => {
             villageLabel={villageLabel}
             regionLabel={villageRegionLabel}
             prestige={gameState?.village.prestige ?? 0}
-            cityResourceSnapshot={{
-              wood: gameState?.resources.wood ?? 0,
-              stone: gameState?.resources.stone ?? 0,
-              iron: gameState?.resources.iron ?? 0,
-              gold: gameState?.resources.gold ?? 0,
-              coins: gameState?.resources.coins ?? 0,
-              cap: gameState?.resources.cap ?? 0,
-              goldCap: gameState?.resources.goldCap ?? 0,
-              coinsCap: gameState?.resources.coinsCap ?? 0,
-              populationUsed: gameState?.population.used ?? 0,
-              populationCap: gameState?.population.cap ?? 0,
-              productionPerHour: {
-                wood: gameState?.resources.productionPerHour.wood ?? 0,
-                stone: gameState?.resources.productionPerHour.stone ?? 0,
-                iron: gameState?.resources.productionPerHour.iron ?? 0,
-                gold: gameState?.resources.productionPerHour.gold ?? 0,
-                mintCoins: gameState?.resources.productionPerHour.mintCoins ?? 0,
-              },
-              protection: {
-                wood: gameState?.resources.protection.wood ?? 0,
-                stone: gameState?.resources.protection.stone ?? 0,
-                iron: gameState?.resources.protection.iron ?? 0,
-                gold: gameState?.resources.protection.gold ?? 0,
-                coins: gameState?.resources.protection.coins ?? 0,
-              },
-            }}
-            availableResources={{
-              wood: gameState?.resources.wood ?? 0,
-              stone: gameState?.resources.stone ?? 0,
-              iron: gameState?.resources.iron ?? 0,
-            }}
+            cityResourceSnapshot={cityPanelResourceSnapshot}
+            availableResources={cityPanelAvailableResources}
             buildings={buildings}
             onOpenBuilding={openBuildingPanel}
             onUpgradeBuilding={handleBuildingUpgrade}
@@ -18475,6 +19275,7 @@ export const GamePage = () => {
             focusedSettlementId={focusedOwnSettlementId}
             activeVillageId={gameState?.village.id ?? activeVillageId}
             currentUsername={username}
+            previewTravelModifier={mapPreviewTravelModifier}
             zoomPercent={mapZoomPercent}
             orderMarkersByVillageId={mapOrderMarkersByVillageId}
             onZoomChange={setMapZoomPercent}
@@ -18739,12 +19540,14 @@ export const GamePage = () => {
             shortcutBindings={shortcutBindings}
             customShortcutBindings={shortcutCustomBindings}
             autoHidePinColumns={autoHidePinColumns}
+            mapPreviewTravelModifier={mapPreviewTravelModifier}
             shortcutNotice={shortcutNotice}
             isTouchDevice={isTouchDevice}
             onCaptureShortcut={handleShortcutCapture}
             onResetShortcutBinding={handleShortcutResetOne}
             onResetAllShortcuts={handleShortcutResetAll}
             onAutoHidePinColumnsChange={handleAutoHidePinColumnsChange}
+            onMapPreviewTravelModifierChange={handleMapPreviewTravelModifierChange}
           />
         );
       case 'village': {
@@ -18821,15 +19624,10 @@ export const GamePage = () => {
     () => panels.filter((panel) => panel.expanded),
     [panels],
   );
-  const resolvedDockMode = useCallback((panel: PanelWindow): PanelLayoutMode => {
-    if (panel.layoutMode !== 'floating') {
-      return panel.layoutMode;
-    }
-    if (!canPanelUseDockLayout(panel.type)) {
-      return 'floating';
-    }
-    return panel.side === 'right' ? 'split-right' : 'split-left';
-  }, []);
+  const resolvedDockMode = useCallback(
+    (panel: PanelWindow): PanelLayoutMode => resolvePanelDockLayoutMode(panel),
+    [],
+  );
   const dockPanels = useMemo(
     () =>
       expandedPanels.filter(
@@ -18857,10 +19655,63 @@ export const GamePage = () => {
     () => dockPanels.filter((panel) => resolvedDockMode(panel) === 'split-right'),
     [dockPanels, resolvedDockMode],
   );
-  const fullDockPanel = fullDockPanels.find((panel) => panel.id === activePanelId) ?? fullDockPanels[0] ?? null;
-  const leftDockPanel = leftDockPanels.find((panel) => panel.id === activePanelId) ?? leftDockPanels[0] ?? null;
+  useEffect(() => {
+    if (!activePanelId) {
+      return;
+    }
+    const activeDockPanel = panels.find(
+      (panel) => panel.id === activePanelId && panel.expanded && canPanelUseDockLayout(panel.type),
+    );
+    if (!activeDockPanel) {
+      return;
+    }
+    const mode = resolvePanelDockLayoutMode(activeDockPanel);
+    if (mode === 'full') {
+      setActiveFullDockPanelId(activeDockPanel.id);
+      return;
+    }
+    if (mode === 'split-left') {
+      setActiveLeftDockPanelId(activeDockPanel.id);
+      return;
+    }
+    if (mode === 'split-right') {
+      setActiveRightDockPanelId(activeDockPanel.id);
+    }
+  }, [activePanelId, panels]);
+
+  useEffect(() => {
+    setActiveFullDockPanelId((previous) =>
+      previous != null && fullDockPanels.some((panel) => panel.id === previous)
+        ? previous
+        : fullDockPanels[0]?.id ?? null,
+    );
+    setActiveLeftDockPanelId((previous) =>
+      previous != null && leftDockPanels.some((panel) => panel.id === previous)
+        ? previous
+        : leftDockPanels[0]?.id ?? null,
+    );
+    setActiveRightDockPanelId((previous) =>
+      previous != null && rightDockPanels.some((panel) => panel.id === previous)
+        ? previous
+        : rightDockPanels[0]?.id ?? null,
+    );
+  }, [fullDockPanels, leftDockPanels, rightDockPanels]);
+
+  const fullDockPanel =
+    fullDockPanels.find((panel) => panel.id === activeFullDockPanelId) ??
+    fullDockPanels.find((panel) => panel.id === activePanelId) ??
+    fullDockPanels[0] ??
+    null;
+  const leftDockPanel =
+    leftDockPanels.find((panel) => panel.id === activeLeftDockPanelId) ??
+    leftDockPanels.find((panel) => panel.id === activePanelId) ??
+    leftDockPanels[0] ??
+    null;
   const rightDockPanel =
-    rightDockPanels.find((panel) => panel.id === activePanelId) ?? rightDockPanels[0] ?? null;
+    rightDockPanels.find((panel) => panel.id === activeRightDockPanelId) ??
+    rightDockPanels.find((panel) => panel.id === activePanelId) ??
+    rightDockPanels[0] ??
+    null;
   const hasDockedPanels =
     fullDockPanels.length > 0 || leftDockPanels.length > 0 || rightDockPanels.length > 0;
   const currentCanvasViewport = getCanvasViewportSize();
@@ -19225,33 +20076,24 @@ export const GamePage = () => {
                 </div>
               </div>
             </article>
-            {activeVillageProtection ? (
-              <div className="village-protection-timer">
-                {`Nováčkovská ochrana: ${formatDurationLabel(activeVillageProtection.remainingSec)} (do ${activeVillageProtection.formattedUntil})`}
-              </div>
-            ) : null}
+            <ActiveVillageProtectionTimer notice={activeVillageProtection} />
           </div>
           <div className="resource-strip-spacer" aria-hidden="true" />
           <div className="resource-strip-column resource-right-column">
             {currentResearchTask ? (
               <button
                 type="button"
-                className="resource-card research-spotlight-card"
+                className={`resource-card research-spotlight-card ${currentResearchTask.status === 'researching' ? 'is-researching' : ''}`}
                 onClick={handleResearchSpotlightClick}
-                title="Otevřít Univerzitu"
+                title={currentResearchTooltipLabel}
+                style={
+                  {
+                    '--research-spotlight-progress': `${currentResearchProgressPercent}%`,
+                  } as CSSProperties
+                }
               >
                 <p>Aktuální výzkum</p>
                 <strong>{currentResearchTask.name}</strong>
-                <div className="research-spotlight-metrics">
-                  <span>{Math.round(currentResearchTask.progressPercent)} %</span>
-                  <span>
-                    {currentResearchTask.status === 'researching'
-                      ? `Akademici ${Math.max(0, Math.floor(Number(currentResearchTask.assignedAcademics ?? 0))).toLocaleString('cs-CZ')}`
-                      : currentResearchTask.status === 'available'
-                        ? 'Připraveno ke spuštění'
-                        : 'Dokončeno'}
-                  </span>
-                </div>
               </button>
             ) : (
               <article className="resource-card research-spotlight-card is-empty">

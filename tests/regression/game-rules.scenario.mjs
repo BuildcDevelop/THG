@@ -1124,7 +1124,7 @@ const runScenarioMintCoinsAccumulateShortTicks = () => {
       gold: Number(beforePocket.gold ?? 0),
       coins: Number(beforePocket.coins ?? 0),
     },
-    after: {
+    storedAfterRead: {
       gold: Number(afterPocket.gold ?? 0),
       coins: Number(afterPocket.coins ?? 0),
     },
@@ -1133,6 +1133,35 @@ const runScenarioMintCoinsAccumulateShortTicks = () => {
       coins: Number(snapshot?.resources?.coins ?? 0),
       mintCoinsPerHour: Number(snapshot?.resources?.productionPerHour?.mintCoins ?? 0),
     },
+  };
+};
+
+const runScenarioGoldMineIntegerProductionTick = () => {
+  clearTransientState();
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const villageId = Number(attackerVillage.villageId);
+  const oneHourAgoIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+  setVillageBuildings(villageId, { 'gold-mine': 1, mint: 0 });
+  setVillageResources(villageId, {
+    wood: 0,
+    stone: 0,
+    iron: 0,
+    gold: 0,
+    coins: 0,
+  });
+
+  const beforePocket = selectResourcePocketByVillageStmt.get(villageId) ?? { gold: 0 };
+  updateResourceLastSyncAtByVillageStmt.run(oneHourAgoIso, villageId);
+  updateGameStateLastTickAtStmt.run(oneHourAgoIso);
+  const snapshot = getVillageSnapshot(ATTACKER_USERNAME, villageId, WORLD_PRIMARY, 'center', {
+    includeWorldMap: false,
+  });
+
+  return {
+    beforeGold: Number(beforePocket.gold ?? 0),
+    visibleGold: Number(snapshot?.resources?.gold ?? 0),
+    productionPerHour: Number(snapshot?.resources?.productionPerHour?.gold ?? 0),
   };
 };
 
@@ -1213,6 +1242,7 @@ const scenarioHandlers = new Map([
   ['summary-polling-consistency', runScenarioSummaryPollingConsistency],
   ['read-models-no-tick-side-effects', runScenarioReadModelsNoTickSideEffects],
   ['mint-coins-accumulate-short-ticks', runScenarioMintCoinsAccumulateShortTicks],
+  ['gold-mine-integer-production-tick', runScenarioGoldMineIntegerProductionTick],
   ['map-render-scope-stress', runScenarioMapRenderScopeStress],
 ]);
 

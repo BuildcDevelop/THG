@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactElement } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { hasSelectedWorld, isAdminAuthenticated, isAuthenticated } from './auth';
 import { fetchHealthStatus } from './api/gameApi';
 import { CommunicationHub } from './components/CommunicationHub';
@@ -53,9 +53,16 @@ const AdminRoute = ({ children }: { children: ReactElement }) => {
 };
 
 function App() {
+  const location = useLocation();
   const [deploymentNotice, setDeploymentNotice] = useState<DeploymentNoticeState | null>(null);
+  const isGameRoute = location.pathname.startsWith('/game');
+  const shouldPollDeployment = isAuthenticated() && isGameRoute;
 
   useEffect(() => {
+    if (!shouldPollDeployment) {
+      setDeploymentNotice(null);
+      return;
+    }
     let disposed = false;
 
     const pollDeploymentStatus = async () => {
@@ -105,7 +112,7 @@ function App() {
       disposed = true;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [shouldPollDeployment]);
 
   return (
     <>
@@ -138,7 +145,7 @@ function App() {
         />
         <Route path="*" element={<Navigate to={isAuthenticated() ? '/worlds' : '/login'} replace />} />
       </Routes>
-      {isAuthenticated() ? <CommunicationHub /> : null}
+      {isAuthenticated() && isGameRoute ? <CommunicationHub /> : null}
       {deploymentNotice ? (
         <div className="deployment-overlay" role="alertdialog" aria-live="assertive" aria-modal="true">
           <section className="deployment-dialog">

@@ -1,5 +1,6 @@
 export const DEFAULT_MAX_BUILDING_LEVEL = 10;
-export const RESOURCE_BUILDING_MAX_LEVEL = 30;
+export const LEGACY_RESOURCE_BUILDING_MAX_LEVEL = 30;
+export const RESOURCE_BUILDING_MAX_LEVEL = 10;
 export const WAREHOUSE_MAX_LEVEL = 25;
 export const TOWNHALL_MAX_LEVEL = 20;
 export const RESIDENTIAL_QUARTER_MAX_LEVEL = 20;
@@ -14,7 +15,7 @@ export const MINT_MAX_LEVEL = 3;
 export const VAULT_MAX_LEVEL = 2;
 export const HIDEOUT_MAX_LEVEL = 3;
 export const MARKET_MAX_LEVEL = 4;
-export const MAX_BUILDING_LEVEL = RESOURCE_BUILDING_MAX_LEVEL;
+export const MAX_BUILDING_LEVEL = WAREHOUSE_MAX_LEVEL;
 export const MAX_PLAYER_VILLAGES = 6;
 
 export const BUILDING_DEFS = {
@@ -333,8 +334,10 @@ const RECRUIT_TIME_MULTIPLIER = 1.3;
 const ARMY_TRAVEL_TIME_MULTIPLIER = 1.25;
 const MIN_ARMY_TRAVEL_DURATION_SEC = 45;
 const RESOURCE_BASE_PRODUCTION_BOOST = 1.1;
+const RESOURCE_BUILDING_IDS = Object.freeze(['woodcutter', 'quarry', 'iron-mine']);
 
 const clampNumber = (value, min, max) => Math.max(min, Math.min(max, value));
+const isResourceBuildingId = (buildingId) => RESOURCE_BUILDING_IDS.includes(String(buildingId ?? ''));
 
 export const getMaxBuildingLevel = (buildingId) =>
   BUILDING_DEFS[buildingId]?.maxLevel ?? DEFAULT_MAX_BUILDING_LEVEL;
@@ -357,14 +360,99 @@ const calculateResourceCurve = (level) => {
   return level * (1 + RESOURCE_PRODUCTION_CURVE_FACTOR * (level - 1));
 };
 
-export const calculateResourceNodeProductionPerHour = (buildingId, level) => {
+const calculateLegacyResourceNodeProductionPerHour = (buildingId, levelRaw) => {
   const base = BUILDING_DEFS[buildingId]?.productionPerHourAtLevel1 ?? 0;
   if (base <= 0) {
     return 0;
   }
 
-  const safeLevel = clampBuildingLevel(buildingId, level);
-  return base * calculateResourceCurve(safeLevel);
+  const level = clampNumber(Number(levelRaw ?? 0), 0, LEGACY_RESOURCE_BUILDING_MAX_LEVEL);
+  if (level <= 0) {
+    return 0;
+  }
+
+  return roundNumber(base * calculateResourceCurve(level));
+};
+
+const calculateCompressedResourceNodeProductionPerHour = (buildingId, levelRaw) => {
+  const base = BUILDING_DEFS[buildingId]?.productionPerHourAtLevel1 ?? 0;
+  if (base <= 0) {
+    return 0;
+  }
+
+  const safeLevel = clampBuildingLevel(buildingId, levelRaw);
+  if (safeLevel <= 0) {
+    return 0;
+  }
+  if (safeLevel <= 1) {
+    return roundNumber(base);
+  }
+
+  const maxLevel = getMaxBuildingLevel(buildingId);
+  if (maxLevel <= 1) {
+    return roundNumber(base);
+  }
+
+  const maxProduction = calculateLegacyResourceNodeProductionPerHour(buildingId, LEGACY_RESOURCE_BUILDING_MAX_LEVEL);
+  const progress = (safeLevel - 1) / (maxLevel - 1);
+  const ratio = maxProduction / base;
+  return roundNumber(base * Math.pow(ratio, progress));
+};
+
+const calculateCompressedResourceUpgradeStep = (buildingId, currentLevelRaw) => {
+  const maxLevel = getMaxBuildingLevel(buildingId);
+  const currentLevel = clampNumber(Math.floor(Number(currentLevelRaw ?? 0)), 0, Math.max(0, maxLevel - 1));
+  if (maxLevel <= 1) {
+    return currentLevel;
+  }
+  return currentLevel * ((LEGACY_RESOURCE_BUILDING_MAX_LEVEL - 1) / (maxLevel - 1));
+};
+
+const normalizeHourlyProductionValue = (valueRaw) => {
+  const value = Math.max(0, Number(valueRaw ?? 0));
+  if (value <= 0) {
+    return 0;
+  }
+  return Math.ceil(value - 0.000001);
+};
+
+export const convertLegacyResourceBuildingLevelToCurrent = (buildingId, legacyLevelRaw) => {
+  if (!isResourceBuildingId(buildingId)) {
+    return clampBuildingLevel(buildingId, legacyLevelRaw);
+  }
+
+  const legacyLevel = clampNumber(
+    Math.floor(Number(legacyLevelRaw ?? 0)),
+    0,
+    LEGACY_RESOURCE_BUILDING_MAX_LEVEL,
+  );
+  if (legacyLevel <= 0) {
+    return 0;
+  }
+
+  const legacyProduction = calculateLegacyResourceNodeProductionPerHour(buildingId, legacyLevel);
+  const maxLevel = getMaxBuildingLevel(buildingId);
+  let bestLevel = 1;
+  let bestDiff = Number.POSITIVE_INFINITY;
+
+  for (let candidateLevel = 1; candidateLevel <= maxLevel; candidateLevel += 1) {
+    const candidateProduction = calculateCompressedResourceNodeProductionPerHour(buildingId, candidateLevel);
+    const diff = Math.abs(candidateProduction - legacyProduction);
+    if (diff < bestDiff || (diff === bestDiff && candidateLevel < bestLevel)) {
+      bestDiff = diff;
+      bestLevel = candidateLevel;
+    }
+  }
+
+  return bestLevel;
+};
+
+export const calculateResourceNodeProductionPerHour = (buildingId, level) => {
+  if (isResourceBuildingId(buildingId)) {
+    return calculateCompressedResourceNodeProductionPerHour(buildingId, level);
+  }
+
+  return calculateLegacyResourceNodeProductionPerHour(buildingId, clampBuildingLevel(buildingId, level));
 };
 
 export const calculateUpgradeCost = (buildingId, currentLevel) => {
@@ -373,7 +461,10 @@ export const calculateUpgradeCost = (buildingId, currentLevel) => {
     return null;
   }
 
-  const factor = Math.pow(def.costGrowth, currentLevel);
+  const effectiveCurrentLevel = isResourceBuildingId(buildingId)
+    ? calculateCompressedResourceUpgradeStep(buildingId, currentLevel)
+    : Math.max(0, Math.floor(Number(currentLevel ?? 0)));
+  const factor = Math.pow(def.costGrowth, effectiveCurrentLevel);
   return {
     wood: roundNumber(def.baseCost.wood * factor),
     stone: roundNumber(def.baseCost.stone * factor),
@@ -387,7 +478,10 @@ export const calculateUpgradeDurationSec = (buildingId, currentLevel, townhallLe
     return 0;
   }
 
-  const levelFactor = Math.pow(1.14, currentLevel);
+  const effectiveCurrentLevel = isResourceBuildingId(buildingId)
+    ? calculateCompressedResourceUpgradeStep(buildingId, currentLevel)
+    : Math.max(0, Math.floor(Number(currentLevel ?? 0)));
+  const levelFactor = Math.pow(1.14, effectiveCurrentLevel);
   const townhallSpeedMultiplier = Math.pow(0.95, Math.max(0, Math.floor(Number(townhallLevel ?? 0))));
   const duration = def.baseDurationSec * levelFactor * BUILDING_TIME_MULTIPLIER * townhallSpeedMultiplier;
 
@@ -464,7 +558,8 @@ export const calculateGoldMineProductionPerDay = (levelRaw) => {
   return Math.max(0, 10 * level * level);
 };
 
-export const calculateGoldMineProductionPerHour = (levelRaw) => calculateGoldMineProductionPerDay(levelRaw) / 24;
+export const calculateGoldMineProductionPerHour = (levelRaw) =>
+  normalizeHourlyProductionValue(calculateGoldMineProductionPerDay(levelRaw) / 24);
 
 const MINT_GOLD_STORAGE_BY_LEVEL = [0, 2000, 5000, 10000];
 const MINT_COIN_STORAGE_BY_LEVEL = [0, 10000, 25000, 50000];
@@ -547,10 +642,10 @@ export const calculateProductionPerHour = (buildingLevels, populationUsed, popul
   const gold = calculateGoldMineProductionPerHour(buildingLevels['gold-mine'] ?? 0) * penalty;
 
   return {
-    wood,
-    stone,
-    iron,
-    gold,
+    wood: normalizeHourlyProductionValue(wood),
+    stone: normalizeHourlyProductionValue(stone),
+    iron: normalizeHourlyProductionValue(iron),
+    gold: normalizeHourlyProductionValue(gold),
     penalty,
   };
 };
