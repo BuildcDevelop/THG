@@ -11909,28 +11909,30 @@ const cancelArmyCommandTransaction = db.transaction((username, movementIdRaw, re
   };
 });
 
-const rebalanceUpgradeQueueTimeline = (villageIdRaw, nowIsoRaw = nowIso()) => {
+const resolveUpgradeDurationMs = (upgrade) => {
+  const startMs = Date.parse(String(upgrade?.startedAt ?? ''));
+  const finishMs = Date.parse(String(upgrade?.finishAt ?? ''));
+  if (Number.isFinite(startMs) && Number.isFinite(finishMs)) {
+    return Math.max(1000, finishMs - startMs);
+  }
+  return 1000;
+};
+
+const applyUpgradeQueueTimeline = (villageIdRaw, orderedUpgrades, nowIsoRaw = nowIso()) => {
   const villageId = Number(villageIdRaw);
-  if (!Number.isFinite(villageId) || villageId <= 0) {
+  if (!Number.isFinite(villageId) || villageId <= 0 || !Array.isArray(orderedUpgrades) || orderedUpgrades.length <= 0) {
     return;
   }
 
   const nowMsRaw = Date.parse(String(nowIsoRaw));
   const nowMs = Number.isFinite(nowMsRaw) ? nowMsRaw : Date.now();
-  const activeUpgrades = selectActiveUpgradesByVillageStmt.all(villageId);
-  if (activeUpgrades.length <= 0) {
-    return;
-  }
 
   let cursorMs = nowMs;
-  for (let index = 0; index < activeUpgrades.length; index += 1) {
-    const upgrade = activeUpgrades[index];
+  for (let index = 0; index < orderedUpgrades.length; index += 1) {
+    const upgrade = orderedUpgrades[index];
     const originalStartMs = Date.parse(String(upgrade.startedAt));
     const originalFinishMs = Date.parse(String(upgrade.finishAt));
-    const originalDurationMs =
-      Number.isFinite(originalStartMs) && Number.isFinite(originalFinishMs)
-        ? Math.max(1000, originalFinishMs - originalStartMs)
-        : 1000;
+    const originalDurationMs = resolveUpgradeDurationMs(upgrade);
 
     let nextStartMs = cursorMs;
     let nextFinishMs = cursorMs + originalDurationMs;
@@ -11965,6 +11967,18 @@ const rebalanceUpgradeQueueTimeline = (villageIdRaw, nowIsoRaw = nowIso()) => {
       villageId,
     );
   }
+};
+
+const rebalanceUpgradeQueueTimeline = (villageIdRaw, nowIsoRaw = nowIso()) => {
+  const villageId = Number(villageIdRaw);
+  if (!Number.isFinite(villageId) || villageId <= 0) {
+    return;
+  }
+  const activeUpgrades = selectActiveUpgradesByVillageStmt.all(villageId);
+  if (activeUpgrades.length <= 0) {
+    return;
+  }
+  applyUpgradeQueueTimeline(villageId, activeUpgrades, nowIsoRaw);
 };
 
 const resolveResearchProgressForPlayerRegion = (
@@ -12256,6 +12270,100 @@ const cancelBuildingUpgradeTransaction = db.transaction((username, upgradeIdRaw,
 
 export const cancelBuildingUpgrade = (username, upgradeId, requestedVillageId = null, worldId = null) =>
   cancelBuildingUpgradeTransaction(username, upgradeId, requestedVillageId, worldId);
+
+const cancelAllBuildingUpgradesTransaction = db.transaction((username, requestedVillageId = null, worldId = null) => {
+  const { village } = requireVillageForUser(username, requestedVillageId, worldId);
+  const villageId = Number(village.id);
+  const activeUpgrades = selectActiveUpgradesByVillageStmt.all(villageId);
+  if (activeUpgrades.length <= 0) {
+    return {
+      canceledCount: 0,
+      refunded: { wood: 0, stone: 0, iron: 0 },
+    };
+  }
+
+  const refunded = activeUpgrades.reduce(
+    (sum, upgrade) => ({
+      wood: sum.wood + Math.max(0, Math.floor(Number(upgrade.woodCost ?? 0))),
+      stone: sum.stone + Math.max(0, Math.floor(Number(upgrade.stoneCost ?? 0))),
+      iron: sum.iron + Math.max(0, Math.floor(Number(upgrade.ironCost ?? 0))),
+    }),
+    { wood: 0, stone: 0, iron: 0 },
+  );
+
+  for (const upgrade of activeUpgrades) {
+    deleteActiveUpgradeByIdStmt.run(Number(upgrade.id), villageId);
+  }
+
+  addResourcesWithoutCap(villageId, refunded);
+
+  return {
+    canceledCount: activeUpgrades.length,
+    refunded,
+  };
+});
+
+export const cancelAllBuildingUpgrades = (username, requestedVillageId = null, worldId = null) =>
+  cancelAllBuildingUpgradesTransaction(username, requestedVillageId, worldId);
+
+const reorderBuildingUpgradeQueueTransaction = db.transaction(
+  (username, upgradeIdRaw, targetIndexRaw, requestedVillageId = null, worldId = null) => {
+    const { village } = requireVillageForUser(username, requestedVillageId, worldId);
+    const villageId = Number(village.id);
+    const upgradeId = requirePositiveInteger(upgradeIdRaw, 'upgradeId');
+    const activeUpgrades = selectActiveUpgradesByVillageStmt.all(villageId);
+    if (activeUpgrades.length <= 1) {
+      throw new GameRuleError('Stavebni fronta nema dostatek polozek pro presun.', 400);
+    }
+
+    const fromIndex = activeUpgrades.findIndex((upgrade) => Number(upgrade.id) === upgradeId);
+    if (fromIndex < 0) {
+      throw new GameRuleError('Upgrade nebyl nalezen nebo uz neni aktivni.', 404);
+    }
+    if (fromIndex === 0) {
+      throw new GameRuleError('Aktivne probiha upgrade nelze presouvat.', 400);
+    }
+
+    const rawTargetIndex = Math.floor(Number(targetIndexRaw));
+    if (!Number.isFinite(rawTargetIndex)) {
+      throw new GameRuleError('Neplatny cilovy index fronty.', 400);
+    }
+    const minTargetIndex = 1;
+    const maxTargetIndex = activeUpgrades.length - 1;
+    const targetIndex = Math.max(minTargetIndex, Math.min(maxTargetIndex, rawTargetIndex));
+
+    if (targetIndex === fromIndex) {
+      return {
+        movedUpgradeId: upgradeId,
+        fromIndex,
+        toIndex: targetIndex,
+        queueLength: activeUpgrades.length,
+        moved: false,
+      };
+    }
+
+    const reorderedUpgrades = [...activeUpgrades];
+    const [movedUpgrade] = reorderedUpgrades.splice(fromIndex, 1);
+    reorderedUpgrades.splice(targetIndex, 0, movedUpgrade);
+    applyUpgradeQueueTimeline(villageId, reorderedUpgrades, nowIso());
+
+    return {
+      movedUpgradeId: upgradeId,
+      fromIndex,
+      toIndex: targetIndex,
+      queueLength: reorderedUpgrades.length,
+      moved: true,
+    };
+  },
+);
+
+export const reorderBuildingUpgradeQueue = (
+  username,
+  upgradeId,
+  targetIndex,
+  requestedVillageId = null,
+  worldId = null,
+) => reorderBuildingUpgradeQueueTransaction(username, upgradeId, targetIndex, requestedVillageId, worldId);
 
 const conquerVillageTransaction = db.transaction((username, villageIdRaw, requestedVillageId = null, worldId = null) => {
   const { player, world } = requireVillageForUser(username, requestedVillageId, worldId);

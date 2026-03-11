@@ -1116,6 +1116,19 @@ export type CancelBuildingUpgradeResult = {
   refunded: ResourceCost;
 };
 
+export type CancelAllBuildingUpgradesResult = {
+  canceledCount: number;
+  refunded: ResourceCost;
+};
+
+export type ReorderBuildingUpgradeQueueResult = {
+  movedUpgradeId: number;
+  fromIndex: number;
+  toIndex: number;
+  queueLength: number;
+  moved: boolean;
+};
+
 export type CancelRecruitmentResult = {
   canceledRecruitmentId: number;
   unitId: string;
@@ -1874,6 +1887,52 @@ export const cancelBuildingUpgrade = async (
     {
       method: 'POST',
       body: JSON.stringify({ username, villageId, worldId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const cancelAllBuildingUpgrades = async (
+  username: string,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: CancelAllBuildingUpgradesResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: CancelAllBuildingUpgradesResult }>(
+    '/api/v1/buildings/upgrades/cancel-all',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, villageId, worldId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const reorderBuildingUpgradeQueue = async (
+  username: string,
+  upgradeId: number,
+  targetIndex: number,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: ReorderBuildingUpgradeQueueResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: ReorderBuildingUpgradeQueueResult }>(
+    '/api/v1/buildings/upgrades/reorder',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        upgradeId,
+        targetIndex,
+        villageId,
+        worldId,
+      }),
     },
   );
 

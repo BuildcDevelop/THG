@@ -8,6 +8,7 @@ import {
   cancelArmyCommand,
   cancelPlannerPlan,
   cancelBuildingUpgrade,
+  cancelAllBuildingUpgrades,
   cancelMarketLogistics,
   cancelRecruitment,
   configureMarketGuildAutomation,
@@ -48,6 +49,7 @@ import {
   sendMarketLogistics,
   startResearchProject,
   startBuildingUpgrade,
+  reorderBuildingUpgradeQueue,
   transferKingdomLeadership,
   unarchivePlayerNotification,
   updatePlannerPlan,
@@ -1132,6 +1134,68 @@ app.post('/api/v1/buildings/upgrades/:upgradeId/cancel', async (req, res, next) 
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = cancelBuildingUpgrade(username, upgradeId, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
+      return { result, state };
+    });
+
+    res.json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/buildings/upgrades/cancel-all', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = cancelAllBuildingUpgrades(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
+      return { result, state };
+    });
+
+    res.json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/buildings/upgrades/reorder', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const upgradeId = Number(req.body?.upgradeId ?? 0);
+    const targetIndex = Number(req.body?.targetIndex ?? Number.NaN);
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = reorderBuildingUpgradeQueue(
+        username,
+        upgradeId,
+        targetIndex,
+        normalizedVillageId,
+        worldId,
+      );
       const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });

@@ -2,6 +2,7 @@
 import type {
   ChangeEvent,
   CSSProperties,
+  FocusEvent as ReactFocusEvent,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
@@ -14,6 +15,7 @@ import { GAME_VERSION_LABEL } from '../version';
 import {
   acceptKingdomInvite as acceptKingdomInviteRequest,
   cancelArmyCommand as cancelArmyCommandRequest,
+  cancelAllBuildingUpgrades as cancelAllBuildingUpgradesRequest,
   cancelBuildingUpgrade as cancelBuildingUpgradeRequest,
   cancelMarketLogistics as cancelMarketLogisticsRequest,
   cancelPlannerPlan as cancelPlannerPlanRequest,
@@ -48,6 +50,7 @@ import {
   recallKnight as recallKnightRequest,
   reconfirmPlannerPlan as reconfirmPlannerPlanRequest,
   recruitUnit,
+  reorderBuildingUpgradeQueue as reorderBuildingUpgradeQueueRequest,
   renameVillage as renameVillageRequest,
   restartVillageProgress as restartVillageProgressRequest,
   sendMarketLogistics as sendMarketLogisticsRequest,
@@ -725,6 +728,58 @@ const resolvePanelDockLayoutMode = (
     return 'floating';
   }
   return panel.side === 'right' ? 'split-right' : 'split-left';
+};
+
+const resolveSplitModeBySide = (
+  side: PinSide,
+): Extract<PanelLayoutMode, 'split-left' | 'split-right'> =>
+  side === 'right' ? 'split-right' : 'split-left';
+
+const moveDockPanelToCenterStage = (panels: PanelWindow[], targetPanelId: string): PanelWindow[] => {
+  const targetPanel = panels.find(
+    (panel) =>
+      panel.id === targetPanelId &&
+      panel.expanded &&
+      canPanelUseDockLayout(panel.type),
+  );
+  if (!targetPanel) {
+    return panels;
+  }
+
+  let changed = false;
+  const nextPanels: PanelWindow[] = panels.map((panel): PanelWindow => {
+    if (!panel.expanded || !canPanelUseDockLayout(panel.type)) {
+      return panel;
+    }
+
+    if (panel.id === targetPanelId) {
+      if (panel.layoutMode === 'full' && !panel.alert) {
+        return panel;
+      }
+      changed = true;
+      return {
+        ...panel,
+        layoutMode: 'full' as PanelLayoutMode,
+        alert: false,
+      };
+    }
+
+    if (resolvePanelDockLayoutMode(panel) !== 'full') {
+      return panel;
+    }
+
+    const parkedLayoutMode = resolveSplitModeBySide(panel.side);
+    if (panel.layoutMode === parkedLayoutMode) {
+      return panel;
+    }
+    changed = true;
+    return {
+      ...panel,
+      layoutMode: parkedLayoutMode,
+    };
+  });
+
+  return changed ? nextPanels : panels;
 };
 
 const BUILDING_ICON_BASE_PATH = '/assets/buildings';
@@ -1474,6 +1529,59 @@ const CityResourceSummaryTooltip = ({
   return tooltipNode;
 };
 
+const QueueActionTooltip = ({
+  title,
+  description,
+  cursorPosition,
+}: {
+  title: string;
+  description: string;
+  cursorPosition: TooltipCursorPosition | null;
+}) => {
+  const resolvedCursorPosition = useMemo(() => {
+    if (typeof window === 'undefined' || !cursorPosition) {
+      return null;
+    }
+    const estimatedTooltipWidth = Math.max(240, Math.min(360, Math.floor(window.innerWidth * 0.32)));
+    const estimatedTooltipHeight = 132;
+    return clampTooltipPosition(
+      cursorPosition,
+      estimatedTooltipWidth,
+      estimatedTooltipHeight,
+      window.innerWidth,
+      window.innerHeight,
+    );
+  }, [cursorPosition]);
+
+  if (!resolvedCursorPosition || !title.trim() || !description.trim()) {
+    return null;
+  }
+
+  const tooltipNode = (
+    <div
+      className="commands-army-tooltip city-queue-action-tooltip is-follow-cursor"
+      style={{
+        left: `${resolvedCursorPosition.x}px`,
+        top: `${resolvedCursorPosition.y}px`,
+      }}
+      role="tooltip"
+    >
+      <p>{title}</p>
+      <ul>
+        <li>
+          <span>{description}</span>
+        </li>
+      </ul>
+    </div>
+  );
+
+  if (typeof document !== 'undefined') {
+    return createPortal(tooltipNode, document.body);
+  }
+
+  return tooltipNode;
+};
+
 const VillageIntelTooltip = ({
   title,
   rows,
@@ -1774,11 +1882,9 @@ const REGION_CELL_SIZE = 25;
 const MAP_ZOOM_MIN = -50;
 const MAP_ZOOM_MAX = 100;
 const MAP_ZOOM_STEP = 0.5;
-const MAP_ZOOM_WHEEL_SENSITIVITY = 0.028;
+const MAP_ZOOM_WHEEL_SENSITIVITY = 0.022;
 const MAP_ZOOM_WHEEL_MIN_DELTA = 0.35;
-const MAP_ZOOM_WHEEL_MAX_DELTA = 3.1;
-const MAP_ZOOM_TARGET_SMOOTHNESS = 13;
-const MAP_ZOOM_TARGET_EPSILON = 0.08;
+const MAP_ZOOM_WHEEL_MAX_DELTA = 2.4;
 const MAP_PAN_TARGET_SMOOTHNESS = 15;
 const MAP_PAN_TARGET_EPSILON_PX = 0.65;
 const MAP_CELL_GAP_PX = 2;
@@ -3636,19 +3742,15 @@ const sanitizeStoredPanel = (value: unknown, index: number): PanelWindow | null 
     persistedLayoutMode === 'floating'
       ? persistedLayoutMode
       : canPanelUseDockLayout(meta.type)
-        ? meta.type === 'city'
-          ? 'split-left'
-          : 'full'
+        ? 'full'
         : 'floating';
   const normalizedLayoutMode: PanelLayoutMode = !canPanelUseDockLayout(meta.type)
     ? 'floating'
-    : meta.type === 'city' && layoutMode === 'full'
-      ? 'split-left'
-      : layoutMode === 'floating'
-        ? side === 'right'
-          ? 'split-right'
-          : 'split-left'
-        : layoutMode;
+    : layoutMode === 'floating'
+      ? side === 'right'
+        ? 'split-right'
+        : 'split-left'
+      : layoutMode;
 
   return {
     ...meta,
@@ -4281,9 +4383,13 @@ const CityPanel = memo(({
   onOpenBuilding,
   onUpgradeBuilding,
   onCancelBuildingUpgrade,
+  onCancelAllBuildingUpgrades,
+  onReorderBuildingUpgrade,
   buildingUpgradeQueueByBuilding,
   upgradePendingBuildingId,
   cancelUpgradePendingOrderId,
+  reorderUpgradePendingOrderId,
+  cancelUpgradeQueuePending,
   buildingNotices,
 }: {
   villageLabel: string;
@@ -4295,9 +4401,13 @@ const CityPanel = memo(({
   onOpenBuilding: (building: Building) => void;
   onUpgradeBuilding: (building: Building) => void;
   onCancelBuildingUpgrade: (upgradeOrderId: number, buildingId: string) => void;
+  onCancelAllBuildingUpgrades: () => void;
+  onReorderBuildingUpgrade: (upgradeOrderId: number, targetIndex: number) => void;
   buildingUpgradeQueueByBuilding: Map<string, BuildingUpgradeQueueOrder[]>;
   upgradePendingBuildingId: string | null;
   cancelUpgradePendingOrderId: number | null;
+  reorderUpgradePendingOrderId: number | null;
+  cancelUpgradeQueuePending: boolean;
   buildingNotices: Record<string, string>;
 }) => {
   const [hoveredBuildingId, setHoveredBuildingId] = useState<string | null>(null);
@@ -4307,6 +4417,72 @@ const CityPanel = memo(({
   const [isCityResourceTooltipOpen, setIsCityResourceTooltipOpen] = useState(false);
   const [cityResourceTooltipCursorPosition, setCityResourceTooltipCursorPosition] =
     useState<TooltipCursorPosition | null>(null);
+  const [draggedQueueOrderId, setDraggedQueueOrderId] = useState<number | null>(null);
+  const [queueActionTooltip, setQueueActionTooltip] = useState<{
+    title: string;
+    description: string;
+    cursorPosition: TooltipCursorPosition | null;
+  } | null>(null);
+  const openQueueActionTooltipAtCursor = useCallback(
+    (event: ReactMouseEvent<HTMLElement>, title: string, description: string) => {
+      setQueueActionTooltip({
+        title,
+        description,
+        cursorPosition: {
+          x: event.clientX,
+          y: event.clientY,
+        },
+      });
+    },
+    [],
+  );
+  const openQueueActionTooltipAtElement = useCallback(
+    (event: ReactFocusEvent<HTMLElement>, title: string, description: string) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      setQueueActionTooltip({
+        title,
+        description,
+        cursorPosition: {
+          x: Math.floor(rect.left + rect.width * 0.5),
+          y: Math.floor(rect.top + rect.height * 0.5),
+        },
+      });
+    },
+    [],
+  );
+  const moveQueueActionTooltip = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    setQueueActionTooltip((previous) =>
+      previous
+        ? {
+            ...previous,
+            cursorPosition: {
+              x: event.clientX,
+              y: event.clientY,
+            },
+          }
+        : previous,
+    );
+  }, []);
+  const closeQueueActionTooltip = useCallback(() => {
+    setQueueActionTooltip(null);
+  }, []);
+  const bindQueueActionTooltip = useCallback(
+    (title: string, description: string) => ({
+      onMouseEnter: (event: ReactMouseEvent<HTMLElement>) =>
+        openQueueActionTooltipAtCursor(event, title, description),
+      onMouseMove: moveQueueActionTooltip,
+      onMouseLeave: closeQueueActionTooltip,
+      onFocus: (event: ReactFocusEvent<HTMLElement>) =>
+        openQueueActionTooltipAtElement(event, title, description),
+      onBlur: closeQueueActionTooltip,
+    }),
+    [
+      closeQueueActionTooltip,
+      moveQueueActionTooltip,
+      openQueueActionTooltipAtCursor,
+      openQueueActionTooltipAtElement,
+    ],
+  );
   const buildingsById = useMemo(
     () => new Map(buildings.map((building) => [building.id, building])),
     [buildings],
@@ -4389,6 +4565,19 @@ const CityPanel = memo(({
       ],
     [buildingsById, cityResourceSnapshot],
   );
+  const cityResourceTooltipRows = useMemo(() => {
+    const desiredOrder = ['wood', 'gold', 'stone', 'coins', 'iron', 'population'];
+    const rowByKey = new Map(cityResourceRows.map((row) => [row.key, row]));
+    const ordered = desiredOrder
+      .map((key) => rowByKey.get(key))
+      .filter((row): row is CityPanelResourceRow => row != null);
+    if (ordered.length >= cityResourceRows.length) {
+      return ordered;
+    }
+    const usedKeys = new Set(ordered.map((row) => row.key));
+    const remaining = cityResourceRows.filter((row) => !usedKeys.has(row.key));
+    return [...ordered, ...remaining];
+  }, [cityResourceRows]);
 
   const upgradeQueueRows = useMemo(() => {
     const allOrders = Array.from(buildingUpgradeQueueByBuilding.values()).flatMap((orders) => orders);
@@ -4408,6 +4597,10 @@ const CityPanel = memo(({
         queueIndex: index,
         isActive: index === 0,
         startsInSec,
+        buildingIcon:
+          buildingsById.get(order.buildingId)?.icon ??
+          BUILDING_ART[order.buildingId]?.icon ??
+          DEFAULT_BUILDING_ICON,
         buildingName:
           buildingsById.get(order.buildingId)?.name ??
           BUILDING_ART[order.buildingId]?.fallbackName ??
@@ -4424,6 +4617,8 @@ const CityPanel = memo(({
     }
     return byBuilding;
   }, [upgradeQueueRows]);
+  const isQueueActionPending =
+    cancelUpgradeQueuePending || cancelUpgradePendingOrderId != null || reorderUpgradePendingOrderId != null;
 
   return (
     <div className="city-panel">
@@ -4496,7 +4691,7 @@ const CityPanel = memo(({
               </ul>
               {isCityResourceTooltipOpen ? (
                 <CityResourceSummaryTooltip
-                  rows={cityResourceRows}
+                  rows={cityResourceTooltipRows}
                   cursorPosition={cityResourceTooltipCursorPosition}
                 />
               ) : null}
@@ -4656,9 +4851,23 @@ const CityPanel = memo(({
           </section>
 
           <section className="city-upgrade-queue-panel">
-            <header>
-              <h4>Stavební fronta</h4>
-              <small>Zrušení položky vrací 100 % surovin.</small>
+            <header className="city-upgrade-queue-header">
+              <div className="city-upgrade-queue-title">
+                <h4>Stavební fronta</h4>
+                <small>Zrušení položky vrací 100 % surovin.</small>
+              </div>
+              <button
+                type="button"
+                className="city-upgrade-queue-stop-all"
+                {...bindQueueActionTooltip(
+                  'Ukončit stávající frontu',
+                  'Po potvrzení zruší všechny aktivní i čekající upgrady v této frontě a vrátí suroviny.',
+                )}
+                onClick={() => onCancelAllBuildingUpgrades()}
+                disabled={isQueueActionPending || upgradeQueueRows.length <= 0}
+              >
+                Ukončit stávající frontu
+              </button>
             </header>
             {upgradeQueueRows.length > 0 ? (
               <div className="city-upgrade-queue-scroll">
@@ -4667,44 +4876,139 @@ const CityPanel = memo(({
                     const isCancelPending = cancelUpgradePendingOrderId === order.id;
                     const cancelBuildingOrderId = firstQueueOrderIdByBuilding.get(order.buildingId) ?? order.id;
                     const isCancelBuildingPending = cancelUpgradePendingOrderId === cancelBuildingOrderId;
-                    const statusLabel = order.isActive
-                      ? `Aktivní · zbývá ${formatDurationLabel(order.remainingSec)}`
-                      : `Ve frontě · start za ${formatDurationLabel(order.startsInSec)} · dokončení ${formatDateTimeLabel(order.finishAt)}`;
+                    const isReorderPending = reorderUpgradePendingOrderId === order.id;
+                    const canMoveWithinQueue = !order.isActive && !isQueueActionPending;
+                    const canMoveUp = canMoveWithinQueue && order.queueIndex > 1;
+                    const canMoveDown = canMoveWithinQueue && order.queueIndex < upgradeQueueRows.length - 1;
+                    const isDragSource = draggedQueueOrderId === order.id;
+                    const isDragTarget =
+                      draggedQueueOrderId != null && draggedQueueOrderId !== order.id && !order.isActive;
+                    const leadTimeLabel = order.isActive
+                      ? formatDurationLabel(order.remainingSec)
+                      : formatDurationLabel(order.startsInSec);
+                    const finishTimeLabel = formatDateTimeLabel(order.finishAt);
 
                     return (
                       <li
                         key={`city-queue-${order.id}`}
-                        className={`city-upgrade-queue-item ${order.isActive ? 'is-active' : ''}`}
+                        className={`city-upgrade-queue-item ${order.isActive ? 'is-active' : ''} ${isDragSource ? 'is-drag-source' : ''} ${isDragTarget ? 'is-drag-target' : ''}`}
+                        draggable={canMoveWithinQueue}
+                        onDragStart={() => {
+                          closeQueueActionTooltip();
+                          setDraggedQueueOrderId(order.id);
+                        }}
+                        onDragOver={(event) => {
+                          if (draggedQueueOrderId == null || draggedQueueOrderId === order.id || order.isActive) {
+                            return;
+                          }
+                          event.preventDefault();
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          if (draggedQueueOrderId == null || draggedQueueOrderId === order.id || order.isActive) {
+                            return;
+                          }
+                          onReorderBuildingUpgrade(draggedQueueOrderId, order.queueIndex);
+                          setDraggedQueueOrderId(null);
+                        }}
+                        onDragEnd={() => setDraggedQueueOrderId(null)}
                       >
-                        <div>
-                          <strong>
-                            #{order.queueIndex + 1} · {order.buildingName}
-                          </strong>
-                          <span>
-                            Úroveň {order.fromLevel} → {order.toLevel}
-                          </span>
-                          <small>{statusLabel}</small>
+                        <span
+                          className="city-upgrade-queue-grip"
+                          aria-hidden="true"
+                          {...bindQueueActionTooltip(
+                            'Přetažení pořadí',
+                            'Uchop kartu a přetáhni ji na novou pozici ve stavební frontě.',
+                          )}
+                        >
+                          <i />
+                          <i />
+                          <i />
+                        </span>
+                        <div className="city-upgrade-queue-item-main">
+                          <div className="city-upgrade-queue-item-head">
+                            <span
+                              className={`city-upgrade-queue-status-icon ${order.isActive ? 'is-live' : 'is-waiting'}`}
+                              aria-label={order.isActive ? 'Aktivní stavba' : 'Čekající stavba'}
+                            >
+                              {order.isActive ? '●' : '○'}
+                            </span>
+                            <div className="city-upgrade-queue-time-row">
+                              <span className="city-upgrade-queue-time-chip">
+                                <span aria-hidden="true">⏱</span>
+                                {leadTimeLabel}
+                              </span>
+                              <span className="city-upgrade-queue-time-chip muted">
+                                <span aria-hidden="true">⌚</span>
+                                {finishTimeLabel}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="city-upgrade-queue-building">
+                            <img src={order.buildingIcon} alt="" loading="lazy" decoding="async" draggable={false} />
+                            <div>
+                              <strong>{order.buildingName}</strong>
+                              <span>
+                                L{order.fromLevel} → L{order.toLevel}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="city-upgrade-queue-rank" aria-label={`Pořadí fronty ${order.queueIndex + 1}`}>
+                          {order.queueIndex + 1}
                         </div>
                         <div className="city-upgrade-queue-actions">
                           <button
                             type="button"
-                            className="inline-cancel-button"
+                            className="city-upgrade-queue-action"
+                            {...bindQueueActionTooltip(
+                              'Posunout výše',
+                              'Posune tuto kartu o jednu pozici výš. Aktivní první pozici nelze přeskočit.',
+                            )}
+                            onClick={() => onReorderBuildingUpgrade(order.id, order.queueIndex - 1)}
+                            disabled={!canMoveUp || isReorderPending}
+                            aria-label="Posunout výše"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            className="city-upgrade-queue-action"
+                            {...bindQueueActionTooltip(
+                              'Posunout níže',
+                              'Posune tuto kartu o jednu pozici níž ve frontě.',
+                            )}
+                            onClick={() => onReorderBuildingUpgrade(order.id, order.queueIndex + 1)}
+                            disabled={!canMoveDown || isReorderPending}
+                            aria-label="Posunout níže"
+                          >
+                            ↓
+                          </button>
+                          <button
+                            type="button"
+                            className="city-upgrade-queue-action is-danger"
+                            {...bindQueueActionTooltip(
+                              'Zrušit kartu',
+                              'Zruší pouze tuto konkrétní položku stavební fronty a vrátí její suroviny.',
+                            )}
                             onClick={() => onCancelBuildingUpgrade(order.id, order.buildingId)}
-                            disabled={isCancelPending}
-                            title="Zrušit tuto položku fronty"
-                            aria-label="Zrušit položku stavební fronty"
+                            disabled={isQueueActionPending || isCancelPending}
+                            aria-label="Zrušit tuto konkrétní kartu z fronty"
                           >
                             {isCancelPending ? '…' : '✕'}
                           </button>
                           <button
                             type="button"
-                            className="inline-cancel-button"
+                            className="city-upgrade-queue-action is-warning"
+                            {...bindQueueActionTooltip(
+                              'Zrušit budovu',
+                              'Zruší všechny navazující položky této budovy ve stavební frontě.',
+                            )}
                             onClick={() => onCancelBuildingUpgrade(cancelBuildingOrderId, order.buildingId)}
-                            disabled={isCancelBuildingPending}
-                            title="Zrušit všechny položky této budovy"
+                            disabled={isQueueActionPending || isCancelBuildingPending}
                             aria-label="Zrušit všechny položky této budovy"
                           >
-                            {isCancelBuildingPending ? '…' : '↺'}
+                            {isCancelBuildingPending ? '…' : '▣'}
                           </button>
                         </div>
                       </li>
@@ -4716,6 +5020,13 @@ const CityPanel = memo(({
               <p className="row-help">Ve frontě zatím není žádná stavba.</p>
             )}
           </section>
+          {queueActionTooltip ? (
+            <QueueActionTooltip
+              title={queueActionTooltip.title}
+              description={queueActionTooltip.description}
+              cursorPosition={queueActionTooltip.cursorPosition}
+            />
+          ) : null}
         </div>
       </div>
     </div>
@@ -4767,7 +5078,7 @@ const ArmyPanel = memo(({
 }) => {
   const [recruitDraftAmounts, setRecruitDraftAmounts] = useState<Record<string, string>>({});
   const [armyViewMode, setArmyViewMode] = useState<'armadaPlanner' | 'selectedVillage' | 'multiVillage'>(
-    'armadaPlanner',
+    'selectedVillage',
   );
   const [multiVillageBuildingDraftById, setMultiVillageBuildingDraftById] = useState<Record<number, string>>({});
   const [multiVillageUnitDraftById, setMultiVillageUnitDraftById] = useState<Record<number, string>>({});
@@ -6044,17 +6355,17 @@ const ArmyPanel = memo(({
       <section className="army-panel-tabs">
         <button
           type="button"
-          className={`secondary-action ${armyViewMode === 'armadaPlanner' ? 'is-active' : ''}`}
-          onClick={() => setArmyViewMode('armadaPlanner')}
-        >
-          Armada + plánovač
-        </button>
-        <button
-          type="button"
           className={`secondary-action ${armyViewMode === 'selectedVillage' ? 'is-active' : ''}`}
           onClick={() => setArmyViewMode('selectedVillage')}
         >
           Správa vybraného léna
+        </button>
+        <button
+          type="button"
+          className={`secondary-action ${armyViewMode === 'armadaPlanner' ? 'is-active' : ''}`}
+          onClick={() => setArmyViewMode('armadaPlanner')}
+        >
+          Armada + plánovač
         </button>
         <button
           type="button"
@@ -6706,51 +7017,6 @@ const ArmyPanel = memo(({
       ) : (
       <>
       <section>
-        <h3>Správa staveb vybraného léna</h3>
-        <p>Budovy jsou rozdělené do 4 řádků podle městských okruhů a připravené pro rychlé vylepšení.</p>
-        <div className="selected-village-building-groups">
-          {selectedVillageBuildingGroups.map((group) => (
-            <section key={`army-building-group-${group.id}`} className="selected-village-building-group">
-              <header>
-                <h4>{group.label}</h4>
-                <p>{group.subtitle}</p>
-              </header>
-              <div className="selected-village-building-strip">
-                {group.buildings.map((building) => (
-                  <article key={`army-building-${group.id}-${building.id}`} className="selected-village-building-card">
-                    <header>
-                      <span className="unit-icon-shell" aria-hidden="true">
-                        <img src={building.icon} alt="" className="unit-icon-image" loading="lazy" />
-                      </span>
-                      <strong>{building.name}</strong>
-                    </header>
-                    <p>
-                      Úroveň <strong>{building.level}</strong>
-                    </p>
-                    <small>
-                      {building.isInProgress
-                        ? `Probíhá (${building.nextTime})`
-                        : building.canUpgrade
-                          ? `Připraveno (${building.nextTime})`
-                          : building.blockedReason ?? 'Max úroveň'}
-                    </small>
-                    <button
-                      type="button"
-                      className="secondary-action"
-                      onClick={() => onUpgradeBuilding(building)}
-                      disabled={!building.canUpgrade || upgradePendingBuildingId === building.id}
-                    >
-                      {upgradePendingBuildingId === building.id ? 'Vylepšuji...' : 'Vylepšit'}
-                    </button>
-                  </article>
-                ))}
-              </div>
-            </section>
-          ))}
-          {selectedVillageBuildingGroups.length === 0 ? <p>Žádné stavby nejsou dostupné.</p> : null}
-        </div>
-      </section>
-      <section>
         <h3>Nábor jednotek</h3>
         <p>Nábor běží ve frontě pro aktuální léno. Limitem je dostupná populace a suroviny.</p>
         {notice ? (
@@ -6947,6 +7213,51 @@ const ArmyPanel = memo(({
             ) : null}
           </tbody>
         </table>
+      </section>
+      <section>
+        <h3>Správa staveb vybraného léna</h3>
+        <p>Budovy jsou rozdělené do 4 řádků podle městských okruhů a připravené pro rychlé vylepšení.</p>
+        <div className="selected-village-building-groups">
+          {selectedVillageBuildingGroups.map((group) => (
+            <section key={`army-building-group-${group.id}`} className="selected-village-building-group">
+              <header>
+                <h4>{group.label}</h4>
+                <p>{group.subtitle}</p>
+              </header>
+              <div className="selected-village-building-strip">
+                {group.buildings.map((building) => (
+                  <article key={`army-building-${group.id}-${building.id}`} className="selected-village-building-card">
+                    <header>
+                      <span className="unit-icon-shell" aria-hidden="true">
+                        <img src={building.icon} alt="" className="unit-icon-image" loading="lazy" />
+                      </span>
+                      <strong>{building.name}</strong>
+                    </header>
+                    <p>
+                      Úroveň <strong>{building.level}</strong>
+                    </p>
+                    <small>
+                      {building.isInProgress
+                        ? `Probíhá (${building.nextTime})`
+                        : building.canUpgrade
+                          ? `Připraveno (${building.nextTime})`
+                          : building.blockedReason ?? 'Max úroveň'}
+                    </small>
+                    <button
+                      type="button"
+                      className="secondary-action"
+                      onClick={() => onUpgradeBuilding(building)}
+                      disabled={!building.canUpgrade || upgradePendingBuildingId === building.id}
+                    >
+                      {upgradePendingBuildingId === building.id ? 'Vylepšuji...' : 'Vylepšit'}
+                    </button>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ))}
+          {selectedVillageBuildingGroups.length === 0 ? <p>Žádné stavby nejsou dostupné.</p> : null}
+        </div>
       </section>
       </>
       )}
@@ -12545,11 +12856,10 @@ const MapPanel = memo(({
   const panAnimationLastTimestampRef = useRef<number | null>(null);
   const miniMapDragPointerIdRef = useRef<number | null>(null);
   const [localZoomPercent, setLocalZoomPercent] = useState(() => normalizeMapZoom(zoomPercent));
-  const zoomAnimationRafRef = useRef<number | null>(null);
-  const zoomAnimationAnchorRef = useRef<{ clientX: number; clientY: number } | null>(null);
-  const zoomAnimationLastTimestampRef = useRef<number | null>(null);
+  const wheelZoomRafRef = useRef<number | null>(null);
+  const wheelZoomTargetRef = useRef<number | null>(null);
+  const wheelAnchorRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const zoomPercentRef = useRef(localZoomPercent);
-  const targetZoomPercentRef = useRef(localZoomPercent);
   const zoomCommitTimerRef = useRef<number | null>(null);
   const pendingZoomCommitRef = useRef(localZoomPercent);
   const hasInitialAutoCenterRef = useRef(false);
@@ -12594,14 +12904,13 @@ const MapPanel = memo(({
     if (normalizedIncoming === zoomPercentRef.current) {
       return;
     }
-    if (zoomAnimationRafRef.current != null) {
-      window.cancelAnimationFrame(zoomAnimationRafRef.current);
-      zoomAnimationRafRef.current = null;
+    if (wheelZoomRafRef.current != null) {
+      window.cancelAnimationFrame(wheelZoomRafRef.current);
+      wheelZoomRafRef.current = null;
     }
-    zoomAnimationLastTimestampRef.current = null;
-    zoomAnimationAnchorRef.current = null;
+    wheelZoomTargetRef.current = null;
+    wheelAnchorRef.current = null;
     zoomPercentRef.current = normalizedIncoming;
-    targetZoomPercentRef.current = normalizedIncoming;
     pendingZoomCommitRef.current = normalizedIncoming;
     // Local map zoom stays UI-first; this controlled sync is intentional.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -13196,12 +13505,12 @@ const MapPanel = memo(({
 
   useEffect(
     () => () => {
-      if (zoomAnimationRafRef.current != null) {
-        window.cancelAnimationFrame(zoomAnimationRafRef.current);
-        zoomAnimationRafRef.current = null;
+      if (wheelZoomRafRef.current != null) {
+        window.cancelAnimationFrame(wheelZoomRafRef.current);
+        wheelZoomRafRef.current = null;
       }
-      zoomAnimationLastTimestampRef.current = null;
-      zoomAnimationAnchorRef.current = null;
+      wheelZoomTargetRef.current = null;
+      wheelAnchorRef.current = null;
       if (zoomCommitTimerRef.current != null) {
         window.clearTimeout(zoomCommitTimerRef.current);
         zoomCommitTimerRef.current = null;
@@ -13219,19 +13528,11 @@ const MapPanel = memo(({
   );
 
   const applyZoom = useCallback(
-    (
-      nextZoomPercent: number,
-      anchor?: { clientX: number; clientY: number },
-      options?: { updateTarget?: boolean },
-    ) => {
-      const shouldUpdateTarget = options?.updateTarget ?? true;
+    (nextZoomPercent: number, anchor?: { clientX: number; clientY: number }) => {
       const currentZoom = zoomPercentRef.current;
       const normalizedNext = clamp(Number(nextZoomPercent), MAP_ZOOM_MIN, MAP_ZOOM_MAX);
       if (Math.abs(normalizedNext - currentZoom) <= 0.0001) {
         return;
-      }
-      if (shouldUpdateTarget) {
-        targetZoomPercentRef.current = normalizedNext;
       }
 
       const wrap = gridWrapRef.current;
@@ -13273,37 +13574,6 @@ const MapPanel = memo(({
     },
     [scheduleZoomCommit, updateMiniViewport],
   );
-
-  const startSmoothZoomAnimation = useCallback(() => {
-    if (zoomAnimationRafRef.current != null) {
-      return;
-    }
-
-    const step = (timestamp: number) => {
-      const currentZoom = zoomPercentRef.current;
-      const targetZoom = targetZoomPercentRef.current;
-      const delta = targetZoom - currentZoom;
-      if (Math.abs(delta) <= MAP_ZOOM_TARGET_EPSILON) {
-        if (Math.abs(delta) > 0.0001) {
-          applyZoom(targetZoom, zoomAnimationAnchorRef.current ?? undefined, { updateTarget: false });
-        }
-        zoomAnimationRafRef.current = null;
-        zoomAnimationLastTimestampRef.current = null;
-        return;
-      }
-
-      const previousTimestamp = zoomAnimationLastTimestampRef.current ?? timestamp;
-      const deltaSeconds = Math.min(0.064, Math.max(0.001, (timestamp - previousTimestamp) / 1000));
-      zoomAnimationLastTimestampRef.current = timestamp;
-      const interpolation = 1 - Math.exp(-MAP_ZOOM_TARGET_SMOOTHNESS * deltaSeconds);
-      const nextZoom = currentZoom + delta * interpolation;
-      applyZoom(nextZoom, zoomAnimationAnchorRef.current ?? undefined, { updateTarget: false });
-      zoomAnimationRafRef.current = window.requestAnimationFrame(step);
-    };
-
-    zoomAnimationLastTimestampRef.current = null;
-    zoomAnimationRafRef.current = window.requestAnimationFrame(step);
-  }, [applyZoom]);
 
   const clampPanTarget = useCallback((wrap: HTMLDivElement, left: number, top: number) => {
     const maxLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
@@ -13546,10 +13816,38 @@ const MapPanel = memo(({
       MAP_ZOOM_WHEEL_MAX_DELTA,
     );
     const delta = event.deltaY < 0 ? wheelDelta : -wheelDelta;
-    const nextTargetZoom = clamp(targetZoomPercentRef.current + delta, MAP_ZOOM_MIN, MAP_ZOOM_MAX);
-    targetZoomPercentRef.current = nextTargetZoom;
-    zoomAnimationAnchorRef.current = { clientX: event.clientX, clientY: event.clientY };
-    startSmoothZoomAnimation();
+    const baseTarget = wheelZoomTargetRef.current ?? zoomPercentRef.current;
+    wheelZoomTargetRef.current = clamp(baseTarget + delta, MAP_ZOOM_MIN, MAP_ZOOM_MAX);
+    wheelAnchorRef.current = { clientX: event.clientX, clientY: event.clientY };
+
+    if (wheelZoomRafRef.current != null) {
+      return;
+    }
+
+    const animateWheelZoom = () => {
+      const targetZoom = wheelZoomTargetRef.current;
+      if (targetZoom == null) {
+        wheelZoomRafRef.current = null;
+        return;
+      }
+
+      const currentZoom = zoomPercentRef.current;
+      const remaining = targetZoom - currentZoom;
+      const nextZoom = Math.abs(remaining) <= 0.2 ? targetZoom : currentZoom + remaining * 0.24;
+      const anchor = wheelAnchorRef.current ?? undefined;
+      applyZoom(nextZoom, anchor);
+
+      if (Math.abs(targetZoom - zoomPercentRef.current) <= 0.2) {
+        applyZoom(targetZoom, anchor);
+        wheelZoomTargetRef.current = null;
+        wheelZoomRafRef.current = null;
+        return;
+      }
+
+      wheelZoomRafRef.current = window.requestAnimationFrame(animateWheelZoom);
+    };
+
+    wheelZoomRafRef.current = window.requestAnimationFrame(animateWheelZoom);
   };
 
   const jumpToMinimapPoint = useCallback(
@@ -14691,7 +14989,7 @@ export const GamePage = () => {
 
     hasStoredPanelLayoutRef.current = false;
 
-    return [createPanelWindow('city', 40, 0, { layoutMode: 'split-left' })];
+    return [createPanelWindow('city', 40, 0, { layoutMode: 'full' })];
   });
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
   const [activeFullDockPanelId, setActiveFullDockPanelId] = useState<string | null>(null);
@@ -14716,6 +15014,8 @@ export const GamePage = () => {
   const [armyCommandPending, setArmyCommandPending] = useState(false);
   const [upgradePendingBuildingId, setUpgradePendingBuildingId] = useState<string | null>(null);
   const [cancelUpgradePendingOrderId, setCancelUpgradePendingOrderId] = useState<number | null>(null);
+  const [reorderUpgradePendingOrderId, setReorderUpgradePendingOrderId] = useState<number | null>(null);
+  const [cancelUpgradeQueuePending, setCancelUpgradeQueuePending] = useState(false);
   const [recallKnightPending, setRecallKnightPending] = useState(false);
   const [renameVillagePending, setRenameVillagePending] = useState(false);
   const [buildingNotices, setBuildingNotices] = useState<Record<string, string>>({});
@@ -14820,6 +15120,8 @@ export const GamePage = () => {
         cancelRecruitmentPendingId != null ||
         upgradePendingBuildingId ||
         cancelUpgradePendingOrderId != null ||
+        reorderUpgradePendingOrderId != null ||
+        cancelUpgradeQueuePending ||
         armyCommandPending ||
         researchActionPending ||
         mercenaryActionPending ||
@@ -14838,6 +15140,8 @@ export const GamePage = () => {
     cancelLogisticsPendingId,
     cancelRecruitmentPendingId,
     cancelUpgradePendingOrderId,
+    reorderUpgradePendingOrderId,
+    cancelUpgradeQueuePending,
     logisticsActionPending,
     guildActionPending,
     kingdomActionPending,
@@ -16629,6 +16933,7 @@ export const GamePage = () => {
 
   const openPanel = useCallback((type: StaticPanelType) => {
     setActivePanelId(type);
+    const canDock = canPanelUseDockLayout(type);
     const { viewportWidth, viewportHeight } = getCanvasViewportSize();
     const panelVillageName =
       type === 'city' || type === 'map' || type === 'army' || type === 'commands'
@@ -16640,44 +16945,9 @@ export const GamePage = () => {
       const existing = previous.find((panel) => panel.type === type);
       const nextZ = ++topZ.current;
       const rememberedPlacement = storedPanelPlacement[type];
-
-      const resolveLayoutModeForNewPanel = (): PanelLayoutMode => {
-        if (!canPanelUseDockLayout(type)) {
-          return 'floating';
-        }
-        const rememberedLayoutMode = rememberedPlacement?.layoutMode;
-        if (
-          rememberedLayoutMode === 'full' ||
-          rememberedLayoutMode === 'split-left' ||
-          rememberedLayoutMode === 'split-right'
-        ) {
-          return rememberedLayoutMode;
-        }
-        if (rememberedLayoutMode === 'floating') {
-          return rememberedPlacement?.side === 'right' ? 'split-right' : 'split-left';
-        }
-        if (type === 'city') {
-          return 'split-left';
-        }
-        return PANEL_META[type].side === 'right' ? 'split-right' : 'split-left';
-      };
-      const requestedLayoutMode = resolveLayoutModeForNewPanel();
-      const requestedSide: PinSide =
-        requestedLayoutMode === 'split-left'
-          ? 'left'
-          : requestedLayoutMode === 'split-right'
-            ? 'right'
-            : rememberedPlacement?.side ?? PANEL_META[type].side;
+      const requestedSide: PinSide = rememberedPlacement?.side ?? PANEL_META[type].side;
 
       if (existing) {
-        const existingLayoutMode =
-          canPanelUseDockLayout(type)
-            ? type === 'city'
-              ? requestedLayoutMode
-              : existing.layoutMode === 'floating'
-                ? requestedLayoutMode
-                : existing.layoutMode
-            : 'floating';
         const nextPanels = previous.map((panel) => {
           if (panel.type !== type) {
             return panel;
@@ -16691,8 +16961,8 @@ export const GamePage = () => {
               alert: false,
               label: PANEL_META[type].label,
               villageName: panelVillageName ?? panel.villageName,
-              side: canPanelUseDockLayout(type) ? requestedSide : panel.side,
-              layoutMode: canPanelUseDockLayout(type) ? existingLayoutMode : 'floating',
+              side: panel.side,
+              layoutMode: canDock ? 'full' : 'floating',
             },
             viewportWidth,
             viewportHeight,
@@ -16702,7 +16972,7 @@ export const GamePage = () => {
           }
           return adjusted;
         });
-        return nextPanels;
+        return canDock ? moveDockPanelToCenterStage(nextPanels, existing.id) : nextPanels;
       }
 
       const mapSizeOverride =
@@ -16725,8 +16995,8 @@ export const GamePage = () => {
         createPanelWindow(type, nextZ, previous.length, {
           ...(mapSizeOverride ?? {}),
           villageName: panelVillageName,
-          side: canPanelUseDockLayout(type) ? requestedSide : PANEL_META[type].side,
-          layoutMode: requestedLayoutMode,
+          side: canDock ? requestedSide : PANEL_META[type].side,
+          layoutMode: canDock ? 'full' : 'floating',
         }),
         viewportWidth,
         viewportHeight,
@@ -16735,7 +17005,8 @@ export const GamePage = () => {
       if (nextCreated.type === 'map') {
         nextMapSize = { width: nextCreated.width, height: nextCreated.height };
       }
-      return [...previous, nextCreated];
+      const appendedPanels = [...previous, nextCreated];
+      return canDock ? moveDockPanelToCenterStage(appendedPanels, nextCreated.id) : appendedPanels;
     });
 
     if (nextMapSize) {
@@ -17449,10 +17720,18 @@ export const GamePage = () => {
 
   const setPanelDockLayoutMode = useCallback(
     (id: string, nextMode: Extract<PanelLayoutMode, 'full' | 'split-left' | 'split-right'>) => {
+      if (nextMode === 'full') {
+        setActivePanelId(id);
+      }
+
       setPanels((previous) => {
         const target = previous.find((panel) => panel.id === id);
         if (!target || !target.expanded || !canPanelUseDockLayout(target.type)) {
           return previous;
+        }
+
+        if (nextMode === 'full') {
+          return moveDockPanelToCenterStage(previous, id);
         }
 
         const hasChanged = (left: PanelWindow, right: PanelWindow): boolean =>
@@ -17484,18 +17763,6 @@ export const GamePage = () => {
             return panel;
           }
 
-          if (nextMode === 'full') {
-            if (panel.layoutMode !== 'full') {
-              return panel;
-            }
-            const updated = {
-              ...panel,
-              layoutMode: 'floating' as PanelLayoutMode,
-            };
-            changed = changed || hasChanged(panel, updated);
-            return updated;
-          }
-
           if (panel.layoutMode === 'full') {
             const oppositeMode: Extract<PanelLayoutMode, 'split-left' | 'split-right'> =
               nextMode === 'split-left' ? 'split-right' : 'split-left';
@@ -17523,6 +17790,16 @@ export const GamePage = () => {
       const target = previous.find((panel) => panel.id === id);
       if (!target || !target.expanded || !canPanelUseDockLayout(target.type)) {
         return previous;
+      }
+
+      const hasCenterStagePanel = previous.some(
+        (panel) =>
+          panel.expanded &&
+          canPanelUseDockLayout(panel.type) &&
+          resolvePanelDockLayoutMode(panel) === 'full',
+      );
+      if (hasCenterStagePanel && resolvePanelDockLayoutMode(target) !== 'full') {
+        return moveDockPanelToCenterStage(previous, id);
       }
 
       if (!target.alert) {
@@ -18464,6 +18741,9 @@ export const GamePage = () => {
       if (!Number.isFinite(upgradeOrderId) || upgradeOrderId <= 0) {
         return 'Neplatná položka stavební fronty.';
       }
+      if (cancelUpgradeQueuePending || reorderUpgradePendingOrderId != null) {
+        return 'Fronta se právě upravuje. Zkus to znovu za okamžik.';
+      }
       const currentVillageId = gameState?.village.id ?? activeVillageId;
       const requestedVillageId =
         requestedVillageIdRaw == null || String(requestedVillageIdRaw).trim() === ''
@@ -18531,7 +18811,229 @@ export const GamePage = () => {
         setCancelUpgradePendingOrderId(null);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
+    [
+      activeVillageId,
+      applyIncomingGameState,
+      cancelUpgradeQueuePending,
+      gameState?.village.id,
+      loadGameState,
+      reorderUpgradePendingOrderId,
+      selectedWorldId,
+      username,
+    ],
+  );
+
+  const handleCancelAllBuildingUpgrades = useCallback(
+    async (requestedVillageIdRaw?: number | null): Promise<string> => {
+      if (cancelUpgradePendingOrderId != null || reorderUpgradePendingOrderId != null || cancelUpgradeQueuePending) {
+        return 'Fronta se právě upravuje. Zkus to znovu za okamžik.';
+      }
+      const queuedUpgrades = gameState?.activeUpgrades ?? [];
+      if (queuedUpgrades.length <= 0) {
+        return 'Stavební fronta je již prázdná.';
+      }
+
+      if (typeof window !== 'undefined') {
+        const shouldCancelQueue = window.confirm(
+          'Opravdu chceš ukončit celou stavební frontu? Zruší se všechny aktivní i čekající upgrady.',
+        );
+        if (!shouldCancelQueue) {
+          return 'Ukončení fronty bylo zrušeno.';
+        }
+      }
+
+      const currentVillageId = gameState?.village.id ?? activeVillageId;
+      const requestedVillageId =
+        requestedVillageIdRaw == null || String(requestedVillageIdRaw).trim() === ''
+          ? Number(currentVillageId ?? 0)
+          : Math.max(0, Math.floor(Number(requestedVillageIdRaw)));
+      if (!Number.isFinite(requestedVillageId) || requestedVillageId <= 0) {
+        return 'Neplatné léno pro ukončení stavební fronty.';
+      }
+      const isCurrentVillageTarget =
+        currentVillageId != null && Number.isFinite(Number(currentVillageId))
+          ? Number(currentVillageId) === requestedVillageId
+          : false;
+      const queuedBuildingIds = [
+        ...new Set(queuedUpgrades.map((upgrade) => String(upgrade.buildingId))),
+      ].filter((buildingId) => buildingId.trim() !== '');
+
+      setCancelUpgradeQueuePending(true);
+      if (isCurrentVillageTarget) {
+        setBuildingNotices((previous) => {
+          const next = { ...previous };
+          for (const buildingId of queuedBuildingIds) {
+            next[buildingId] = '';
+          }
+          return next;
+        });
+      }
+
+      try {
+        const response = await cancelAllBuildingUpgradesRequest(username, requestedVillageId, selectedWorldId);
+        const canceledCount = Math.max(0, Math.floor(Number(response.result.canceledCount ?? 0)));
+        const notice =
+          canceledCount <= 0
+            ? 'Stavební fronta je již prázdná.'
+            : `Stavební fronta ukončena. Zrušeno ${canceledCount.toLocaleString('cs-CZ')} položek, vráceno ${formatResourceBundleLabel(response.result.refunded)}.`;
+
+        if (isCurrentVillageTarget) {
+          applyIncomingGameState(response.data);
+          setBuildingNotices((previous) => {
+            const next = { ...previous };
+            for (const buildingId of queuedBuildingIds) {
+              next[buildingId] = notice;
+            }
+            return next;
+          });
+          void loadGameState(true, true);
+        } else {
+          const nextIntelData = toVillageIntelData(response.data);
+          setVillageIntelByVillageId((previous) => ({
+            ...previous,
+            [requestedVillageId]: {
+              status: 'ready',
+              data: nextIntelData,
+              error: null,
+              fetchedAt: Date.now(),
+            },
+          }));
+        }
+        return notice;
+      } catch (error) {
+        const errorMessage = getErrorMessage(error);
+        if (isCurrentVillageTarget) {
+          setBuildingNotices((previous) => {
+            const next = { ...previous };
+            for (const buildingId of queuedBuildingIds) {
+              next[buildingId] = errorMessage;
+            }
+            return next;
+          });
+        }
+        return errorMessage;
+      } finally {
+        setCancelUpgradeQueuePending(false);
+      }
+    },
+    [
+      activeVillageId,
+      applyIncomingGameState,
+      cancelUpgradePendingOrderId,
+      cancelUpgradeQueuePending,
+      gameState?.activeUpgrades,
+      gameState?.village.id,
+      loadGameState,
+      reorderUpgradePendingOrderId,
+      selectedWorldId,
+      username,
+    ],
+  );
+
+  const handleReorderBuildingUpgrade = useCallback(
+    async (
+      upgradeOrderId: number,
+      targetIndexRaw: number,
+      requestedVillageIdRaw?: number | null,
+    ): Promise<string> => {
+      if (!Number.isFinite(upgradeOrderId) || upgradeOrderId <= 0) {
+        return 'Neplatná položka stavební fronty.';
+      }
+      if (!Number.isFinite(targetIndexRaw) || targetIndexRaw <= 0) {
+        return 'Neplatná cílová pozice fronty.';
+      }
+      if (cancelUpgradePendingOrderId != null || cancelUpgradeQueuePending || reorderUpgradePendingOrderId != null) {
+        return 'Fronta se právě upravuje. Zkus to znovu za okamžik.';
+      }
+
+      const currentVillageId = gameState?.village.id ?? activeVillageId;
+      const requestedVillageId =
+        requestedVillageIdRaw == null || String(requestedVillageIdRaw).trim() === ''
+          ? Number(currentVillageId ?? 0)
+          : Math.max(0, Math.floor(Number(requestedVillageIdRaw)));
+      if (!Number.isFinite(requestedVillageId) || requestedVillageId <= 0) {
+        return 'Neplatné léno pro přesun ve stavební frontě.';
+      }
+      const isCurrentVillageTarget =
+        currentVillageId != null && Number.isFinite(Number(currentVillageId))
+          ? Number(currentVillageId) === requestedVillageId
+          : false;
+      const targetIndex = Math.max(1, Math.floor(targetIndexRaw));
+      const movedUpgrade = (gameState?.activeUpgrades ?? []).find(
+        (upgrade) => Number(upgrade.id) === Math.floor(upgradeOrderId),
+      );
+      const movedBuildingId = movedUpgrade ? String(movedUpgrade.buildingId) : null;
+
+      setReorderUpgradePendingOrderId(Math.floor(upgradeOrderId));
+      if (isCurrentVillageTarget && movedBuildingId) {
+        setBuildingNotices((previous) => ({
+          ...previous,
+          [movedBuildingId]: '',
+        }));
+      }
+
+      try {
+        const response = await reorderBuildingUpgradeQueueRequest(
+          username,
+          Math.floor(upgradeOrderId),
+          targetIndex,
+          requestedVillageId,
+          selectedWorldId,
+        );
+        const fromDisplay = Number(response.result.fromIndex) + 1;
+        const toDisplay = Number(response.result.toIndex) + 1;
+        const notice =
+          response.result.moved === false
+            ? 'Pořadí stavební fronty zůstalo beze změny.'
+            : `Pořadí fronty upraveno: #${fromDisplay.toLocaleString('cs-CZ')} → #${toDisplay.toLocaleString('cs-CZ')}.`;
+
+        if (isCurrentVillageTarget) {
+          applyIncomingGameState(response.data);
+          if (movedBuildingId) {
+            setBuildingNotices((previous) => ({
+              ...previous,
+              [movedBuildingId]: notice,
+            }));
+          }
+          void loadGameState(true, true);
+        } else {
+          const nextIntelData = toVillageIntelData(response.data);
+          setVillageIntelByVillageId((previous) => ({
+            ...previous,
+            [requestedVillageId]: {
+              status: 'ready',
+              data: nextIntelData,
+              error: null,
+              fetchedAt: Date.now(),
+            },
+          }));
+        }
+        return notice;
+      } catch (error) {
+        const errorMessage = getErrorMessage(error);
+        if (isCurrentVillageTarget && movedBuildingId) {
+          setBuildingNotices((previous) => ({
+            ...previous,
+            [movedBuildingId]: errorMessage,
+          }));
+        }
+        return errorMessage;
+      } finally {
+        setReorderUpgradePendingOrderId(null);
+      }
+    },
+    [
+      activeVillageId,
+      applyIncomingGameState,
+      cancelUpgradePendingOrderId,
+      cancelUpgradeQueuePending,
+      gameState?.activeUpgrades,
+      gameState?.village.id,
+      loadGameState,
+      reorderUpgradePendingOrderId,
+      selectedWorldId,
+      username,
+    ],
   );
 
   const handleCreateKingdom = useCallback(
@@ -19258,9 +19760,17 @@ export const GamePage = () => {
             onOpenBuilding={openBuildingPanel}
             onUpgradeBuilding={handleBuildingUpgrade}
             onCancelBuildingUpgrade={handleCancelBuildingUpgrade}
+            onCancelAllBuildingUpgrades={() => {
+              void handleCancelAllBuildingUpgrades();
+            }}
+            onReorderBuildingUpgrade={(upgradeOrderId, targetIndex) => {
+              void handleReorderBuildingUpgrade(upgradeOrderId, targetIndex);
+            }}
             buildingUpgradeQueueByBuilding={buildingUpgradeQueueByBuilding}
             upgradePendingBuildingId={upgradePendingBuildingId}
             cancelUpgradePendingOrderId={cancelUpgradePendingOrderId}
+            reorderUpgradePendingOrderId={reorderUpgradePendingOrderId}
+            cancelUpgradeQueuePending={cancelUpgradeQueuePending}
             buildingNotices={buildingNotices}
           />
         );
@@ -19922,7 +20432,6 @@ export const GamePage = () => {
             })}
           </nav>
           <div className="world-indicator-wrap" ref={worldMenuRef}>
-            <small className="world-version-note">Verze hry {GAME_VERSION_LABEL}</small>
             <button
               type="button"
               className={`world-indicator world-indicator-trigger is-${selectedWorldFlavor}${isWorldMenuOpen ? ' is-open' : ''}`}
@@ -20404,6 +20913,7 @@ export const GamePage = () => {
                 </div>
               </>
             )}
+            <small className="dock-version-note">Verze hry {GAME_VERSION_LABEL}</small>
           </section>
         ) : null}
         {floatingPanels.map((panel) => renderPanelWindow(panel))}
