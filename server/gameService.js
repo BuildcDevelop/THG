@@ -8,7 +8,6 @@ import {
   UNIT_DEFS,
   UNIT_ORDER,
   calculatePopulationCap,
-  calculatePopulationUsed,
   calculateProductionPerHour,
   calculateResourceNodeProductionPerHour,
   calculateResourceCap,
@@ -17,6 +16,9 @@ import {
   calculateMintThroughputPerHour,
   calculateHideoutProtectedAmount,
   calculateVaultProtection,
+  calculateTownhallBuildTimeReductionPct,
+  calculateRecruitmentTimeReductionPct,
+  calculateUniversityResearchBonusPct,
   calculateUpgradeCost,
   calculateUpgradeDurationSec,
   calculateRecruitDurationSec,
@@ -139,6 +141,13 @@ const MERCENARY_DELIVERY_DELAY_MINUTES = 30;
 const MERCENARY_DURATION_HOURS = 72;
 const ACADEMIC_COST_COINS = 250;
 const ACADEMIC_POPULATION_COST = 1;
+const GARRISON_RESERVED_POPULATION = 300;
+const GARRISON_UNLOCK_TOWNHALL_LEVEL = 5;
+const GARRISON_UNIT_CAPS = Object.freeze({
+  militia: 180,
+  archer: 120,
+});
+const GARRISON_UNIT_IDS = Object.freeze(['militia', 'archer']);
 const MAX_ACADEMICS_PER_RESEARCH = 3;
 const MARKET_MAX_DISTANCE_TILES = 50;
 const LOGISTICS_MINUTES_BASE = 10;
@@ -567,6 +576,49 @@ const selectUnitsByVillageStmt = db.prepare(
    FROM units
    WHERE village_id = ?`,
 );
+const selectVillageGarrisonByVillageStmt = db.prepare(
+  `SELECT
+      village_id AS villageId,
+      militia_amount AS militiaAmount,
+      archer_amount AS archerAmount,
+      militia_progress AS militiaProgress,
+      archer_progress AS archerProgress,
+      last_sync_at AS lastSyncAt
+   FROM village_garrisons
+   WHERE village_id = ?
+   LIMIT 1`,
+);
+const upsertVillageGarrisonStateStmt = db.prepare(
+  `INSERT INTO village_garrisons (
+      village_id,
+      militia_amount,
+      archer_amount,
+      militia_progress,
+      archer_progress,
+      last_sync_at
+   ) VALUES (?, ?, ?, ?, ?, ?)
+   ON CONFLICT(village_id) DO UPDATE SET
+     militia_amount = excluded.militia_amount,
+     archer_amount = excluded.archer_amount,
+     militia_progress = excluded.militia_progress,
+     archer_progress = excluded.archer_progress,
+     last_sync_at = excluded.last_sync_at`,
+);
+const updateVillageGarrisonAmountsStmt = db.prepare(
+  `UPDATE village_garrisons
+   SET militia_amount = ?, archer_amount = ?, last_sync_at = ?
+   WHERE village_id = ?`,
+);
+const selectAwayUnitTotalsByHomeVillageStmt = db.prepare(
+  `SELECT
+      mu.unit_id AS unitId,
+      COALESCE(SUM(mu.amount), 0) AS amount
+   FROM army_movements m
+   INNER JOIN army_movement_units mu ON mu.movement_id = m.id
+   WHERE m.home_village_id = ?
+     AND m.status IN ('in_progress', 'stationed')
+   GROUP BY mu.unit_id`,
+);
 const selectActiveUpgradesByVillageStmt = db.prepare(
   `SELECT
       id,
@@ -779,6 +831,11 @@ const updateUnitAmountStmt = db.prepare(
 );
 const selectUnitAmountByVillageAndUnitStmt = db.prepare(
   'SELECT amount FROM units WHERE village_id = ? AND unit_id = ? LIMIT 1',
+);
+const insertVillageGarrisonIfMissingStmt = db.prepare(
+  `INSERT INTO village_garrisons (village_id, militia_amount, archer_amount, militia_progress, archer_progress, last_sync_at)
+   VALUES (?, ?, ?, 0, 0, ?)
+   ON CONFLICT(village_id) DO NOTHING`,
 );
 const selectDueRecruitmentsStmt = db.prepare(
   `SELECT id, village_id AS villageId, unit_id AS unitId, amount
@@ -2583,17 +2640,6 @@ const roundResource = (value) => {
   return Math.round(numeric * RESOURCE_STORAGE_PRECISION) / RESOURCE_STORAGE_PRECISION;
 };
 
-const POPULATION_CLEANUP_UNIT_PRIORITY = [
-  'militia',
-  'archer',
-  'scout',
-  'cavalry',
-  'ram',
-  'caravan',
-  'mercenary',
-  'knight',
-];
-
 const normalizeKingdomValue = (value) => String(value ?? '').trim();
 
 const isNeutralKingdom = (kingdom) => {
@@ -3641,6 +3687,13 @@ const resolveTemplateByType = (templateType, fallbackTemplate) =>
   SPAWN_TEMPLATE_BY_TYPE[String(templateType ?? '')] ?? fallbackTemplate;
 
 const applyVillageTemplate = (villageId, template) => {
+  insertVillageGarrisonIfMissingStmt.run(
+    Number(villageId),
+    Number(GARRISON_UNIT_CAPS.militia ?? 0),
+    Number(GARRISON_UNIT_CAPS.archer ?? 0),
+    nowIso(),
+  );
+
   const resourceTemplate = template?.resources ?? STARTING_RESOURCES;
   upsertVillageResourcesStmt.run(
     Number(villageId),
@@ -4197,6 +4250,20 @@ const clampResourceToCap = (value, cap) => {
   }
   return value;
 };
+const applyCappedResourceDeltaPreservingOverflow = (currentRaw, deltaRaw, capRaw) => {
+  const current = Math.max(0, Number(currentRaw ?? 0));
+  const delta = Number(deltaRaw ?? 0);
+  const cap = Math.max(0, Number(capRaw ?? 0));
+
+  if (current > cap) {
+    if (delta > 0) {
+      return current;
+    }
+    return Math.max(0, current + delta);
+  }
+
+  return clampResourceToCap(current + delta, cap);
+};
 
 const calculateVillagePrestige = (buildingLevels, unitCounts) => {
   let buildingScore = 0;
@@ -4218,8 +4285,8 @@ const calculateVillagePrestige = (buildingLevels, unitCounts) => {
   return Math.max(0, Math.round(buildingScore + unitScore));
 };
 
-const calculateRecruitmentSpeedReduction = (level) =>
-  Math.max(0, 1 - Math.pow(0.96, Math.max(0, Math.floor(Number(level ?? 0)))));
+const calculateRecruitmentSpeedReduction = (buildingId, level) =>
+  Math.max(0, Number(calculateRecruitmentTimeReductionPct(buildingId, level) ?? 0) / 100);
 
 const calculateBuildingEffect = (buildingId, level) => {
   if (buildingId === 'woodcutter') {
@@ -4250,9 +4317,9 @@ const calculateBuildingEffect = (buildingId, level) => {
   if (buildingId === 'mint') {
     const goldCap = calculateMintGoldStorageCap(level);
     const coinCap = calculateMintCoinStorageCap(level);
-    const throughput = calculateMintThroughputPerHour(level);
+    const throughput = Math.max(0, Math.floor(Number(calculateMintThroughputPerHour(level) ?? 0)));
     return level > 0
-      ? `Razba: ${throughput.toFixed(2)} minci/h, sklad zlata ${goldCap.toLocaleString('cs-CZ')}, sklad minci ${coinCap.toLocaleString('cs-CZ')}`
+      ? `Razba: ${throughput.toLocaleString('cs-CZ')} minci/h, sklad zlata ${goldCap.toLocaleString('cs-CZ')}, sklad minci ${coinCap.toLocaleString('cs-CZ')}`
       : 'Mincovna neaktivni';
   }
   if (buildingId === 'vault') {
@@ -4272,16 +4339,18 @@ const calculateBuildingEffect = (buildingId, level) => {
       : `Kapacita obchodu ${capacity.toLocaleString('cs-CZ')}`;
   }
   if (buildingId === 'residential-quarter') {
-    return `Kapacita populace: ${calculatePopulationCap(level).toLocaleString('cs-CZ')} (obsluha budov je rezervována automaticky)`;
+    return `Kapacita populace: ${calculatePopulationCap(level).toLocaleString(
+      'cs-CZ',
+    )} (včetně systémové rezervace 300 obyvatel pro posádku)`;
   }
   if (buildingId === 'townhall') {
-    const reductionPct = Math.round((1 - Math.pow(0.95, Math.max(0, Math.floor(Number(level ?? 0))))) * 100);
+    const reductionPct = Math.round(calculateTownhallBuildTimeReductionPct(level));
     return reductionPct > 0
       ? `Vystavba budov: -${reductionPct} % casu`
       : 'Vystavba budov bez casoveho bonusu';
   }
   if (buildingId === 'university') {
-    const researchBonusPct = Math.round(Math.max(0, Number(level ?? 0)) * 20);
+    const researchBonusPct = Math.round(calculateUniversityResearchBonusPct(level));
     const academicSlots = getVillageUniversityCapacity({ university: level });
     const academicLabel = `Sloty akademiku: ${academicSlots.toLocaleString('cs-CZ')} / 3`;
     return researchBonusPct > 0
@@ -4289,17 +4358,17 @@ const calculateBuildingEffect = (buildingId, level) => {
       : `Vyzkum bez bonusu · ${academicLabel}`;
   }
   if (buildingId === 'barracks') {
-    const reductionPct = Math.round(calculateRecruitmentSpeedReduction(level) * 100);
+    const reductionPct = Math.round(calculateRecruitmentSpeedReduction('barracks', level) * 100);
     return reductionPct > 0
       ? `Nabor pesich jednotek: -${reductionPct} % casu`
       : 'Nabor pesich jednotek bez bonusu';
   }
   if (buildingId === 'stable') {
-    const reductionPct = Math.round(calculateRecruitmentSpeedReduction(level) * 100);
+    const reductionPct = Math.round(calculateRecruitmentSpeedReduction('stable', level) * 100);
     return reductionPct > 0 ? `Nabor jezdectva: -${reductionPct} % casu` : 'Nabor jezdectva bez bonusu';
   }
   if (buildingId === 'workshop') {
-    const reductionPct = Math.round(calculateRecruitmentSpeedReduction(level) * 100);
+    const reductionPct = Math.round(calculateRecruitmentSpeedReduction('workshop', level) * 100);
     return reductionPct > 0
       ? `Nabor dilenskych jednotek: -${reductionPct} % casu`
       : 'Nabor dilenskych jednotek bez bonusu';
@@ -4450,8 +4519,8 @@ const buildBuildingNextLevelPreview = ({
       `Kapacita populace: ${currentPopulationCap.toLocaleString('cs-CZ')} -> ${nextPopulationCap.toLocaleString('cs-CZ')} (${formatSignedInteger(nextPopulationCap, currentPopulationCap)}).`,
     );
   } else if (buildingId === 'townhall') {
-    const currentReductionPct = Math.round((1 - Math.pow(0.95, currentLevel)) * 100);
-    const nextReductionPct = Math.round((1 - Math.pow(0.95, nextLevel)) * 100);
+    const currentReductionPct = Math.round(calculateTownhallBuildTimeReductionPct(currentLevel));
+    const nextReductionPct = Math.round(calculateTownhallBuildTimeReductionPct(nextLevel));
     const sampleCurrent = calculateUpgradeDurationSec('woodcutter', 1, currentLevel);
     const sampleNext = calculateUpgradeDurationSec('woodcutter', 1, nextLevel);
     deltas.push(
@@ -4461,8 +4530,8 @@ const buildBuildingNextLevelPreview = ({
       `Priklad (Drevorubec L1->2): ${formatRemaining(sampleCurrent)} -> ${formatRemaining(sampleNext)}.`,
     );
   } else if (buildingId === 'university') {
-    const currentSpeedBonus = Math.round(currentLevel * 5);
-    const nextSpeedBonus = Math.round(nextLevel * 5);
+    const currentSpeedBonus = Math.round(calculateUniversityResearchBonusPct(currentLevel));
+    const nextSpeedBonus = Math.round(calculateUniversityResearchBonusPct(nextLevel));
     deltas.push(`Rychlost vyzkumu akademiku: +${currentSpeedBonus}% -> +${nextSpeedBonus}%.`);
     const currentAcademicSlots = getVillageUniversityCapacity({ university: currentLevel });
     const nextAcademicSlots = getVillageUniversityCapacity({ university: nextLevel });
@@ -4472,8 +4541,8 @@ const buildBuildingNextLevelPreview = ({
       )} (${formatSignedInteger(nextAcademicSlots, currentAcademicSlots)}).`,
     );
   } else if (buildingId === 'barracks') {
-    const currentReduction = Math.round(calculateRecruitmentSpeedReduction(currentLevel) * 100);
-    const nextReduction = Math.round(calculateRecruitmentSpeedReduction(nextLevel) * 100);
+    const currentReduction = Math.round(calculateRecruitmentSpeedReduction('barracks', currentLevel) * 100);
+    const nextReduction = Math.round(calculateRecruitmentSpeedReduction('barracks', nextLevel) * 100);
     const currentMilitiaRecruit = calculateRecruitDurationSec('militia', 1, currentLevel);
     const nextMilitiaRecruit = calculateRecruitDurationSec('militia', 1, nextLevel);
     deltas.push(
@@ -4483,8 +4552,8 @@ const buildBuildingNextLevelPreview = ({
       `Ozbrojenec (1 ks): ${formatRemaining(currentMilitiaRecruit)} -> ${formatRemaining(nextMilitiaRecruit)}.`,
     );
   } else if (buildingId === 'stable') {
-    const currentReduction = Math.round(calculateRecruitmentSpeedReduction(currentLevel) * 100);
-    const nextReduction = Math.round(calculateRecruitmentSpeedReduction(nextLevel) * 100);
+    const currentReduction = Math.round(calculateRecruitmentSpeedReduction('stable', currentLevel) * 100);
+    const nextReduction = Math.round(calculateRecruitmentSpeedReduction('stable', nextLevel) * 100);
     const currentCavalryRecruit = calculateRecruitDurationSec('cavalry', 1, currentLevel);
     const nextCavalryRecruit = calculateRecruitDurationSec('cavalry', 1, nextLevel);
     deltas.push(
@@ -4492,8 +4561,8 @@ const buildBuildingNextLevelPreview = ({
     );
     deltas.push(`Jezdec (1 ks): ${formatRemaining(currentCavalryRecruit)} -> ${formatRemaining(nextCavalryRecruit)}.`);
   } else if (buildingId === 'workshop') {
-    const currentReduction = Math.round(calculateRecruitmentSpeedReduction(currentLevel) * 100);
-    const nextReduction = Math.round(calculateRecruitmentSpeedReduction(nextLevel) * 100);
+    const currentReduction = Math.round(calculateRecruitmentSpeedReduction('workshop', currentLevel) * 100);
+    const nextReduction = Math.round(calculateRecruitmentSpeedReduction('workshop', nextLevel) * 100);
     const currentRamRecruit = calculateRecruitDurationSec('ram', 1, currentLevel);
     const nextRamRecruit = calculateRecruitDurationSec('ram', 1, nextLevel);
     deltas.push(
@@ -4798,72 +4867,245 @@ const calculateUnitPopulationUsed = (unitCounts) =>
     return sum + amount * populationCost;
   }, 0);
 
-const enforceVillagePopulationBudget = (villageId, buildingLevels, unitCounts, academicCount = 0) => {
-  const populationCap = calculatePopulationCap(buildingLevels['residential-quarter'] ?? 0);
-  const buildingPopulationUsed = calculateBuildingPopulationUsed(buildingLevels);
-  const reservedAcademicPopulation = Math.max(0, Math.floor(Number(academicCount ?? 0))) * ACADEMIC_POPULATION_COST;
-  const maxUnitPopulation = Math.max(0, populationCap - buildingPopulationUsed - reservedAcademicPopulation);
-  const nextUnitCounts = { ...unitCounts };
-  const removedUnits = {};
-  let overflowPopulation = Math.max(0, calculateUnitPopulationUsed(nextUnitCounts) - maxUnitPopulation);
+const getVillageAwayUnitCounts = (villageId) =>
+  toUnitCountMap(selectAwayUnitTotalsByHomeVillageStmt.all(Number(villageId)));
 
-  if (overflowPopulation > 0) {
-    for (const unitId of POPULATION_CLEANUP_UNIT_PRIORITY) {
-      const currentAmount = Math.max(0, Math.floor(Number(nextUnitCounts[unitId] ?? 0)));
-      if (currentAmount <= 0) {
-        continue;
-      }
-      const populationCost = Math.max(0, Math.floor(Number(UNIT_DEFS[unitId]?.populationCost ?? 0)));
-      if (populationCost <= 0) {
-        continue;
-      }
+const calculateGarrisonRefillDurationSec = (unitId, buildingLevels) => {
+  const requiredBuildingId = String(UNIT_DEFS[unitId]?.requiredBuilding ?? '');
+  const requiredBuildingLevel = Math.max(
+    0,
+    Math.floor(Number(requiredBuildingId ? buildingLevels?.[requiredBuildingId] ?? 0 : 0)),
+  );
+  const durationSec = calculateRecruitDurationSec(unitId, 1, requiredBuildingLevel);
+  return Math.max(1, Math.floor(Number(durationSec ?? 1)));
+};
 
-      const removableAmount = Math.min(currentAmount, Math.ceil(overflowPopulation / populationCost));
-      if (removableAmount <= 0) {
-        continue;
-      }
+const synchronizeVillageGarrisonAt = (villageId, referenceIso = nowIso(), options = {}) => {
+  const persist = options?.persist !== false;
+  const numericVillageId = Number(villageId);
+  if (!Number.isFinite(numericVillageId) || numericVillageId <= 0) {
+    return {
+      villageId: 0,
+      isUnlocked: false,
+      activeCap: 0,
+      totalCap: GARRISON_RESERVED_POPULATION,
+      reservedPopulation: GARRISON_RESERVED_POPULATION,
+      totalUnits: 0,
+      units: {
+        militia: { amount: 0, cap: 0, missing: 0, refillSecPerUnit: 0, nextRefillSec: null },
+        archer: { amount: 0, cap: 0, missing: 0, refillSecPerUnit: 0, nextRefillSec: null },
+      },
+      militiaAmount: 0,
+      archerAmount: 0,
+      militiaProgress: 0,
+      archerProgress: 0,
+      lastSyncAt: null,
+    };
+  }
 
-      const nextAmount = currentAmount - removableAmount;
-      nextUnitCounts[unitId] = nextAmount;
-      removedUnits[unitId] = removableAmount;
-      overflowPopulation = Math.max(0, overflowPopulation - removableAmount * populationCost);
-      updateUnitAmountStmt.run(nextAmount, Number(villageId), unitId);
+  let row = selectVillageGarrisonByVillageStmt.get(numericVillageId) ?? null;
+  if (!row && persist) {
+    insertVillageGarrisonIfMissingStmt.run(
+      numericVillageId,
+      Number(GARRISON_UNIT_CAPS.militia ?? 0),
+      Number(GARRISON_UNIT_CAPS.archer ?? 0),
+      String(referenceIso),
+    );
+    row = selectVillageGarrisonByVillageStmt.get(numericVillageId) ?? null;
+  }
 
-      if (overflowPopulation <= 0) {
-        break;
+  const buildingLevels =
+    options?.buildingLevels ??
+    toBuildingLevelMap(selectBuildingsByVillageStmt.all(numericVillageId));
+  const townhallLevel = Math.max(0, Math.floor(Number(buildingLevels?.townhall ?? 0)));
+  const isUnlocked = townhallLevel >= GARRISON_UNLOCK_TOWNHALL_LEVEL;
+  const militiaCap = isUnlocked ? Number(GARRISON_UNIT_CAPS.militia ?? 0) : 0;
+  const archerCap = isUnlocked ? Number(GARRISON_UNIT_CAPS.archer ?? 0) : 0;
+  const activeCap = militiaCap + archerCap;
+
+  if (!isUnlocked) {
+    return {
+      villageId: numericVillageId,
+      isUnlocked: false,
+      activeCap: 0,
+      totalCap: GARRISON_RESERVED_POPULATION,
+      reservedPopulation: GARRISON_RESERVED_POPULATION,
+      totalUnits: 0,
+      units: {
+        militia: { amount: 0, cap: 0, missing: 0, refillSecPerUnit: 0, nextRefillSec: null },
+        archer: { amount: 0, cap: 0, missing: 0, refillSecPerUnit: 0, nextRefillSec: null },
+      },
+      militiaAmount: 0,
+      archerAmount: 0,
+      militiaProgress: Math.max(0, Number(row?.militiaProgress ?? 0)),
+      archerProgress: Math.max(0, Number(row?.archerProgress ?? 0)),
+      lastSyncAt: row?.lastSyncAt ? String(row.lastSyncAt) : null,
+    };
+  }
+
+  let militiaAmount = Math.max(
+    0,
+    Math.min(
+      militiaCap,
+      Math.floor(Number(row?.militiaAmount ?? militiaCap)),
+    ),
+  );
+  let archerAmount = Math.max(
+    0,
+    Math.min(
+      archerCap,
+      Math.floor(Number(row?.archerAmount ?? archerCap)),
+    ),
+  );
+  let militiaProgress = Math.max(0, Number(row?.militiaProgress ?? 0));
+  let archerProgress = Math.max(0, Number(row?.archerProgress ?? 0));
+
+  const referenceMs = Date.parse(String(referenceIso));
+  const rowLastSyncMs = Date.parse(String(row?.lastSyncAt ?? ''));
+  const effectiveLastSyncMs = Number.isFinite(rowLastSyncMs) ? rowLastSyncMs : referenceMs;
+  const elapsedSec =
+    Number.isFinite(referenceMs) && Number.isFinite(effectiveLastSyncMs)
+      ? Math.max(0, (referenceMs - effectiveLastSyncMs) / 1000)
+      : 0;
+
+  const refillDurationByUnit = {
+    militia: calculateGarrisonRefillDurationSec('militia', buildingLevels),
+    archer: calculateGarrisonRefillDurationSec('archer', buildingLevels),
+  };
+
+  if (elapsedSec > 0) {
+    const missingMilitia = Math.max(0, militiaCap - militiaAmount);
+    if (missingMilitia > 0) {
+      militiaProgress += elapsedSec / Math.max(1, Number(refillDurationByUnit.militia ?? 1));
+      const recovered = Math.min(missingMilitia, Math.floor(militiaProgress));
+      if (recovered > 0) {
+        militiaAmount += recovered;
+        militiaProgress -= recovered;
       }
+    } else {
+      militiaProgress = 0;
+    }
+
+    const missingArcher = Math.max(0, archerCap - archerAmount);
+    if (missingArcher > 0) {
+      archerProgress += elapsedSec / Math.max(1, Number(refillDurationByUnit.archer ?? 1));
+      const recovered = Math.min(missingArcher, Math.floor(archerProgress));
+      if (recovered > 0) {
+        archerAmount += recovered;
+        archerProgress -= recovered;
+      }
+    } else {
+      archerProgress = 0;
     }
   }
 
+  militiaAmount = Math.max(0, Math.min(militiaCap, militiaAmount));
+  archerAmount = Math.max(0, Math.min(archerCap, archerAmount));
+  if (militiaAmount >= militiaCap) {
+    militiaProgress = 0;
+  }
+  if (archerAmount >= archerCap) {
+    archerProgress = 0;
+  }
+
+  const nextLastSyncAt = Number.isFinite(referenceMs) ? String(referenceIso) : row?.lastSyncAt ? String(row.lastSyncAt) : null;
+  if (persist) {
+    upsertVillageGarrisonStateStmt.run(
+      numericVillageId,
+      militiaAmount,
+      archerAmount,
+      Number.isFinite(militiaProgress) ? militiaProgress : 0,
+      Number.isFinite(archerProgress) ? archerProgress : 0,
+      nextLastSyncAt,
+    );
+  }
+
+  const militiaMissing = Math.max(0, militiaCap - militiaAmount);
+  const archerMissing = Math.max(0, archerCap - archerAmount);
+  const militiaNextRefillSec =
+    militiaMissing > 0
+      ? Math.max(1, Math.ceil((1 - Math.max(0, Math.min(0.999999, militiaProgress))) * refillDurationByUnit.militia))
+      : null;
+  const archerNextRefillSec =
+    archerMissing > 0
+      ? Math.max(1, Math.ceil((1 - Math.max(0, Math.min(0.999999, archerProgress))) * refillDurationByUnit.archer))
+      : null;
+
   return {
-    unitCounts: nextUnitCounts,
-    removedUnits,
-    populationCap,
-    populationUsed: Math.max(0, buildingPopulationUsed + calculateUnitPopulationUsed(nextUnitCounts) + reservedAcademicPopulation),
+    villageId: numericVillageId,
+    isUnlocked: true,
+    activeCap,
+    totalCap: GARRISON_RESERVED_POPULATION,
+    reservedPopulation: GARRISON_RESERVED_POPULATION,
+    totalUnits: militiaAmount + archerAmount,
+    units: {
+      militia: {
+        amount: militiaAmount,
+        cap: militiaCap,
+        missing: militiaMissing,
+        refillSecPerUnit: Number(refillDurationByUnit.militia),
+        nextRefillSec: militiaNextRefillSec,
+      },
+      archer: {
+        amount: archerAmount,
+        cap: archerCap,
+        missing: archerMissing,
+        refillSecPerUnit: Number(refillDurationByUnit.archer),
+        nextRefillSec: archerNextRefillSec,
+      },
+    },
+    militiaAmount,
+    archerAmount,
+    militiaProgress,
+    archerProgress,
+    lastSyncAt: nextLastSyncAt,
   };
 };
 
-const getVillagePopulationStatus = (villageId) => {
-  const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(Number(villageId)));
-  const unitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(Number(villageId)));
+const getVillagePopulationStatus = (villageId, options = {}) => {
+  const numericVillageId = Number(villageId);
+  const buildingLevels =
+    options?.buildingLevels ??
+    toBuildingLevelMap(selectBuildingsByVillageStmt.all(numericVillageId));
+  const unitCounts =
+    options?.unitCounts ??
+    toUnitCountMap(selectUnitsByVillageStmt.all(numericVillageId));
+  const awayUnitCounts = options?.awayUnitCounts ?? getVillageAwayUnitCounts(numericVillageId);
+  const academicCount =
+    options?.academicCount ??
+    Math.max(
+      0,
+      Math.floor(Number(countActiveAcademicsByVillageStmt.get(numericVillageId)?.total ?? 0)),
+    );
   const populationCap = calculatePopulationCap(buildingLevels['residential-quarter'] ?? 0);
-  const unitAndBuildingPopulationUsed = calculatePopulationUsed(buildingLevels, unitCounts);
-  const academicCount = Math.max(
-    0,
-    Math.floor(Number(countActiveAcademicsByVillageStmt.get(Number(villageId))?.total ?? 0)),
-  );
+  const buildingPopulationUsed = calculateBuildingPopulationUsed(buildingLevels);
+  const homeUnitPopulationUsed = calculateUnitPopulationUsed(unitCounts);
+  const awayUnitPopulationUsed = calculateUnitPopulationUsed(awayUnitCounts);
   const academicPopulationUsed = academicCount * ACADEMIC_POPULATION_COST;
-  const populationUsed = unitAndBuildingPopulationUsed + academicPopulationUsed;
+  const garrisonPopulationReserved = GARRISON_RESERVED_POPULATION;
+  const populationUsed =
+    buildingPopulationUsed +
+    homeUnitPopulationUsed +
+    awayUnitPopulationUsed +
+    academicPopulationUsed +
+    garrisonPopulationReserved;
   const availablePopulation = Math.max(0, populationCap - populationUsed);
+  const overflowPopulation = Math.max(0, populationUsed - populationCap);
 
   return {
     buildingLevels,
     unitCounts,
+    awayUnitCounts,
     academicCount,
     academicPopulationUsed,
+    garrisonPopulationReserved,
+    buildingPopulationUsed,
+    homeUnitPopulationUsed,
+    awayUnitPopulationUsed,
     populationCap,
     populationUsed,
     availablePopulation,
+    overflowPopulation,
   };
 };
 
@@ -5471,18 +5713,19 @@ const synchronizeVillageEconomyAt = (villageId, referenceIso = nowIso(), options
   const villageRow = selectVillageByIdStmt.get(numericVillageId);
   const villageRegion = Number(villageRow?.region ?? DEFAULT_WORLD_REGION_ID);
   const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(numericVillageId));
-  const rawUnitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(numericVillageId));
+  const unitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(numericVillageId));
+  const awayUnitCounts = getVillageAwayUnitCounts(numericVillageId);
   const resourceCaps = resolveVillageResourceCaps(buildingLevels);
   const activeAcademicsInVillage = Math.max(
     0,
     Math.floor(Number(countActiveAcademicsByVillageStmt.get(numericVillageId)?.total ?? 0)),
   );
-  const populationSnapshot = enforceVillagePopulationBudget(
-    numericVillageId,
+  const populationSnapshot = getVillagePopulationStatus(numericVillageId, {
     buildingLevels,
-    rawUnitCounts,
-    activeAcademicsInVillage,
-  );
+    unitCounts,
+    awayUnitCounts,
+    academicCount: activeAcademicsInVillage,
+  });
   const baseProduction = calculateProductionPerHour(
     buildingLevels,
     populationSnapshot.populationUsed,
@@ -5492,14 +5735,27 @@ const synchronizeVillageEconomyAt = (villageId, referenceIso = nowIso(), options
   const developerBoost = resolveDeveloperResourceBoostForWorld(world, referenceMs);
   const production = applyProductionMultiplier(baseProduction, developerBoost.multiplier);
 
-  let nextWood = clampResourceToCap(Number(resourceRow.wood ?? 0) + (production.wood * elapsedSec) / 3600, resourceCaps.wood);
-  let nextStone = clampResourceToCap(Number(resourceRow.stone ?? 0) + (production.stone * elapsedSec) / 3600, resourceCaps.stone);
-  let nextIron = clampResourceToCap(Number(resourceRow.iron ?? 0) + (production.iron * elapsedSec) / 3600, resourceCaps.iron);
-  let nextGold = clampResourceToCap(
-    Number(resourceRow.gold ?? 0) + (Number(production.gold ?? 0) * elapsedSec) / 3600,
+  let nextWood = applyCappedResourceDeltaPreservingOverflow(
+    Number(resourceRow.wood ?? 0),
+    (production.wood * elapsedSec) / 3600,
+    resourceCaps.wood,
+  );
+  let nextStone = applyCappedResourceDeltaPreservingOverflow(
+    Number(resourceRow.stone ?? 0),
+    (production.stone * elapsedSec) / 3600,
+    resourceCaps.stone,
+  );
+  let nextIron = applyCappedResourceDeltaPreservingOverflow(
+    Number(resourceRow.iron ?? 0),
+    (production.iron * elapsedSec) / 3600,
+    resourceCaps.iron,
+  );
+  let nextGold = applyCappedResourceDeltaPreservingOverflow(
+    Number(resourceRow.gold ?? 0),
+    (Number(production.gold ?? 0) * elapsedSec) / 3600,
     resourceCaps.gold,
   );
-  let nextCoins = clampResourceToCap(Number(resourceRow.coins ?? 0), resourceCaps.coins);
+  let nextCoins = Math.max(0, Number(resourceRow.coins ?? 0));
 
   const mintLevel = Math.max(0, Math.floor(Number(buildingLevels.mint ?? 0)));
   if (mintLevel > 0 && resourceCaps.coins > 0) {
@@ -5508,8 +5764,8 @@ const synchronizeVillageEconomyAt = (villageId, referenceIso = nowIso(), options
     const coinStorageRemaining = Math.max(0, resourceCaps.coins - nextCoins);
     const mintable = Math.max(0, Math.min(nextGold, mintLimitByTime, coinStorageRemaining));
     if (mintable > 0) {
-      nextGold -= mintable;
-      nextCoins += mintable;
+      nextGold = applyCappedResourceDeltaPreservingOverflow(nextGold, -mintable, resourceCaps.gold);
+      nextCoins = applyCappedResourceDeltaPreservingOverflow(nextCoins, mintable, resourceCaps.coins);
     }
   }
 
@@ -5556,11 +5812,11 @@ const applyResourceDeltaWithCap = (villageId, delta) => {
     coins: Number(delta.coins ?? 0),
   };
   const next = {
-    wood: clampResourceToCap(current.wood + requested.wood, caps.wood),
-    stone: clampResourceToCap(current.stone + requested.stone, caps.stone),
-    iron: clampResourceToCap(current.iron + requested.iron, caps.iron),
-    gold: clampResourceToCap(current.gold + requested.gold, caps.gold),
-    coins: clampResourceToCap(current.coins + requested.coins, caps.coins),
+    wood: applyCappedResourceDeltaPreservingOverflow(current.wood, requested.wood, caps.wood),
+    stone: applyCappedResourceDeltaPreservingOverflow(current.stone, requested.stone, caps.stone),
+    iron: applyCappedResourceDeltaPreservingOverflow(current.iron, requested.iron, caps.iron),
+    gold: applyCappedResourceDeltaPreservingOverflow(current.gold, requested.gold, caps.gold),
+    coins: applyCappedResourceDeltaPreservingOverflow(current.coins, requested.coins, caps.coins),
   };
   const applied = {
     wood: Math.round(next.wood - current.wood),
@@ -7738,13 +7994,32 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         continue;
       }
 
+      const defenderBuildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(Number(targetVillage.id)));
+      const defenderGarrisonBefore = synchronizeVillageGarrisonAt(Number(targetVillage.id), tickTimeIso, {
+        persist: true,
+        buildingLevels: defenderBuildingLevels,
+      });
       const villageDefenderUnitsBefore = toUnitCountMap(selectUnitsByVillageStmt.all(Number(targetVillage.id)));
       const stationedSupportGroups = buildStationedSupportBattleGroups(Number(targetVillage.id));
       const defenderUnitsBefore = toCompleteUnitSelection(villageDefenderUnitsBefore);
+      for (const unitId of GARRISON_UNIT_IDS) {
+        const garrisonAmount = Math.max(
+          0,
+          Math.floor(
+            Number(
+              unitId === 'militia'
+                ? defenderGarrisonBefore?.militiaAmount
+                : defenderGarrisonBefore?.archerAmount,
+            ),
+          ),
+        );
+        if (garrisonAmount > 0) {
+          defenderUnitsBefore[unitId] = Math.max(0, Number(defenderUnitsBefore[unitId] ?? 0)) + garrisonAmount;
+        }
+      }
       for (const supportGroup of stationedSupportGroups) {
         addUnitSelection(defenderUnitsBefore, supportGroup.units);
       }
-      const defenderBuildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(Number(targetVillage.id)));
       if (isScoutOnlyAttackSelection(unitSelection)) {
         const attackerName = String(attackerPlayer?.username ?? 'Neznamy utocnik');
         const defenderName = String(targetVillage.ownerUsername ?? 'Neznamy obrance');
@@ -7891,8 +8166,13 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         villagesToRecalculatePrestige.add(Number(targetVillage.id));
       }
 
+      const garrisonStartSelection = toCompleteUnitSelection({
+        militia: Number(defenderGarrisonBefore?.militiaAmount ?? 0),
+        archer: Number(defenderGarrisonBefore?.archerAmount ?? 0),
+      });
       const defenderGroupStarts = [
         toCompleteUnitSelection(villageDefenderUnitsBefore),
+        garrisonStartSelection,
         ...stationedSupportGroups.map((supportGroup) => toCompleteUnitSelection(supportGroup.units)),
       ];
       const defenderGroupSurvivors = distributeSurvivorsAcrossDefenderGroups(
@@ -7911,11 +8191,22 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           unitId,
         );
       }
+      const garrisonSurvivors = toCompleteUnitSelection(defenderGroupSurvivors[1]);
+      const garrisonAfterLoss = {
+        losses: buildLossesFromStartAndSurvivors(garrisonStartSelection, garrisonSurvivors),
+        survivors: garrisonSurvivors,
+      };
+      updateVillageGarrisonAmountsStmt.run(
+        Number(garrisonAfterLoss.survivors.militia ?? 0),
+        Number(garrisonAfterLoss.survivors.archer ?? 0),
+        tickTimeIso,
+        Number(targetVillage.id),
+      );
       villagesToRecalculatePrestige.add(Number(targetVillage.id));
 
       const stationedSupportCasualties = [];
       for (const supportGroup of stationedSupportGroups) {
-        const groupIndex = stationedSupportCasualties.length + 1;
+        const groupIndex = stationedSupportCasualties.length + 2;
         const supportSurvivors = toCompleteUnitSelection(defenderGroupSurvivors[groupIndex]);
         const supportAfterLoss = {
           losses: buildLossesFromStartAndSurvivors(supportGroup.units, supportSurvivors),
@@ -7944,6 +8235,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       }
 
       const defenderVillageSurvivorsTotal = sumSelectedUnits(villageDefenseAfterLoss.survivors);
+      const garrisonSurvivorsTotal = sumSelectedUnits(garrisonAfterLoss.survivors);
       const stationedSupportSurvivorsTotal = stationedSupportCasualties.reduce(
         (sum, support) => sum + Math.max(0, Number(support.survivorsTotal ?? 0)),
         0,
@@ -7958,6 +8250,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         attackerSentKnights > 0 &&
         attackerSurvivingKnights > 0 &&
         defenderVillageSurvivorsTotal <= 0 &&
+        garrisonSurvivorsTotal <= 0 &&
         stationedSupportSurvivorsTotal <= 0 &&
         Number(targetVillage.playerId) !== Number(movement.playerId);
       let conquestPayload = null;
@@ -8232,7 +8525,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       }
 
       if (defenderPlayer && Number(defenderPlayer.isBot ?? 0) !== 1) {
-        const defenderOwnSurvivorsTotal = sumSelectedUnits(villageDefenseAfterLoss.survivors);
+        const defenderOwnSurvivorsTotal =
+          sumSelectedUnits(villageDefenseAfterLoss.survivors) + sumSelectedUnits(garrisonAfterLoss.survivors);
         let defenseTitle = blockedByGate
           ? `Obrana: brana odrazila utok na ${targetVillage.name}`
           : `Obrana: ${targetVillage.name} celi utoku`;
@@ -8424,33 +8718,17 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
 
     if (movement.commandType === 'return') {
       const targetVillageId = Number(movement.targetVillageId);
-      const targetPopulation = getVillagePopulationStatus(targetVillageId);
-      let remainingPopulationCapacity = Number(targetPopulation.availablePopulation);
-      const overflowSelection = toCompleteUnitSelection({});
       let acceptedUnitsTotal = 0;
       for (const unitRow of movementUnits) {
         const unitId = unitRow.unitId;
-        const amount = Number(unitRow.amount);
+        const amount = Math.max(0, Math.floor(Number(unitRow.amount)));
         if (amount <= 0) {
           continue;
         }
-        const unitPopulationCost = getUnitPopulationCost(unitId);
-        const acceptedAmount = Math.min(
-          amount,
-          Math.max(0, Math.floor(remainingPopulationCapacity / unitPopulationCost)),
-        );
-        const overflowAmount = Math.max(0, amount - acceptedAmount);
-
-        if (acceptedAmount > 0) {
-          const currentAmountRow = selectUnitAmountByVillageAndUnitStmt.get(targetVillageId, unitId);
-          const currentAmount = Number(currentAmountRow?.amount ?? 0);
-          updateUnitAmountStmt.run(currentAmount + acceptedAmount, targetVillageId, unitId);
-          remainingPopulationCapacity -= acceptedAmount * unitPopulationCost;
-          acceptedUnitsTotal += acceptedAmount;
-        }
-        if (overflowAmount > 0) {
-          overflowSelection[unitId] = overflowAmount;
-        }
+        const currentAmountRow = selectUnitAmountByVillageAndUnitStmt.get(targetVillageId, unitId);
+        const currentAmount = Number(currentAmountRow?.amount ?? 0);
+        updateUnitAmountStmt.run(currentAmount + amount, targetVillageId, unitId);
+        acceptedUnitsTotal += amount;
       }
       if (acceptedUnitsTotal > 0) {
         villagesToRecalculatePrestige.add(targetVillageId);
@@ -8462,32 +8740,6 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       };
       if (carry.wood > 0 || carry.stone > 0 || carry.iron > 0) {
         applyResourceDeltaWithCap(targetVillageId, carry);
-      }
-
-      const dissolvedTotal = sumSelectedUnits(overflowSelection);
-      if (dissolvedTotal > 0) {
-        const targetVillage = selectVillageByIdStmt.get(targetVillageId);
-        if (targetVillage) {
-          createPlayerNotification({
-            playerId: Number(targetVillage.playerId),
-            region: Number(targetVillage.region),
-            category: 'military',
-            eventType: 'return_population_overflow',
-            severity: 'warning',
-            title: `Návrat armády do ${String(targetVillage.name)}`,
-            summary: `Část vracejících se jednotek (${dissolvedTotal.toLocaleString('cs-CZ')}) se rozpustila kvůli limitu populace.`,
-            payload: {
-              movementId,
-              targetVillageId,
-              dissolvedTotal,
-              dissolvedUnits: overflowSelection,
-              acceptedUnitsTotal,
-            },
-            sourceType: 'army_overflow',
-            sourceId: movementId,
-            createdAt: tickTimeIso,
-          });
-        }
       }
 
       updateArmyMovementStatusStmt.run('completed', tickTimeIso, movementId);
@@ -10844,6 +11096,12 @@ export const getVillageSnapshot = (
   options = {},
 ) => {
   const includeWorldMap = options?.includeWorldMap !== false;
+  const includeLeaderboard = options?.includeLeaderboard !== false;
+  const includeKingdomHub = options?.includeKingdomHub !== false;
+  const includeResearch = options?.includeResearch !== false;
+  const includeMarket = options?.includeMarket !== false;
+  const includeMercenaries = options?.includeMercenaries !== false;
+  const includeRules = options?.includeRules !== false;
   const snapshotIso = nowIso();
   const { player, village, villages, world } = requireVillageForUser(
     username,
@@ -10866,13 +11124,25 @@ export const getVillageSnapshot = (
   const mintGoldCap = calculateMintGoldStorageCap(mintLevel);
   const mintCoinCap = calculateMintCoinStorageCap(mintLevel);
   const mintThroughputPerHour = calculateMintThroughputPerHour(mintLevel);
-  const populationCap = calculatePopulationCap(buildingLevels['residential-quarter'] ?? 0);
   const academicCountInVillage = Math.max(
     0,
     Math.floor(Number(countActiveAcademicsByVillageStmt.get(Number(village.id))?.total ?? 0)),
   );
-  const academicPopulationUsed = academicCountInVillage * ACADEMIC_POPULATION_COST;
-  const populationUsed = calculatePopulationUsed(buildingLevels, unitCounts) + academicPopulationUsed;
+  const awayUnitCounts = getVillageAwayUnitCounts(Number(village.id));
+  const populationSnapshot = getVillagePopulationStatus(Number(village.id), {
+    buildingLevels,
+    unitCounts,
+    awayUnitCounts,
+    academicCount: academicCountInVillage,
+  });
+  const populationCap = Number(populationSnapshot.populationCap ?? 0);
+  const academicPopulationUsed = Number(populationSnapshot.academicPopulationUsed ?? 0);
+  const populationUsed = Number(populationSnapshot.populationUsed ?? 0);
+  const availablePopulation = Number(populationSnapshot.availablePopulation ?? 0);
+  const garrisonState = synchronizeVillageGarrisonAt(Number(village.id), snapshotIso, {
+    persist: false,
+    buildingLevels,
+  });
   const baseProduction = calculateProductionPerHour(buildingLevels, populationUsed, populationCap);
   const developerResourceBoost = resolveDeveloperResourceBoostForWorld(world);
   const production = applyProductionMultiplier(baseProduction, developerResourceBoost.multiplier);
@@ -10914,7 +11184,6 @@ export const getVillageSnapshot = (
     coins: Number(resourcesRow.coins ?? 0),
   };
 
-  const availablePopulation = Math.max(0, populationCap - populationUsed);
   const reservedPopulationForRecruitment = calculateReservedPopulationForRecruitments(activeRecruitments);
   const availablePopulationForRecruitment = calculateAvailablePopulationForRecruitment(
     populationCap,
@@ -10933,29 +11202,41 @@ export const getVillageSnapshot = (
     { persist: false },
   );
   const completedResearchIds = buildCompletedResearchSet(researchRows);
-  const researchView = buildResearchViewModel(researchRows, {
-    playerId: Number(player.id),
-    region: Number(world.region),
-    snapshotIso,
-  });
-  const totalAcademicsInRegion = Math.max(
-    0,
-    Math.floor(Number(countActiveAcademicsByPlayerRegionStmt.get(Number(player.id), Number(world.region))?.total ?? 0)),
-  );
-  const regionAcademicCapacity = Math.max(
-    0,
-    Math.floor(
-      Number(
-        selectTotalUniversityAcademicCapacityByPlayerAndRegionStmt.get(Number(player.id), Number(world.region))
-          ?.totalCapacity ?? 0,
-      ),
-    ),
-  );
-  const regionAcademicAvailableSlots = Math.max(0, regionAcademicCapacity - totalAcademicsInRegion);
-  const idleAcademicsInRegion = Math.max(
-    0,
-    Math.floor(Number(countIdleAcademicsByPlayerRegionStmt.get(Number(player.id), Number(world.region))?.total ?? 0)),
-  );
+  const researchView = includeResearch
+    ? buildResearchViewModel(researchRows, {
+        playerId: Number(player.id),
+        region: Number(world.region),
+        snapshotIso,
+      })
+    : [];
+  const totalAcademicsInRegion = includeResearch
+    ? Math.max(
+        0,
+        Math.floor(
+          Number(countActiveAcademicsByPlayerRegionStmt.get(Number(player.id), Number(world.region))?.total ?? 0),
+        ),
+      )
+    : 0;
+  const regionAcademicCapacity = includeResearch
+    ? Math.max(
+        0,
+        Math.floor(
+          Number(
+            selectTotalUniversityAcademicCapacityByPlayerAndRegionStmt.get(Number(player.id), Number(world.region))
+              ?.totalCapacity ?? 0,
+          ),
+        ),
+      )
+    : 0;
+  const regionAcademicAvailableSlots = includeResearch ? Math.max(0, regionAcademicCapacity - totalAcademicsInRegion) : 0;
+  const idleAcademicsInRegion = includeResearch
+    ? Math.max(
+        0,
+        Math.floor(
+          Number(countIdleAcademicsByPlayerRegionStmt.get(Number(player.id), Number(world.region))?.total ?? 0),
+        ),
+      )
+    : 0;
   const activeResearchRow = selectActiveResearchByPlayerRegionStmt.get(Number(player.id), Number(world.region));
 
   const buildings = BUILDING_ORDER.map((buildingId) => {
@@ -11184,20 +11465,34 @@ export const getVillageSnapshot = (
     activeOrders.push('Vyzkum: zadny aktivni projekt');
   }
 
-  const mercenaryContracts = selectMercenaryContractsByVillageStmt.all(Number(village.id));
-  const activeMercenaryContract = mercenaryContracts.find((contract) =>
-    ['en_route', 'active'].includes(String(contract.status)),
-  );
-  if (activeMercenaryContract) {
-    if (String(activeMercenaryContract.status) === 'en_route') {
-      const remainingSec = Math.max(0, Math.ceil((Date.parse(String(activeMercenaryContract.arriveAt)) - Date.now()) / 1000));
-      activeOrders.push(`Zoldaci: kontrakt na ceste (dorazi za ${formatRemaining(remainingSec)})`);
+  const mercenaryContracts = includeMercenaries
+    ? selectMercenaryContractsByVillageStmt.all(Number(village.id))
+    : [];
+  const activeMercenaryContract = includeMercenaries
+    ? mercenaryContracts.find((contract) => ['en_route', 'active'].includes(String(contract.status)))
+    : null;
+  if (includeMercenaries) {
+    if (activeMercenaryContract) {
+      if (String(activeMercenaryContract.status) === 'en_route') {
+        const remainingSec = Math.max(
+          0,
+          Math.ceil((Date.parse(String(activeMercenaryContract.arriveAt)) - Date.now()) / 1000),
+        );
+        activeOrders.push(`Zoldaci: kontrakt na ceste (dorazi za ${formatRemaining(remainingSec)})`);
+      } else {
+        const remainingSec = Math.max(
+          0,
+          Math.ceil((Date.parse(String(activeMercenaryContract.expiresAt)) - Date.now()) / 1000),
+        );
+        activeOrders.push(
+          `Zoldaci: aktivni obrana (${Number(activeMercenaryContract.unitAmount)} jednotek, zbyva ${formatRemaining(
+            remainingSec,
+          )})`,
+        );
+      }
     } else {
-      const remainingSec = Math.max(0, Math.ceil((Date.parse(String(activeMercenaryContract.expiresAt)) - Date.now()) / 1000));
-      activeOrders.push(`Zoldaci: aktivni obrana (${Number(activeMercenaryContract.unitAmount)} jednotek, zbyva ${formatRemaining(remainingSec)})`);
+      activeOrders.push('Zoldaci: zadny aktivni kontrakt');
     }
-  } else {
-    activeOrders.push('Zoldaci: zadny aktivni kontrakt');
   }
 
   activeOrders.push('Ekonomika jede v realnem case podle cron ticku.');
@@ -11217,50 +11512,52 @@ export const getVillageSnapshot = (
         referenceIso: snapshotIso,
       })
     : null;
-  const leaderboard = listPlayerLeaderboard(world.id);
-  const kingdomHub = buildKingdomHubState(player, village);
-  const recentLogisticsRoutes = selectRecentLogisticsByVillageStmt
-    .all(Number(village.id), Number(village.id), Number(world.region))
-    .map((route) => {
-      const arriveAtMs = Date.parse(String(route.arriveAt ?? ''));
-      const completedAtMs = Date.parse(String(route.completedAt ?? ''));
-      const remainingSec =
-        String(route.status) === 'in_progress' && Number.isFinite(arriveAtMs)
-          ? Math.max(0, Math.ceil((arriveAtMs - Date.now()) / 1000))
-          : 0;
-      return {
-        id: Number(route.id),
-        ownerPlayerId: Number(route.ownerPlayerId),
-        sourceVillageId: Number(route.sourceVillageId),
-        targetVillageId: Number(route.targetVillageId),
-        sourceVillageName: String(route.sourceVillageName ?? ''),
-        targetVillageName: String(route.targetVillageName ?? ''),
-        mode: String(route.mode ?? 'manual'),
-        status: String(route.status ?? 'completed'),
-        wood: Math.max(0, Math.floor(Number(route.wood ?? 0))),
-        stone: Math.max(0, Math.floor(Number(route.stone ?? 0))),
-        iron: Math.max(0, Math.floor(Number(route.iron ?? 0))),
-        startedAt: String(route.startedAt ?? nowIso()),
-        arriveAt: String(route.arriveAt ?? nowIso()),
-        completedAt: Number.isFinite(completedAtMs) ? String(route.completedAt) : null,
-        remainingSec,
-      };
-    });
-  const marketLevel = Math.max(0, Math.floor(Number(buildingLevels.market ?? 0)));
-  const marketCapacity = calculateMarketCapacity(marketLevel);
-  const marketMerchants = calculateMarketMerchantStateByVillage(Number(village.id), marketLevel);
+  const leaderboard = includeLeaderboard ? listPlayerLeaderboard(world.id) : null;
+  const kingdomHub = includeKingdomHub ? buildKingdomHubState(player, village) : null;
+  const recentLogisticsRoutes = includeMarket
+    ? selectRecentLogisticsByVillageStmt.all(Number(village.id), Number(village.id), Number(world.region)).map((route) => {
+        const arriveAtMs = Date.parse(String(route.arriveAt ?? ''));
+        const completedAtMs = Date.parse(String(route.completedAt ?? ''));
+        const remainingSec =
+          String(route.status) === 'in_progress' && Number.isFinite(arriveAtMs)
+            ? Math.max(0, Math.ceil((arriveAtMs - Date.now()) / 1000))
+            : 0;
+        return {
+          id: Number(route.id),
+          ownerPlayerId: Number(route.ownerPlayerId),
+          sourceVillageId: Number(route.sourceVillageId),
+          targetVillageId: Number(route.targetVillageId),
+          sourceVillageName: String(route.sourceVillageName ?? ''),
+          targetVillageName: String(route.targetVillageName ?? ''),
+          mode: String(route.mode ?? 'manual'),
+          status: String(route.status ?? 'completed'),
+          wood: Math.max(0, Math.floor(Number(route.wood ?? 0))),
+          stone: Math.max(0, Math.floor(Number(route.stone ?? 0))),
+          iron: Math.max(0, Math.floor(Number(route.iron ?? 0))),
+          startedAt: String(route.startedAt ?? nowIso()),
+          arriveAt: String(route.arriveAt ?? nowIso()),
+          completedAt: Number.isFinite(completedAtMs) ? String(route.completedAt) : null,
+          remainingSec,
+        };
+      })
+    : [];
+  const marketLevel = includeMarket ? Math.max(0, Math.floor(Number(buildingLevels.market ?? 0))) : 0;
+  const marketCapacity = includeMarket ? calculateMarketCapacity(marketLevel) : 0;
+  const marketMerchants = includeMarket ? calculateMarketMerchantStateByVillage(Number(village.id), marketLevel) : null;
   const hideoutProtection = calculateLootProtectionPocket(buildingLevels);
   const vaultProtection = calculateCurrencyProtectionPocket(buildingLevels);
-  const marketGuildUnlocked = isMarketGuildUnlocked(marketLevel, completedResearchIds);
-  const marketGuildAutomation = buildMarketGuildAutomationState({
-    playerId: Number(player.id),
-    region: Number(world.region),
-    sourceVillageId: Number(village.id),
-    sourceMarketLevel: marketLevel,
-    guildUnlocked: marketGuildUnlocked,
-    referenceIso: snapshotIso,
-    persist: false,
-  });
+  const marketGuildUnlocked = includeMarket ? isMarketGuildUnlocked(marketLevel, completedResearchIds) : false;
+  const marketGuildAutomation = includeMarket
+    ? buildMarketGuildAutomationState({
+        playerId: Number(player.id),
+        region: Number(world.region),
+        sourceVillageId: Number(village.id),
+        sourceMarketLevel: marketLevel,
+        guildUnlocked: marketGuildUnlocked,
+        referenceIso: snapshotIso,
+        persist: false,
+      })
+    : null;
   const worldSpawnConfig = resolveWorldSpawnConfig(world);
   const villageProtectionRuleDays = Math.max(0, Number(worldSpawnConfig.playerProtectionDays ?? 0));
   const villageProtectionUntil = resolveVillageProtectionUntilIso(village, villageProtectionRuleDays);
@@ -11274,7 +11571,7 @@ export const getVillageSnapshot = (
       id: Number(player.id),
       username: player.username,
     },
-    kingdomHub,
+    ...(includeKingdomHub ? { kingdomHub } : {}),
     villages: villages.map((entry) => ({
       id: Number(entry.id),
       name: entry.name,
@@ -11350,16 +11647,65 @@ export const getVillageSnapshot = (
         endsAt: developerResourceBoost.endsAt == null ? null : String(developerResourceBoost.endsAt),
         remainingSec: Math.max(0, Number(developerResourceBoost.remainingSec ?? 0)),
       },
+      overflow: {
+        wood: Number(currentResources.wood ?? 0) > Number(resourceCap),
+        stone: Number(currentResources.stone ?? 0) > Number(resourceCap),
+        iron: Number(currentResources.iron ?? 0) > Number(resourceCap),
+        gold: Number(currentResources.gold ?? 0) > Number(mintGoldCap),
+        coins: Number(currentResources.coins ?? 0) > Number(mintCoinCap),
+        any:
+          Number(currentResources.wood ?? 0) > Number(resourceCap) ||
+          Number(currentResources.stone ?? 0) > Number(resourceCap) ||
+          Number(currentResources.iron ?? 0) > Number(resourceCap) ||
+          Number(currentResources.gold ?? 0) > Number(mintGoldCap) ||
+          Number(currentResources.coins ?? 0) > Number(mintCoinCap),
+      },
     },
     population: {
       used: populationUsed,
       cap: populationCap,
       available: availablePopulation,
       academicsUsed: academicPopulationUsed,
+      breakdown: {
+        buildings: Number(populationSnapshot.buildingPopulationUsed ?? 0),
+        unitsHome: Number(populationSnapshot.homeUnitPopulationUsed ?? 0),
+        unitsAway: Number(populationSnapshot.awayUnitPopulationUsed ?? 0),
+        academics: Number(populationSnapshot.academicPopulationUsed ?? 0),
+        garrisonReserved: Number(populationSnapshot.garrisonPopulationReserved ?? GARRISON_RESERVED_POPULATION),
+        recruitmentReserved: reservedPopulationForRecruitment,
+      },
+      overflow: {
+        amount: Math.max(0, Number(populationUsed) - Number(populationCap)),
+        any: Number(populationUsed) > Number(populationCap),
+      },
+    },
+    garrison: {
+      isUnlocked: Boolean(garrisonState.isUnlocked),
+      activeCap: Number(garrisonState.activeCap ?? 0),
+      reservedPopulation: Number(garrisonState.reservedPopulation ?? GARRISON_RESERVED_POPULATION),
+      totalCap: Number(garrisonState.totalCap ?? GARRISON_RESERVED_POPULATION),
+      totalUnits: Number(garrisonState.totalUnits ?? 0),
+      lastSyncAt: garrisonState.lastSyncAt ? String(garrisonState.lastSyncAt) : null,
+      units: {
+        militia: {
+          amount: Number(garrisonState.units?.militia?.amount ?? 0),
+          cap: Number(garrisonState.units?.militia?.cap ?? GARRISON_UNIT_CAPS.militia),
+          missing: Number(garrisonState.units?.militia?.missing ?? 0),
+          refillSecPerUnit: Number(garrisonState.units?.militia?.refillSecPerUnit ?? 0),
+          nextRefillSec: garrisonState.units?.militia?.nextRefillSec ?? null,
+        },
+        archer: {
+          amount: Number(garrisonState.units?.archer?.amount ?? 0),
+          cap: Number(garrisonState.units?.archer?.cap ?? GARRISON_UNIT_CAPS.archer),
+          missing: Number(garrisonState.units?.archer?.missing ?? 0),
+          refillSecPerUnit: Number(garrisonState.units?.archer?.refillSecPerUnit ?? 0),
+          nextRefillSec: garrisonState.units?.archer?.nextRefillSec ?? null,
+        },
+      },
     },
     buildings,
     units,
-    leaderboard,
+    ...(includeLeaderboard ? { leaderboard } : {}),
     activeUpgrade: activeUpgrade
       ? {
           id: Number(activeUpgrade.id),
@@ -11398,56 +11744,72 @@ export const getVillageSnapshot = (
       remainingSec: Math.max(0, Math.ceil((Date.parse(recruitment.finishAt) - Date.now()) / 1000)),
     })),
     army: armyState,
-    research: {
-      totalAcademics: totalAcademicsInRegion,
-      idleAcademics: idleAcademicsInRegion,
-      regionAcademicCapacity,
-      regionAcademicAvailableSlots,
-      villageAcademics: academicCountInVillage,
-      villageAcademicCapacity,
-      villageAcademicAvailableSlots,
-      activeProjectId: activeResearchRow ? String(activeResearchRow.researchId) : null,
-      projects: researchView,
-    },
-    market: {
-      level: marketLevel,
-      capacity: marketCapacity,
-      maxDistance: MARKET_MAX_DISTANCE_TILES,
-      guildUnlocked: marketGuildUnlocked,
-      merchants: marketMerchants,
-      logisticsRoutes: recentLogisticsRoutes,
-      guildAutomation: marketGuildAutomation,
-    },
-    mercenaries: {
-      contracts: selectMercenaryContractsByVillageStmt.all(Number(village.id)).map((contract) => ({
-        id: Number(contract.id),
-        status: String(contract.status ?? 'expired'),
-        orderedAt: String(contract.orderedAt ?? nowIso()),
-        arriveAt: String(contract.arriveAt ?? nowIso()),
-        expiresAt: String(contract.expiresAt ?? nowIso()),
-        deliveredAt: contract.deliveredAt ? String(contract.deliveredAt) : null,
-        finishedAt: contract.finishedAt ? String(contract.finishedAt) : null,
-        unitAmount: Math.max(0, Math.floor(Number(contract.unitAmount ?? 0))),
-      })),
-      cooldownRemainingSec: getMercenaryCooldownRemainingSec(
-        selectLatestMercenaryContractByPlayerRegionStmt.get(Number(player.id), Number(world.region)),
-      ),
-    },
-    rules: {
-      nightMode: {
-        startHourUtc: NIGHT_MODE_START_HOUR,
-        endHourUtc: NIGHT_MODE_END_HOUR,
-        isActiveNow: isNightModeAtTime(nowIso()),
-        defenseBonusPct: 100,
-      },
-      prestigeBalance: {
-        minAttackablePrestigeRatio: MIN_ATTACKABLE_PRESTIGE_RATIO,
-        minLootModifier: MIN_LOOT_MODIFIER,
-        retaliationRule:
-          'Pokud slabsi hrac zautoci na silnejsiho, ztraci ochranu prestize vuci tomuto hraci a muze dostat odvetny utok.',
-      },
-      cancelCommandProgressLimit: COMMAND_CANCEL_MAX_PROGRESS,
-    },
+    ...(includeResearch
+      ? {
+          research: {
+            totalAcademics: totalAcademicsInRegion,
+            idleAcademics: idleAcademicsInRegion,
+            regionAcademicCapacity,
+            regionAcademicAvailableSlots,
+            villageAcademics: academicCountInVillage,
+            villageAcademicCapacity,
+            villageAcademicAvailableSlots,
+            activeProjectId: activeResearchRow ? String(activeResearchRow.researchId) : null,
+            projects: researchView,
+          },
+        }
+      : {}),
+    ...(includeMarket
+      ? {
+          market: {
+            level: marketLevel,
+            capacity: marketCapacity,
+            maxDistance: MARKET_MAX_DISTANCE_TILES,
+            guildUnlocked: marketGuildUnlocked,
+            merchants: marketMerchants,
+            logisticsRoutes: recentLogisticsRoutes,
+            guildAutomation: marketGuildAutomation,
+          },
+        }
+      : {}),
+    ...(includeMercenaries
+      ? {
+          mercenaries: {
+            contracts: mercenaryContracts.map((contract) => ({
+              id: Number(contract.id),
+              status: String(contract.status ?? 'expired'),
+              orderedAt: String(contract.orderedAt ?? nowIso()),
+              arriveAt: String(contract.arriveAt ?? nowIso()),
+              expiresAt: String(contract.expiresAt ?? nowIso()),
+              deliveredAt: contract.deliveredAt ? String(contract.deliveredAt) : null,
+              finishedAt: contract.finishedAt ? String(contract.finishedAt) : null,
+              unitAmount: Math.max(0, Math.floor(Number(contract.unitAmount ?? 0))),
+            })),
+            cooldownRemainingSec: getMercenaryCooldownRemainingSec(
+              selectLatestMercenaryContractByPlayerRegionStmt.get(Number(player.id), Number(world.region)),
+            ),
+          },
+        }
+      : {}),
+    ...(includeRules
+      ? {
+          rules: {
+            nightMode: {
+              startHourUtc: NIGHT_MODE_START_HOUR,
+              endHourUtc: NIGHT_MODE_END_HOUR,
+              isActiveNow: isNightModeAtTime(nowIso()),
+              defenseBonusPct: 100,
+            },
+            prestigeBalance: {
+              minAttackablePrestigeRatio: MIN_ATTACKABLE_PRESTIGE_RATIO,
+              minLootModifier: MIN_LOOT_MODIFIER,
+              retaliationRule:
+                'Pokud slabsi hrac zautoci na silnejsiho, ztraci ochranu prestize vuci tomuto hraci a muze dostat odvetny utok.',
+            },
+            cancelCommandProgressLimit: COMMAND_CANCEL_MAX_PROGRESS,
+          },
+        }
+      : {}),
     activeOrders,
     limits: {
       maxBuildingLevel: getGlobalMaxBuildingLevel(),
@@ -12948,12 +13310,19 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
   const queuedCountForUnit = activeRecruitments
     .filter((recruitment) => recruitment.unitId === unitId)
     .reduce((sum, recruitment) => sum + Number(recruitment.amount), 0);
-  const populationCap = calculatePopulationCap(buildingLevels['residential-quarter'] ?? 0);
   const academicCount = Math.max(
     0,
     Math.floor(Number(countActiveAcademicsByVillageStmt.get(Number(village.id))?.total ?? 0)),
   );
-  const populationUsed = calculatePopulationUsed(buildingLevels, unitCounts) + academicCount * ACADEMIC_POPULATION_COST;
+  const awayUnitCounts = getVillageAwayUnitCounts(Number(village.id));
+  const populationStatus = getVillagePopulationStatus(Number(village.id), {
+    buildingLevels,
+    unitCounts,
+    awayUnitCounts,
+    academicCount,
+  });
+  const populationCap = Number(populationStatus.populationCap ?? 0);
+  const populationUsed = Number(populationStatus.populationUsed ?? 0);
   const reservedPopulationForRecruitment = calculateReservedPopulationForRecruitments(activeRecruitments);
   const availablePopulationForRecruitment = calculateAvailablePopulationForRecruitment(
     populationCap,

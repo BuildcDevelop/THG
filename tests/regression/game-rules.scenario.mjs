@@ -1165,6 +1165,83 @@ const runScenarioGoldMineIntegerProductionTick = () => {
   };
 };
 
+const runScenarioResourceOverflowPreservedOnTick = () => {
+  clearTransientState();
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const villageId = Number(attackerVillage.villageId);
+  const oneHourAgoIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+  setVillageBuildings(villageId, { warehouse: 1, woodcutter: 10, mint: 0, 'gold-mine': 0 });
+  setVillageResources(villageId, {
+    wood: 4000,
+    stone: 0,
+    iron: 0,
+    gold: 0,
+    coins: 0,
+  });
+
+  const beforePocket = selectResourcePocketByVillageStmt.get(villageId) ?? { wood: 0 };
+  updateResourceLastSyncAtByVillageStmt.run(oneHourAgoIso, villageId);
+  updateGameStateLastTickAtStmt.run(oneHourAgoIso);
+  runGameTick();
+
+  const afterPocket = selectResourcePocketByVillageStmt.get(villageId) ?? { wood: 0 };
+  const snapshot = getVillageSnapshot(ATTACKER_USERNAME, villageId, WORLD_PRIMARY, 'center', {
+    includeWorldMap: false,
+  });
+
+  return {
+    beforeWood: Number(beforePocket.wood ?? 0),
+    storedWood: Number(afterPocket.wood ?? 0),
+    cap: Number(snapshot?.resources?.cap ?? 0),
+    overflowAny: Boolean(snapshot?.resources?.overflow?.any),
+    overflowWood: Boolean(snapshot?.resources?.overflow?.wood),
+    productionPerHourWood: Number(snapshot?.resources?.productionPerHour?.wood ?? 0),
+  };
+};
+
+const runScenarioPopulationOverflowNoUnitCleanup = () => {
+  clearTransientState();
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const villageId = Number(attackerVillage.villageId);
+  const oneHourAgoIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+  setVillageBuildings(villageId, { 'residential-quarter': 1 });
+  setVillageUnits(villageId, { militia: 900 });
+  setVillageResources(villageId, {
+    wood: 0,
+    stone: 0,
+    iron: 0,
+    gold: 0,
+    coins: 0,
+  });
+
+  const beforeMilitia = Math.max(
+    0,
+    Math.floor(Number(selectUnitAmountByVillageAndUnitStmt.get(villageId, 'militia')?.amount ?? 0)),
+  );
+  updateResourceLastSyncAtByVillageStmt.run(oneHourAgoIso, villageId);
+  updateGameStateLastTickAtStmt.run(oneHourAgoIso);
+  runGameTick();
+
+  const afterMilitia = Math.max(
+    0,
+    Math.floor(Number(selectUnitAmountByVillageAndUnitStmt.get(villageId, 'militia')?.amount ?? 0)),
+  );
+  const snapshot = getVillageSnapshot(ATTACKER_USERNAME, villageId, WORLD_PRIMARY, 'center', {
+    includeWorldMap: false,
+  });
+
+  return {
+    beforeMilitia,
+    afterMilitia,
+    populationUsed: Number(snapshot?.population?.used ?? 0),
+    populationCap: Number(snapshot?.population?.cap ?? 0),
+    populationOverflowAny: Boolean(snapshot?.population?.overflow?.any),
+    populationOverflowAmount: Number(snapshot?.population?.overflow?.amount ?? 0),
+  };
+};
+
 const runScenarioMapRenderScopeStress = () => {
   clearTransientState();
   createAbandonedVillages(50);
@@ -1243,6 +1320,8 @@ const scenarioHandlers = new Map([
   ['read-models-no-tick-side-effects', runScenarioReadModelsNoTickSideEffects],
   ['mint-coins-accumulate-short-ticks', runScenarioMintCoinsAccumulateShortTicks],
   ['gold-mine-integer-production-tick', runScenarioGoldMineIntegerProductionTick],
+  ['resource-overflow-preserved-on-tick', runScenarioResourceOverflowPreservedOnTick],
+  ['population-overflow-no-unit-cleanup', runScenarioPopulationOverflowNoUnitCleanup],
   ['map-render-scope-stress', runScenarioMapRenderScopeStress],
 ]);
 

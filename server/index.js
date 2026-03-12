@@ -382,6 +382,12 @@ app.get('/api/v1/state', async (req, res, next) => {
     const worldId = parseOptionalWorldId(req.query.worldId);
     const spawnDirection = parseOptionalSpawnDirection(req.query.spawnDirection);
     const includeWorldMap = parseOptionalBoolean(req.query.includeWorldMap, false);
+    const includeLeaderboard = parseOptionalBoolean(req.query.includeLeaderboard, true);
+    const includeKingdomHub = parseOptionalBoolean(req.query.includeKingdomHub, true);
+    const includeResearch = parseOptionalBoolean(req.query.includeResearch, true);
+    const includeMarket = parseOptionalBoolean(req.query.includeMarket, true);
+    const includeMercenaries = parseOptionalBoolean(req.query.includeMercenaries, true);
+    const includeRules = parseOptionalBoolean(req.query.includeRules, true);
     const villageIdRaw = req.query.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -389,7 +395,15 @@ app.get('/api/v1/state', async (req, res, next) => {
         : Number(String(villageIdRaw).trim());
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const resolvedState = await executeWithReadOperation(() =>
-      getVillageSnapshot(username, normalizedVillageId, worldId, spawnDirection, { includeWorldMap }),
+      getVillageSnapshot(username, normalizedVillageId, worldId, spawnDirection, {
+        includeWorldMap,
+        includeLeaderboard,
+        includeKingdomHub,
+        includeResearch,
+        includeMarket,
+        includeMercenaries,
+        includeRules,
+      }),
     );
 
     res.json({

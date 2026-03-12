@@ -669,10 +669,46 @@ export type GameStateResponse = {
     cap: number;
     available: number;
     academicsUsed?: number;
+    breakdown?: {
+      buildings: number;
+      unitsHome: number;
+      unitsAway: number;
+      academics: number;
+      garrisonReserved: number;
+      recruitmentReserved: number;
+    };
+    overflow?: {
+      amount: number;
+      any: boolean;
+    };
+  };
+  garrison: {
+    isUnlocked?: boolean;
+    activeCap?: number;
+    reservedPopulation: number;
+    totalCap: number;
+    totalUnits: number;
+    lastSyncAt: string | null;
+    units: {
+      militia: {
+        amount: number;
+        cap: number;
+        missing: number;
+        refillSecPerUnit: number;
+        nextRefillSec: number | null;
+      };
+      archer: {
+        amount: number;
+        cap: number;
+        missing: number;
+        refillSecPerUnit: number;
+        nextRefillSec: number | null;
+      };
+    };
   };
   buildings: GameBuildingState[];
   units: GameUnitState[];
-  leaderboard: LeaderboardRow[];
+  leaderboard?: LeaderboardRow[];
   activeUpgrade: {
     id: number;
     buildingId: string;
@@ -757,6 +793,16 @@ export type GameStateResponse = {
     maxBuildingLevel: number;
     maxUnitCount: number | null;
   };
+};
+
+export type FetchGameStateOptions = {
+  includeWorldMap?: boolean;
+  includeLeaderboard?: boolean;
+  includeKingdomHub?: boolean;
+  includeResearch?: boolean;
+  includeMarket?: boolean;
+  includeMercenaries?: boolean;
+  includeRules?: boolean;
 };
 
 export type LoginResponse = {
@@ -1697,8 +1743,10 @@ export const fetchGameState = async (
   villageId?: number | null,
   worldId?: string | null,
   spawnDirection?: SpawnDirection | string | null,
-  includeWorldMap?: boolean,
+  options?: FetchGameStateOptions | boolean,
 ): Promise<GameStateResponse> => {
+  const resolvedOptions: FetchGameStateOptions =
+    typeof options === 'boolean' ? { includeWorldMap: options } : options ?? {};
   const params = new URLSearchParams({ username });
   if (villageId != null && Number.isFinite(villageId)) {
     params.set('villageId', String(villageId));
@@ -1709,8 +1757,26 @@ export const fetchGameState = async (
   if (spawnDirection != null && String(spawnDirection).trim() !== '') {
     params.set('spawnDirection', String(spawnDirection).trim());
   }
-  if (includeWorldMap === true) {
-    params.set('includeWorldMap', '1');
+  if (resolvedOptions.includeWorldMap != null) {
+    params.set('includeWorldMap', resolvedOptions.includeWorldMap ? '1' : '0');
+  }
+  if (resolvedOptions.includeLeaderboard != null) {
+    params.set('includeLeaderboard', resolvedOptions.includeLeaderboard ? '1' : '0');
+  }
+  if (resolvedOptions.includeKingdomHub != null) {
+    params.set('includeKingdomHub', resolvedOptions.includeKingdomHub ? '1' : '0');
+  }
+  if (resolvedOptions.includeResearch != null) {
+    params.set('includeResearch', resolvedOptions.includeResearch ? '1' : '0');
+  }
+  if (resolvedOptions.includeMarket != null) {
+    params.set('includeMarket', resolvedOptions.includeMarket ? '1' : '0');
+  }
+  if (resolvedOptions.includeMercenaries != null) {
+    params.set('includeMercenaries', resolvedOptions.includeMercenaries ? '1' : '0');
+  }
+  if (resolvedOptions.includeRules != null) {
+    params.set('includeRules', resolvedOptions.includeRules ? '1' : '0');
   }
   const payload = await request<ApiOk<GameStateResponse>>(`/api/v1/state?${params.toString()}`);
   return payload.data;

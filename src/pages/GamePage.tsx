@@ -24,9 +24,11 @@ import {
   createPlannerPlan as createPlannerPlanRequest,
   createCommunicationNotificationShare,
   createKingdom as createKingdomRequest,
+  fetchBattleReportsSummary,
   fetchCommunicationInbox,
   fetchCommunicationNotificationSharePreview,
   fetchCommunicationTokenSuggestions,
+  fetchGameActivitySummary,
   fetchGameActivity,
   fetchBattleReports,
   fetchArmyOverview,
@@ -383,6 +385,7 @@ type VillageIntelData = {
   fortificationLevel: number;
   gateLevel: number;
   garrisonUnits: number;
+  garrisonUnlocked: boolean;
   resources: Pick<GameStateResponse['resources'], 'wood' | 'stone' | 'iron' | 'gold' | 'coins'>;
   armies: VillageIntelArmyTemplate[];
 };
@@ -1019,9 +1022,14 @@ const toVillageIntelData = (state: GameStateResponse): VillageIntelData => {
   const buildingLevelById = new Map(
     (state.buildings ?? []).map((building) => [String(building.id), Math.max(0, Math.floor(Number(building.level ?? 0)))]),
   );
-  const garrisonUnits = (state.units ?? []).reduce(
-    (sum, unit) => sum + Math.max(0, Math.floor(Number(unit.amount ?? 0))),
+  const garrisonUnits = Math.max(
     0,
+    Math.floor(
+      Number(
+        state.garrison?.totalUnits ??
+          (state.units ?? []).reduce((sum, unit) => sum + Math.max(0, Math.floor(Number(unit.amount ?? 0))), 0),
+      ),
+    ),
   );
 
   return {
@@ -1050,6 +1058,7 @@ const toVillageIntelData = (state: GameStateResponse): VillageIntelData => {
     fortificationLevel: Math.max(0, Math.floor(Number(buildingLevelById.get('fortification') ?? 0))),
     gateLevel: Math.max(0, Math.floor(Number(buildingLevelById.get('gate') ?? 0))),
     garrisonUnits,
+    garrisonUnlocked: Boolean(state.garrison?.isUnlocked ?? true),
     resources: {
       wood: Math.max(0, Math.floor(Number(state.resources?.wood ?? 0))),
       stone: Math.max(0, Math.floor(Number(state.resources?.stone ?? 0))),
@@ -1946,6 +1955,10 @@ const WORLD_MAP_DEPENDENT_PANEL_TYPES = new Set<PanelType>([
   'kingdomProfile',
   'playerProfile',
 ]);
+const LEADERBOARD_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['rankings', 'profile', 'kingdomProfile', 'playerProfile']);
+const KINGDOM_HUB_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['kingdom', 'messages']);
+const RESEARCH_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['research']);
+const MARKET_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['commands']);
 const PANEL_DEFAULT_MIN_WIDTH = 360;
 const PANEL_DEFAULT_MIN_HEIGHT = 280;
 const PANEL_CITY_MIN_WIDTH = 1080;
@@ -14733,9 +14746,13 @@ const VillagePanel = memo(({
             <strong>
               {hasVillageIntel
                 ? `${(villageIntelData?.garrisonUnits ?? 0).toLocaleString('cs-CZ')} jednotek`
-                : '500 jednotek'}
+                : '300 jednotek'}
             </strong>
-            <span>Zatím orientační součet obránců léna.</span>
+            <span>
+              {hasVillageIntel && villageIntelData && !villageIntelData.garrisonUnlocked
+                ? 'Posádka se odemyká od Radnice 5. Rezervace 300 populace je aktivní hned.'
+                : 'Statická obrana léna (ozbrojenci + lučištníci) s průběžnou obnovou.'}
+            </span>
           </article>
         </div>
 
@@ -14833,8 +14850,8 @@ const BuildingPanel = memo(({
       <p>{building.effect}</p>
       {building.id === 'residential-quarter' ? (
         <p className="row-help">
-          Poznámka: část populace je systémově rezervovaná na provoz budov, aby se po rekrutu nebo ztrátách
-          nerozpadla ekonomická obsluha.
+          Poznámka: 300 populace je systémově rezervováno pro posádku (ozbrojenci + lučištníci), aby se obrana
+          obnovovala stabilně a nebylo možné tuto rezervaci obejít rekrutem. Aktivní posádka se odemyká od Radnice 5.
         </p>
       ) : null}
       <div className="building-hero-art">
@@ -14920,7 +14937,9 @@ export const GamePage = () => {
   const stateRequestPromiseRef = useRef<Promise<void> | null>(null);
   const worldMapRequestPromiseRef = useRef<Promise<void> | null>(null);
   const reportsRequestPromiseRef = useRef<Promise<void> | null>(null);
+  const reportsSummaryRequestPromiseRef = useRef<Promise<void> | null>(null);
   const activityRequestPromiseRef = useRef<Promise<void> | null>(null);
+  const activitySummaryRequestPromiseRef = useRef<Promise<void> | null>(null);
   const mutationPendingRef = useRef(false);
   const villageIntelRequestByVillageIdRef = useRef<Record<number, Promise<void> | null>>({});
   const hasStoredPanelLayoutRef = useRef(false);
@@ -15570,10 +15589,14 @@ export const GamePage = () => {
     };
   }, [gameState?.resources?.developerBoost]);
 
+  const researchProjects = useMemo(
+    () => (Array.isArray(gameState?.research?.projects) ? gameState.research.projects : []),
+    [gameState?.research?.projects],
+  );
+  const hasResolvedResearchProjects = Array.isArray(gameState?.research?.projects);
   const currentResearchTask = useMemo(() => {
-    const projects = gameState?.research?.projects ?? [];
-    const researchingProjects = projects.filter((project) => project.status === 'researching');
-    const availableProjects = projects.filter((project) => project.status === 'available');
+    const researchingProjects = researchProjects.filter((project) => project.status === 'researching');
+    const availableProjects = researchProjects.filter((project) => project.status === 'available');
     const candidates = researchingProjects.length > 0 ? researchingProjects : availableProjects;
     if (candidates.length <= 0) {
       return null;
@@ -15603,7 +15626,11 @@ export const GamePage = () => {
     });
 
     return sortedCandidates[0] ?? null;
-  }, [gameState?.research?.projects]);
+  }, [researchProjects]);
+  const isResearchSpotlightEmpty =
+    hasResolvedResearchProjects && researchProjects.length > 0 && currentResearchTask === null;
+  const isResearchSpotlightComplete =
+    isResearchSpotlightEmpty && researchProjects.every((project) => project.status === 'completed');
   const currentResearchProgressPercent = currentResearchTask
     ? Math.max(0, Math.min(100, Number(currentResearchTask.progressPercent ?? 0)))
     : 0;
@@ -15618,8 +15645,21 @@ export const GamePage = () => {
         : 'Neurčeno'
     : 'Neurčeno';
   const currentResearchTooltipLabel = currentResearchTask
-    ? `Dokončení: ${Math.round(currentResearchProgressPercent)} %\nČas dokončení: ${currentResearchCompletionTimeLabel}\nAkademici: ${currentResearchAssignedAcademics.toLocaleString('cs-CZ')}`
-    : '';
+    ? currentResearchTask.status === 'researching'
+      ? `Dokončení: ${Math.round(currentResearchProgressPercent)} %\nČas dokončení: ${currentResearchCompletionTimeLabel}\nAkademici: ${currentResearchAssignedAcademics.toLocaleString('cs-CZ')}`
+      : `Připravený projekt: ${currentResearchTask.name}\nCena: ${Math.max(0, Math.floor(Number(currentResearchTask.coinCost ?? 0))).toLocaleString('cs-CZ')} mincí\nKlikni pro otevření panelu Výzkum`
+    : !hasResolvedResearchProjects
+      ? 'Načítám přehled výzkumu.'
+      : isResearchSpotlightComplete
+        ? 'Výzkum je kompletní. Klikni pro otevření panelu Výzkum.'
+        : 'Momentálně není k dispozici žádný další projekt. Klikni pro otevření panelu Výzkum.';
+  const currentResearchHeadline = currentResearchTask
+    ? currentResearchTask.name
+    : !hasResolvedResearchProjects
+      ? 'Načítám výzkum...'
+      : isResearchSpotlightComplete
+        ? 'Výzkum dokončen'
+        : 'Žádný projekt k výzkumu';
 
   const villageLabel = gameState
     ? `${gameState.village.name} (${gameState.village.coordX}|${gameState.village.coordY})`
@@ -15885,6 +15925,22 @@ export const GamePage = () => {
     () => panels.some((panel) => panel.type === 'activity' && panel.expanded),
     [panels],
   );
+  const hasExpandedLeaderboardConsumerPanel = useMemo(
+    () => panels.some((panel) => panel.expanded && LEADERBOARD_DEPENDENT_PANEL_TYPES.has(panel.type)),
+    [panels],
+  );
+  const hasExpandedKingdomHubConsumerPanel = useMemo(
+    () => panels.some((panel) => panel.expanded && KINGDOM_HUB_DEPENDENT_PANEL_TYPES.has(panel.type)),
+    [panels],
+  );
+  const hasExpandedResearchConsumerPanel = useMemo(
+    () => panels.some((panel) => panel.expanded && RESEARCH_DEPENDENT_PANEL_TYPES.has(panel.type)),
+    [panels],
+  );
+  const hasExpandedMarketConsumerPanel = useMemo(
+    () => panels.some((panel) => panel.expanded && MARKET_DEPENDENT_PANEL_TYPES.has(panel.type)),
+    [panels],
+  );
   const isOwnSettlementForPlayer = useCallback(
     (settlement: RegionSettlement) =>
       settlement.owner === username || settlement.kind === 'own' || settlement.relation === 'self',
@@ -15993,7 +16049,15 @@ export const GamePage = () => {
             activeVillageId,
             selectedWorldId,
             selectedSpawnDirection,
-            false,
+            {
+              includeWorldMap: false,
+              includeLeaderboard: hasExpandedLeaderboardConsumerPanel,
+              includeKingdomHub: hasExpandedKingdomHubConsumerPanel,
+              includeResearch: true,
+              includeMarket: hasExpandedMarketConsumerPanel,
+              includeMercenaries: hasExpandedResearchConsumerPanel,
+              includeRules: hasExpandedResearchConsumerPanel,
+            },
           );
           applyIncomingGameState(nextState);
         } catch (error) {
@@ -16015,7 +16079,18 @@ export const GamePage = () => {
         }
       }
     },
-    [activeVillageId, applyIncomingGameState, selectedSpawnDirection, selectedWorldId, session, username],
+    [
+      activeVillageId,
+      applyIncomingGameState,
+      hasExpandedKingdomHubConsumerPanel,
+      hasExpandedLeaderboardConsumerPanel,
+      hasExpandedMarketConsumerPanel,
+      hasExpandedResearchConsumerPanel,
+      selectedSpawnDirection,
+      selectedWorldId,
+      session,
+      username,
+    ],
   );
 
   const loadWorldMapSnapshot = useCallback(
@@ -16063,6 +16138,70 @@ export const GamePage = () => {
     },
     [activeVillageId, selectedSpawnDirection, selectedWorldId, session, username],
   );
+
+  const loadBattleReportsSummary = useCallback(async () => {
+    if (!session || !selectedWorldId) {
+      return;
+    }
+    if (reportsSummaryRequestPromiseRef.current) {
+      return reportsSummaryRequestPromiseRef.current;
+    }
+
+    const requestPromise = (async () => {
+      try {
+        const summary = await fetchBattleReportsSummary(username, selectedWorldId);
+        setBattleReportsSummary({
+          total: Math.max(0, Number(summary.total ?? 0)),
+          updatedAt: String(summary.updatedAt ?? new Date().toISOString()),
+        });
+      } catch {
+        // Keep previous summary value when lightweight refresh fails.
+      }
+    })();
+
+    reportsSummaryRequestPromiseRef.current = requestPromise;
+
+    try {
+      await requestPromise;
+    } finally {
+      if (reportsSummaryRequestPromiseRef.current === requestPromise) {
+        reportsSummaryRequestPromiseRef.current = null;
+      }
+    }
+  }, [selectedWorldId, session, username]);
+
+  const loadActivitySummary = useCallback(async () => {
+    if (!session || !selectedWorldId) {
+      return;
+    }
+    if (activitySummaryRequestPromiseRef.current) {
+      return activitySummaryRequestPromiseRef.current;
+    }
+
+    const requestPromise = (async () => {
+      try {
+        const summary = await fetchGameActivitySummary(username, selectedWorldId);
+        setActivitySummary({
+          unreadTotal: Math.max(0, Number(summary.unreadTotal ?? 0)),
+          attentionTotal: Math.max(0, Number(summary.attentionTotal ?? 0)),
+          unreadFeed: Array.isArray(summary.unreadFeed) ? summary.unreadFeed : [],
+          updatedAt: String(summary.updatedAt ?? new Date().toISOString()),
+        });
+      } catch {
+        // Keep previous summary value when lightweight refresh fails.
+      }
+    })();
+
+    activitySummaryRequestPromiseRef.current = requestPromise;
+
+    try {
+      await requestPromise;
+    } finally {
+      if (activitySummaryRequestPromiseRef.current === requestPromise) {
+        activitySummaryRequestPromiseRef.current = null;
+      }
+    }
+  }, [selectedWorldId, session, username]);
 
   const loadBattleReports = useCallback(
     async (silent = false) => {
@@ -16300,6 +16439,74 @@ export const GamePage = () => {
     activityActionPending,
     isActivityPanelExpanded,
     loadActivity,
+    selectedWorldId,
+    session,
+  ]);
+
+  useEffect(() => {
+    if (!session || !selectedWorldId || isReportsPanelExpanded) {
+      return;
+    }
+
+    const pollBattleReportsSummary = () => {
+      if (document.hidden || mutationPendingRef.current) {
+        return;
+      }
+      void loadBattleReportsSummary();
+    };
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        void loadBattleReportsSummary();
+      }
+    };
+
+    void loadBattleReportsSummary();
+    const reportsSummaryTimer = window.setInterval(pollBattleReportsSummary, REPORTS_POLL_INTERVAL_MS);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(reportsSummaryTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isReportsPanelExpanded, loadBattleReportsSummary, selectedWorldId, session]);
+
+  useEffect(() => {
+    if (!session || !selectedWorldId || isActivityPanelExpanded) {
+      return;
+    }
+
+    const pollActivitySummary = () => {
+      if (document.hidden || mutationPendingRef.current) {
+        return;
+      }
+      if (activityActionPending) {
+        return;
+      }
+      void loadActivitySummary();
+    };
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        if (activityActionPending) {
+          return;
+        }
+        void loadActivitySummary();
+      }
+    };
+
+    void loadActivitySummary();
+    const activitySummaryTimer = window.setInterval(pollActivitySummary, REPORTS_POLL_INTERVAL_MS);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(activitySummaryTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [
+    activityActionPending,
+    isActivityPanelExpanded,
+    loadActivitySummary,
     selectedWorldId,
     session,
   ]);
@@ -17150,7 +17357,15 @@ export const GamePage = () => {
             villageId,
             selectedWorldId,
             selectedSpawnDirection,
-            false,
+            {
+              includeWorldMap: false,
+              includeLeaderboard: false,
+              includeKingdomHub: false,
+              includeResearch: false,
+              includeMarket: false,
+              includeMercenaries: false,
+              includeRules: false,
+            },
           );
           const intelData = toVillageIntelData(response);
           setVillageIntelByVillageId((previous) => ({
@@ -20589,28 +20804,23 @@ export const GamePage = () => {
           </div>
           <div className="resource-strip-spacer" aria-hidden="true" />
           <div className="resource-strip-column resource-right-column">
-            {currentResearchTask ? (
-              <button
-                type="button"
-                className={`resource-card research-spotlight-card ${currentResearchTask.status === 'researching' ? 'is-researching' : ''}`}
-                onClick={handleResearchSpotlightClick}
-                title={currentResearchTooltipLabel}
-                style={
-                  {
-                    '--research-spotlight-progress': `${currentResearchProgressPercent}%`,
-                  } as CSSProperties
-                }
-              >
-                <p>Aktuální výzkum</p>
-                <strong>{currentResearchTask.name}</strong>
-              </button>
-            ) : (
-              <article className="resource-card research-spotlight-card is-empty">
-                <p>Aktuální výzkum</p>
-                <strong>Žádný aktivní projekt</strong>
-                <span>Otevři panel Výzkum a spusť nový projekt.</span>
-              </article>
-            )}
+            <button
+              type="button"
+              className={`resource-card research-spotlight-card ${currentResearchTask?.status === 'researching' ? 'is-researching' : ''} ${isResearchSpotlightEmpty ? 'is-empty' : ''}`}
+              onClick={handleResearchSpotlightClick}
+              title={currentResearchTooltipLabel}
+              aria-label={currentResearchTooltipLabel}
+              style={
+                currentResearchTask
+                  ? ({
+                      '--research-spotlight-progress': `${currentResearchProgressPercent}%`,
+                    } as CSSProperties)
+                  : undefined
+              }
+            >
+              <p>Aktuální výzkum</p>
+              <strong>{currentResearchHeadline}</strong>
+            </button>
           </div>
         </section>
       {isVillageMenuOpen && villageMenuPosition ? (
