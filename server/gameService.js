@@ -68,9 +68,15 @@ const DOMINION_FIRE_RESPAWN_PROTECTION_DAYS = 3;
 const DOMINION_FIRE_NEARBY_ABANDONED_COUNT = 5;
 const DOMINION_FIRE_RESPAWN_NEARBY_ABANDONED_COUNT = 0;
 const DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MIN = 1;
-const DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MAX = 3;
+const DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MAX = 4;
 const DEFAULT_NEARBY_SPAWN_MIN_DISTANCE = 1;
-const DEFAULT_NEARBY_SPAWN_MAX_DISTANCE = 3;
+const DEFAULT_NEARBY_SPAWN_MAX_DISTANCE = 4;
+const DEFAULT_WEIGHTED_SPAWN_DISTANCE_RULES = Object.freeze([
+  { distance: 1, weight: 1 },
+  { distance: 2, weight: 15 },
+  { distance: 3, weight: 45 },
+  { distance: 4, weight: 80 },
+]);
 const DEFAULT_RESPAWN_PLAYER_PROTECTION_DAYS = 0;
 const DEFAULT_RESPAWN_NEARBY_ABANDONED_COUNT = 0;
 // NOTE: Every world must map to its own unique `region` ID.
@@ -98,6 +104,7 @@ const WORLD_CATALOG = Object.freeze([
       playerSpawnMinDistanceMax: DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MAX,
       nearbySpawnMinDistance: DEFAULT_NEARBY_SPAWN_MIN_DISTANCE,
       nearbySpawnMaxDistance: DEFAULT_NEARBY_SPAWN_MAX_DISTANCE,
+      distanceWeights: DEFAULT_WEIGHTED_SPAWN_DISTANCE_RULES,
     },
   },
   {
@@ -122,6 +129,7 @@ const WORLD_CATALOG = Object.freeze([
       playerSpawnMinDistanceMax: DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MAX,
       nearbySpawnMinDistance: DEFAULT_NEARBY_SPAWN_MIN_DISTANCE,
       nearbySpawnMaxDistance: DEFAULT_NEARBY_SPAWN_MAX_DISTANCE,
+      distanceWeights: DEFAULT_WEIGHTED_SPAWN_DISTANCE_RULES,
     },
   },
 ]);
@@ -2928,6 +2936,113 @@ const normalizeSpawnDistanceRange = (
   };
 };
 
+const normalizeSpawnDistanceWeights = (
+  distanceWeightsRaw,
+  fallbackRules = DEFAULT_WEIGHTED_SPAWN_DISTANCE_RULES,
+) => {
+  if (
+    distanceWeightsRaw &&
+    typeof distanceWeightsRaw === 'object' &&
+    Array.isArray(distanceWeightsRaw.rules) &&
+    Number(distanceWeightsRaw.totalWeight) > 0
+  ) {
+    return normalizeSpawnDistanceWeights(distanceWeightsRaw.rules, fallbackRules);
+  }
+  const sourceRules = Array.isArray(distanceWeightsRaw) && distanceWeightsRaw.length > 0 ? distanceWeightsRaw : fallbackRules;
+  const normalizedRulesByDistance = new Map();
+
+  for (const rule of sourceRules) {
+    const distance = Math.max(1, Math.floor(Number(rule?.distance ?? Number.NaN)));
+    const weight = Math.max(0, Math.floor(Number(rule?.weight ?? Number.NaN)));
+    if (!Number.isFinite(distance) || !Number.isFinite(weight) || weight <= 0) {
+      continue;
+    }
+    normalizedRulesByDistance.set(distance, (normalizedRulesByDistance.get(distance) ?? 0) + weight);
+  }
+
+  if (normalizedRulesByDistance.size <= 0) {
+    return normalizeSpawnDistanceWeights(fallbackRules, fallbackRules);
+  }
+
+  const rules = [...normalizedRulesByDistance.entries()]
+    .map(([distance, weight]) => ({ distance, weight }))
+    .sort((a, b) => a.distance - b.distance);
+  const totalWeight = rules.reduce((sum, rule) => sum + Number(rule.weight), 0);
+  const normalizedChanceRules = rules.map((rule) => ({
+    distance: Number(rule.distance),
+    weight: Number(rule.weight),
+    chancePercent: totalWeight > 0 ? (Number(rule.weight) / totalWeight) * 100 : 0,
+  }));
+
+  return {
+    rules: normalizedChanceRules,
+    totalWeight,
+    minDistance: Number(normalizedChanceRules[0]?.distance ?? 1),
+    maxDistance: Number(normalizedChanceRules[normalizedChanceRules.length - 1]?.distance ?? 1),
+  };
+};
+
+const normalizeSpawnDistanceWeightsForRange = (
+  distanceWeightsRaw,
+  minDistanceRaw,
+  maxDistanceRaw,
+  fallbackRules = DEFAULT_WEIGHTED_SPAWN_DISTANCE_RULES,
+) => {
+  const minDistance = Math.max(0, Math.floor(Number(minDistanceRaw ?? 0)));
+  const maxDistance = Math.max(minDistance, Math.floor(Number(maxDistanceRaw ?? minDistance)));
+  const normalized = normalizeSpawnDistanceWeights(distanceWeightsRaw, fallbackRules);
+  const rulesInRange = normalized.rules.filter(
+    (rule) => Number(rule.distance) >= minDistance && Number(rule.distance) <= maxDistance,
+  );
+  if (rulesInRange.length > 0) {
+    return normalizeSpawnDistanceWeights(rulesInRange, rulesInRange);
+  }
+
+  const fallbackInRange = normalizeSpawnDistanceWeights(fallbackRules, fallbackRules).rules.filter(
+    (rule) => Number(rule.distance) >= minDistance && Number(rule.distance) <= maxDistance,
+  );
+  if (fallbackInRange.length > 0) {
+    return normalizeSpawnDistanceWeights(fallbackInRange, fallbackInRange);
+  }
+
+  const safeDistance = Math.max(0, minDistance);
+  return normalizeSpawnDistanceWeights(
+    [{ distance: safeDistance, weight: 1 }],
+    [{ distance: safeDistance, weight: 1 }],
+  );
+};
+
+const pickWeightedSpawnDistance = (distanceWeights) => {
+  const normalizedRules = Array.isArray(distanceWeights?.rules) ? distanceWeights.rules : [];
+  const totalWeight = Math.max(0, Number(distanceWeights?.totalWeight ?? 0));
+  if (normalizedRules.length <= 0 || totalWeight <= 0) {
+    return 1;
+  }
+
+  let cursor = randomIntInclusive(1, Math.max(1, Math.floor(totalWeight)));
+  for (const rule of normalizedRules) {
+    cursor -= Math.max(0, Math.floor(Number(rule.weight ?? 0)));
+    if (cursor <= 0) {
+      return Math.max(1, Math.floor(Number(rule.distance ?? 1)));
+    }
+  }
+
+  return Math.max(1, Math.floor(Number(normalizedRules[normalizedRules.length - 1]?.distance ?? 1)));
+};
+
+const buildSpawnDistanceFallbackOrder = (targetDistanceRaw, minimumAllowedDistanceRaw = 0) => {
+  const targetDistance = Math.max(0, Math.floor(Number(targetDistanceRaw ?? 0)));
+  const minimumAllowedDistance = Math.max(0, Math.floor(Number(minimumAllowedDistanceRaw ?? 0)));
+  const fallbackOrder = [];
+  for (let distance = targetDistance; distance >= minimumAllowedDistance; distance -= 1) {
+    fallbackOrder.push(distance);
+  }
+  if (fallbackOrder.length <= 0) {
+    fallbackOrder.push(minimumAllowedDistance);
+  }
+  return fallbackOrder;
+};
+
 const resolveWorldSpawnConfig = (world) => ({
   playerTemplateType: String(world?.spawn?.playerTemplateType ?? 'default-player'),
   abandonedTemplateType: String(world?.spawn?.abandonedTemplateType ?? 'default-abandoned'),
@@ -2965,6 +3080,10 @@ const resolveWorldSpawnConfig = (world) => ({
       playerSpawnMinDistanceMax: playerRange.maxDistance,
       nearbySpawnMinDistance: nearbyRange.minDistance,
       nearbySpawnMaxDistance: nearbyRange.maxDistance,
+      distanceWeights: normalizeSpawnDistanceWeights(
+        world?.spawn?.distanceWeights,
+        DEFAULT_WEIGHTED_SPAWN_DISTANCE_RULES,
+      ),
     };
   })(),
 });
@@ -3458,9 +3577,14 @@ const calculateSpawnScore = (
     }
   }
 
-  // Nejprve plníme střed mapy směrem ven do prstenců. V rámci stejného prstence
-  // použijeme preferovanou světovou stranu a drobný rozptyl podle nejbližší obsazené buňky.
-  return -chebyshevFromCenter * 1_000_000 + directionalBias * 10_000 + nearestDistance * 100 - manhattanFromCenter;
+  // Primárně plníme svět od středu směrem ven, ale rozestup od existujících lén
+  // musí mít dostatečnou váhu, aby se nové spawny nehromadily v jedné kapse mapy.
+  return (
+    -chebyshevFromCenter * 120_000 +
+    nearestDistance * 40_000 +
+    directionalBias * 1_000 -
+    manhattanFromCenter
+  );
 };
 
 const claimBestSpawnCell = (spawnContext, preferredDirectionRaw = 'center', options = null) => {
@@ -3515,6 +3639,39 @@ const claimBestSpawnCell = (spawnContext, preferredDirectionRaw = 'center', opti
   return best;
 };
 
+const claimBestSpawnCellByDistanceWeights = (spawnContext, preferredDirectionRaw = 'center', options = null) => {
+  const distanceWeights = normalizeSpawnDistanceWeights(
+    options?.distanceWeights,
+    DEFAULT_WEIGHTED_SPAWN_DISTANCE_RULES,
+  );
+  const minimumAllowedDistance = Math.max(0, Math.floor(Number(options?.minimumAllowedDistance ?? 0)));
+  const targetDistance = pickWeightedSpawnDistance(distanceWeights);
+  const fallbackOrder = buildSpawnDistanceFallbackOrder(targetDistance, minimumAllowedDistance);
+  const minDistanceCoords = Array.isArray(options?.minDistanceCoords)
+    ? options.minDistanceCoords
+    : spawnContext.occupiedCoords;
+  const scoreDistanceCoords = Array.isArray(options?.scoreDistanceCoords)
+    ? options.scoreDistanceCoords
+    : spawnContext.occupiedCoords;
+
+  for (const minDistance of fallbackOrder) {
+    const spawnCell = claimBestSpawnCell(spawnContext, preferredDirectionRaw, {
+      minDistance,
+      minDistanceCoords,
+      scoreDistanceCoords,
+    });
+    if (spawnCell) {
+      return {
+        ...spawnCell,
+        targetDistance,
+        resolvedMinDistance: minDistance,
+      };
+    }
+  }
+
+  return null;
+};
+
 const claimNearbySpawnCells = (spawnContext, originCoordXRaw, originCoordYRaw, countRaw, options = null) => {
   const region = spawnContext.region;
   const originCoordX = Number(originCoordXRaw);
@@ -3528,6 +3685,20 @@ const claimNearbySpawnCells = (spawnContext, originCoordXRaw, originCoordYRaw, c
   );
   const minDistance = spawnRange.minDistance;
   const maxDistance = spawnRange.maxDistance;
+  const globalMinDistanceCoords = Array.isArray(options?.globalMinDistanceCoords)
+    ? options.globalMinDistanceCoords
+    : spawnContext.occupiedCoords;
+  const globalDistanceWeights = normalizeSpawnDistanceWeights(
+    options?.globalDistanceWeights,
+    DEFAULT_WEIGHTED_SPAWN_DISTANCE_RULES,
+  );
+  const localDistanceWeights = normalizeSpawnDistanceWeightsForRange(
+    globalDistanceWeights,
+    minDistance,
+    maxDistance,
+    DEFAULT_WEIGHTED_SPAWN_DISTANCE_RULES,
+  );
+  const minimumAllowedGlobalDistance = Math.max(0, Math.floor(Number(options?.minimumAllowedGlobalDistance ?? 0)));
   if (!Number.isFinite(originCoordX) || !Number.isFinite(originCoordY) || count <= 0) {
     return [];
   }
@@ -3556,46 +3727,96 @@ const claimNearbySpawnCells = (spawnContext, originCoordXRaw, originCoordYRaw, c
   }
 
   const remainingCandidates = [...candidates];
-  const selected = [];
-  while (selected.length < count && remainingCandidates.length > 0) {
-    const preferredDistance = randomIntInclusive(minDistance, maxDistance);
-    const preferredIndexes = [];
-    for (let index = 0; index < remainingCandidates.length; index += 1) {
-      if (remainingCandidates[index].chebyshevDistance === preferredDistance) {
-        preferredIndexes.push(index);
+  const pickCandidateIndex = (indexes) =>
+    indexes.length > 0 ? indexes[randomIntInclusive(0, indexes.length - 1)] : null;
+  const calculateNearestGlobalDistanceForCandidate = (candidate) =>
+    calculateNearestChebyshevDistance(Number(candidate.coordX), Number(candidate.coordY), globalMinDistanceCoords);
+  const collectIndexesByMaxGlobalDistance = (indexes) => {
+    let bestDistance = Number.NEGATIVE_INFINITY;
+    const bestIndexes = [];
+    for (const index of indexes) {
+      const candidate = remainingCandidates[index];
+      if (!candidate) {
+        continue;
+      }
+      const distance = calculateNearestGlobalDistanceForCandidate(candidate);
+      if (distance > bestDistance) {
+        bestDistance = distance;
+        bestIndexes.length = 0;
+        bestIndexes.push(index);
+      } else if (distance === bestDistance) {
+        bestIndexes.push(index);
       }
     }
+    return bestIndexes;
+  };
 
+  const selected = [];
+  while (selected.length < count && remainingCandidates.length > 0) {
+    const preferredDistance = Math.min(
+      maxDistance,
+      Math.max(minDistance, Math.floor(Number(pickWeightedSpawnDistance(localDistanceWeights) ?? minDistance))),
+    );
+    const targetGlobalDistance = pickWeightedSpawnDistance(globalDistanceWeights);
+    const globalDistanceFallbackOrder = buildSpawnDistanceFallbackOrder(
+      targetGlobalDistance,
+      minimumAllowedGlobalDistance,
+    );
     let chosenIndex = null;
-    if (preferredIndexes.length > 0) {
-      chosenIndex = preferredIndexes[randomIntInclusive(0, preferredIndexes.length - 1)];
-    } else {
-      const inRangeIndexes = [];
+
+    for (const minimumGlobalDistance of globalDistanceFallbackOrder) {
+      const preferredIndexes = [];
       for (let index = 0; index < remainingCandidates.length; index += 1) {
-        const distance = remainingCandidates[index].chebyshevDistance;
-        if (distance >= minDistance && distance <= maxDistance) {
-          inRangeIndexes.push(index);
+        const candidate = remainingCandidates[index];
+        if (candidate.chebyshevDistance !== preferredDistance) {
+          continue;
+        }
+        if (calculateNearestGlobalDistanceForCandidate(candidate) >= minimumGlobalDistance) {
+          preferredIndexes.push(index);
         }
       }
-      if (inRangeIndexes.length > 0) {
-        chosenIndex = inRangeIndexes[randomIntInclusive(0, inRangeIndexes.length - 1)];
+      chosenIndex = pickCandidateIndex(preferredIndexes);
+      if (chosenIndex != null) {
+        break;
+      }
+
+      const inRangeIndexes = [];
+      for (let index = 0; index < remainingCandidates.length; index += 1) {
+        const candidate = remainingCandidates[index];
+        if (
+          candidate.chebyshevDistance >= minDistance &&
+          candidate.chebyshevDistance <= maxDistance
+        ) {
+          if (calculateNearestGlobalDistanceForCandidate(candidate) >= minimumGlobalDistance) {
+            inRangeIndexes.push(index);
+          }
+        }
+      }
+      chosenIndex = pickCandidateIndex(inRangeIndexes);
+      if (chosenIndex != null) {
+        break;
       }
     }
 
     if (chosenIndex == null) {
-      let nearestDistance = Number.POSITIVE_INFINITY;
-      for (const candidate of remainingCandidates) {
-        nearestDistance = Math.min(nearestDistance, Number(candidate.chebyshevDistance));
-      }
-      const nearestIndexes = [];
+      const inRangeIndexes = [];
       for (let index = 0; index < remainingCandidates.length; index += 1) {
-        if (remainingCandidates[index].chebyshevDistance === nearestDistance) {
-          nearestIndexes.push(index);
+        const distance = Number(remainingCandidates[index]?.chebyshevDistance ?? 0);
+        if (distance >= minDistance && distance <= maxDistance) {
+          inRangeIndexes.push(index);
         }
       }
-      if (nearestIndexes.length > 0) {
-        chosenIndex = nearestIndexes[randomIntInclusive(0, nearestIndexes.length - 1)];
-      } else {
+      const bestInRangeIndexes = collectIndexesByMaxGlobalDistance(inRangeIndexes);
+      chosenIndex = pickCandidateIndex(bestInRangeIndexes);
+      if (chosenIndex == null) {
+        const allIndexes = [];
+        for (let index = 0; index < remainingCandidates.length; index += 1) {
+          allIndexes.push(index);
+        }
+        const bestOverallIndexes = collectIndexesByMaxGlobalDistance(allIndexes);
+        chosenIndex = pickCandidateIndex(bestOverallIndexes);
+      }
+      if (chosenIndex == null) {
         chosenIndex = 0;
       }
     }
@@ -3839,6 +4060,9 @@ const createNearbyAbandonedVillagesAroundSpawn = ({
   templateType = 'default-abandoned',
   minDistance = DEFAULT_NEARBY_SPAWN_MIN_DISTANCE,
   maxDistance = DEFAULT_NEARBY_SPAWN_MAX_DISTANCE,
+  globalDistanceWeights = DEFAULT_WEIGHTED_SPAWN_DISTANCE_RULES,
+  globalMinDistanceCoords = null,
+  minimumAllowedGlobalDistance = 0,
   createdAtIso = nowIso(),
 }) => {
   const normalizedCount = Math.max(0, Math.floor(Number(count ?? 0)));
@@ -3852,7 +4076,13 @@ const createNearbyAbandonedVillagesAroundSpawn = ({
     Number(centerCoordX),
     Number(centerCoordY),
     normalizedCount,
-    { minDistance, maxDistance },
+    {
+      minDistance,
+      maxDistance,
+      globalDistanceWeights,
+      globalMinDistanceCoords,
+      minimumAllowedGlobalDistance,
+    },
   );
   const createdVillages = [];
 
@@ -3929,63 +4159,86 @@ const claimBotCityStateSpawnCell = (
   spawnContext,
   botCoords = [],
   minDistanceRaw = BOT_CITY_STATE_MIN_DISTANCE_FROM_SETTLEMENT,
+  distanceWeightsRaw = DEFAULT_WEIGHTED_SPAWN_DISTANCE_RULES,
 ) => {
   const region = spawnContext.region;
-  const minDistance = Math.max(0, Math.floor(Number(minDistanceRaw ?? 0)));
+  const baseMinDistance = Math.max(0, Math.floor(Number(minDistanceRaw ?? 0)));
+  const distanceWeights = normalizeSpawnDistanceWeights(distanceWeightsRaw, DEFAULT_WEIGHTED_SPAWN_DISTANCE_RULES);
+  const weightedTargetDistance = pickWeightedSpawnDistance(distanceWeights);
+  const minDistanceFallbackOrder = buildSpawnDistanceFallbackOrder(
+    Math.max(baseMinDistance, weightedTargetDistance),
+    baseMinDistance,
+  );
   const scoreDistanceCoords = Array.isArray(botCoords) && botCoords.length > 0 ? botCoords : spawnContext.occupiedCoords;
-  let bestScore = Number.NEGATIVE_INFINITY;
-  const bestCandidates = [];
 
-  for (let localY = 1; localY <= Number(region.size); localY += 1) {
-    for (let localX = 1; localX <= Number(region.size); localX += 1) {
-      const coordX = Number(region.originX) + localX - 1;
-      const coordY = Number(region.originY) + localY - 1;
-      const key = toCoordinateKey(coordX, coordY);
-      if (spawnContext.occupiedKeys.has(key)) {
-        continue;
-      }
-      if (minDistance > 0) {
-        const nearestDistance = calculateNearestChebyshevDistance(coordX, coordY, spawnContext.occupiedCoords);
-        if (nearestDistance < minDistance) {
+  const tryClaimForMinDistance = (minimumDistance) => {
+    let bestScore = Number.NEGATIVE_INFINITY;
+    const bestCandidates = [];
+
+    for (let localY = 1; localY <= Number(region.size); localY += 1) {
+      for (let localX = 1; localX <= Number(region.size); localX += 1) {
+        const coordX = Number(region.originX) + localX - 1;
+        const coordY = Number(region.originY) + localY - 1;
+        const key = toCoordinateKey(coordX, coordY);
+        if (spawnContext.occupiedKeys.has(key)) {
           continue;
         }
-      }
+        if (minimumDistance > 0) {
+          const nearestDistance = calculateNearestChebyshevDistance(coordX, coordY, spawnContext.occupiedCoords);
+          if (nearestDistance < minimumDistance) {
+            continue;
+          }
+        }
 
-      const score = calculateSpawnScore(
-        coordX,
-        coordY,
-        spawnContext.occupiedCoords,
-        region,
-        'center',
-        scoreDistanceCoords,
-      );
-      if (score > bestScore) {
-        bestScore = score;
-        bestCandidates.length = 0;
-        bestCandidates.push({ localX, localY, coordX, coordY, key, score });
-      } else if (score === bestScore) {
-        bestCandidates.push({ localX, localY, coordX, coordY, key, score });
+        const score = calculateSpawnScore(
+          coordX,
+          coordY,
+          spawnContext.occupiedCoords,
+          region,
+          'center',
+          scoreDistanceCoords,
+        );
+        if (score > bestScore) {
+          bestScore = score;
+          bestCandidates.length = 0;
+          bestCandidates.push({ localX, localY, coordX, coordY, key, score });
+        } else if (score === bestScore) {
+          bestCandidates.push({ localX, localY, coordX, coordY, key, score });
+        }
       }
     }
-  }
 
-  if (bestCandidates.length <= 0) {
-    return null;
-  }
-  const chosenIndex = bestCandidates.length > 1 ? randomIntInclusive(0, bestCandidates.length - 1) : 0;
-  const chosen = bestCandidates[chosenIndex];
-  spawnContext.occupiedKeys.add(chosen.key);
-  spawnContext.occupiedCoords.push({
-    coordX: chosen.coordX,
-    coordY: chosen.coordY,
-  });
-  if (Array.isArray(botCoords)) {
-    botCoords.push({
+    if (bestCandidates.length <= 0) {
+      return null;
+    }
+    const chosenIndex = bestCandidates.length > 1 ? randomIntInclusive(0, bestCandidates.length - 1) : 0;
+    const chosen = bestCandidates[chosenIndex];
+    spawnContext.occupiedKeys.add(chosen.key);
+    spawnContext.occupiedCoords.push({
       coordX: chosen.coordX,
       coordY: chosen.coordY,
     });
+    if (Array.isArray(botCoords)) {
+      botCoords.push({
+        coordX: chosen.coordX,
+        coordY: chosen.coordY,
+      });
+    }
+    return {
+      ...chosen,
+      targetDistance: weightedTargetDistance,
+      resolvedMinDistance: minimumDistance,
+    };
+  };
+
+  for (const minimumDistance of minDistanceFallbackOrder) {
+    const claimed = tryClaimForMinDistance(minimumDistance);
+    if (claimed) {
+      return claimed;
+    }
   }
-  return chosen;
+
+  return null;
 };
 
 const normalizeActiveBotCityStateVillagesInWorld = (world, nameAllocator) => {
@@ -4034,6 +4287,7 @@ const normalizeActiveBotCityStateVillagesInWorld = (world, nameAllocator) => {
 const spawnBotCityStatesForWorld = (world, requestedCountRaw, createdAtIso = nowIso()) => {
   const requestedCount = Math.max(0, Math.floor(Number(requestedCountRaw ?? 0)));
   const resolvedWorld = resolveWorldById(world?.id ?? world);
+  const spawnConfig = resolveWorldSpawnConfig(resolvedWorld);
   const region = Number(resolvedWorld.region);
   const botPlayerId = ensureActiveBotPlayerId(createdAtIso);
   const nameAllocator = createBotCityStateNameAllocatorForRegion(region);
@@ -4061,6 +4315,7 @@ const spawnBotCityStatesForWorld = (world, requestedCountRaw, createdAtIso = now
       spawnContext,
       botCoords,
       BOT_CITY_STATE_MIN_DISTANCE_FROM_SETTLEMENT,
+      spawnConfig.distanceWeights,
     );
     if (!spawnCell) {
       break;
@@ -4237,18 +4492,19 @@ const ensurePlayerHasVillageInWorldTransaction = db.transaction(
       ? Math.max(0, Math.floor(Number(spawnConfig.nearbyAbandonedCount ?? 0)))
       : Math.max(0, Math.floor(Number(overrideNearbyAbandonedCountRaw)));
   const spawnContext = buildSpawnContext(world);
-  const playerSpawnMinDistance = randomIntInclusive(
-    spawnConfig.playerSpawnMinDistanceMin,
-    spawnConfig.playerSpawnMinDistanceMax,
-  );
-  const playerSpawnCell = claimBestSpawnCell(spawnContext, spawnDirectionRaw, {
-    minDistance: playerSpawnMinDistance,
+  const playerSpawnCell = claimBestSpawnCellByDistanceWeights(spawnContext, spawnDirectionRaw, {
+    distanceWeights: spawnConfig.distanceWeights,
+    minimumAllowedDistance: spawnConfig.playerSpawnMinDistanceMin,
     minDistanceCoords: spawnContext.occupiedCoords,
     scoreDistanceCoords: spawnContext.occupiedCoords,
   });
   if (!playerSpawnCell) {
     throw new GameRuleError('Ve svete neni volne misto pro nove leno.', 409);
   }
+  const resolvedPlayerSpawnMinDistance = Math.max(
+    spawnConfig.playerSpawnMinDistanceMin,
+    Math.floor(Number(playerSpawnCell.resolvedMinDistance ?? spawnConfig.playerSpawnMinDistanceMin)),
+  );
 
   createFreshVillageForPlayer({
     playerId: Number(playerId),
@@ -4258,7 +4514,7 @@ const ensurePlayerHasVillageInWorldTransaction = db.transaction(
     protectionDays: effectiveProtectionDays,
     spawnContext,
     spawnCell: playerSpawnCell,
-    playerSpawnMinDistance,
+    playerSpawnMinDistance: resolvedPlayerSpawnMinDistance,
     playerSpawnMinDistanceCoords: spawnContext.occupiedCoords,
     playerSpawnScoreCoords: spawnContext.occupiedCoords,
   });
@@ -4272,6 +4528,9 @@ const ensurePlayerHasVillageInWorldTransaction = db.transaction(
     templateType: spawnConfig.abandonedTemplateType,
     minDistance: spawnConfig.nearbySpawnMinDistance,
     maxDistance: spawnConfig.nearbySpawnMaxDistance,
+    globalDistanceWeights: spawnConfig.distanceWeights,
+    globalMinDistanceCoords: spawnContext.occupiedCoords,
+    minimumAllowedGlobalDistance: spawnConfig.playerSpawnMinDistanceMin,
   });
 
   return selectVillagesByPlayerAndRegionStmt.all(Number(playerId), Number(world.region));
@@ -4372,12 +4631,18 @@ const createAbandonedVillagesTransaction = db.transaction((countRaw = 1) => {
   const requestedCount = clampNumber(Number.isFinite(parsedCount) ? Math.floor(parsedCount) : 1, 1, 50);
   const serialAllocator = createAbandonedBotSerialAllocator();
   const world = resolveWorldById(DEFAULT_WORLD_ID);
+  const spawnConfig = resolveWorldSpawnConfig(world);
   const spawnContext = buildSpawnContext(world);
   const createdAtIso = nowIso();
   const villages = [];
 
   for (let index = 0; index < requestedCount; index += 1) {
-    const spawnCell = claimBestSpawnCell(spawnContext);
+    const spawnCell = claimBestSpawnCellByDistanceWeights(spawnContext, 'center', {
+      distanceWeights: spawnConfig.distanceWeights,
+      minimumAllowedDistance: spawnConfig.playerSpawnMinDistanceMin,
+      minDistanceCoords: spawnContext.occupiedCoords,
+      scoreDistanceCoords: spawnContext.occupiedCoords,
+    });
     if (!spawnCell) {
       break;
     }

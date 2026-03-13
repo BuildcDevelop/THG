@@ -553,6 +553,8 @@ const runScenarioCaravanBinaryCasualties = () => {
   clearTransientState();
   updateVillageOwnerStmt.run(Number(defender.id), KINGDOM_DEFENDER, Number(defenderVillage.villageId));
   setVillageUnits(attackerVillage.villageId, { militia: 3000, caravan: 4 });
+  // Keep the scenario deterministic despite population-budget cleanup on economy sync.
+  setVillageBuildings(attackerVillage.villageId, { 'residential-quarter': 20 });
   setVillageUnits(defenderVillage.villageId, { militia: 25 });
   setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
   const { payload: survivorPayload } = runAttackAndGetPayload({
