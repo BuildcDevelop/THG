@@ -345,6 +345,48 @@ app.post('/api/v1/auth/register', async (req, res, next) => {
   }
 });
 
+app.use('/api/v1', (req, _res, next) => {
+  if (PUBLIC_AUTH_PATHS.has(String(req.path ?? '').trim())) {
+    next();
+    return;
+  }
+
+  const session = resolveSessionFromRequest(req);
+  if (!session) {
+    next(new GameRuleError('Neplatne prihlasovaci udaje.', 401, 'AUTH_REQUIRED'));
+    return;
+  }
+
+  const bodyUsernameRaw =
+    req.body && typeof req.body === 'object' && 'username' in req.body ? req.body.username : null;
+  const queryUsernameRaw =
+    req.query && typeof req.query === 'object' && 'username' in req.query ? req.query.username : null;
+
+  const bodyUsername = String(bodyUsernameRaw ?? '').trim();
+  const queryUsername = String(queryUsernameRaw ?? '').trim();
+  const sessionComparable = normalizeComparableUsername(session.username);
+
+  if (bodyUsername && normalizeComparableUsername(bodyUsername) !== sessionComparable) {
+    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH'));
+    return;
+  }
+
+  if (queryUsername && normalizeComparableUsername(queryUsername) !== sessionComparable) {
+    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH'));
+    return;
+  }
+
+  if (req.query && typeof req.query === 'object') {
+    req.query.username = session.username;
+  }
+  if (req.body && typeof req.body === 'object') {
+    req.body.username = session.username;
+  }
+
+  req.authSession = session;
+  next();
+});
+
 app.get('/api/v1/worlds', async (req, res, next) => {
   try {
     const username = String(req.query.username ?? '').trim();
@@ -378,7 +420,10 @@ app.get('/api/v1/admin/players', async (_req, res, next) => {
 
 app.get('/api/v1/state', async (req, res, next) => {
   try {
-    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const username = String(req.authSession?.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError('Neplatne prihlasovaci udaje.', 401, 'AUTH_REQUIRED');
+    }
     const worldId = parseOptionalWorldId(req.query.worldId);
     const spawnDirection = parseOptionalSpawnDirection(req.query.spawnDirection);
     const includeWorldMap = parseOptionalBoolean(req.query.includeWorldMap, false);
@@ -468,48 +513,6 @@ app.post('/api/v1/auth/logout', async (req, res, next) => {
   } catch (error) {
     next(toGameRuleError(error));
   }
-});
-
-app.use('/api/v1', (req, _res, next) => {
-  if (PUBLIC_AUTH_PATHS.has(String(req.path ?? '').trim())) {
-    next();
-    return;
-  }
-
-  const session = resolveSessionFromRequest(req);
-  if (!session) {
-    next(new GameRuleError('Neplatne prihlasovaci udaje.', 401, 'AUTH_REQUIRED'));
-    return;
-  }
-
-  const bodyUsernameRaw =
-    req.body && typeof req.body === 'object' && 'username' in req.body ? req.body.username : null;
-  const queryUsernameRaw =
-    req.query && typeof req.query === 'object' && 'username' in req.query ? req.query.username : null;
-
-  const bodyUsername = String(bodyUsernameRaw ?? '').trim();
-  const queryUsername = String(queryUsernameRaw ?? '').trim();
-  const sessionComparable = normalizeComparableUsername(session.username);
-
-  if (bodyUsername && normalizeComparableUsername(bodyUsername) !== sessionComparable) {
-    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH'));
-    return;
-  }
-
-  if (queryUsername && normalizeComparableUsername(queryUsername) !== sessionComparable) {
-    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH'));
-    return;
-  }
-
-  if (req.query && typeof req.query === 'object') {
-    req.query.username = session.username;
-  }
-  if (req.body && typeof req.body === 'object') {
-    req.body.username = session.username;
-  }
-
-  req.authSession = session;
-  next();
 });
 
 app.get('/api/v1/army/overview', async (req, res, next) => {

@@ -11465,12 +11465,71 @@ export const getVillageSnapshot = (
     activeOrders.push('Vyzkum: zadny aktivni projekt');
   }
 
+  const latestMercenaryContract = includeMercenaries
+    ? selectLatestMercenaryContractByPlayerRegionStmt.get(Number(player.id), Number(world.region))
+    : null;
+  const mercenaryCooldownSec = MERCENARY_CONTRACT_COOLDOWN_HOURS * 60 * 60;
+  const mercenaryDeliveryDelaySec = MERCENARY_DELIVERY_DELAY_MINUTES * 60;
+  const mercenaryDurationSec = MERCENARY_DURATION_HOURS * 60 * 60;
+  const mercenaryCooldownRemainingSec = includeMercenaries
+    ? getMercenaryCooldownRemainingSec(latestMercenaryContract, snapshotIso)
+    : 0;
+  const mercenaryCooldownEndsAt = includeMercenaries
+    ? (() => {
+        const orderedAtMs = Date.parse(String(latestMercenaryContract?.orderedAt ?? ''));
+        if (!Number.isFinite(orderedAtMs)) {
+          return null;
+        }
+        return new Date(orderedAtMs + mercenaryCooldownSec * 1000).toISOString();
+      })()
+    : null;
+  const mercenaryUnlocked = includeMercenaries
+    ? isResearchCompleted(researchRows, 'verven-bank')
+    : false;
   const mercenaryContracts = includeMercenaries
     ? selectMercenaryContractsByVillageStmt.all(Number(village.id))
     : [];
   const activeMercenaryContract = includeMercenaries
     ? mercenaryContracts.find((contract) => ['en_route', 'active'].includes(String(contract.status)))
     : null;
+  const mercenaryHiringOptions = includeMercenaries
+    ? villages.map((entry) => {
+        const optionVillageId = Number(entry.id);
+        const optionResources = selectResourcesByVillageStmt.get(optionVillageId);
+        const optionCoins = Math.max(0, Math.floor(Number(optionResources?.coins ?? 0)));
+        const optionContracts = selectMercenaryContractsByVillageStmt.all(optionVillageId);
+        const optionActiveContract =
+          optionContracts.find((contract) =>
+            ['en_route', 'active'].includes(String(contract.status ?? '').toLocaleLowerCase('cs-CZ')),
+          ) ?? null;
+        const missingCoins = Math.max(0, MERCENARY_CONTRACT_COST_COINS - optionCoins);
+        let blockedReason = null;
+        if (!mercenaryUnlocked) {
+          blockedReason = "Vyzkum 'Vervenska zlata banka' neni dokoncen.";
+        } else if (mercenaryCooldownRemainingSec > 0) {
+          blockedReason = `Zoldacka blokace: ${formatRemaining(mercenaryCooldownRemainingSec)}.`;
+        } else if (missingCoins > 0) {
+          blockedReason = `Chybi ${missingCoins.toLocaleString('cs-CZ')} minci.`;
+        }
+        return {
+          villageId: optionVillageId,
+          villageName: String(entry.name ?? `Leno #${optionVillageId}`),
+          coordX: Number(entry.coordX ?? 0),
+          coordY: Number(entry.coordY ?? 0),
+          coins: optionCoins,
+          hasEnoughCoins: optionCoins >= MERCENARY_CONTRACT_COST_COINS,
+          canHire: blockedReason == null,
+          blockedReason,
+          isCurrentVillage: optionVillageId === Number(village.id),
+          activeContractStatus: optionActiveContract ? String(optionActiveContract.status ?? '') : null,
+          activeContractArriveAt: optionActiveContract ? String(optionActiveContract.arriveAt ?? nowIso()) : null,
+          activeContractExpiresAt: optionActiveContract ? String(optionActiveContract.expiresAt ?? nowIso()) : null,
+          activeContractUnitAmount: optionActiveContract
+            ? Math.max(0, Math.floor(Number(optionActiveContract.unitAmount ?? 0)))
+            : 0,
+        };
+      })
+    : [];
   if (includeMercenaries) {
     if (activeMercenaryContract) {
       if (String(activeMercenaryContract.status) === 'en_route') {
@@ -11777,6 +11836,8 @@ export const getVillageSnapshot = (
           mercenaries: {
             contracts: mercenaryContracts.map((contract) => ({
               id: Number(contract.id),
+              villageId: Number(village.id),
+              villageName: String(village.name ?? `Leno #${Number(village.id)}`),
               status: String(contract.status ?? 'expired'),
               orderedAt: String(contract.orderedAt ?? nowIso()),
               arriveAt: String(contract.arriveAt ?? nowIso()),
@@ -11785,9 +11846,15 @@ export const getVillageSnapshot = (
               finishedAt: contract.finishedAt ? String(contract.finishedAt) : null,
               unitAmount: Math.max(0, Math.floor(Number(contract.unitAmount ?? 0))),
             })),
-            cooldownRemainingSec: getMercenaryCooldownRemainingSec(
-              selectLatestMercenaryContractByPlayerRegionStmt.get(Number(player.id), Number(world.region)),
-            ),
+            cooldownRemainingSec: mercenaryCooldownRemainingSec,
+            cooldownEndsAt: mercenaryCooldownEndsAt,
+            cooldownSec: mercenaryCooldownSec,
+            deliveryDelaySec: mercenaryDeliveryDelaySec,
+            durationSec: mercenaryDurationSec,
+            contractCoinCost: MERCENARY_CONTRACT_COST_COINS,
+            contractUnitAmount: MERCENARY_CONTRACT_UNIT_AMOUNT,
+            unlocked: mercenaryUnlocked,
+            hiringOptions: mercenaryHiringOptions,
           },
         }
       : {}),
@@ -13940,6 +14007,7 @@ const hireMercenaryContractTransaction = db.transaction((username, requestedVill
   return {
     contractId: Number(insertion.lastInsertRowid),
     villageId: Number(village.id),
+    villageName: String(village.name ?? `Leno #${Number(village.id)}`),
     orderedAt: orderedAtIso,
     arriveAt: arriveAtIso,
     expiresAt: expiresAtIso,

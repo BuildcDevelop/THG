@@ -1070,6 +1070,7 @@ const toVillageIntelData = (state: GameStateResponse): VillageIntelData => {
   };
 };
 
+const MERCENARY_UNIT_ID = 'mercenary';
 const COMMAND_UNIT_ORDER = ['militia', 'archer', 'cavalry', 'scout', 'knight', 'ram', 'caravan'] as const;
 type CommandUnitId = (typeof COMMAND_UNIT_ORDER)[number];
 const UNIT_ATTACK_POWER: Record<CommandUnitId, number> = {
@@ -1099,6 +1100,27 @@ const UNIT_LOOT_CAPACITY: Record<CommandUnitId, number> = {
   knight: 45,
   ram: 0,
   caravan: 250,
+};
+const resolveCombatPowerUnitId = (unitIdRaw: string): CommandUnitId | null => {
+  if (unitIdRaw === MERCENARY_UNIT_ID) {
+    return 'militia';
+  }
+  return COMMAND_UNIT_ORDER.includes(unitIdRaw as CommandUnitId) ? (unitIdRaw as CommandUnitId) : null;
+};
+const resolveAttackPowerByUnitId = (unitIdRaw: string): number => {
+  const powerUnitId = resolveCombatPowerUnitId(unitIdRaw);
+  return powerUnitId ? UNIT_ATTACK_POWER[powerUnitId] : 0;
+};
+const resolveDefensePowerByUnitId = (unitIdRaw: string): number => {
+  const powerUnitId = resolveCombatPowerUnitId(unitIdRaw);
+  return powerUnitId ? UNIT_DEFENSE_POWER[powerUnitId] : 0;
+};
+const resolveLootCapacityByUnitId = (unitIdRaw: string): number => {
+  if (unitIdRaw === MERCENARY_UNIT_ID) {
+    return 0;
+  }
+  const powerUnitId = resolveCombatPowerUnitId(unitIdRaw);
+  return powerUnitId ? UNIT_LOOT_CAPACITY[powerUnitId] : 0;
 };
 const UNIT_TRAVEL_SPEED_TILES_PER_HOUR: Record<CommandUnitId, number> = {
   militia: 18,
@@ -1906,6 +1928,7 @@ const MAP_PREVIEW_CARD_PINNED_HEIGHT_PX = 500;
 const MAP_HOVER_CLEAR_DELAY_MS = 190;
 const MAP_WINDOW_SIZE_STORAGE_KEY = 'tld_map_window_size';
 const LEGACY_MAP_WINDOW_SIZE_STORAGE_KEY = 'thg_map_window_size';
+const PANEL_STORAGE_SCHEMA_VERSION = 'v2';
 const PANEL_LAYOUT_STORAGE_KEY_PREFIX = 'tld_panel_layout';
 const LEGACY_PANEL_LAYOUT_STORAGE_KEY_PREFIX = 'thg_panel_layout';
 const PANEL_PLACEMENT_STORAGE_KEY_PREFIX = 'tld_panel_placement';
@@ -1958,6 +1981,7 @@ const WORLD_MAP_DEPENDENT_PANEL_TYPES = new Set<PanelType>([
 const LEADERBOARD_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['rankings', 'profile', 'kingdomProfile', 'playerProfile']);
 const KINGDOM_HUB_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['kingdom', 'messages']);
 const RESEARCH_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['research']);
+const MERCENARY_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['military']);
 const MARKET_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['commands']);
 const PANEL_DEFAULT_MIN_WIDTH = 360;
 const PANEL_DEFAULT_MIN_HEIGHT = 280;
@@ -2904,16 +2928,16 @@ const SETTLEMENT_PRESTIGE_META_BY_TIER: Record<SettlementPrestigeTier, Settlemen
 
 const resolveSettlementPrestigeTier = (prestigeRaw: number): SettlementPrestigeTier => {
   const prestige = Math.max(0, Math.floor(Number(prestigeRaw ?? 0)));
-  if (prestige >= 20000) {
+  if (prestige >= 16000) {
     return 'E';
   }
-  if (prestige >= 10000) {
+  if (prestige >= 9000) {
     return 'D';
   }
-  if (prestige >= 6000) {
+  if (prestige >= 4500) {
     return 'C';
   }
-  if (prestige >= 3000) {
+  if (prestige >= 1500) {
     return 'B';
   }
   return 'A';
@@ -3590,27 +3614,37 @@ const saveStoredShortcutSettings = (
   }
 };
 
-const getPanelLayoutStorageKey = (username: string): string =>
-  `${PANEL_LAYOUT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+const normalizePanelStorageScope = (worldId: string | null | undefined): string => {
+  const normalized = String(worldId ?? '').trim().toLocaleLowerCase('cs-CZ');
+  return normalized.length > 0 ? normalized : 'global';
+};
+const getPanelLayoutStorageKey = (username: string, worldId: string | null | undefined): string =>
+  `${PANEL_LAYOUT_STORAGE_KEY_PREFIX}:${PANEL_STORAGE_SCHEMA_VERSION}:${username.toLocaleLowerCase('cs-CZ')}:${normalizePanelStorageScope(worldId)}`;
 const getLegacyPanelLayoutStorageKey = (username: string): string =>
-  `${LEGACY_PANEL_LAYOUT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
-const getPanelPlacementStorageKey = (username: string): string =>
-  `${PANEL_PLACEMENT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+  `${LEGACY_PANEL_LAYOUT_STORAGE_KEY_PREFIX}:${username.toLocaleLowerCase('cs-CZ')}`;
+const getPanelPlacementStorageKey = (username: string, worldId: string | null | undefined): string =>
+  `${PANEL_PLACEMENT_STORAGE_KEY_PREFIX}:${PANEL_STORAGE_SCHEMA_VERSION}:${username.toLocaleLowerCase('cs-CZ')}:${normalizePanelStorageScope(worldId)}`;
 const getLegacyPanelPlacementStorageKey = (username: string): string =>
-  `${LEGACY_PANEL_PLACEMENT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+  `${LEGACY_PANEL_PLACEMENT_STORAGE_KEY_PREFIX}:${username.toLocaleLowerCase('cs-CZ')}`;
 
 const isPanelLayoutMode = (value: unknown): value is PanelLayoutMode =>
   value === 'floating' || value === 'full' || value === 'split-left' || value === 'split-right';
 
-const readStoredPanelPlacement = (username: string): StoredPanelPlacementByType => {
+const readStoredPanelPlacement = (
+  username: string,
+  worldId: string | null | undefined,
+): StoredPanelPlacementByType => {
   if (typeof window === 'undefined') {
     return {};
   }
 
   try {
+    const scopedRaw = window.localStorage.getItem(getPanelPlacementStorageKey(username, worldId));
     const raw =
-      window.localStorage.getItem(getPanelPlacementStorageKey(username)) ??
-      window.localStorage.getItem(getLegacyPanelPlacementStorageKey(username));
+      scopedRaw ??
+      (normalizePanelStorageScope(worldId) === 'global'
+        ? window.localStorage.getItem(getLegacyPanelPlacementStorageKey(username))
+        : null);
     if (!raw) {
       return {};
     }
@@ -3655,7 +3689,11 @@ const readStoredPanelPlacement = (username: string): StoredPanelPlacementByType 
   }
 };
 
-const saveStoredPanelPlacement = (username: string, placement: StoredPanelPlacementByType): void => {
+const saveStoredPanelPlacement = (
+  username: string,
+  worldId: string | null | undefined,
+  placement: StoredPanelPlacementByType,
+): void => {
   if (typeof window === 'undefined') {
     return;
   }
@@ -3685,7 +3723,7 @@ const saveStoredPanelPlacement = (username: string, placement: StoredPanelPlacem
   }
 
   try {
-    window.localStorage.setItem(getPanelPlacementStorageKey(username), JSON.stringify(payload));
+    window.localStorage.setItem(getPanelPlacementStorageKey(username, worldId), JSON.stringify(payload));
   } catch {
     // Ignore storage errors.
   }
@@ -3790,15 +3828,18 @@ const sanitizeStoredPanel = (value: unknown, index: number): PanelWindow | null 
   };
 };
 
-const readStoredPanelLayout = (username: string): PanelWindow[] | null => {
+const readStoredPanelLayout = (username: string, worldId: string | null | undefined): PanelWindow[] | null => {
   if (typeof window === 'undefined') {
     return null;
   }
 
   try {
+    const scopedRaw = window.localStorage.getItem(getPanelLayoutStorageKey(username, worldId));
     const raw =
-      window.localStorage.getItem(getPanelLayoutStorageKey(username)) ??
-      window.localStorage.getItem(getLegacyPanelLayoutStorageKey(username));
+      scopedRaw ??
+      (normalizePanelStorageScope(worldId) === 'global'
+        ? window.localStorage.getItem(getLegacyPanelLayoutStorageKey(username))
+        : null);
     if (!raw) {
       return null;
     }
@@ -3826,7 +3867,11 @@ const readStoredPanelLayout = (username: string): PanelWindow[] | null => {
   }
 };
 
-const savePanelLayout = (username: string, panels: PanelWindow[]): void => {
+const savePanelLayout = (
+  username: string,
+  worldId: string | null | undefined,
+  panels: PanelWindow[],
+): void => {
   if (typeof window === 'undefined') {
     return;
   }
@@ -3853,7 +3898,7 @@ const savePanelLayout = (username: string, panels: PanelWindow[]): void => {
   }));
 
   try {
-    window.localStorage.setItem(getPanelLayoutStorageKey(username), JSON.stringify(payload));
+    window.localStorage.setItem(getPanelLayoutStorageKey(username, worldId), JSON.stringify(payload));
   } catch {
     // Ignore storage errors in private mode/quota pressure.
   }
@@ -7284,12 +7329,24 @@ const MilitaryPanel = ({
   incomingMovements,
   stationedSupports,
   currentVillageName,
+  mercenaries,
+  resources,
+  notice,
+  mercenaryActionPending,
+  onHireMercenaries,
 }: {
   units: Unit[];
   activeMovements: ArmyMovementState[];
   incomingMovements: ArmyMovementState[];
   stationedSupports: ArmyMovementState[];
   currentVillageName: string;
+  mercenaries: GameStateResponse['mercenaries'] | undefined;
+  resources:
+    | Pick<GameStateResponse['resources'], 'coins' | 'productionPerHour' | 'protection'>
+    | undefined;
+  notice: string | null;
+  mercenaryActionPending: boolean;
+  onHireMercenaries: (villageId: number) => void;
 }) => {
   const orderedUnits = useMemo(
     () =>
@@ -7317,8 +7374,7 @@ const MilitaryPanel = ({
   const totalAttackPower = useMemo(
     () =>
       orderedUnits.reduce((sum, unit) => {
-        const unitId = unit.id as CommandUnitId;
-        const unitPower = COMMAND_UNIT_ORDER.includes(unitId) ? UNIT_ATTACK_POWER[unitId] : 0;
+        const unitPower = resolveAttackPowerByUnitId(String(unit.id));
         return sum + Number(unit.amount ?? 0) * unitPower;
       }, 0),
     [orderedUnits],
@@ -7326,8 +7382,7 @@ const MilitaryPanel = ({
   const totalDefensePower = useMemo(
     () =>
       orderedUnits.reduce((sum, unit) => {
-        const unitId = unit.id as CommandUnitId;
-        const unitPower = COMMAND_UNIT_ORDER.includes(unitId) ? UNIT_DEFENSE_POWER[unitId] : 0;
+        const unitPower = resolveDefensePowerByUnitId(String(unit.id));
         return sum + Number(unit.amount ?? 0) * unitPower;
       }, 0),
     [orderedUnits],
@@ -7335,8 +7390,7 @@ const MilitaryPanel = ({
   const totalLootCapacity = useMemo(
     () =>
       orderedUnits.reduce((sum, unit) => {
-        const unitId = unit.id as CommandUnitId;
-        const unitCapacity = COMMAND_UNIT_ORDER.includes(unitId) ? UNIT_LOOT_CAPACITY[unitId] : 0;
+        const unitCapacity = resolveLootCapacityByUnitId(String(unit.id));
         return sum + Number(unit.amount ?? 0) * unitCapacity;
       }, 0),
     [orderedUnits],
@@ -7365,6 +7419,198 @@ const MilitaryPanel = ({
   );
   const [hoveredMovementId, setHoveredMovementId] = useState<number | null>(null);
   const [tooltipCursorPosition, setTooltipCursorPosition] = useState<TooltipCursorPosition | null>(null);
+  const [selectedMercenaryVillageId, setSelectedMercenaryVillageId] = useState<number | null>(null);
+
+  const mercenaryCooldownRemainingSec = Math.max(0, Math.floor(Number(mercenaries?.cooldownRemainingSec ?? 0)));
+  const mercenaryCooldownSec = Math.max(0, Math.floor(Number(mercenaries?.cooldownSec ?? 0)));
+  const mercenaryDeliveryDelaySec = Math.max(0, Math.floor(Number(mercenaries?.deliveryDelaySec ?? 0)));
+  const mercenaryDurationSec = Math.max(0, Math.floor(Number(mercenaries?.durationSec ?? 0)));
+  const mercenaryContractCoinCost = Math.max(
+    0,
+    Math.floor(Number(mercenaries?.contractCoinCost ?? MERCENARY_CONTRACT_COIN_COST)),
+  );
+  const mercenaryContractUnitAmount = Math.max(
+    0,
+    Math.floor(Number(mercenaries?.contractUnitAmount ?? 0)),
+  );
+  const mercenaryUnlocked = Boolean(mercenaries?.unlocked);
+  const mercenaryContracts = useMemo(() => {
+    const statusPriority: Record<string, number> = {
+      active: 0,
+      en_route: 1,
+      ordered: 2,
+      in_transit: 3,
+      completed: 4,
+      expired: 5,
+      canceled: 6,
+    };
+    return [...(mercenaries?.contracts ?? [])].sort((left, right) => {
+      const leftPriority = statusPriority[String(left.status).toLocaleLowerCase('cs-CZ')] ?? 99;
+      const rightPriority = statusPriority[String(right.status).toLocaleLowerCase('cs-CZ')] ?? 99;
+      if (leftPriority !== rightPriority) {
+        return leftPriority - rightPriority;
+      }
+      const rightOrderedAtMs = Date.parse(String(right.orderedAt));
+      const leftOrderedAtMs = Date.parse(String(left.orderedAt));
+      const safeRight = Number.isFinite(rightOrderedAtMs) ? rightOrderedAtMs : 0;
+      const safeLeft = Number.isFinite(leftOrderedAtMs) ? leftOrderedAtMs : 0;
+      return safeRight - safeLeft;
+    });
+  }, [mercenaries?.contracts]);
+  const activeMercenaryContract = useMemo(
+    () =>
+      mercenaryContracts.find((contract) => {
+        const status = String(contract.status ?? '').toLocaleLowerCase('cs-CZ');
+        return status === 'active' || status === 'en_route';
+      }) ?? null,
+    [mercenaryContracts],
+  );
+  type MercenaryDeploymentState = {
+    status: 'en_route' | 'active';
+    remainingSec: number;
+    overlayPercent: number;
+    summaryLabel: string;
+    hoverLabel: string;
+  };
+  const mercenaryDeployment = useMemo<MercenaryDeploymentState | null>(() => {
+    if (!activeMercenaryContract) {
+      return null;
+    }
+
+    const nowMs = Date.now();
+    const status = String(activeMercenaryContract.status ?? '').toLocaleLowerCase('cs-CZ');
+    if (status === 'en_route') {
+      const orderedAtMs = Date.parse(String(activeMercenaryContract.orderedAt));
+      const arriveAtMs = Date.parse(String(activeMercenaryContract.arriveAt));
+      if (!Number.isFinite(arriveAtMs)) {
+        return null;
+      }
+      const fallbackDeliverySec =
+        Number.isFinite(orderedAtMs) && Number.isFinite(arriveAtMs)
+          ? Math.max(1, Math.floor((arriveAtMs - orderedAtMs) / 1000))
+          : 1;
+      const totalDeliverySec = mercenaryDeliveryDelaySec > 0 ? mercenaryDeliveryDelaySec : fallbackDeliverySec;
+      const remainingDeliverySec = Math.max(0, Math.ceil((arriveAtMs - nowMs) / 1000));
+      const overlayPercent = Math.max(
+        0,
+        Math.min(100, Math.round((remainingDeliverySec / Math.max(1, totalDeliverySec)) * 100)),
+      );
+      return {
+        status: 'en_route',
+        remainingSec: remainingDeliverySec,
+        overlayPercent,
+        summaryLabel: `Spawn za ${formatDurationLabel(remainingDeliverySec)} · ${formatDateTimeLabel(
+          activeMercenaryContract.arriveAt,
+        )}`,
+        hoverLabel: `Žoldáci dorazí ${formatDateTimeLabel(activeMercenaryContract.arriveAt)} (za ${formatDurationLabel(
+          remainingDeliverySec,
+        )}).`,
+      };
+    }
+
+    if (status === 'active') {
+      const arriveAtMs = Date.parse(String(activeMercenaryContract.arriveAt));
+      const expiresAtMs = Date.parse(String(activeMercenaryContract.expiresAt));
+      if (!Number.isFinite(expiresAtMs)) {
+        return null;
+      }
+      const fallbackDurationSec =
+        Number.isFinite(arriveAtMs) && Number.isFinite(expiresAtMs)
+          ? Math.max(1, Math.floor((expiresAtMs - arriveAtMs) / 1000))
+          : 1;
+      const totalDurationSec = mercenaryDurationSec > 0 ? mercenaryDurationSec : fallbackDurationSec;
+      const remainingDurationSec = Math.max(0, Math.ceil((expiresAtMs - nowMs) / 1000));
+      const overlayPercent = Math.max(
+        0,
+        Math.min(100, Math.round((remainingDurationSec / Math.max(1, totalDurationSec)) * 100)),
+      );
+      return {
+        status: 'active',
+        remainingSec: remainingDurationSec,
+        overlayPercent,
+        summaryLabel: `Nasazení končí za ${formatDurationLabel(remainingDurationSec)} · ${formatDateTimeLabel(
+          activeMercenaryContract.expiresAt,
+        )}`,
+        hoverLabel: `Žoldáci v lénu do ${formatDateTimeLabel(activeMercenaryContract.expiresAt)} (zbývá ${formatDurationLabel(
+          remainingDurationSec,
+        )}).`,
+      };
+    }
+
+    return null;
+  }, [activeMercenaryContract, mercenaryDeliveryDelaySec, mercenaryDurationSec]);
+  const mercenaryHiringOptions = useMemo(
+    () =>
+      [...(mercenaries?.hiringOptions ?? [])].sort((left, right) => {
+        if (left.hasEnoughCoins !== right.hasEnoughCoins) {
+          return left.hasEnoughCoins ? -1 : 1;
+        }
+        if (left.isCurrentVillage !== right.isCurrentVillage) {
+          return left.isCurrentVillage ? -1 : 1;
+        }
+        return compareVillageLabelNatural(
+          {
+            name: left.villageName,
+            coordX: left.coordX,
+            coordY: left.coordY,
+          },
+          {
+            name: right.villageName,
+            coordX: right.coordX,
+            coordY: right.coordY,
+          },
+        );
+      }),
+    [mercenaries?.hiringOptions],
+  );
+  const coinEligibleHiringOptions = useMemo(
+    () => mercenaryHiringOptions.filter((option) => option.hasEnoughCoins),
+    [mercenaryHiringOptions],
+  );
+  const displayedHiringOptions = coinEligibleHiringOptions.length > 0 ? coinEligibleHiringOptions : mercenaryHiringOptions;
+  const hasCoinEligibleHiringOptions = coinEligibleHiringOptions.length > 0;
+  useEffect(() => {
+    if (displayedHiringOptions.length <= 0) {
+      setSelectedMercenaryVillageId(null);
+      return;
+    }
+    setSelectedMercenaryVillageId((previous) => {
+      if (previous != null && displayedHiringOptions.some((option) => option.villageId === previous)) {
+        return previous;
+      }
+      const currentVillageOption =
+        displayedHiringOptions.find((option) => option.isCurrentVillage) ?? displayedHiringOptions[0];
+      return currentVillageOption?.villageId ?? null;
+    });
+  }, [displayedHiringOptions]);
+  const selectedMercenaryVillage = useMemo(
+    () =>
+      displayedHiringOptions.find((option) => option.villageId === selectedMercenaryVillageId) ??
+      mercenaryHiringOptions.find((option) => option.villageId === selectedMercenaryVillageId) ??
+      null,
+    [displayedHiringOptions, mercenaryHiringOptions, selectedMercenaryVillageId],
+  );
+  const canHireMercenaries = Boolean(selectedMercenaryVillage?.canHire) && !mercenaryActionPending;
+  const resolveMercenaryContractStatusLabel = (statusRaw: string): string => {
+    switch (String(statusRaw ?? '').toLocaleLowerCase('cs-CZ')) {
+      case 'ordered':
+        return 'Objednáno';
+      case 'en_route':
+        return 'Na cestě';
+      case 'in_transit':
+        return 'Na cestě';
+      case 'active':
+        return 'Aktivní';
+      case 'completed':
+        return 'Dokončeno';
+      case 'expired':
+        return 'Vypršelo';
+      case 'canceled':
+        return 'Zrušeno';
+      default:
+        return statusRaw;
+    }
+  };
 
   return (
     <div className="panel-stack military-panel">
@@ -7394,15 +7640,26 @@ const MilitaryPanel = ({
         <h3>Armáda ve vybraném lénu</h3>
         <div className="military-unit-grid">
           {orderedUnits.map((unit) => {
-            const unitId = unit.id as CommandUnitId;
-            const attackPower = COMMAND_UNIT_ORDER.includes(unitId) ? UNIT_ATTACK_POWER[unitId] : 0;
-            const defensePower = COMMAND_UNIT_ORDER.includes(unitId) ? UNIT_DEFENSE_POWER[unitId] : 0;
-            const lootCapacity = COMMAND_UNIT_ORDER.includes(unitId) ? UNIT_LOOT_CAPACITY[unitId] : 0;
+            const unitId = String(unit.id);
+            const attackPower = resolveAttackPowerByUnitId(unitId);
+            const defensePower = resolveDefensePowerByUnitId(unitId);
+            const lootCapacity = resolveLootCapacityByUnitId(unitId);
             const attackContribution = Number(unit.amount ?? 0) * attackPower;
             const defenseContribution = Number(unit.amount ?? 0) * defensePower;
+            const isMercenaryUnitCard = unitId === MERCENARY_UNIT_ID;
+            const mercenaryProgressPercent = isMercenaryUnitCard ? (mercenaryDeployment?.overlayPercent ?? 0) : 0;
 
             return (
-              <article key={`military-unit-${unit.id}`} className="military-unit-card">
+              <article
+                key={`military-unit-${unit.id}`}
+                className={`military-unit-card${isMercenaryUnitCard ? ' is-mercenary-card' : ''}`}
+                title={isMercenaryUnitCard && mercenaryDeployment ? mercenaryDeployment.hoverLabel : undefined}
+              >
+                {isMercenaryUnitCard ? (
+                  <span className="military-unit-mercenary-progress" aria-hidden="true">
+                    <span style={{ width: `${mercenaryProgressPercent}%` }} />
+                  </span>
+                ) : null}
                 <header>
                   <span className="unit-icon-shell" aria-hidden="true">
                     <img src={getUnitMetaById(unit.id).icon} alt="" className="unit-icon-image" loading="lazy" />
@@ -7417,6 +7674,9 @@ const MilitaryPanel = ({
                   <small>Obrana: {defenseContribution.toLocaleString('cs-CZ')}</small>
                   <small>Kořist: {(Number(unit.amount ?? 0) * lootCapacity).toLocaleString('cs-CZ')}</small>
                 </div>
+                {isMercenaryUnitCard && mercenaryDeployment ? (
+                  <small className="row-help military-unit-mercenary-timing">{mercenaryDeployment.summaryLabel}</small>
+                ) : null}
                 {unit.queuedCount > 0 ? (
                   <small className="row-help">Ve frontě náboru: +{unit.queuedCount.toLocaleString('cs-CZ')}</small>
                 ) : null}
@@ -7547,39 +7807,166 @@ const MilitaryPanel = ({
           </article>
         </div>
       </section>
+
+      <section className="military-mercenary-section">
+        <h3>Mincovna a žoldáci</h3>
+        <div className="commands-kpi-strip">
+          <article>
+            <span>Mince ve vybraném lénu</span>
+            <strong>{Math.max(0, Math.floor(Number(resources?.coins ?? 0))).toLocaleString('cs-CZ')}</strong>
+          </article>
+          <article>
+            <span>Chráněné mince</span>
+            <strong>{Math.max(0, Math.floor(Number(resources?.protection.coins ?? 0))).toLocaleString('cs-CZ')}</strong>
+          </article>
+          <article>
+            <span>Ražba / h</span>
+            <strong>{Math.max(0, Number(resources?.productionPerHour.mintCoins ?? 0)).toLocaleString('cs-CZ')}</strong>
+          </article>
+          <article>
+            <span>Cooldown žoldáků</span>
+            <strong>
+              {mercenaryCooldownRemainingSec > 0 ? formatDurationLabel(mercenaryCooldownRemainingSec) : 'Připraveno'}
+            </strong>
+          </article>
+          <article className={mercenaryUnlocked ? '' : 'is-danger'}>
+            <span>Výzkum banky</span>
+            <strong>{mercenaryUnlocked ? 'Odemčeno' : 'Zamčeno'}</strong>
+          </article>
+        </div>
+
+        <div className="research-panel-inline-actions military-mercenary-actions">
+          <label>
+            Léno pro nábor
+            <select
+              value={selectedMercenaryVillageId ?? ''}
+              onChange={(event) => setSelectedMercenaryVillageId(Number(event.target.value) || null)}
+              disabled={mercenaryActionPending || displayedHiringOptions.length <= 0}
+            >
+              {displayedHiringOptions.map((option) => (
+                <option key={`mercenary-hire-option-${option.villageId}`} value={option.villageId}>
+                  {option.villageName} ({option.coordX}|{option.coordY}) · {option.coins.toLocaleString('cs-CZ')} mincí
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="secondary-action"
+            onClick={() => {
+              if (selectedMercenaryVillageId == null) {
+                return;
+              }
+              onHireMercenaries(selectedMercenaryVillageId);
+            }}
+            disabled={!canHireMercenaries}
+          >
+            {mercenaryActionPending
+              ? 'Najímám žoldáky...'
+              : `Najmout žoldáky (${mercenaryContractCoinCost.toLocaleString('cs-CZ')} mincí)`}
+          </button>
+        </div>
+        {!hasCoinEligibleHiringOptions && mercenaryHiringOptions.length > 0 ? (
+          <small className="row-help">Žádné léno aktuálně nemá dost mincí pro nábor.</small>
+        ) : null}
+        {selectedMercenaryVillage ? (
+          <small className="row-help">
+            Vybrané léno {selectedMercenaryVillage.villageName} ({selectedMercenaryVillage.coordX}|
+            {selectedMercenaryVillage.coordY}) · mince {selectedMercenaryVillage.coins.toLocaleString('cs-CZ')} ·{' '}
+            {selectedMercenaryVillage.blockedReason ?? 'Nábor je připraven.'}
+          </small>
+        ) : (
+          <small className="row-help">Vyber léno pro nábor žoldáků.</small>
+        )}
+
+        <ul className="commands-list military-mercenary-timeline">
+          <li className="commands-item">
+            <div className="commands-item-line">
+              <strong>Doba spawnu</strong>
+              <span>{formatDurationLabel(Math.max(1, mercenaryDeliveryDelaySec))}</span>
+            </div>
+            <small>
+              {mercenaryDeployment?.status === 'en_route'
+                ? `Aktuální kontrakt dorazí ${formatDateTimeLabel(activeMercenaryContract?.arriveAt)} (za ${formatDurationLabel(mercenaryDeployment.remainingSec)}).`
+                : `Po náboru dorazí žoldáci za ${formatDurationLabel(Math.max(1, mercenaryDeliveryDelaySec))}.`}
+            </small>
+          </li>
+          <li className="commands-item">
+            <div className="commands-item-line">
+              <strong>Doba nasazení</strong>
+              <span>{formatDurationLabel(Math.max(1, mercenaryDurationSec))}</span>
+            </div>
+            <small>
+              {mercenaryDeployment?.status === 'active'
+                ? `Aktivní jednotka (+${Math.max(0, Math.floor(Number(activeMercenaryContract?.unitAmount ?? mercenaryContractUnitAmount))).toLocaleString('cs-CZ')}) vyprší ${formatDateTimeLabel(activeMercenaryContract?.expiresAt)}.`
+                : 'Žoldáci brání pouze domovské léno a po vypršení kontraktu automaticky zmizí.'}
+            </small>
+          </li>
+          <li className="commands-item">
+            <div className="commands-item-line">
+              <strong>Blokace náboru</strong>
+              <span>{formatDurationLabel(Math.max(1, mercenaryCooldownSec))}</span>
+            </div>
+            <small>
+              {mercenaryCooldownRemainingSec > 0
+                ? `Další nábor možný za ${formatDurationLabel(mercenaryCooldownRemainingSec)} (${formatDateTimeLabel(mercenaries?.cooldownEndsAt)}).`
+                : 'Cooldown je volný, nábor můžeš spustit ihned.'}
+            </small>
+          </li>
+        </ul>
+
+        {mercenaryContracts.length > 0 ? (
+          <ul className="commands-list">
+            {mercenaryContracts.map((contract) => (
+              <li key={`mercenary-contract-${contract.id}`} className="commands-item">
+                <div className="commands-item-line">
+                  <strong>
+                    Kontrakt #{contract.id}
+                    {contract.villageName ? ` · ${contract.villageName}` : ''}
+                  </strong>
+                  <span>
+                    {resolveMercenaryContractStatusLabel(contract.status)} · +
+                    {Math.max(0, Math.floor(Number(contract.unitAmount ?? 0))).toLocaleString('cs-CZ')} žoldáků
+                  </span>
+                </div>
+                <small>
+                  Objednáno {formatDateTimeLabel(contract.orderedAt)} · Dorazí {formatDateTimeLabel(contract.arriveAt)} ·
+                  Expirace {formatDateTimeLabel(contract.expiresAt)}
+                </small>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>Zatím nemáš žádný žoldácký kontrakt.</p>
+        )}
+        {notice ? <p className="panel-feedback">{notice}</p> : null}
+      </section>
     </div>
   );
 };
 
 const ResearchPanel = ({
   research,
-  mercenaries,
   rules,
   resources,
   notice,
   researchActionPending,
-  mercenaryActionPending,
   onHireAcademics,
   onAdjustResearchAcademics,
   onStartResearchProject,
-  onHireMercenaries,
 }: {
   research: GameStateResponse['research'] | undefined;
-  mercenaries: GameStateResponse['mercenaries'] | undefined;
   rules: GameStateResponse['rules'] | undefined;
   resources:
     | Pick<GameStateResponse['resources'], 'coins' | 'gold' | 'productionPerHour' | 'protection'>
     | undefined;
   notice: string | null;
   researchActionPending: boolean;
-  mercenaryActionPending: boolean;
   onHireAcademics: (amount: number) => Promise<boolean>;
   onAdjustResearchAcademics: (researchId: string, delta: number) => Promise<boolean>;
   onStartResearchProject: (researchId: string, academics: number) => void;
-  onHireMercenaries: () => void;
 }) => {
   const projects = useMemo(() => research?.projects ?? [], [research?.projects]);
-  const mercenaryCooldownRemainingSec = Math.max(0, Math.floor(Number(mercenaries?.cooldownRemainingSec ?? 0)));
   const [isHireImpactActive, setIsHireImpactActive] = useState(false);
   const [hoveredResearchProjectId, setHoveredResearchProjectId] = useState<string | null>(null);
   const [researchTooltipCursorPosition, setResearchTooltipCursorPosition] = useState<TooltipCursorPosition | null>(null);
@@ -7602,36 +7989,6 @@ const ResearchPanel = ({
     () => projects.filter((project) => project.status === 'available'),
     [projects],
   );
-  const mercenaryResearch = useMemo(
-    () => projects.find((project) => project.id === 'verven-bank') ?? null,
-    [projects],
-  );
-  const mercenaryUnlocked = mercenaryResearch?.status === 'completed';
-  const sortedContracts = useMemo(
-    () => {
-      const statusPriority: Record<string, number> = {
-        active: 0,
-        ordered: 1,
-        in_transit: 2,
-        completed: 3,
-        expired: 4,
-        canceled: 5,
-      };
-      return [...(mercenaries?.contracts ?? [])].sort((left, right) => {
-        const leftPriority = statusPriority[String(left.status).toLocaleLowerCase('cs-CZ')] ?? 99;
-        const rightPriority = statusPriority[String(right.status).toLocaleLowerCase('cs-CZ')] ?? 99;
-        if (leftPriority !== rightPriority) {
-          return leftPriority - rightPriority;
-        }
-        const rightOrderedAtMs = Date.parse(String(right.orderedAt));
-        const leftOrderedAtMs = Date.parse(String(left.orderedAt));
-        const safeRight = Number.isFinite(rightOrderedAtMs) ? rightOrderedAtMs : 0;
-        const safeLeft = Number.isFinite(leftOrderedAtMs) ? leftOrderedAtMs : 0;
-        return safeRight - safeLeft;
-      });
-    },
-    [mercenaries?.contracts],
-  );
   const parseDraftAmount = (value: string): number => {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -7640,11 +7997,6 @@ const ResearchPanel = ({
     return Math.max(0, Math.floor(parsed));
   };
 
-  const canHireMercenaries =
-    mercenaryUnlocked &&
-    mercenaryCooldownRemainingSec <= 0 &&
-    Number(resources?.coins ?? 0) >= MERCENARY_CONTRACT_COIN_COST &&
-    !mercenaryActionPending;
   const totalAcademics = Math.max(0, Math.floor(Number(research?.totalAcademics ?? 0)));
   const idleAcademics = Math.max(0, Math.floor(Number(research?.idleAcademics ?? 0)));
   const regionAcademicCapacity = Math.max(
@@ -7694,32 +8046,6 @@ const ResearchPanel = ({
       return 'Probíhá';
     }
     return 'Dokončeno';
-  };
-
-  const resolveRouteStatusLabel = (statusRaw: string): string => {
-    const status = String(statusRaw ?? '').toLocaleLowerCase('cs-CZ');
-    if (status === 'ordered') {
-      return 'Objednáno';
-    }
-    if (status === 'active') {
-      return 'Aktivní';
-    }
-    if (status === 'expired') {
-      return 'Vypršelo';
-    }
-    if (status === 'in_progress') {
-      return 'Na cestě';
-    }
-    if (status === 'in_transit') {
-      return 'Na cestě';
-    }
-    if (status === 'completed') {
-      return 'Doručeno';
-    }
-    if (status === 'canceled') {
-      return 'Zrušeno';
-    }
-    return statusRaw;
   };
 
   const handleHireSingleAcademic = useCallback(async () => {
@@ -7984,61 +8310,6 @@ const ResearchPanel = ({
             <p className="row-help">Všechny dostupné projekty jsou hotové nebo uzamčené.</p>
           ) : null}
         </div>
-      </section>
-
-      <section>
-        <h3>Mincovna a žoldáci</h3>
-        <div className="commands-kpi-strip">
-          <article>
-            <span>Chráněné mince</span>
-            <strong>{Math.max(0, Math.floor(Number(resources?.protection.coins ?? 0))).toLocaleString('cs-CZ')}</strong>
-          </article>
-          <article>
-            <span>Ražba / h</span>
-            <strong>{Math.max(0, Number(resources?.productionPerHour.mintCoins ?? 0)).toLocaleString('cs-CZ')}</strong>
-          </article>
-          <article>
-            <span>Cooldown žoldáků</span>
-            <strong>{mercenaryCooldownRemainingSec > 0 ? formatDurationLabel(mercenaryCooldownRemainingSec) : 'Připraveno'}</strong>
-          </article>
-          <article className={mercenaryUnlocked ? '' : 'is-danger'}>
-            <span>Výzkum banky</span>
-            <strong>{mercenaryUnlocked ? 'Odemčeno' : 'Zamčeno'}</strong>
-          </article>
-        </div>
-        <div className="research-panel-inline-actions">
-          <button
-            type="button"
-            className="secondary-action"
-            onClick={onHireMercenaries}
-            disabled={!canHireMercenaries}
-          >
-            {mercenaryActionPending
-              ? 'Najímám žoldáky...'
-              : `Najmout žoldáky (${MERCENARY_CONTRACT_COIN_COST.toLocaleString('cs-CZ')} mincí)`}
-          </button>
-          <small className="row-help">Žoldáci brání pouze domovské léno a po 72 hodinách vyprší.</small>
-        </div>
-        {sortedContracts.length > 0 ? (
-          <ul className="commands-list">
-            {sortedContracts.map((contract) => (
-              <li key={`mercenary-contract-${contract.id}`} className="commands-item">
-                <div className="commands-item-line">
-                  <strong>Kontrakt #{contract.id}</strong>
-                  <span>
-                    {resolveRouteStatusLabel(contract.status)} · +{Math.max(0, Math.floor(Number(contract.unitAmount))).toLocaleString('cs-CZ')} žoldáků
-                  </span>
-                </div>
-                <small>
-                  Objednáno {formatDateTimeLabel(contract.orderedAt)} · Dorazí {formatDateTimeLabel(contract.arriveAt)} ·
-                  Expirace {formatDateTimeLabel(contract.expiresAt)}
-                </small>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p>Zatím nemáš žádný žoldácký kontrakt.</p>
-        )}
       </section>
 
       <section>
@@ -14943,6 +15214,8 @@ export const GamePage = () => {
   const mutationPendingRef = useRef(false);
   const villageIntelRequestByVillageIdRef = useRef<Record<number, Promise<void> | null>>({});
   const hasStoredPanelLayoutRef = useRef(false);
+  const skipPanelLayoutSaveScopeRef = useRef<string | null>(null);
+  const skipPanelPlacementSaveScopeRef = useRef<string | null>(null);
   const initialAutoStretchAppliedRef = useRef(false);
   const armyQuickSelectionRequestIdRef = useRef(0);
   const logisticsSendLockRef = useRef(false);
@@ -14985,11 +15258,11 @@ export const GamePage = () => {
   );
   const [mapZoomPercent, setMapZoomPercent] = useState<number>(() => readStoredMapZoom(username));
   const [storedPanelPlacement, setStoredPanelPlacement] = useState<StoredPanelPlacementByType>(() =>
-    readStoredPanelPlacement(username),
+    readStoredPanelPlacement(username, selectedWorldId),
   );
 
   const [panels, setPanels] = useState<PanelWindow[]>(() => {
-    const restored = readStoredPanelLayout(username);
+    const restored = readStoredPanelLayout(username, selectedWorldId);
     if (restored && restored.length > 0) {
       hasStoredPanelLayoutRef.current = true;
       const highestZ = restored.reduce((maxZ, panel) => Math.max(maxZ, panel.z), 40);
@@ -15068,8 +15341,34 @@ export const GamePage = () => {
   const [isWorldMenuOpen, setIsWorldMenuOpen] = useState(false);
   const [worldMenuError, setWorldMenuError] = useState<string | null>(null);
   useEffect(() => {
-    setStoredPanelPlacement(readStoredPanelPlacement(username));
-  }, [username]);
+    const storageScope = normalizePanelStorageScope(selectedWorldId);
+    skipPanelLayoutSaveScopeRef.current = storageScope;
+    skipPanelPlacementSaveScopeRef.current = storageScope;
+    setActivePanelId(null);
+    setActiveFullDockPanelId(null);
+    setActiveLeftDockPanelId(null);
+    setActiveRightDockPanelId(null);
+    setStoredPanelPlacement(readStoredPanelPlacement(username, selectedWorldId));
+    const restored = readStoredPanelLayout(username, selectedWorldId);
+    if (restored && restored.length > 0) {
+      hasStoredPanelLayoutRef.current = true;
+      const highestZ = restored.reduce((maxZ, panel) => Math.max(maxZ, panel.z), 40);
+      topZ.current = Math.max(40, highestZ);
+      const mapPanel = restored.find((panel) => panel.type === 'map');
+      if (mapPanel) {
+        mapWindowSizeRef.current = {
+          width: mapPanel.width,
+          height: mapPanel.height,
+        };
+      }
+      setPanels(restored);
+      return;
+    }
+
+    hasStoredPanelLayoutRef.current = false;
+    topZ.current = 40;
+    setPanels([createPanelWindow('city', 40, 0, { layoutMode: 'full' })]);
+  }, [selectedWorldId, username]);
   useEffect(() => {
     setVillageIntelByVillageId({});
     villageIntelRequestByVillageIdRef.current = {};
@@ -15937,6 +16236,10 @@ export const GamePage = () => {
     () => panels.some((panel) => panel.expanded && RESEARCH_DEPENDENT_PANEL_TYPES.has(panel.type)),
     [panels],
   );
+  const hasExpandedMercenaryConsumerPanel = useMemo(
+    () => panels.some((panel) => panel.expanded && MERCENARY_DEPENDENT_PANEL_TYPES.has(panel.type)),
+    [panels],
+  );
   const hasExpandedMarketConsumerPanel = useMemo(
     () => panels.some((panel) => panel.expanded && MARKET_DEPENDENT_PANEL_TYPES.has(panel.type)),
     [panels],
@@ -16055,7 +16358,7 @@ export const GamePage = () => {
               includeKingdomHub: hasExpandedKingdomHubConsumerPanel,
               includeResearch: true,
               includeMarket: hasExpandedMarketConsumerPanel,
-              includeMercenaries: hasExpandedResearchConsumerPanel,
+              includeMercenaries: hasExpandedMercenaryConsumerPanel,
               includeRules: hasExpandedResearchConsumerPanel,
             },
           );
@@ -16085,6 +16388,7 @@ export const GamePage = () => {
       hasExpandedKingdomHubConsumerPanel,
       hasExpandedLeaderboardConsumerPanel,
       hasExpandedMarketConsumerPanel,
+      hasExpandedMercenaryConsumerPanel,
       hasExpandedResearchConsumerPanel,
       selectedSpawnDirection,
       selectedWorldId,
@@ -16660,15 +16964,20 @@ export const GamePage = () => {
     if (!session) {
       return;
     }
+    const storageScope = normalizePanelStorageScope(selectedWorldId);
+    if (skipPanelLayoutSaveScopeRef.current === storageScope) {
+      skipPanelLayoutSaveScopeRef.current = null;
+      return;
+    }
 
     const timer = window.setTimeout(() => {
-      savePanelLayout(username, panels);
+      savePanelLayout(username, selectedWorldId, panels);
     }, 120);
 
     return () => {
       window.clearTimeout(timer);
     };
-  }, [panels, session, username]);
+  }, [panels, selectedWorldId, session, username]);
 
   useEffect(() => {
     setStoredPanelPlacement((previous) => {
@@ -16705,8 +17014,13 @@ export const GamePage = () => {
     if (!session) {
       return;
     }
-    saveStoredPanelPlacement(username, storedPanelPlacement);
-  }, [session, storedPanelPlacement, username]);
+    const storageScope = normalizePanelStorageScope(selectedWorldId);
+    if (skipPanelPlacementSaveScopeRef.current === storageScope) {
+      skipPanelPlacementSaveScopeRef.current = null;
+      return;
+    }
+    saveStoredPanelPlacement(username, selectedWorldId, storedPanelPlacement);
+  }, [selectedWorldId, session, storedPanelPlacement, username]);
 
   useEffect(() => {
     if (!session) {
@@ -18007,16 +18321,6 @@ export const GamePage = () => {
         return previous;
       }
 
-      const hasCenterStagePanel = previous.some(
-        (panel) =>
-          panel.expanded &&
-          canPanelUseDockLayout(panel.type) &&
-          resolvePanelDockLayoutMode(panel) === 'full',
-      );
-      if (hasCenterStagePanel && resolvePanelDockLayoutMode(target) !== 'full') {
-        return moveDockPanelToCenterStage(previous, id);
-      }
-
       if (!target.alert) {
         return previous;
       }
@@ -18679,26 +18983,38 @@ export const GamePage = () => {
     [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
-  const handleHireMercenaries = useCallback(async () => {
-    setMercenaryActionPending(true);
-    setResearchNotice(null);
-    try {
-      const response = await hireMercenaryContractRequest(
-        username,
-        gameState?.village.id ?? activeVillageId,
-        selectedWorldId,
-      );
-      applyIncomingGameState(response.data);
-      setResearchNotice(
-        `Žoldáci najati. Dorazí za 30 minut do ${new Date(response.result.arriveAt).toLocaleString('cs-CZ')}.`,
-      );
-      void loadGameState(true, true);
-    } catch (error) {
-      setResearchNotice(getErrorMessage(error));
-    } finally {
-      setMercenaryActionPending(false);
-    }
-  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username]);
+  const handleHireMercenaries = useCallback(
+    async (targetVillageIdRaw: number) => {
+      const targetVillageId = Math.max(0, Math.floor(Number(targetVillageIdRaw ?? 0)));
+      if (!targetVillageId) {
+        setResearchNotice('Vyber léno, kde chceš žoldáky najmout.');
+        return;
+      }
+      setMercenaryActionPending(true);
+      setResearchNotice(null);
+      try {
+        const response = await hireMercenaryContractRequest(
+          username,
+          targetVillageId,
+          selectedWorldId,
+        );
+        const activeVillageForView = Number(gameState?.village.id ?? activeVillageId);
+        if (targetVillageId === activeVillageForView) {
+          applyIncomingGameState(response.data);
+        }
+        const villageLabel = String(response.result.villageName ?? `Léno #${targetVillageId}`);
+        setResearchNotice(
+          `Žoldáci najati v lénu ${villageLabel}. Dorazí ${new Date(response.result.arriveAt).toLocaleString('cs-CZ')}.`,
+        );
+        void loadGameState(true, true);
+      } catch (error) {
+        setResearchNotice(getErrorMessage(error));
+      } finally {
+        setMercenaryActionPending(false);
+      }
+    },
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
+  );
 
   const handleSendMarketLogistics = useCallback(
     async (payload: { targetVillageId: number; wood: number; stone: number; iron: number }) => {
@@ -20042,6 +20358,11 @@ export const GamePage = () => {
             incomingMovements={armyIncomingMovements}
             stationedSupports={armyStationedSupports}
             currentVillageName={villageLabel}
+            mercenaries={gameState?.mercenaries}
+            resources={gameState?.resources}
+            notice={researchNotice}
+            mercenaryActionPending={mercenaryActionPending}
+            onHireMercenaries={handleHireMercenaries}
           />
         );
       case 'commands':
@@ -20077,16 +20398,13 @@ export const GamePage = () => {
         return (
           <ResearchPanel
             research={gameState?.research}
-            mercenaries={gameState?.mercenaries}
             rules={gameState?.rules}
             resources={gameState?.resources}
             notice={researchNotice}
             researchActionPending={researchActionPending}
-            mercenaryActionPending={mercenaryActionPending}
             onHireAcademics={handleHireAcademics}
             onAdjustResearchAcademics={handleAdjustResearchAcademics}
             onStartResearchProject={handleStartResearchProject}
-            onHireMercenaries={handleHireMercenaries}
           />
         );
       case 'messages':

@@ -582,6 +582,8 @@ export type WorldMapSnapshotResponse = {
 
 export type MercenaryContractState = {
   id: number;
+  villageId?: number;
+  villageName?: string;
   status: string;
   orderedAt: string;
   arriveAt: string;
@@ -589,6 +591,22 @@ export type MercenaryContractState = {
   deliveredAt: string | null;
   finishedAt: string | null;
   unitAmount: number;
+};
+
+export type MercenaryHiringOptionState = {
+  villageId: number;
+  villageName: string;
+  coordX: number;
+  coordY: number;
+  coins: number;
+  hasEnoughCoins: boolean;
+  canHire: boolean;
+  blockedReason: string | null;
+  isCurrentVillage: boolean;
+  activeContractStatus: string | null;
+  activeContractArriveAt: string | null;
+  activeContractExpiresAt: string | null;
+  activeContractUnitAmount: number;
 };
 
 export type GameStateResponse = {
@@ -773,6 +791,14 @@ export type GameStateResponse = {
   mercenaries?: {
     contracts: MercenaryContractState[];
     cooldownRemainingSec: number;
+    cooldownEndsAt?: string | null;
+    cooldownSec?: number;
+    deliveryDelaySec?: number;
+    durationSec?: number;
+    contractCoinCost?: number;
+    contractUnitAmount?: number;
+    unlocked?: boolean;
+    hiringOptions?: MercenaryHiringOptionState[];
   };
   rules?: {
     nightMode: {
@@ -1216,6 +1242,7 @@ export type AdjustResearchProjectAcademicsResult = {
 export type HireMercenaryContractResult = {
   contractId: number;
   villageId: number;
+  villageName?: string;
   orderedAt: string;
   arriveAt: string;
   expiresAt: string;

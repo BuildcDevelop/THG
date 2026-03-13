@@ -10935,6 +10935,66 @@ html {
   padding: 0.56rem 0.62rem;
   display: grid;
   gap: 0.34rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.military-unit-card > :not(.military-unit-mercenary-progress) {
+  position: relative;
+  z-index: 1;
+}
+
+.military-unit-card.is-mercenary-card {
+  border-color: rgba(116, 186, 255, 0.6);
+  box-shadow: inset 0 0 0 1px rgba(98, 160, 231, 0.22);
+}
+
+.military-unit-mercenary-progress {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.military-unit-mercenary-progress span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  max-width: 100%;
+  background:
+    linear-gradient(180deg, rgba(89, 164, 255, 0.42), rgba(34, 95, 168, 0.22)),
+    linear-gradient(90deg, rgba(123, 192, 255, 0.28), rgba(70, 135, 221, 0.18));
+  transition: width 240ms ease;
+}
+
+.military-unit-mercenary-timing {
+  color: #b9ddff;
+}
+
+.military-mercenary-section .commands-kpi-strip {
+  margin-bottom: 0.55rem;
+}
+
+.military-mercenary-actions {
+  align-items: end;
+}
+
+.military-mercenary-actions label {
+  min-width: 270px;
+}
+
+.military-mercenary-actions select {
+  width: 100%;
+  border: 1px solid rgba(145, 188, 223, 0.34);
+  border-radius: 8px;
+  background: rgba(8, 16, 27, 0.84);
+  color: #e2edf8;
+  padding: 0.36rem 0.52rem;
+  font: inherit;
+}
+
+.military-mercenary-timeline {
+  margin-top: 0.2rem;
 }
 
 .military-unit-card header {
