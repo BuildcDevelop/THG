@@ -780,16 +780,6 @@ const deleteResourcesByRegionVillagesStmt = db.prepare(
 const deleteVillagesByRegionStmt = db.prepare(
   'DELETE FROM villages WHERE region = ?',
 );
-const deleteOrphanAbandonedBotPlayersStmt = db.prepare(
-  `DELETE FROM players
-   WHERE is_bot = 1
-     AND username GLOB ?
-     AND NOT EXISTS (
-       SELECT 1
-       FROM villages v
-       WHERE v.player_id = players.id
-     )`,
-);
 const updateVillageToAbandonedOwnerStmt = db.prepare(
   `UPDATE villages
    SET player_id = ?,
@@ -4570,9 +4560,9 @@ const wipeWorldDataTransaction = db.transaction((worldIdRaw, options = {}) => {
   deleteResourcesByRegionVillagesStmt.run(region);
   deleteVillagesByRegionStmt.run(region);
   const resetPlayerWorldStateRows = Number(resetPlayerWorldStateByWorldStmt.run(startedAt, String(world.id)).changes ?? 0);
-  const deletedAbandonedBotPlayers = Number(
-    deleteOrphanAbandonedBotPlayersStmt.run(`${ABANDONED_BOT_USERNAME_PREFIX}*`).changes ?? 0,
-  );
+  // Keep bot player accounts untouched during world wipes; player row cleanup can violate FK constraints
+  // when historical player-linked records exist in non-world-scoped tables.
+  const deletedAbandonedBotPlayers = 0;
   const after = buildWorldScopedWipeStats(region);
 
   return {
