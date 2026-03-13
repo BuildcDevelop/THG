@@ -191,8 +191,9 @@ DELETE FROM game_state;
         region,
         prestige,
         loyalty,
+        settlement_kind,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of villages) {
       insertVillage.run(
@@ -205,6 +206,7 @@ DELETE FROM game_state;
         Number(row.region ?? 1),
         Number(row.prestige ?? 0),
         Number(row.loyalty ?? 100),
+        String(row.settlement_kind ?? 'player'),
         String(row.created_at ?? new Date().toISOString()),
       );
     }

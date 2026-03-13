@@ -1,6 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { fetchWorlds, type WorldPortalItem, type WorldsPortalResponse } from '../api/gameApi';
+import { fetchWorlds, spawnWorldEntry, type WorldPortalItem, type WorldsPortalResponse } from '../api/gameApi';
 import { getSession, logout, setSelectedWorld } from '../auth';
 
 const isWorldPlayable = (world: WorldPortalItem): boolean => String(world.status).toLowerCase() === 'online';
@@ -100,14 +100,33 @@ export const WorldsPage = () => {
   );
 
   const handleEnterWorld = async (worldOverride?: WorldPortalItem | null) => {
+    if (!session) {
+      return;
+    }
     const targetWorld = worldOverride ?? selectedWorld;
     if (!targetWorld || !isWorldPlayable(targetWorld)) {
       return;
     }
 
     setIsEntering(true);
-    setSelectedWorld(targetWorld.id, selectedSpawnDirection);
-    navigate('/game', { replace: true });
+    setError(null);
+    try {
+      if (!targetWorld.player?.hasPresence) {
+        await spawnWorldEntry(
+          session.username,
+          targetWorld.id,
+          selectedSpawnDirection,
+          targetWorld.player?.hasSpawnedBefore ? 'respawn' : 'entry',
+        );
+      }
+      setSelectedWorld(targetWorld.id, selectedSpawnDirection);
+      navigate('/game', { replace: true });
+    } catch (entryError) {
+      setError(entryError instanceof Error ? entryError.message : 'Vstup do sveta se nepodaril.');
+      await loadPortal();
+    } finally {
+      setIsEntering(false);
+    }
   };
 
   const handleLogout = () => {

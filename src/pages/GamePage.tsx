@@ -12794,7 +12794,11 @@ export const GamePage = () => {
           );
           applyIncomingGameState(nextState);
         } catch (error) {
-          setStateError(getErrorMessage(error));
+          const resolvedMessage = getErrorMessage(error);
+          setStateError(resolvedMessage);
+          if (/nema zalozenou osadu/i.test(resolvedMessage)) {
+            navigate('/worlds', { replace: true });
+          }
         } finally {
           if (!silent) {
             setLoadingState(false);
@@ -12812,7 +12816,7 @@ export const GamePage = () => {
         }
       }
     },
-    [activeVillageId, applyIncomingGameState, selectedSpawnDirection, selectedWorldId, session, username],
+    [activeVillageId, applyIncomingGameState, navigate, selectedSpawnDirection, selectedWorldId, session, username],
   );
 
   const loadWorldMapSnapshot = useCallback(
@@ -15127,7 +15131,15 @@ export const GamePage = () => {
     } finally {
       setMercenaryActionPending(false);
     }
-  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username]);
+  }, [
+    activeVillageId,
+    applyIncomingGameState,
+    gameState?.village.id,
+    loadGameState,
+    selectedSpawnDirection,
+    selectedWorldId,
+    username,
+  ]);
 
   const handleSendMarketLogistics = useCallback(
     async (payload: { targetVillageId: number; wood: number; stone: number; iron: number }) => {
@@ -15692,6 +15704,7 @@ export const GamePage = () => {
         username,
         gameState?.village.id ?? activeVillageId,
         selectedWorldId,
+        selectedSpawnDirection,
       );
       const nextState = response.data;
       applyIncomingGameState(nextState);

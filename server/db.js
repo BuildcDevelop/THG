@@ -9,6 +9,15 @@ import {
   calculateResourceCap,
   getMaxBuildingLevel,
 } from './gameConfig.js';
+import {
+  ABANDONED_SETTLEMENT_KIND,
+  BOT_CITY_STATE_SETTLEMENT_KIND,
+  PLAYER_SETTLEMENT_KIND,
+  createFallbackBotCityStateVillageName,
+  extractBotCityStateHistoricalName,
+  formatBotCityStateVillageName,
+  pickRandomUnusedBotCityStateName,
+} from './botCityStates.js';
 
 const configuredDataDir = String(process.env.TLD_DATA_DIR ?? process.env.THG_DATA_DIR ?? '').trim();
 const configuredSeedDbPath = String(process.env.TLD_SEED_DB_PATH ?? process.env.THG_SEED_DB_PATH ?? '').trim();
@@ -88,7 +97,6 @@ const ABANDONED_BOT_VILLAGE_COUNT = 20;
 const ABANDONED_BOT_USERNAME_PREFIX = '__abandoned_ai__';
 const ACTIVE_BOT_USERNAME = 'Bot';
 const ACTIVE_BOT_VILLAGE_COUNT = 3;
-const ACTIVE_BOT_VILLAGE_NAME_PREFIX = 'Bot osada';
 const ACTIVE_BOT_PROTECTION_DAYS = 5;
 const ABANDONED_BOT_VILLAGE_NAME_PREFIX = 'Opuštěná vesnice';
 const STARTING_RESOURCES = {
@@ -203,6 +211,7 @@ CREATE TABLE IF NOT EXISTS villages (
   peace_until TEXT,
   prestige INTEGER NOT NULL DEFAULT 0,
   loyalty INTEGER NOT NULL DEFAULT 100,
+  settlement_kind TEXT NOT NULL DEFAULT 'player',
   created_at TEXT NOT NULL,
   FOREIGN KEY (player_id) REFERENCES players(id)
 );
@@ -724,6 +733,22 @@ CREATE TABLE IF NOT EXISTS game_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   last_tick_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS player_world_state (
+  player_id INTEGER NOT NULL,
+  world_id TEXT NOT NULL,
+  has_spawned INTEGER NOT NULL DEFAULT 0,
+  spawn_count INTEGER NOT NULL DEFAULT 0,
+  last_spawn_at TEXT,
+  last_spawn_direction TEXT,
+  last_spawn_reason TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (player_id, world_id),
+  FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_world_state_world
+  ON player_world_state(world_id, has_spawned, spawn_count);
 `);
 
   const villageColumns = db.prepare('PRAGMA table_info(villages)').all();
@@ -735,6 +760,49 @@ CREATE TABLE IF NOT EXISTS game_state (
   if (!hasPeaceUntilColumn) {
     db.prepare('ALTER TABLE villages ADD COLUMN peace_until TEXT').run();
   }
+  const hasSettlementKindColumn = villageColumns.some((column) => column.name === 'settlement_kind');
+  if (!hasSettlementKindColumn) {
+    db.prepare(`ALTER TABLE villages ADD COLUMN settlement_kind TEXT NOT NULL DEFAULT '${PLAYER_SETTLEMENT_KIND}'`).run();
+  }
+  db.prepare(
+    `UPDATE villages
+     SET settlement_kind = CASE
+       WHEN EXISTS (
+         SELECT 1
+         FROM players p
+         WHERE p.id = villages.player_id
+           AND p.is_bot = 1
+           AND p.username GLOB ?
+       ) THEN ?
+       WHEN EXISTS (
+         SELECT 1
+         FROM players p
+         WHERE p.id = villages.player_id
+           AND p.is_bot = 1
+       ) THEN ?
+       ELSE ?
+     END
+     WHERE settlement_kind IS NULL
+        OR TRIM(settlement_kind) = ''
+        OR settlement_kind NOT IN (?, ?, ?)`,
+  ).run(
+    `${ABANDONED_BOT_USERNAME_PREFIX}*`,
+    ABANDONED_SETTLEMENT_KIND,
+    BOT_CITY_STATE_SETTLEMENT_KIND,
+    PLAYER_SETTLEMENT_KIND,
+    PLAYER_SETTLEMENT_KIND,
+    ABANDONED_SETTLEMENT_KIND,
+    BOT_CITY_STATE_SETTLEMENT_KIND,
+  );
+  db.prepare(
+    `CREATE INDEX IF NOT EXISTS idx_villages_region_settlement_kind
+     ON villages(region, settlement_kind, id)`,
+  ).run();
+  db.prepare(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_villages_region_bot_city_state_name_unique
+     ON villages(region, name)
+     WHERE settlement_kind = '${BOT_CITY_STATE_SETTLEMENT_KIND}'`,
+  ).run();
 
   const playerColumns = db.prepare('PRAGMA table_info(players)').all();
   const hasIsBotColumn = playerColumns.some((column) => column.name === 'is_bot');
@@ -915,6 +983,7 @@ DELETE FROM units;
 DELETE FROM buildings;
 DELETE FROM resources;
 DELETE FROM villages;
+DELETE FROM player_world_state;
 DELETE FROM players;
 DELETE FROM game_state;
 `);
@@ -938,6 +1007,9 @@ const seedWorld = db.transaction(() => {
       loyalty,
       created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const updateVillageSettlementKindStmt = db.prepare(
+    'UPDATE villages SET settlement_kind = ? WHERE id = ?',
   );
   const insertResourceStmt = db.prepare(
     'INSERT INTO resources (village_id, wood, stone, iron, gold, coins) VALUES (?, ?, ?, ?, ?, ?)',
@@ -1022,6 +1094,8 @@ const seedWorld = db.transaction(() => {
       nowIso(),
     );
     const villageId = Number(villageResult.lastInsertRowid);
+    updateVillageSettlementKindStmt.run(ABANDONED_SETTLEMENT_KIND, villageId);
+    updateVillageSettlementKindStmt.run(ABANDONED_SETTLEMENT_KIND, villageId);
 
     insertResourceStmt.run(
       villageId,
@@ -1187,7 +1261,9 @@ const ensureActiveBotVillages = db.transaction(() => {
   const updatePlayerToBotStmt = db.prepare('UPDATE players SET is_bot = 1, password = ? WHERE id = ?');
   const selectBotVillagesStmt = db.prepare(
     `SELECT
-        id
+        id,
+        name,
+        settlement_kind AS settlementKind
      FROM villages
      WHERE player_id = ? AND region = ?
      ORDER BY id ASC`,
@@ -1204,6 +1280,12 @@ const ensureActiveBotVillages = db.transaction(() => {
       loyalty,
       created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const updateVillageSettlementKindStmt = db.prepare(
+    'UPDATE villages SET settlement_kind = ? WHERE id = ?',
+  );
+  const updateVillageNameAndSettlementKindStmt = db.prepare(
+    'UPDATE villages SET name = ?, settlement_kind = ? WHERE id = ?',
   );
   const upsertResourceStmt = db.prepare(
     `INSERT INTO resources (village_id, wood, stone, iron, gold, coins)
@@ -1234,6 +1316,31 @@ const ensureActiveBotVillages = db.transaction(() => {
        AND (peace_until IS NULL OR TRIM(peace_until) = '')`,
   );
 
+  const usedVillageNames = new Set(
+    db
+      .prepare(
+        `SELECT name
+         FROM villages
+         WHERE region = ?`,
+      )
+      .all(Number(WORLD_REGION.id))
+      .map((row) => String(row.name ?? '').trim())
+      .filter((name) => name.length > 0),
+  );
+  const usedHistoricalNames = new Set();
+  const allocateBotVillageName = () => {
+    const historicalName = pickRandomUnusedBotCityStateName(usedHistoricalNames);
+    if (historicalName) {
+      usedHistoricalNames.add(historicalName);
+      const villageName = formatBotCityStateVillageName(historicalName);
+      usedVillageNames.add(villageName);
+      return villageName;
+    }
+    const fallbackVillageName = createFallbackBotCityStateVillageName(usedVillageNames, 101);
+    usedVillageNames.add(fallbackVillageName);
+    return fallbackVillageName;
+  };
+
   let botPlayer = selectNamedBotPlayerStmt.get(ACTIVE_BOT_USERNAME);
   if (!botPlayer) {
     const insertion = insertPlayerStmt.run(ACTIVE_BOT_USERNAME, '', 1, nowIso());
@@ -1251,6 +1358,33 @@ const ensureActiveBotVillages = db.transaction(() => {
 
   const playerId = Number(botPlayer.id);
   const existingVillages = selectBotVillagesStmt.all(playerId, WORLD_REGION.id);
+  const assignedHistoricalNames = new Set();
+  for (const village of existingVillages) {
+    const currentName = String(village.name ?? '').trim();
+    const historicalName = extractBotCityStateHistoricalName(currentName);
+    const isAlreadyAssigned = historicalName.length > 0 && assignedHistoricalNames.has(historicalName);
+    if (historicalName.length > 0 && !isAlreadyAssigned) {
+      assignedHistoricalNames.add(historicalName);
+      usedHistoricalNames.add(historicalName);
+      usedVillageNames.add(currentName);
+      if (String(village.settlementKind ?? '') !== BOT_CITY_STATE_SETTLEMENT_KIND) {
+        updateVillageSettlementKindStmt.run(BOT_CITY_STATE_SETTLEMENT_KIND, Number(village.id));
+      }
+      continue;
+    }
+
+    const renamedVillage = allocateBotVillageName();
+    const nextHistoricalName = extractBotCityStateHistoricalName(renamedVillage);
+    if (nextHistoricalName.length > 0) {
+      assignedHistoricalNames.add(nextHistoricalName);
+    }
+    updateVillageNameAndSettlementKindStmt.run(
+      renamedVillage,
+      BOT_CITY_STATE_SETTLEMENT_KIND,
+      Number(village.id),
+    );
+  }
+
   const missingVillageCount = Math.max(0, ACTIVE_BOT_VILLAGE_COUNT - existingVillages.length);
   if (missingVillageCount > 0) {
     const occupied = new Set(
@@ -1273,10 +1407,10 @@ const ensureActiveBotVillages = db.transaction(() => {
       }
       const coordX = WORLD_REGION.originX + spawn.localX - 1;
       const coordY = WORLD_REGION.originY + spawn.localY - 1;
-      const villageOrder = existingVillages.length + index + 1;
-      insertVillageStmt.run(
+      const villageName = allocateBotVillageName();
+      const insertion = insertVillageStmt.run(
         playerId,
-        `${ACTIVE_BOT_VILLAGE_NAME_PREFIX} ${String(villageOrder).padStart(2, '0')}`,
+        villageName,
         'Neutral',
         coordX,
         coordY,
@@ -1285,6 +1419,8 @@ const ensureActiveBotVillages = db.transaction(() => {
         100,
         nowIso(),
       );
+      const villageId = Number(insertion.lastInsertRowid);
+      updateVillageSettlementKindStmt.run(BOT_CITY_STATE_SETTLEMENT_KIND, villageId);
     }
   }
 
@@ -1325,6 +1461,35 @@ const ensureBotFlagConsistency = db.transaction(() => {
      WHERE is_bot = 0
        AND username GLOB ?`,
   ).run(`${ABANDONED_BOT_USERNAME_PREFIX}*`);
+  db.prepare(
+    `UPDATE villages
+     SET settlement_kind = ?
+     WHERE player_id IN (
+       SELECT id
+       FROM players
+       WHERE is_bot = 1
+         AND username GLOB ?
+     )`,
+  ).run(ABANDONED_SETTLEMENT_KIND, `${ABANDONED_BOT_USERNAME_PREFIX}*`);
+  db.prepare(
+    `UPDATE villages
+     SET settlement_kind = ?
+     WHERE player_id IN (
+       SELECT id
+       FROM players
+       WHERE is_bot = 1
+         AND username NOT GLOB ?
+     )`,
+  ).run(BOT_CITY_STATE_SETTLEMENT_KIND, `${ABANDONED_BOT_USERNAME_PREFIX}*`);
+  db.prepare(
+    `UPDATE villages
+     SET settlement_kind = ?
+     WHERE player_id IN (
+       SELECT id
+       FROM players
+       WHERE is_bot = 0
+     )`,
+  ).run(PLAYER_SETTLEMENT_KIND);
 });
 
 const ensureHayatoOwnsAbandonedVillage13 = db.transaction(() => {

@@ -31,6 +31,16 @@ import {
   MIN_LOOT_MODIFIER,
   resolveCombatBalance,
 } from './combatBalance.js';
+import {
+  ABANDONED_SETTLEMENT_KIND,
+  BOT_CITY_STATE_SETTLEMENT_KIND,
+  BOT_CITY_STATE_TITLE,
+  PLAYER_SETTLEMENT_KIND,
+  createFallbackBotCityStateVillageName,
+  extractBotCityStateHistoricalName,
+  formatBotCityStateVillageName,
+  pickRandomUnusedBotCityStateName,
+} from './botCityStates.js';
 
 const runtimeEnv = String(process.env.TLD_ENV ?? process.env.APP_ENV ?? process.env.NODE_ENV ?? '')
   .trim()
@@ -54,11 +64,15 @@ const WORLD_REGIONS = Object.freeze({
 const WORLD_STATUS_ONLINE = 'online';
 const DOMINION_FIRE_WORLD_ID = 'dominion-1-fire';
 const DOMINION_FIRE_PLAYER_PROTECTION_DAYS = 5;
+const DOMINION_FIRE_RESPAWN_PROTECTION_DAYS = 3;
 const DOMINION_FIRE_NEARBY_ABANDONED_COUNT = 5;
+const DOMINION_FIRE_RESPAWN_NEARBY_ABANDONED_COUNT = 0;
 const DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MIN = 1;
 const DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MAX = 3;
 const DEFAULT_NEARBY_SPAWN_MIN_DISTANCE = 1;
 const DEFAULT_NEARBY_SPAWN_MAX_DISTANCE = 3;
+const DEFAULT_RESPAWN_PLAYER_PROTECTION_DAYS = 0;
+const DEFAULT_RESPAWN_NEARBY_ABANDONED_COUNT = 0;
 // NOTE: Every world must map to its own unique `region` ID.
 // Account identity is global, but gameplay state (villages/kingdom/invites/events) is region-scoped.
 const WORLD_CATALOG = Object.freeze([
@@ -78,6 +92,8 @@ const WORLD_CATALOG = Object.freeze([
       abandonedTemplateType: 'default-abandoned',
       nearbyAbandonedCount: 0,
       playerProtectionDays: 0,
+      playerRespawnProtectionDays: DEFAULT_RESPAWN_PLAYER_PROTECTION_DAYS,
+      respawnNearbyAbandonedCount: DEFAULT_RESPAWN_NEARBY_ABANDONED_COUNT,
       playerSpawnMinDistanceMin: DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MIN,
       playerSpawnMinDistanceMax: DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MAX,
       nearbySpawnMinDistance: DEFAULT_NEARBY_SPAWN_MIN_DISTANCE,
@@ -100,6 +116,8 @@ const WORLD_CATALOG = Object.freeze([
       abandonedTemplateType: 'default-abandoned',
       nearbyAbandonedCount: DOMINION_FIRE_NEARBY_ABANDONED_COUNT,
       playerProtectionDays: DOMINION_FIRE_PLAYER_PROTECTION_DAYS,
+      playerRespawnProtectionDays: DOMINION_FIRE_RESPAWN_PROTECTION_DAYS,
+      respawnNearbyAbandonedCount: DOMINION_FIRE_RESPAWN_NEARBY_ABANDONED_COUNT,
       playerSpawnMinDistanceMin: DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MIN,
       playerSpawnMinDistanceMax: DEFAULT_PLAYER_SPAWN_MIN_DISTANCE_MAX,
       nearbySpawnMinDistance: DEFAULT_NEARBY_SPAWN_MIN_DISTANCE,
@@ -167,6 +185,11 @@ const DOMINION_FIRE_RESOURCE_BOOST = Object.freeze({
 const ABANDONED_BOT_USERNAME_PREFIX = '__abandoned_ai__';
 const PLAYER_VILLAGE_NAME_PREFIX = 'Leno';
 const ABANDONED_VILLAGE_NAME_PREFIX = 'Opustene leno';
+const SPAWN_REASON_ENTRY = 'entry';
+const SPAWN_REASON_RESTART = 'restart';
+const SPAWN_REASON_RESPAWN = 'respawn';
+const SPAWN_REASON_SEASONAL_FIRST = 'seasonal_first_spawn';
+const SPAWN_REASON_RESPAWN_AFTER_LOSS = 'respawn_after_loss';
 const normalizePriorityUsernameComparable = (value) =>
   String(value ?? '')
     .trim()
@@ -249,7 +272,32 @@ const FIRE_WORLD_STARTING_UNITS = {
   militia: 5,
 };
 const ACTIVE_BOT_USERNAME = 'Bot';
-const ACTIVE_BOT_MAX_VILLAGES_PER_CYCLE = 3;
+const ACTIVE_BOT_MAX_VILLAGES_PER_CYCLE = 25;
+const BOT_CITY_STATE_PROTECTION_DAYS = 5;
+const BOT_CITY_STATE_VILLAGES_PER_PLAYER_SETTLEMENTS = 10;
+const BOT_CITY_STATE_MAX_CREATED_PER_RECONCILE = 5;
+const BOT_CITY_STATE_MIN_DISTANCE_FROM_SETTLEMENT = 2;
+const BOT_CITY_STATE_RECONCILE_INTERVAL_MS = 60 * 60 * 1000;
+const BOT_CITY_STATE_STARTING_RESOURCES = Object.freeze({
+  wood: 6000,
+  stone: 6000,
+  iron: 6000,
+  gold: 0,
+  coins: 0,
+});
+const BOT_CITY_STATE_STARTING_BUILDING_LEVELS = Object.freeze({
+  townhall: 1,
+  warehouse: 1,
+  'residential-quarter': 1,
+  woodcutter: 1,
+  quarry: 1,
+  'iron-mine': 1,
+  hideout: 0,
+  barracks: 1,
+});
+const BOT_CITY_STATE_STARTING_UNITS = Object.freeze({
+  militia: 20,
+});
 const BOT_NIGHT_BUILD_PRIORITY = Object.freeze([
   'woodcutter',
   'quarry',
@@ -267,6 +315,7 @@ const BOT_NIGHT_RESOURCE_RESERVE = Object.freeze({
   iron: 300,
 });
 let lastBotNightCycleHourKey = null;
+let lastBotCityStateReconcileAtMs = 0;
 const RESEARCH_DEFS = Object.freeze([
   {
     id: 'linen-ropes',
@@ -427,11 +476,73 @@ const selectVillagesByPlayerAndRegionStmt = db.prepare(
    WHERE player_id = ? AND region = ?
    ORDER BY id ASC`,
 );
+const selectPlayerWorldStateByPlayerAndWorldStmt = db.prepare(
+  `SELECT
+      player_id AS playerId,
+      world_id AS worldId,
+      has_spawned AS hasSpawned,
+      spawn_count AS spawnCount,
+      last_spawn_at AS lastSpawnAt,
+      last_spawn_direction AS lastSpawnDirection,
+      last_spawn_reason AS lastSpawnReason,
+      updated_at AS updatedAt
+   FROM player_world_state
+   WHERE player_id = ? AND world_id = ?
+   LIMIT 1`,
+);
+const upsertPlayerWorldStateStmt = db.prepare(
+  `INSERT INTO player_world_state (
+      player_id,
+      world_id,
+      has_spawned,
+      spawn_count,
+      last_spawn_at,
+      last_spawn_direction,
+      last_spawn_reason,
+      updated_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(player_id, world_id) DO UPDATE SET
+     has_spawned = excluded.has_spawned,
+     spawn_count = excluded.spawn_count,
+     last_spawn_at = excluded.last_spawn_at,
+     last_spawn_direction = excluded.last_spawn_direction,
+     last_spawn_reason = excluded.last_spawn_reason,
+     updated_at = excluded.updated_at`,
+);
+const resetPlayerWorldStateByWorldStmt = db.prepare(
+  `UPDATE player_world_state
+   SET has_spawned = 0,
+       spawn_count = 0,
+       last_spawn_at = NULL,
+       last_spawn_direction = NULL,
+       last_spawn_reason = NULL,
+       updated_at = ?
+   WHERE world_id = ?`,
+);
 const selectNamedBotVillagesByRegionStmt = db.prepare(
   `SELECT
       v.id,
       v.player_id AS playerId,
       v.name,
+      v.settlement_kind AS settlementKind,
+      v.coord_x AS coordX,
+      v.coord_y AS coordY,
+      v.region,
+      v.kingdom
+   FROM villages v
+   INNER JOIN players p ON p.id = v.player_id
+   WHERE p.is_bot = 1
+     AND p.username = ? COLLATE NOCASE
+     AND v.region = ?
+     AND v.settlement_kind = ?
+   ORDER BY v.id ASC`,
+);
+const selectNamedBotVillagesAnyKindByRegionStmt = db.prepare(
+  `SELECT
+      v.id,
+      v.player_id AS playerId,
+      v.name,
+      v.settlement_kind AS settlementKind,
       v.coord_x AS coordX,
       v.coord_y AS coordY,
       v.region,
@@ -442,6 +553,42 @@ const selectNamedBotVillagesByRegionStmt = db.prepare(
      AND p.username = ? COLLATE NOCASE
      AND v.region = ?
    ORDER BY v.id ASC`,
+);
+const countPlayerOwnedVillagesByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM villages v
+   INNER JOIN players p ON p.id = v.player_id
+   WHERE v.region = ?
+     AND p.is_bot = 0`,
+);
+const countBotCityStateVillagesByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM villages
+   WHERE region = ?
+     AND settlement_kind = ?`,
+);
+const selectBotCityStateCoordsByRegionStmt = db.prepare(
+  `SELECT
+      coord_x AS coordX,
+      coord_y AS coordY
+   FROM villages
+   WHERE region = ?
+     AND settlement_kind = ?`,
+);
+const selectBotCityStateVillageNamesByRegionStmt = db.prepare(
+  `SELECT name
+   FROM villages
+   WHERE region = ?
+     AND settlement_kind = ?`,
+);
+const selectBotPlayerByUsernameStmt = db.prepare(
+  `SELECT
+      id,
+      username,
+      is_bot AS isBot
+   FROM players
+   WHERE username = ? COLLATE NOCASE
+   LIMIT 1`,
 );
 const selectVillageCoordsStmt = db.prepare(
   `SELECT
@@ -464,6 +611,12 @@ const selectAbandonedBotUsernamesStmt = db.prepare(
 const insertAbandonedBotPlayerStmt = db.prepare(
   'INSERT INTO players (username, password, is_bot, created_at) VALUES (?, ?, 1, ?)',
 );
+const insertActiveBotPlayerStmt = db.prepare(
+  'INSERT INTO players (username, password, is_bot, created_at) VALUES (?, ?, 1, ?)',
+);
+const updatePlayerToBotStmt = db.prepare(
+  'UPDATE players SET is_bot = 1, password = ? WHERE id = ?',
+);
 const insertPlayerAccountStmt = db.prepare(
   'INSERT INTO players (username, password, is_bot, created_at) VALUES (?, ?, 0, ?)',
 );
@@ -478,8 +631,15 @@ const insertVillageForPlayerStmt = db.prepare(
       peace_until,
       prestige,
       loyalty,
+      settlement_kind,
       created_at
-   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+);
+const updateVillageSettlementKindByIdStmt = db.prepare(
+  'UPDATE villages SET settlement_kind = ? WHERE id = ?',
+);
+const updateVillageNameAndSettlementKindByIdStmt = db.prepare(
+  'UPDATE villages SET name = ?, settlement_kind = ? WHERE id = ?',
 );
 const upsertVillageResourcesStmt = db.prepare(
   `INSERT INTO resources (village_id, wood, stone, iron, gold, coins, last_sync_at)
@@ -529,8 +689,115 @@ const deleteArmyMovementsByPlayerAndRegionStmt = db.prepare(
        WHERE region = ?
      )`,
 );
+const deleteArmyMovementUnitsByRegionStmt = db.prepare(
+  `DELETE FROM army_movement_units
+   WHERE movement_id IN (
+     SELECT m.id
+     FROM army_movements m
+     LEFT JOIN villages ov ON ov.id = m.origin_village_id
+     LEFT JOIN villages tv ON tv.id = m.target_village_id
+     LEFT JOIN villages hv ON hv.id = m.home_village_id
+     WHERE ov.region = ? OR tv.region = ? OR hv.region = ?
+   )`,
+);
+const deleteArmyMovementsByRegionStmt = db.prepare(
+  `DELETE FROM army_movements
+   WHERE id IN (
+     SELECT m.id
+     FROM army_movements m
+     LEFT JOIN villages ov ON ov.id = m.origin_village_id
+     LEFT JOIN villages tv ON tv.id = m.target_village_id
+     LEFT JOIN villages hv ON hv.id = m.home_village_id
+     WHERE ov.region = ? OR tv.region = ? OR hv.region = ?
+   )`,
+);
+const deleteBattleReportsByRegionVillagesStmt = db.prepare(
+  `DELETE FROM battle_reports
+   WHERE origin_village_id IN (SELECT id FROM villages WHERE region = ?)
+      OR target_village_id IN (SELECT id FROM villages WHERE region = ?)`,
+);
+const deleteCombatRetaliationFlagsByRegionStmt = db.prepare(
+  'DELETE FROM combat_retaliation_flags WHERE region = ?',
+);
+const deleteKingdomInvitesByRegionStmt = db.prepare(
+  'DELETE FROM kingdom_invites WHERE region = ?',
+);
+const deleteKingdomEventsByRegionStmt = db.prepare(
+  'DELETE FROM kingdom_events WHERE region = ?',
+);
+const deletePlayerNotificationsByRegionStmt = db.prepare(
+  'DELETE FROM player_notifications WHERE region = ?',
+);
+const deleteNotificationSharesByRegionStmt = db.prepare(
+  'DELETE FROM notification_shares WHERE source_region = ?',
+);
+const deleteMarketOffersByRegionStmt = db.prepare(
+  'DELETE FROM market_offers WHERE region = ?',
+);
+const deleteLogisticsRoutesByRegionStmt = db.prepare(
+  'DELETE FROM logistics_routes WHERE region = ?',
+);
+const deleteMarketGuildAuditByRegionStmt = db.prepare(
+  'DELETE FROM market_guild_audit_logs WHERE region = ?',
+);
+const deleteMarketGuildSettingsByRegionStmt = db.prepare(
+  'DELETE FROM market_guild_settings WHERE region = ?',
+);
+const deleteMarketGuildTargetsByRegionVillagesStmt = db.prepare(
+  `DELETE FROM market_guild_targets
+   WHERE source_village_id IN (SELECT id FROM villages WHERE region = ?)
+      OR target_village_id IN (SELECT id FROM villages WHERE region = ?)`,
+);
+const deleteAcademicsByRegionStmt = db.prepare(
+  'DELETE FROM academics WHERE region = ?',
+);
+const deleteResearchProgressByRegionStmt = db.prepare(
+  'DELETE FROM research_progress WHERE region = ?',
+);
+const deleteMercenaryContractsByRegionStmt = db.prepare(
+  'DELETE FROM mercenary_contracts WHERE region = ?',
+);
+const deleteBuildingUpgradesByRegionVillagesStmt = db.prepare(
+  `DELETE FROM building_upgrades
+   WHERE village_id IN (SELECT id FROM villages WHERE region = ?)`,
+);
+const deleteUnitRecruitmentsByRegionVillagesStmt = db.prepare(
+  `DELETE FROM unit_recruitments
+   WHERE village_id IN (SELECT id FROM villages WHERE region = ?)`,
+);
+const deleteUnitsByRegionVillagesStmt = db.prepare(
+  `DELETE FROM units
+   WHERE village_id IN (SELECT id FROM villages WHERE region = ?)`,
+);
+const deleteBuildingsByRegionVillagesStmt = db.prepare(
+  `DELETE FROM buildings
+   WHERE village_id IN (SELECT id FROM villages WHERE region = ?)`,
+);
+const deleteResourcesByRegionVillagesStmt = db.prepare(
+  `DELETE FROM resources
+   WHERE village_id IN (SELECT id FROM villages WHERE region = ?)`,
+);
+const deleteVillagesByRegionStmt = db.prepare(
+  'DELETE FROM villages WHERE region = ?',
+);
+const deleteOrphanAbandonedBotPlayersStmt = db.prepare(
+  `DELETE FROM players
+   WHERE is_bot = 1
+     AND username GLOB ?
+     AND NOT EXISTS (
+       SELECT 1
+       FROM villages v
+       WHERE v.player_id = players.id
+     )`,
+);
 const updateVillageToAbandonedOwnerStmt = db.prepare(
-  "UPDATE villages SET player_id = ?, name = ?, kingdom = 'Neutral', peace_until = NULL WHERE id = ?",
+  `UPDATE villages
+   SET player_id = ?,
+       name = ?,
+       kingdom = 'Neutral',
+       peace_until = NULL,
+       settlement_kind = '${ABANDONED_SETTLEMENT_KIND}'
+   WHERE id = ?`,
 );
 const selectResourcesByVillageStmt = db.prepare(
   'SELECT wood, stone, iron, gold, coins, last_sync_at AS lastSyncAt FROM resources WHERE village_id = ? LIMIT 1',
@@ -630,8 +897,9 @@ const selectAllVillagesForWorldStmt = db.prepare(
       v.prestige,
       v.loyalty,
       v.peace_until AS peaceUntil,
+      v.settlement_kind AS settlementKind,
       CASE
-        WHEN p.is_bot = 1 AND p.username GLOB '__abandoned_ai__*' THEN 'Opuštěná osada'
+        WHEN v.settlement_kind = 'abandoned' THEN 'Opuštěná osada'
         ELSE p.username
       END AS owner,
       p.username AS ownerUsername,
@@ -788,6 +1056,7 @@ const selectVillageByIdStmt = db.prepare(
       coord_x AS coordX,
       coord_y AS coordY,
       region,
+      settlement_kind AS settlementKind,
       created_at AS createdAt,
       peace_until AS peaceUntil
    FROM villages
@@ -805,6 +1074,7 @@ const selectVillageWithOwnerByCoordsAndRegionStmt = db.prepare(
       v.coord_x AS coordX,
       v.coord_y AS coordY,
       v.region,
+      v.settlement_kind AS settlementKind,
       v.created_at AS createdAt,
       v.peace_until AS peaceUntil,
       p.username AS ownerUsername,
@@ -823,6 +1093,7 @@ const selectVillageWithOwnerByIdStmt = db.prepare(
       v.coord_x AS coordX,
       v.coord_y AS coordY,
       v.region,
+      v.settlement_kind AS settlementKind,
       v.created_at AS createdAt,
       v.peace_until AS peaceUntil,
       p.username AS ownerUsername,
@@ -1691,7 +1962,12 @@ const selectDistinctVillageKingdomsByPlayerStmt = db.prepare(
    WHERE player_id = ? AND region = ?`,
 );
 const updateVillageOwnerForConquestStmt = db.prepare(
-  'UPDATE villages SET player_id = ?, kingdom = ?, loyalty = 100 WHERE id = ?',
+  `UPDATE villages
+   SET player_id = ?,
+       kingdom = ?,
+       loyalty = 100,
+       settlement_kind = '${PLAYER_SETTLEMENT_KIND}'
+   WHERE id = ?`,
 );
 const updateVillageNameByOwnerAndRegionStmt = db.prepare(
   'UPDATE villages SET name = ? WHERE id = ? AND player_id = ? AND region = ?',
@@ -1944,6 +2220,109 @@ const selectPlayerCountByRegionStmt = db.prepare(
    WHERE v.region = ?
      AND p.is_bot = 0
      AND p.username NOT GLOB '__abandoned_ai__*'`,
+);
+const countVillagesByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM villages
+   WHERE region = ?`,
+);
+const countBuildingUpgradesByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM building_upgrades
+   WHERE village_id IN (SELECT id FROM villages WHERE region = ?)`,
+);
+const countUnitRecruitmentsByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM unit_recruitments
+   WHERE village_id IN (SELECT id FROM villages WHERE region = ?)`,
+);
+const countArmyMovementsByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM army_movements m
+   LEFT JOIN villages ov ON ov.id = m.origin_village_id
+   LEFT JOIN villages tv ON tv.id = m.target_village_id
+   LEFT JOIN villages hv ON hv.id = m.home_village_id
+   WHERE ov.region = ? OR tv.region = ? OR hv.region = ?`,
+);
+const countBattleReportsByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM battle_reports
+   WHERE origin_village_id IN (SELECT id FROM villages WHERE region = ?)
+      OR target_village_id IN (SELECT id FROM villages WHERE region = ?)`,
+);
+const countCombatRetaliationByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM combat_retaliation_flags
+   WHERE region = ?`,
+);
+const countKingdomInvitesByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM kingdom_invites
+   WHERE region = ?`,
+);
+const countKingdomEventsByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM kingdom_events
+   WHERE region = ?`,
+);
+const countPlayerNotificationsByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM player_notifications
+   WHERE region = ?`,
+);
+const countNotificationSharesByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM notification_shares
+   WHERE source_region = ?`,
+);
+const countMarketOffersByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM market_offers
+   WHERE region = ?`,
+);
+const countLogisticsRoutesByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM logistics_routes
+   WHERE region = ?`,
+);
+const countMarketGuildSettingsByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM market_guild_settings
+   WHERE region = ?`,
+);
+const countMarketGuildTargetsByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM market_guild_targets
+   WHERE source_village_id IN (SELECT id FROM villages WHERE region = ?)
+      OR target_village_id IN (SELECT id FROM villages WHERE region = ?)`,
+);
+const countMarketGuildAuditByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM market_guild_audit_logs
+   WHERE region = ?`,
+);
+const countAcademicsByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM academics
+   WHERE region = ?`,
+);
+const countResearchProgressByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM research_progress
+   WHERE region = ?`,
+);
+const countMercenaryContractsByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM mercenary_contracts
+   WHERE region = ?`,
+);
+const countAbandonedBotPlayersWithVillageByRegionStmt = db.prepare(
+  `SELECT COUNT(DISTINCT p.id) AS total
+   FROM players p
+   INNER JOIN villages v ON v.player_id = p.id
+   WHERE p.is_bot = 1
+     AND p.username GLOB ?
+     AND v.region = ?`,
 );
 const selectKingdomLeaderByKingdomStmt = db.prepare(
   `SELECT
@@ -2564,6 +2943,20 @@ const resolveWorldSpawnConfig = (world) => ({
   abandonedTemplateType: String(world?.spawn?.abandonedTemplateType ?? 'default-abandoned'),
   nearbyAbandonedCount: Math.max(0, Math.floor(Number(world?.spawn?.nearbyAbandonedCount ?? 0))),
   playerProtectionDays: Math.max(0, Number(world?.spawn?.playerProtectionDays ?? 0)),
+  playerRespawnProtectionDays: Math.max(
+    0,
+    Number(
+      world?.spawn?.playerRespawnProtectionDays ??
+        Math.min(
+          Number(world?.spawn?.playerProtectionDays ?? 0),
+          DEFAULT_RESPAWN_PLAYER_PROTECTION_DAYS,
+        ),
+    ),
+  ),
+  respawnNearbyAbandonedCount: Math.max(
+    0,
+    Math.floor(Number(world?.spawn?.respawnNearbyAbandonedCount ?? DEFAULT_RESPAWN_NEARBY_ABANDONED_COUNT)),
+  ),
   ...(() => {
     const playerRange = normalizeSpawnDistanceRange(
       world?.spawn?.playerSpawnMinDistanceMin,
@@ -2585,6 +2978,43 @@ const resolveWorldSpawnConfig = (world) => ({
     };
   })(),
 });
+
+const normalizeSpawnReason = (reasonRaw) => {
+  const normalized = String(reasonRaw ?? '')
+    .trim()
+    .toLowerCase();
+  if (normalized === SPAWN_REASON_RESTART) {
+    return SPAWN_REASON_RESTART;
+  }
+  if (normalized === SPAWN_REASON_RESPAWN || normalized === SPAWN_REASON_RESPAWN_AFTER_LOSS) {
+    return SPAWN_REASON_RESPAWN;
+  }
+  if (normalized === SPAWN_REASON_SEASONAL_FIRST) {
+    return SPAWN_REASON_SEASONAL_FIRST;
+  }
+  return SPAWN_REASON_ENTRY;
+};
+
+const resolveSpawnLifecycleProfile = (spawnConfig, spawnReason, hasSpawnedBefore) => {
+  const normalizedReason = normalizeSpawnReason(spawnReason);
+  const seasonalFirst =
+    normalizedReason === SPAWN_REASON_SEASONAL_FIRST ||
+    (normalizedReason === SPAWN_REASON_ENTRY && !hasSpawnedBefore);
+  if (seasonalFirst) {
+    return {
+      resolvedReason: SPAWN_REASON_SEASONAL_FIRST,
+      protectionDays: Math.max(0, Number(spawnConfig.playerProtectionDays ?? 0)),
+      nearbyAbandonedCount: Math.max(0, Math.floor(Number(spawnConfig.nearbyAbandonedCount ?? 0))),
+    };
+  }
+
+  return {
+    resolvedReason:
+      normalizedReason === SPAWN_REASON_RESTART ? SPAWN_REASON_RESTART : SPAWN_REASON_RESPAWN_AFTER_LOSS,
+    protectionDays: Math.max(0, Number(spawnConfig.playerRespawnProtectionDays ?? 0)),
+    nearbyAbandonedCount: Math.max(0, Math.floor(Number(spawnConfig.respawnNearbyAbandonedCount ?? 0))),
+  };
+};
 
 const listWorldCatalog = () =>
   WORLD_CATALOG.map((world) => ({
@@ -3244,6 +3674,12 @@ const ABANDONED_VILLAGE_TEMPLATE = {
   units: toUnitTemplateMap(STARTING_ABANDONED_UNITS),
 };
 
+const BOT_CITY_STATE_VILLAGE_TEMPLATE = {
+  resources: BOT_CITY_STATE_STARTING_RESOURCES,
+  buildings: toBuildingTemplateMap(BOT_CITY_STATE_STARTING_BUILDING_LEVELS),
+  units: toUnitTemplateMap(BOT_CITY_STATE_STARTING_UNITS),
+};
+
 const FIRE_WORLD_VILLAGE_TEMPLATE = {
   resources: STARTING_RESOURCES,
   buildings: toBuildingTemplateMap(FIRE_WORLD_STARTING_BUILDING_LEVELS),
@@ -3303,6 +3739,7 @@ const createVillage = ({
   villageName,
   kingdom,
   template,
+  settlementKind = PLAYER_SETTLEMENT_KIND,
   world,
   spawnContext,
   createdAtIso,
@@ -3339,6 +3776,7 @@ const createVillage = ({
     peaceUntil == null ? null : String(peaceUntil),
     0,
     100,
+    String(settlementKind || PLAYER_SETTLEMENT_KIND),
     String(createdAtIso ?? nowIso()),
   );
   const villageId = Number(insertion.lastInsertRowid);
@@ -3369,6 +3807,7 @@ const createFreshVillageForPlayer = ({
     villageName: `${PLAYER_VILLAGE_NAME_PREFIX} ${String(username)}`,
     kingdom: 'Neutral',
     template: resolveTemplateByType(templateType, PLAYER_VILLAGE_TEMPLATE),
+    settlementKind: PLAYER_SETTLEMENT_KIND,
     world,
     spawnContext,
     createdAtIso,
@@ -3439,6 +3878,7 @@ const createNearbyAbandonedVillagesAroundSpawn = ({
       villageName: botVillageName,
       kingdom: 'Neutral',
       template: resolveTemplateByType(templateType, ABANDONED_VILLAGE_TEMPLATE),
+      settlementKind: ABANDONED_SETTLEMENT_KIND,
       world,
       spawnContext,
       createdAtIso,
@@ -3450,8 +3890,345 @@ const createNearbyAbandonedVillagesAroundSpawn = ({
   return createdVillages;
 };
 
+const ensureActiveBotPlayerId = (createdAtIso = nowIso()) => {
+  let botPlayer = selectBotPlayerByUsernameStmt.get(ACTIVE_BOT_USERNAME);
+  if (!botPlayer) {
+    const insertion = insertActiveBotPlayerStmt.run(ACTIVE_BOT_USERNAME, '', String(createdAtIso));
+    return Number(insertion.lastInsertRowid);
+  }
+
+  const botPlayerId = Number(botPlayer.id);
+  if (!Number.isFinite(botPlayerId) || botPlayerId <= 0) {
+    throw new GameRuleError('Interni chyba pri nacitani bot uctu.', 500);
+  }
+  if (Number(botPlayer.isBot ?? 0) !== 1) {
+    updatePlayerToBotStmt.run('', botPlayerId);
+  }
+  return botPlayerId;
+};
+
+const createBotCityStateNameAllocatorForRegion = (regionRaw) => {
+  const region = Number(regionRaw);
+  const usedVillageNames = new Set(
+    selectBotCityStateVillageNamesByRegionStmt
+      .all(region, BOT_CITY_STATE_SETTLEMENT_KIND)
+      .map((row) => String(row.name ?? '').trim())
+      .filter((name) => name.length > 0),
+  );
+  const usedHistoricalNames = new Set(
+    [...usedVillageNames]
+      .map((name) => extractBotCityStateHistoricalName(name))
+      .filter((name) => name.length > 0),
+  );
+
+  return () => {
+    const historicalName = pickRandomUnusedBotCityStateName(usedHistoricalNames);
+    if (historicalName) {
+      usedHistoricalNames.add(historicalName);
+      const villageName = formatBotCityStateVillageName(historicalName);
+      usedVillageNames.add(villageName);
+      return villageName;
+    }
+    const fallbackVillageName = createFallbackBotCityStateVillageName(usedVillageNames, 101);
+    usedVillageNames.add(fallbackVillageName);
+    return fallbackVillageName;
+  };
+};
+
+const claimBotCityStateSpawnCell = (
+  spawnContext,
+  botCoords = [],
+  minDistanceRaw = BOT_CITY_STATE_MIN_DISTANCE_FROM_SETTLEMENT,
+) => {
+  const region = spawnContext.region;
+  const minDistance = Math.max(0, Math.floor(Number(minDistanceRaw ?? 0)));
+  const scoreDistanceCoords = Array.isArray(botCoords) && botCoords.length > 0 ? botCoords : spawnContext.occupiedCoords;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  const bestCandidates = [];
+
+  for (let localY = 1; localY <= Number(region.size); localY += 1) {
+    for (let localX = 1; localX <= Number(region.size); localX += 1) {
+      const coordX = Number(region.originX) + localX - 1;
+      const coordY = Number(region.originY) + localY - 1;
+      const key = toCoordinateKey(coordX, coordY);
+      if (spawnContext.occupiedKeys.has(key)) {
+        continue;
+      }
+      if (minDistance > 0) {
+        const nearestDistance = calculateNearestChebyshevDistance(coordX, coordY, spawnContext.occupiedCoords);
+        if (nearestDistance < minDistance) {
+          continue;
+        }
+      }
+
+      const score = calculateSpawnScore(
+        coordX,
+        coordY,
+        spawnContext.occupiedCoords,
+        region,
+        'center',
+        scoreDistanceCoords,
+      );
+      if (score > bestScore) {
+        bestScore = score;
+        bestCandidates.length = 0;
+        bestCandidates.push({ localX, localY, coordX, coordY, key, score });
+      } else if (score === bestScore) {
+        bestCandidates.push({ localX, localY, coordX, coordY, key, score });
+      }
+    }
+  }
+
+  if (bestCandidates.length <= 0) {
+    return null;
+  }
+  const chosenIndex = bestCandidates.length > 1 ? randomIntInclusive(0, bestCandidates.length - 1) : 0;
+  const chosen = bestCandidates[chosenIndex];
+  spawnContext.occupiedKeys.add(chosen.key);
+  spawnContext.occupiedCoords.push({
+    coordX: chosen.coordX,
+    coordY: chosen.coordY,
+  });
+  if (Array.isArray(botCoords)) {
+    botCoords.push({
+      coordX: chosen.coordX,
+      coordY: chosen.coordY,
+    });
+  }
+  return chosen;
+};
+
+const normalizeActiveBotCityStateVillagesInWorld = (world, nameAllocator) => {
+  const region = Number(world.region);
+  const botVillages = selectNamedBotVillagesAnyKindByRegionStmt.all(ACTIVE_BOT_USERNAME, region);
+  const assignedHistoricalNames = new Set();
+  let renamed = 0;
+  let normalizedKind = 0;
+
+  for (const village of botVillages) {
+    const villageId = Number(village.id);
+    if (!Number.isFinite(villageId) || villageId <= 0) {
+      continue;
+    }
+
+    const currentVillageName = String(village.name ?? '').trim();
+    const historicalName = extractBotCityStateHistoricalName(currentVillageName);
+    const isDuplicateHistoricalName = historicalName.length > 0 && assignedHistoricalNames.has(historicalName);
+    const hasValidCityStateName = historicalName.length > 0 && !isDuplicateHistoricalName;
+
+    if (!hasValidCityStateName) {
+      const nextVillageName = nameAllocator();
+      const nextHistoricalName = extractBotCityStateHistoricalName(nextVillageName);
+      if (nextHistoricalName.length > 0) {
+        assignedHistoricalNames.add(nextHistoricalName);
+      }
+      updateVillageNameAndSettlementKindByIdStmt.run(nextVillageName, BOT_CITY_STATE_SETTLEMENT_KIND, villageId);
+      renamed += 1;
+      continue;
+    }
+
+    assignedHistoricalNames.add(historicalName);
+    if (String(village.settlementKind ?? '') !== BOT_CITY_STATE_SETTLEMENT_KIND) {
+      updateVillageSettlementKindByIdStmt.run(BOT_CITY_STATE_SETTLEMENT_KIND, villageId);
+      normalizedKind += 1;
+    }
+  }
+
+  return {
+    renamed,
+    normalizedKind,
+    total: botVillages.length,
+  };
+};
+
+const spawnBotCityStatesForWorld = (world, requestedCountRaw, createdAtIso = nowIso()) => {
+  const requestedCount = Math.max(0, Math.floor(Number(requestedCountRaw ?? 0)));
+  const resolvedWorld = resolveWorldById(world?.id ?? world);
+  const region = Number(resolvedWorld.region);
+  const botPlayerId = ensureActiveBotPlayerId(createdAtIso);
+  const nameAllocator = createBotCityStateNameAllocatorForRegion(region);
+  const normalization = normalizeActiveBotCityStateVillagesInWorld(resolvedWorld, nameAllocator);
+  if (requestedCount <= 0) {
+    return {
+      requestedCount,
+      createdCount: 0,
+      normalizedCount: normalization.renamed + normalization.normalizedKind,
+      villages: [],
+    };
+  }
+  const spawnContext = buildSpawnContext(resolvedWorld);
+  const botCoords = selectBotCityStateCoordsByRegionStmt
+    .all(region, BOT_CITY_STATE_SETTLEMENT_KIND)
+    .map((row) => ({
+      coordX: Number(row.coordX),
+      coordY: Number(row.coordY),
+    }))
+    .filter((coord) => Number.isFinite(coord.coordX) && Number.isFinite(coord.coordY));
+  const villages = [];
+
+  for (let index = 0; index < requestedCount; index += 1) {
+    const spawnCell = claimBotCityStateSpawnCell(
+      spawnContext,
+      botCoords,
+      BOT_CITY_STATE_MIN_DISTANCE_FROM_SETTLEMENT,
+    );
+    if (!spawnCell) {
+      break;
+    }
+    const villageName = nameAllocator();
+    const village = createVillage({
+      playerId: botPlayerId,
+      villageName,
+      kingdom: 'Neutral',
+      template: BOT_CITY_STATE_VILLAGE_TEMPLATE,
+      settlementKind: BOT_CITY_STATE_SETTLEMENT_KIND,
+      world: resolvedWorld,
+      spawnContext,
+      createdAtIso,
+      spawnCell,
+      peaceUntil: buildVillageProtectionUntil(createdAtIso, BOT_CITY_STATE_PROTECTION_DAYS),
+    });
+    villages.push({
+      villageId: Number(village.id),
+      villageName: String(village.name),
+      coordX: Number(village.coordX),
+      coordY: Number(village.coordY),
+    });
+  }
+
+  return {
+    requestedCount,
+    createdCount: villages.length,
+    normalizedCount: normalization.renamed + normalization.normalizedKind,
+    villages,
+  };
+};
+
+const reconcileBotCityStatesAtTick = (tickTimeIso, tickTimeMs) => {
+  const currentTickMs = Number(tickTimeMs);
+  if (!Number.isFinite(currentTickMs)) {
+    return {
+      executed: false,
+      worldStats: [],
+      createdTotal: 0,
+      normalizedTotal: 0,
+    };
+  }
+  if (
+    Number.isFinite(lastBotCityStateReconcileAtMs) &&
+    lastBotCityStateReconcileAtMs > 0 &&
+    currentTickMs - lastBotCityStateReconcileAtMs < BOT_CITY_STATE_RECONCILE_INTERVAL_MS
+  ) {
+    return {
+      executed: false,
+      worldStats: [],
+      createdTotal: 0,
+      normalizedTotal: 0,
+    };
+  }
+
+  const worldStats = [];
+  let createdTotal = 0;
+  let normalizedTotal = 0;
+  for (const world of WORLD_CATALOG) {
+    const region = Number(world.region);
+    const playerSettlementCount = Math.max(
+      0,
+      Math.floor(Number(countPlayerOwnedVillagesByRegionStmt.get(region)?.total ?? 0)),
+    );
+    const currentBotCityStateCount = Math.max(
+      0,
+      Math.floor(Number(countBotCityStateVillagesByRegionStmt.get(region, BOT_CITY_STATE_SETTLEMENT_KIND)?.total ?? 0)),
+    );
+    const targetBotCityStateCount = Math.max(
+      0,
+      Math.floor(playerSettlementCount / BOT_CITY_STATE_VILLAGES_PER_PLAYER_SETTLEMENTS),
+    );
+    const missingBotCount = Math.max(0, targetBotCityStateCount - currentBotCityStateCount);
+    const toCreate = Math.min(missingBotCount, BOT_CITY_STATE_MAX_CREATED_PER_RECONCILE);
+    const spawnResult = spawnBotCityStatesForWorld(world, toCreate, tickTimeIso);
+    createdTotal += Number(spawnResult.createdCount ?? 0);
+    normalizedTotal += Number(spawnResult.normalizedCount ?? 0);
+    worldStats.push({
+      worldId: String(world.id),
+      region,
+      playerSettlementCount,
+      targetBotCityStateCount,
+      currentBotCityStateCount,
+      missingBotCount,
+      createdCount: Number(spawnResult.createdCount ?? 0),
+      normalizedCount: Number(spawnResult.normalizedCount ?? 0),
+    });
+  }
+
+  lastBotCityStateReconcileAtMs = currentTickMs;
+  return {
+    executed: true,
+    worldStats,
+    createdTotal,
+    normalizedTotal,
+  };
+};
+
+const resolvePlayerWorldState = (playerIdRaw, worldIdRaw) => {
+  const playerId = Number(playerIdRaw);
+  const worldId = String(worldIdRaw ?? '').trim();
+  if (!Number.isFinite(playerId) || playerId <= 0 || !worldId) {
+    return {
+      hasSpawned: false,
+      spawnCount: 0,
+      lastSpawnAt: null,
+      lastSpawnDirection: null,
+      lastSpawnReason: null,
+    };
+  }
+  const row = selectPlayerWorldStateByPlayerAndWorldStmt.get(playerId, worldId);
+  return {
+    hasSpawned: Number(row?.hasSpawned ?? 0) > 0,
+    spawnCount: Math.max(0, Math.floor(Number(row?.spawnCount ?? 0))),
+    lastSpawnAt: row?.lastSpawnAt ? String(row.lastSpawnAt) : null,
+    lastSpawnDirection: row?.lastSpawnDirection ? String(row.lastSpawnDirection) : null,
+    lastSpawnReason: row?.lastSpawnReason ? String(row.lastSpawnReason) : null,
+  };
+};
+
+const persistPlayerWorldSpawnState = ({
+  playerId,
+  worldId,
+  spawnDirection,
+  spawnReason,
+  spawnedAt = nowIso(),
+  previousSpawnCount = 0,
+}) => {
+  const normalizedPlayerId = Number(playerId);
+  const normalizedWorldId = String(worldId ?? '').trim();
+  if (!Number.isFinite(normalizedPlayerId) || normalizedPlayerId <= 0 || !normalizedWorldId) {
+    return;
+  }
+  const normalizedSpawnDirection = String(spawnDirection ?? '')
+    .trim()
+    .toLowerCase();
+  const safeSpawnDirection = ['center', 'north', 'east', 'south', 'west'].includes(normalizedSpawnDirection)
+    ? normalizedSpawnDirection
+    : 'center';
+  const safeSpawnReason = normalizeSpawnReason(spawnReason);
+  const nextSpawnCount = Math.max(1, Math.floor(Number(previousSpawnCount ?? 0)) + 1);
+  const updatedAt = String(spawnedAt ?? nowIso());
+
+  upsertPlayerWorldStateStmt.run(
+    normalizedPlayerId,
+    normalizedWorldId,
+    1,
+    nextSpawnCount,
+    updatedAt,
+    safeSpawnDirection,
+    safeSpawnReason,
+    updatedAt,
+  );
+};
+
 const ensurePlayerHasVillageInWorldTransaction = db.transaction(
-  (playerId, username, worldIdRaw, spawnDirectionRaw = 'center') => {
+  (playerId, username, worldIdRaw, spawnDirectionRaw = 'center', options = {}) => {
   const world = resolveWorldById(worldIdRaw);
   const villages = selectVillagesByPlayerAndRegionStmt.all(Number(playerId), Number(world.region));
   if (villages.length > 0) {
@@ -3459,6 +4236,16 @@ const ensurePlayerHasVillageInWorldTransaction = db.transaction(
   }
 
   const spawnConfig = resolveWorldSpawnConfig(world);
+  const overrideProtectionDaysRaw = options?.protectionDays;
+  const overrideNearbyAbandonedCountRaw = options?.nearbyAbandonedCount;
+  const effectiveProtectionDays =
+    overrideProtectionDaysRaw == null
+      ? Number(spawnConfig.playerProtectionDays)
+      : Math.max(0, Number(overrideProtectionDaysRaw));
+  const effectiveNearbyAbandonedCount =
+    overrideNearbyAbandonedCountRaw == null
+      ? Math.max(0, Math.floor(Number(spawnConfig.nearbyAbandonedCount ?? 0)))
+      : Math.max(0, Math.floor(Number(overrideNearbyAbandonedCountRaw)));
   const spawnContext = buildSpawnContext(world);
   const playerSpawnMinDistance = randomIntInclusive(
     spawnConfig.playerSpawnMinDistanceMin,
@@ -3478,7 +4265,7 @@ const ensurePlayerHasVillageInWorldTransaction = db.transaction(
     username: String(username),
     world,
     templateType: spawnConfig.playerTemplateType,
-    protectionDays: spawnConfig.playerProtectionDays,
+    protectionDays: effectiveProtectionDays,
     spawnContext,
     spawnCell: playerSpawnCell,
     playerSpawnMinDistance,
@@ -3491,7 +4278,7 @@ const ensurePlayerHasVillageInWorldTransaction = db.transaction(
     spawnContext,
     centerCoordX: Number(playerSpawnCell.coordX),
     centerCoordY: Number(playerSpawnCell.coordY),
-    count: spawnConfig.nearbyAbandonedCount,
+    count: effectiveNearbyAbandonedCount,
     templateType: spawnConfig.abandonedTemplateType,
     minDistance: spawnConfig.nearbySpawnMinDistance,
     maxDistance: spawnConfig.nearbySpawnMaxDistance,
@@ -3527,6 +4314,69 @@ const createPlayerAccountTransaction = db.transaction((usernameRaw, passwordRaw)
   };
 });
 
+const spawnPlayerInWorldTransaction = db.transaction(
+  (usernameRaw, worldIdRaw, spawnDirectionRaw = 'center', spawnReasonRaw = SPAWN_REASON_ENTRY) => {
+    const normalizedUsername = normalizeUsername(usernameRaw);
+    const world = resolveWorldById(worldIdRaw);
+    const player = selectPlayerByUsernameStmt.get(normalizedUsername);
+    if (!player) {
+      throw new GameRuleError(`Hrac '${normalizedUsername}' neexistuje.`, 404);
+    }
+
+    const existingVillages = selectVillagesByPlayerAndRegionStmt.all(Number(player.id), Number(world.region));
+    if (existingVillages.length > 0) {
+      return {
+        username: normalizedUsername,
+        worldId: String(world.id),
+        region: Number(world.region),
+        alreadyPresent: true,
+        spawnDirection: normalizeSpawnDirection(spawnDirectionRaw),
+        spawnReason: normalizeSpawnReason(spawnReasonRaw),
+        villages: existingVillages,
+      };
+    }
+
+    const spawnConfig = resolveWorldSpawnConfig(world);
+    const playerWorldState = resolvePlayerWorldState(Number(player.id), world.id);
+    const spawnProfile = resolveSpawnLifecycleProfile(
+      spawnConfig,
+      spawnReasonRaw,
+      playerWorldState.hasSpawned,
+    );
+    const spawnedVillages = ensurePlayerHasVillageInWorldTransaction(
+      Number(player.id),
+      normalizedUsername,
+      world.id,
+      spawnDirectionRaw,
+      {
+        protectionDays: spawnProfile.protectionDays,
+        nearbyAbandonedCount: spawnProfile.nearbyAbandonedCount,
+      },
+    );
+
+    const spawnedAt = nowIso();
+    persistPlayerWorldSpawnState({
+      playerId: Number(player.id),
+      worldId: world.id,
+      spawnDirection: spawnDirectionRaw,
+      spawnReason: spawnProfile.resolvedReason,
+      spawnedAt,
+      previousSpawnCount: playerWorldState.spawnCount,
+    });
+
+    return {
+      username: normalizedUsername,
+      worldId: String(world.id),
+      region: Number(world.region),
+      alreadyPresent: false,
+      spawnDirection: normalizeSpawnDirection(spawnDirectionRaw),
+      spawnReason: spawnProfile.resolvedReason,
+      villages: spawnedVillages,
+      spawnedAt,
+    };
+  },
+);
+
 const createAbandonedVillagesTransaction = db.transaction((countRaw = 1) => {
   const parsedCount = Number(countRaw ?? 1);
   const requestedCount = clampNumber(Number.isFinite(parsedCount) ? Math.floor(parsedCount) : 1, 1, 50);
@@ -3552,6 +4402,7 @@ const createAbandonedVillagesTransaction = db.transaction((countRaw = 1) => {
       villageName: botVillageName,
       kingdom: 'Neutral',
       template: ABANDONED_VILLAGE_TEMPLATE,
+      settlementKind: ABANDONED_SETTLEMENT_KIND,
       world,
       spawnContext,
       createdAtIso,
@@ -3573,7 +4424,8 @@ const createAbandonedVillagesTransaction = db.transaction((countRaw = 1) => {
   };
 });
 
-const restartVillageProgressTransaction = db.transaction((username, requestedVillageId = null, worldId = null) => {
+const restartVillageProgressTransaction = db.transaction(
+  (username, requestedVillageId = null, worldId = null, spawnDirectionRaw = 'center') => {
   const normalizedUsername = normalizeUsername(username);
   const { player, world } = requireVillageForUser(normalizedUsername, requestedVillageId, worldId);
   const playerId = Number(player.id);
@@ -3599,11 +4451,31 @@ const restartVillageProgressTransaction = db.transaction((username, requestedVil
   cancelPendingKingdomInvitesByInviterStmt.run(restartedAt, playerId, worldRegion);
   rejectAllPendingKingdomInvitesForTargetStmt.run(restartedAt, playerId, worldRegion);
 
-  const freshVillage = createFreshVillageForPlayer({
+  const spawnConfig = resolveWorldSpawnConfig(world);
+  const playerWorldState = resolvePlayerWorldState(playerId, world.id);
+  const spawnProfile = resolveSpawnLifecycleProfile(
+    spawnConfig,
+    SPAWN_REASON_RESTART,
+    playerWorldState.hasSpawned,
+  );
+  const spawnedVillages = ensurePlayerHasVillageInWorldTransaction(
     playerId,
-    username: normalizedUsername,
-    world,
-    createdAtIso: restartedAt,
+    normalizedUsername,
+    world.id,
+    spawnDirectionRaw,
+    {
+      protectionDays: spawnProfile.protectionDays,
+      nearbyAbandonedCount: spawnProfile.nearbyAbandonedCount,
+    },
+  );
+  const freshVillage = spawnedVillages[0] ?? null;
+  persistPlayerWorldSpawnState({
+    playerId,
+    worldId: world.id,
+    spawnDirection: spawnDirectionRaw,
+    spawnReason: spawnProfile.resolvedReason,
+    spawnedAt: restartedAt,
+    previousSpawnCount: playerWorldState.spawnCount,
   });
 
   return {
@@ -3621,6 +4493,100 @@ const restartVillageProgressTransaction = db.transaction((username, requestedVil
           kingdom: String(freshVillage.kingdom ?? 'Neutral'),
         }
       : null,
+  };
+  },
+);
+
+const buildWorldScopedWipeStats = (regionRaw) => {
+  const region = Number(regionRaw);
+  return {
+    villages: Number(countVillagesByRegionStmt.get(region)?.total ?? 0),
+    buildingUpgrades: Number(countBuildingUpgradesByRegionStmt.get(region)?.total ?? 0),
+    unitRecruitments: Number(countUnitRecruitmentsByRegionStmt.get(region)?.total ?? 0),
+    armyMovements: Number(countArmyMovementsByRegionStmt.get(region, region, region)?.total ?? 0),
+    battleReports: Number(countBattleReportsByRegionStmt.get(region, region)?.total ?? 0),
+    combatRetaliationFlags: Number(countCombatRetaliationByRegionStmt.get(region)?.total ?? 0),
+    kingdomInvites: Number(countKingdomInvitesByRegionStmt.get(region)?.total ?? 0),
+    kingdomEvents: Number(countKingdomEventsByRegionStmt.get(region)?.total ?? 0),
+    playerNotifications: Number(countPlayerNotificationsByRegionStmt.get(region)?.total ?? 0),
+    notificationShares: Number(countNotificationSharesByRegionStmt.get(region)?.total ?? 0),
+    marketOffers: Number(countMarketOffersByRegionStmt.get(region)?.total ?? 0),
+    logisticsRoutes: Number(countLogisticsRoutesByRegionStmt.get(region)?.total ?? 0),
+    marketGuildSettings: Number(countMarketGuildSettingsByRegionStmt.get(region)?.total ?? 0),
+    marketGuildTargets: Number(countMarketGuildTargetsByRegionStmt.get(region, region)?.total ?? 0),
+    marketGuildAuditLogs: Number(countMarketGuildAuditByRegionStmt.get(region)?.total ?? 0),
+    academics: Number(countAcademicsByRegionStmt.get(region)?.total ?? 0),
+    researchProgress: Number(countResearchProgressByRegionStmt.get(region)?.total ?? 0),
+    mercenaryContracts: Number(countMercenaryContractsByRegionStmt.get(region)?.total ?? 0),
+    abandonedBotPlayersInWorld: Number(
+      countAbandonedBotPlayersWithVillageByRegionStmt.get(`${ABANDONED_BOT_USERNAME_PREFIX}*`, region)?.total ?? 0,
+    ),
+  };
+};
+
+const wipeWorldDataTransaction = db.transaction((worldIdRaw, options = {}) => {
+  const world = resolveWorldById(worldIdRaw);
+  const region = Number(world.region);
+  const dryRun = options?.dryRun === true;
+  const startedAt = nowIso();
+  const before = buildWorldScopedWipeStats(region);
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      world: {
+        id: String(world.id),
+        name: String(world.name),
+        region,
+      },
+      startedAt,
+      before,
+      deletedAbandonedBotPlayers: 0,
+      after: before,
+      resetPlayerWorldStateRows: 0,
+    };
+  }
+
+  deleteArmyMovementUnitsByRegionStmt.run(region, region, region);
+  deleteArmyMovementsByRegionStmt.run(region, region, region);
+  deleteBattleReportsByRegionVillagesStmt.run(region, region);
+  deleteCombatRetaliationFlagsByRegionStmt.run(region);
+  deleteKingdomInvitesByRegionStmt.run(region);
+  deleteKingdomEventsByRegionStmt.run(region);
+  deleteNotificationSharesByRegionStmt.run(region);
+  deletePlayerNotificationsByRegionStmt.run(region);
+  deleteMarketGuildAuditByRegionStmt.run(region);
+  deleteMarketGuildTargetsByRegionVillagesStmt.run(region, region);
+  deleteMarketGuildSettingsByRegionStmt.run(region);
+  deleteLogisticsRoutesByRegionStmt.run(region);
+  deleteMarketOffersByRegionStmt.run(region);
+  deleteMercenaryContractsByRegionStmt.run(region);
+  deleteResearchProgressByRegionStmt.run(region);
+  deleteAcademicsByRegionStmt.run(region);
+  deleteBuildingUpgradesByRegionVillagesStmt.run(region);
+  deleteUnitRecruitmentsByRegionVillagesStmt.run(region);
+  deleteUnitsByRegionVillagesStmt.run(region);
+  deleteBuildingsByRegionVillagesStmt.run(region);
+  deleteResourcesByRegionVillagesStmt.run(region);
+  deleteVillagesByRegionStmt.run(region);
+  const resetPlayerWorldStateRows = Number(resetPlayerWorldStateByWorldStmt.run(startedAt, String(world.id)).changes ?? 0);
+  const deletedAbandonedBotPlayers = Number(
+    deleteOrphanAbandonedBotPlayersStmt.run(`${ABANDONED_BOT_USERNAME_PREFIX}*`).changes ?? 0,
+  );
+  const after = buildWorldScopedWipeStats(region);
+
+  return {
+    dryRun: false,
+    world: {
+      id: String(world.id),
+      name: String(world.name),
+      region,
+    },
+    startedAt,
+    before,
+    deletedAbandonedBotPlayers,
+    resetPlayerWorldStateRows,
+    after,
   };
 });
 
@@ -5954,6 +6920,7 @@ const requireVillageForUser = (
   requestedVillageId = null,
   worldId = null,
   spawnDirectionRaw = 'center',
+  options = {},
 ) => {
   const player = selectPlayerByUsernameStmt.get(username);
   if (!player) {
@@ -5973,14 +6940,18 @@ const requireVillageForUser = (
     worldId != null
       ? resolveWorldById(worldId)
       : inferredWorldFromVillage ?? resolveWorldById(DEFAULT_WORLD_ID);
-  const villages = ensurePlayerHasVillageInWorldTransaction(
-    Number(player.id),
-    String(player.username),
-    selectedWorld.id,
-    spawnDirectionRaw,
-  );
+  const villages =
+    options?.allowAutoSpawn === true
+      ? ensurePlayerHasVillageInWorldTransaction(
+          Number(player.id),
+          String(player.username),
+          selectedWorld.id,
+          spawnDirectionRaw,
+          options?.spawnOptions ?? {},
+        )
+      : selectVillagesByPlayerAndRegionStmt.all(Number(player.id), Number(selectedWorld.region));
   if (villages.length === 0) {
-    throw new GameRuleError(`Hrac '${username}' nema zalozenou osadu.`, 404);
+    throw new GameRuleError(`Hrac '${username}' nema zalozenou osadu v tomto svete.`, 404);
   }
 
   let village = villages[0];
@@ -5998,9 +6969,33 @@ const requireVillageForUser = (
   return { player, village, villages, world: selectedWorld };
 };
 
-const normalizeSettlementKind = (isOwn, isBotSettlement, isAbandonedBot) => {
+const normalizeStoredSettlementKind = (valueRaw) => {
+  const normalized = String(valueRaw ?? '')
+    .trim()
+    .toLowerCase();
+  if (normalized === PLAYER_SETTLEMENT_KIND) {
+    return PLAYER_SETTLEMENT_KIND;
+  }
+  if (normalized === ABANDONED_SETTLEMENT_KIND) {
+    return ABANDONED_SETTLEMENT_KIND;
+  }
+  if (normalized === BOT_CITY_STATE_SETTLEMENT_KIND) {
+    return BOT_CITY_STATE_SETTLEMENT_KIND;
+  }
+  return null;
+};
+
+const normalizeSettlementKind = (isOwn, settlementKindRaw, isBotSettlement, isAbandonedBot) => {
   if (isOwn) {
     return 'own';
+  }
+
+  const settlementKind = normalizeStoredSettlementKind(settlementKindRaw);
+  if (settlementKind === ABANDONED_SETTLEMENT_KIND) {
+    return 'abandoned';
+  }
+  if (settlementKind === BOT_CITY_STATE_SETTLEMENT_KIND) {
+    return 'bot';
   }
 
   if (isAbandonedBot) {
@@ -6054,10 +7049,16 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
     const coordY = Number(row.coordY);
     const playerId = Number(row.playerId);
     const ownerUsernameComparable = normalizeUsernameComparable(String(row.ownerUsername ?? ''));
-    const isAbandonedBot =
+    const storedSettlementKind = normalizeStoredSettlementKind(row.settlementKind);
+    const inferredAbandonedByOwnerPrefix =
       Number(row.isBot) === 1 &&
       ownerUsernameComparable.startsWith(normalizeUsernameComparable(ABANDONED_BOT_USERNAME_PREFIX));
-    const isBotSettlement = Number(row.isBot) === 1 && !isAbandonedBot;
+    const isAbandonedBot =
+      storedSettlementKind === ABANDONED_SETTLEMENT_KIND ||
+      (storedSettlementKind == null && inferredAbandonedByOwnerPrefix);
+    const isBotSettlement =
+      storedSettlementKind === BOT_CITY_STATE_SETTLEMENT_KIND ||
+      (storedSettlementKind == null && Number(row.isBot) === 1 && !isAbandonedBot);
     const isOwn = Number.isFinite(playerId) && playerId > 0 && playerId === numericViewerPlayerId;
     const sameKingdom = !isAbandonedBot && !isBotSettlement && row.kingdom === viewerKingdom;
     const protectionUntil = isAbandonedBot
@@ -6094,7 +7095,7 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
       : isAbandonedBot
         ? 'Opustene leno s AI obranou. Podrobnosti o budovach a jednotkach jsou skryte.'
         : isBotSettlement
-          ? 'Bot osada. Brani se jednotkami v osade, ale sama nevede utocne rozkazy.'
+          ? `${BOT_CITY_STATE_TITLE}. Brani se jednotkami v osade, ale sama nevede utocne rozkazy.`
         : 'Cizi leno - podrobnosti o budovach a jednotkach jsou skryte.';
 
     return {
@@ -6102,7 +7103,7 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
       villageId: Number(row.id),
       playerId: Number.isFinite(playerId) && playerId > 0 ? playerId : null,
       name: row.name,
-      kind: normalizeSettlementKind(isOwn, isBotSettlement, isAbandonedBot),
+      kind: normalizeSettlementKind(isOwn, storedSettlementKind, isBotSettlement, isAbandonedBot),
       owner: row.owner,
       kingdom: row.kingdom,
       region: Number(row.region),
@@ -7001,7 +8002,7 @@ const processBotNightEconomyCycle = (tickTimeIso) => {
 
   for (const world of WORLD_CATALOG) {
     const botVillages = selectNamedBotVillagesByRegionStmt
-      .all(ACTIVE_BOT_USERNAME, Number(world.region))
+      .all(ACTIVE_BOT_USERNAME, Number(world.region), BOT_CITY_STATE_SETTLEMENT_KIND)
       .slice(0, ACTIVE_BOT_MAX_VILLAGES_PER_CYCLE);
     for (const village of botVillages) {
       const villageId = Number(village.id);
@@ -7225,6 +8226,12 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     startedUpgrades: 0,
     startedRecruitments: 0,
     failedVillages: 0,
+  };
+  let botCityStateReconcile = {
+    executed: false,
+    worldStats: [],
+    createdTotal: 0,
+    normalizedTotal: 0,
   };
   let deliveredMercenaryContracts = 0;
   let expiredMercenaryContracts = 0;
@@ -8063,6 +9070,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     }
   }
   autoGuildDispatches = processDueMarketGuildDispatches(tickTimeIso);
+  botCityStateReconcile = reconcileBotCityStatesAtTick(tickTimeIso, tickTimeMs);
   botNightEconomy = processBotNightEconomyCycle(tickTimeIso);
 
   const dueMercenaryArrivals = selectDueMercenaryArrivalsStmt.all(tickTimeIso);
@@ -8259,6 +9267,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
     generatedBattleReports,
     completedLogisticsRoutes,
     autoGuildDispatches,
+    botCityStateReconcile,
     botNightEconomy,
     deliveredMercenaryContracts,
     expiredMercenaryContracts,
@@ -8304,6 +9313,13 @@ export const authenticatePlayer = (username, password) => {
 };
 
 export const createPlayerAccount = (username, password) => createPlayerAccountTransaction(username, password);
+export const spawnPlayerInWorld = (
+  username,
+  worldId,
+  spawnDirection = 'center',
+  spawnReason = SPAWN_REASON_ENTRY,
+) => spawnPlayerInWorldTransaction(username, worldId, spawnDirection, spawnReason);
+export const wipeWorldData = (worldId, options = {}) => wipeWorldDataTransaction(worldId, options);
 
 export const listPlayerWorlds = (username) => {
   const normalizedUsername = normalizeUsername(username);
@@ -8342,12 +9358,16 @@ export const listPlayerWorlds = (username) => {
                 normalizeUsernameComparable(String(player.username)),
             ) ?? null;
           const fallbackKingdom = String(villagesInWorld[0]?.kingdom ?? primaryKingdom);
+          const playerWorldState = resolvePlayerWorldState(Number(player.id), String(world.id));
           return {
             hasPresence: villagesInWorld.length > 0,
+            canSpawn: villagesInWorld.length === 0,
             villages: villagesInWorld.length,
             prestige: prestigeInWorld,
             rank: leaderboardEntry?.rank ?? null,
             kingdom: villagesInWorld.length > 0 ? String(leaderboardEntry?.kingdom ?? fallbackKingdom) : null,
+            spawnCount: Number(playerWorldState.spawnCount ?? 0),
+            hasSpawnedBefore: Boolean(playerWorldState.hasSpawned),
           };
         })(),
       },
@@ -9694,8 +10714,12 @@ const renameVillageTransaction = db.transaction((username, nameRaw, requestedVil
 });
 export const renameVillage = (username, name, requestedVillageId = null, worldId = null) =>
   renameVillageTransaction(username, name, requestedVillageId, worldId);
-export const restartVillageProgress = (username, requestedVillageId = null, worldId = null) =>
-  restartVillageProgressTransaction(username, requestedVillageId, worldId);
+export const restartVillageProgress = (
+  username,
+  requestedVillageId = null,
+  worldId = null,
+  spawnDirectionRaw = 'center',
+) => restartVillageProgressTransaction(username, requestedVillageId, worldId, spawnDirectionRaw);
 export const createAbandonedVillages = (count = 1) => createAbandonedVillagesTransaction(count);
 
 const requireKingdomLeadership = (player, kingdomName, region) => {

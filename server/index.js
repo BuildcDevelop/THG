@@ -39,12 +39,14 @@ import {
   renameVillage,
   recruitUnits,
   restartVillageProgress,
+  spawnPlayerInWorld,
   runGameTick,
   sendMarketLogistics,
   startResearchProject,
   startBuildingUpgrade,
   transferKingdomLeadership,
   unarchivePlayerNotification,
+  wipeWorldData,
 } from './gameService.js';
 import {
   archiveCommunicationThread,
@@ -115,6 +117,21 @@ if (isProductionRuntime && !resolvedCorsOrigin) {
   throw new Error("[backend] V produkci musi byt nastavene CORS_ORIGIN.");
 }
 const PUBLIC_AUTH_PATHS = new Set(['/auth/login', '/auth/register']);
+const configuredAdminUsernames = String(process.env.TLD_ADMIN_USERNAMES ?? process.env.VITE_ADMIN_USERNAMES ?? '').trim();
+const ADMIN_USERNAMES = new Set(
+  (
+    configuredAdminUsernames
+      ? configuredAdminUsernames
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+      : ['Hayato']
+  ).map((entry) =>
+    String(entry)
+      .trim()
+      .toLocaleLowerCase('cs-CZ'),
+  ),
+);
 
 const resolveRequestIpAddress = (request) => {
   const forwardedForHeader = request?.headers?.['x-forwarded-for'];
@@ -134,6 +151,12 @@ const normalizeComparableUsername = (value) =>
   String(value ?? '')
     .trim()
     .toLocaleLowerCase('cs-CZ');
+const isAdminUsername = (username) => ADMIN_USERNAMES.has(normalizeComparableUsername(username));
+const requireAdminUserOrThrow = (username) => {
+  if (!isAdminUsername(username)) {
+    throw new GameRuleError('Tato akce je povolena pouze admin uctu.', 403);
+  }
+};
 
 const executeWithReadOperation = async (operation) => operation();
 let writeQueue = Promise.resolve();
@@ -464,6 +487,38 @@ app.use('/api/v1', (req, _res, next) => {
 
   req.authSession = session;
   next();
+});
+
+app.post('/api/v1/worlds/:worldId/spawn', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.params?.worldId);
+    if (!worldId) {
+      throw new GameRuleError("Parametr 'worldId' je povinny.", 400);
+    }
+    const spawnDirection = parseOptionalSpawnDirection(req.body?.spawnDirection);
+    const spawnReason = String(req.body?.spawnReason ?? 'entry').trim() || 'entry';
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = spawnPlayerInWorld(username, worldId, spawnDirection, spawnReason);
+      const seededVillageId =
+        Array.isArray(result?.villages) && result.villages.length > 0
+          ? Number(result.villages[0]?.id ?? result.villages[0]?.villageId ?? 0)
+          : null;
+      const normalizedVillageId =
+        Number.isFinite(seededVillageId) && Number(seededVillageId) > 0 ? Number(seededVillageId) : null;
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, spawnDirection, { includeWorldMap: false });
+      return { result, state };
+    });
+
+    res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
 });
 
 app.get('/api/v1/activity', async (req, res, next) => {
@@ -1108,6 +1163,7 @@ app.post('/api/v1/villages/restart', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
     const worldId = parseOptionalWorldId(req.body?.worldId);
+    const spawnDirection = parseOptionalSpawnDirection(req.body?.spawnDirection);
     const villageIdRaw = req.body?.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -1116,8 +1172,8 @@ app.post('/api/v1/villages/restart', async (req, res, next) => {
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
-      const result = restartVillageProgress(username, normalizedVillageId, worldId);
-      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
+      const result = restartVillageProgress(username, normalizedVillageId, worldId, spawnDirection);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, spawnDirection, { includeWorldMap: false });
       return { result, state };
     });
 
@@ -1166,6 +1222,8 @@ app.post('/api/v1/village/:villageId/rename', handleVillageRenameRequest);
 
 app.post('/api/v1/admin/abandoned-villages/create', async (req, res, next) => {
   try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    requireAdminUserOrThrow(username);
     const count = Number(req.body?.count ?? 1);
     const result = await executeWithWriteOperation(() => {
       runGameTick();
@@ -1173,6 +1231,34 @@ app.post('/api/v1/admin/abandoned-villages/create', async (req, res, next) => {
     });
 
     res.status(201).json({
+      ok: true,
+      result,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/admin/worlds/:worldId/wipe', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    requireAdminUserOrThrow(username);
+    const worldId = parseOptionalWorldId(req.params?.worldId);
+    if (!worldId) {
+      throw new GameRuleError("Parametr 'worldId' je povinny.", 400);
+    }
+    const dryRun = parseOptionalBoolean(req.body?.dryRun, false);
+    const confirmText = String(req.body?.confirmText ?? '').trim();
+    const expectedConfirmText = `WIPE ${worldId}`;
+    if (!dryRun && confirmText !== expectedConfirmText) {
+      throw new GameRuleError(
+        `Pro provedeni wipe je nutne potvrzeni '${expectedConfirmText}'.`,
+        400,
+      );
+    }
+
+    const result = await executeWithWriteOperation(() => wipeWorldData(worldId, { dryRun }));
+    res.status(dryRun ? 200 : 201).json({
       ok: true,
       result,
     });

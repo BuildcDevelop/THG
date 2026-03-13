@@ -544,10 +544,13 @@ export type WorldPortalItem = {
   isDefault: boolean;
   player: {
     hasPresence: boolean;
+    canSpawn?: boolean;
     villages: number;
     prestige: number;
     rank: number | null;
     kingdom: string | null;
+    spawnCount?: number;
+    hasSpawnedBefore?: boolean;
   };
   stats: {
     playerAccounts: number;
@@ -1589,12 +1592,42 @@ export const restartVillageProgress = async (
   username: string,
   villageId?: number | null,
   worldId?: string | null,
+  spawnDirection?: SpawnDirection | string | null,
 ): Promise<{ result: RestartVillageResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: RestartVillageResult }>(
     '/api/v1/villages/restart',
     {
       method: 'POST',
-      body: JSON.stringify({ username, villageId, worldId }),
+      body: JSON.stringify({ username, villageId, worldId, spawnDirection }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const spawnWorldEntry = async (
+  username: string,
+  worldId: string,
+  spawnDirection?: SpawnDirection | string | null,
+  spawnReason: 'entry' | 'respawn' | 'restart' = 'entry',
+): Promise<{ result: unknown; data: GameStateResponse }> => {
+  const normalizedWorldId = String(worldId ?? '').trim();
+  if (!normalizedWorldId) {
+    throw new Error("Parametr 'worldId' je povinny.");
+  }
+
+  const payload = await request<ApiOk<GameStateResponse> & { result: unknown }>(
+    `/api/v1/worlds/${encodeURIComponent(normalizedWorldId)}/spawn`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        spawnDirection,
+        spawnReason,
+      }),
     },
   );
 
