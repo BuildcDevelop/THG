@@ -1,6 +1,7 @@
 import {
   conquerVillage,
   createAbandonedVillages,
+  getBattleReport,
   getBattleReportSummary,
   getPlayerNotificationSummary,
   getVillageSnapshot,
@@ -1019,6 +1020,57 @@ const runScenarioSummaryPollingConsistency = () => {
   };
 };
 
+const runScenarioBattleReportDetailLookup = () => {
+  clearTransientState();
+  const attacker = getPlayer(ATTACKER_USERNAME);
+  const defender = getPlayer(DEFENDER_USERNAME);
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const defenderVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+
+  setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+  applyBalancedPrestigeForRegion(Number(attacker.id), Number(defender.id), REGION_PRIMARY);
+  setVillageUnits(attackerVillage.villageId, { militia: 30 });
+  setVillageUnits(defenderVillage.villageId, {});
+  setVillageResources(defenderVillage.villageId, { wood: 2500, stone: 2500, iron: 2500 });
+
+  const attackPayload = runAttackAndGetPayload({
+    username: ATTACKER_USERNAME,
+    originVillageId: attackerVillage.villageId,
+    targetVillageId: defenderVillage.villageId,
+    units: { militia: 10 },
+    lootPriority: 'balanced',
+  });
+
+  const reports = listBattleReports(
+    ATTACKER_USERNAME,
+    {
+      page: 1,
+      pageSize: 10,
+    },
+    WORLD_PRIMARY,
+  );
+  const listedReport = reports.items[0] ?? null;
+  const detail = listedReport ? getBattleReport(ATTACKER_USERNAME, listedReport.id, WORLD_PRIMARY) : null;
+  let foreignWorldMessage = null;
+  if (listedReport) {
+    try {
+      getBattleReport(ATTACKER_USERNAME, listedReport.id, WORLD_FIRE);
+    } catch (error) {
+      foreignWorldMessage = String(error?.message ?? error);
+    }
+  }
+
+  return {
+    listedTotal: Number(reports?.total ?? 0),
+    listedReportId: Number(listedReport?.id ?? 0),
+    detailReportId: Number(detail?.id ?? 0),
+    detailOriginVillageId: Number(detail?.originVillageId ?? 0),
+    detailOutcome: String(detail?.payload?.outcome ?? ''),
+    attackOutcome: String(attackPayload?.outcome ?? ''),
+    foreignWorldMessage,
+  };
+};
+
 const runScenarioReadModelsNoTickSideEffects = () => {
   clearTransientState();
   const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
@@ -1317,6 +1369,7 @@ const scenarioHandlers = new Map([
   ['knight-single-slot-per-village', runScenarioKnightSingleSlotPerVillage],
   ['prestige-retaliation-unlock', runScenarioPrestigeRetaliationUnlock],
   ['summary-polling-consistency', runScenarioSummaryPollingConsistency],
+  ['battle-report-detail-lookup', runScenarioBattleReportDetailLookup],
   ['read-models-no-tick-side-effects', runScenarioReadModelsNoTickSideEffects],
   ['mint-coins-accumulate-short-ticks', runScenarioMintCoinsAccumulateShortTicks],
   ['gold-mine-integer-production-tick', runScenarioGoldMineIntegerProductionTick],

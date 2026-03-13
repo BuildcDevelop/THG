@@ -2243,6 +2243,25 @@ const selectBattleReportsByPlayerAndRegionStmt = db.prepare(
    ORDER BY br.created_at DESC, br.id DESC
    LIMIT ? OFFSET ?`,
 );
+const selectBattleReportByIdAndPlayerAndRegionStmt = db.prepare(
+  `SELECT
+      br.id,
+      br.player_id AS playerId,
+      br.origin_village_id AS originVillageId,
+      br.target_village_id AS targetVillageId,
+      br.battle_at AS battleAt,
+      br.created_at AS createdAt,
+      br.title,
+      br.summary,
+      br.payload_json AS payloadJson
+   FROM battle_reports br
+   LEFT JOIN villages ov ON ov.id = br.origin_village_id
+   LEFT JOIN villages tv ON tv.id = br.target_village_id
+   WHERE br.id = ?
+     AND br.player_id = ?
+     AND (ov.region = ? OR tv.region = ?)
+   LIMIT 1`,
+);
 const selectBattleReportsForLeaderboardStmt = db.prepare(
   `SELECT
       player_id AS playerId,
@@ -7027,6 +7046,27 @@ const buildCombatRankByPlayerId = (rows, scoreKey) => {
   return rankByPlayerId;
 };
 
+const parseBattleReportRow = (row) => {
+  let payload = {};
+  try {
+    payload = JSON.parse(String(row?.payloadJson ?? '{}'));
+  } catch {
+    payload = {};
+  }
+
+  return {
+    id: Number(row.id),
+    playerId: Number(row.playerId),
+    originVillageId: row.originVillageId == null ? null : Number(row.originVillageId),
+    targetVillageId: row.targetVillageId == null ? null : Number(row.targetVillageId),
+    battleAt: String(row.battleAt),
+    createdAt: String(row.createdAt),
+    title: String(row.title),
+    summary: String(row.summary),
+    payload,
+  };
+};
+
 export const listPlayerLeaderboard = (worldId = null) => {
   const world = worldId == null ? null : resolveWorldById(worldId);
   const players = world ? selectLeaderboardByRegionStmt.all(Number(world.region)) : selectLeaderboardStmt.all();
@@ -7101,27 +7141,32 @@ export const listBattleReports = (username, options = {}, worldId = null) => {
     pageSize,
     total,
     totalPages,
-    items: rows.map((row) => {
-      let payload = {};
-      try {
-        payload = JSON.parse(String(row.payloadJson ?? '{}'));
-      } catch {
-        payload = {};
-      }
-
-      return {
-        id: Number(row.id),
-        playerId: Number(row.playerId),
-        originVillageId: row.originVillageId == null ? null : Number(row.originVillageId),
-        targetVillageId: row.targetVillageId == null ? null : Number(row.targetVillageId),
-        battleAt: String(row.battleAt),
-        createdAt: String(row.createdAt),
-        title: String(row.title),
-        summary: String(row.summary),
-        payload,
-      };
-    }),
+    items: rows.map((row) => parseBattleReportRow(row)),
   };
+};
+
+export const getBattleReport = (username, reportIdRaw, worldId = null) => {
+  const player = selectPlayerByUsernameStmt.get(username);
+  if (!player) {
+    throw new GameRuleError(`Hrac '${username}' neexistuje.`, 404);
+  }
+  const world = resolveWorldById(worldId);
+  const reportId = Number(reportIdRaw);
+  if (!Number.isInteger(reportId) || reportId <= 0) {
+    throw new GameRuleError('Report nebyl nalezen.', 404);
+  }
+
+  const row = selectBattleReportByIdAndPlayerAndRegionStmt.get(
+    reportId,
+    Number(player.id),
+    Number(world.region),
+    Number(world.region),
+  );
+  if (!row) {
+    throw new GameRuleError('Report nebyl nalezen.', 404);
+  }
+
+  return parseBattleReportRow(row);
 };
 
 export const getBattleReportSummary = (username, worldId = null) => {

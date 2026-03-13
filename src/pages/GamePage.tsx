@@ -24,6 +24,7 @@ import {
   createPlannerPlan as createPlannerPlanRequest,
   createCommunicationNotificationShare,
   createKingdom as createKingdomRequest,
+  fetchBattleReportById,
   fetchBattleReportsSummary,
   fetchCommunicationInbox,
   fetchCommunicationNotificationSharePreview,
@@ -8603,13 +8604,23 @@ const BattleArmyBreakdownCard = ({
   );
 };
 
-const BattleReportPanel = ({ report }: { report: BattleReportItem | null }) => {
+const BattleReportPanel = ({
+  report,
+  loading = false,
+}: {
+  report: BattleReportItem | null;
+  loading?: boolean;
+}) => {
   if (!report) {
     return (
       <div className="panel-stack battle-report-view">
         <section>
-          <h3>Bitevní hlášení není dostupné</h3>
-          <p>Report se nenačetl. Otevři panel Zprávy a obnov seznam.</p>
+          <h3>{loading ? 'Načítám bitevní hlášení' : 'Bitevní hlášení není dostupné'}</h3>
+          <p>
+            {loading
+              ? 'Report se právě načítá.'
+              : 'Report se nenačetl. Otevři panel Zprávy a obnov seznam.'}
+          </p>
         </section>
       </div>
     );
@@ -15208,6 +15219,8 @@ export const GamePage = () => {
   const stateRequestPromiseRef = useRef<Promise<void> | null>(null);
   const worldMapRequestPromiseRef = useRef<Promise<void> | null>(null);
   const reportsRequestPromiseRef = useRef<Promise<void> | null>(null);
+  const battleReportDetailRequestByIdRef = useRef<Record<number, Promise<BattleReportItem | null> | null>>({});
+  const battleReportScopeKeyRef = useRef('');
   const reportsSummaryRequestPromiseRef = useRef<Promise<void> | null>(null);
   const activityRequestPromiseRef = useRef<Promise<void> | null>(null);
   const activitySummaryRequestPromiseRef = useRef<Promise<void> | null>(null);
@@ -15318,6 +15331,7 @@ export const GamePage = () => {
   const [battleReportsPage, setBattleReportsPage] = useState(1);
   const [selectedBattleReportId, setSelectedBattleReportId] = useState<number | null>(null);
   const [battleReportCacheById, setBattleReportCacheById] = useState<Record<number, BattleReportItem>>({});
+  const [battleReportPendingById, setBattleReportPendingById] = useState<Record<number, boolean>>({});
   const [activityEntries, setActivityEntries] = useState<GameActivityListResponse | null>(null);
   const [activitySummary, setActivitySummary] = useState<GameActivitySummaryResponse | null>(null);
   const [activityLoading, setActivityLoading] = useState(false);
@@ -15340,6 +15354,10 @@ export const GamePage = () => {
   const [availableWorlds, setAvailableWorlds] = useState<WorldPortalItem[]>([]);
   const [isWorldMenuOpen, setIsWorldMenuOpen] = useState(false);
   const [worldMenuError, setWorldMenuError] = useState<string | null>(null);
+  useEffect(() => {
+    battleReportScopeKeyRef.current = `${username}::${selectedWorldId ?? ''}`;
+  }, [selectedWorldId, username]);
+
   useEffect(() => {
     const storageScope = normalizePanelStorageScope(selectedWorldId);
     skipPanelLayoutSaveScopeRef.current = storageScope;
@@ -15490,6 +15508,13 @@ export const GamePage = () => {
     setPlayerAvatarByUsername({});
     setWorldMapState(null);
     latestAppliedWorldMapKeyRef.current = null;
+    battleReportDetailRequestByIdRef.current = {};
+    setBattleReports(null);
+    setBattleReportsError(null);
+    setBattleReportsPage(1);
+    setSelectedBattleReportId(null);
+    setBattleReportCacheById({});
+    setBattleReportPendingById({});
     setBattleReportsSummary(null);
     setActivitySummary(null);
   }, [username]);
@@ -15497,6 +15522,13 @@ export const GamePage = () => {
   useEffect(() => {
     setWorldMapState(null);
     latestAppliedWorldMapKeyRef.current = null;
+    battleReportDetailRequestByIdRef.current = {};
+    setBattleReports(null);
+    setBattleReportsError(null);
+    setBattleReportsPage(1);
+    setSelectedBattleReportId(null);
+    setBattleReportCacheById({});
+    setBattleReportPendingById({});
     setBattleReportsSummary(null);
     setActivitySummary(null);
   }, [selectedWorldId]);
@@ -19914,6 +19946,74 @@ export const GamePage = () => {
     [navigate],
   );
 
+  const loadBattleReportById = useCallback(
+    async (reportId: number): Promise<BattleReportItem | null> => {
+      if (!session || !selectedWorldId) {
+        return null;
+      }
+
+      const numericReportId = Math.floor(Number(reportId));
+      if (!Number.isFinite(numericReportId) || numericReportId <= 0) {
+        return null;
+      }
+
+      const cachedReport = battleReportsById.get(numericReportId) ?? null;
+      if (cachedReport) {
+        return cachedReport;
+      }
+
+      const pendingRequest = battleReportDetailRequestByIdRef.current[numericReportId];
+      if (pendingRequest) {
+        return pendingRequest;
+      }
+
+      const requestScopeKey = battleReportScopeKeyRef.current;
+      let requestPromise: Promise<BattleReportItem | null>;
+      requestPromise = (async () => {
+        setBattleReportPendingById((previous) => ({
+          ...previous,
+          [numericReportId]: true,
+        }));
+
+        try {
+          const report = await fetchBattleReportById(username, numericReportId, selectedWorldId);
+          if (battleReportScopeKeyRef.current !== requestScopeKey) {
+            return report;
+          }
+          setBattleReportCacheById((previous) => ({
+            ...previous,
+            [report.id]: report,
+          }));
+          setBattleReportsError(null);
+          return report;
+        } catch (error) {
+          if (battleReportScopeKeyRef.current === requestScopeKey) {
+            setBattleReportsError(getErrorMessage(error));
+          }
+          return null;
+        } finally {
+          if (battleReportDetailRequestByIdRef.current[numericReportId] === requestPromise) {
+            delete battleReportDetailRequestByIdRef.current[numericReportId];
+          }
+          if (battleReportScopeKeyRef.current === requestScopeKey) {
+            setBattleReportPendingById((previous) => {
+              if (previous[numericReportId] !== true) {
+                return previous;
+              }
+              const next = { ...previous };
+              delete next[numericReportId];
+              return next;
+            });
+          }
+        }
+      })();
+
+      battleReportDetailRequestByIdRef.current[numericReportId] = requestPromise;
+      return requestPromise;
+    },
+    [battleReportsById, selectedWorldId, session, username],
+  );
+
   const openBattleReportPanel = useCallback(
     (reportId: number) => {
       if (!Number.isFinite(reportId) || reportId <= 0) {
@@ -19969,8 +20069,12 @@ export const GamePage = () => {
 
         return [...previous, created];
       });
+
+      if (!report) {
+        void loadBattleReportById(numericReportId);
+      }
     },
-    [battleReportsById, getCanvasViewportSize],
+    [battleReportsById, getCanvasViewportSize, loadBattleReportById],
   );
 
   const handleBattleReportsPageChange = useCallback((page: number) => {
@@ -20125,21 +20229,30 @@ export const GamePage = () => {
           return;
         }
         const shareToken = String(detail?.shareToken ?? '').trim();
-        if (shareToken) {
+        if (reportId != null || shareToken) {
           void (async () => {
-            try {
-              const preview = await fetchCommunicationNotificationSharePreview(username, shareToken);
-              const sharedReport = preview.battleReport ?? null;
-              if (preview.available && !preview.deleted && sharedReport) {
-                setBattleReportCacheById((previous) => ({
-                  ...previous,
-                  [sharedReport.id]: sharedReport,
-                }));
-                openBattleReportPanel(sharedReport.id);
+            if (reportId != null) {
+              const report = await loadBattleReportById(reportId);
+              if (report) {
+                openBattleReportPanel(report.id);
                 return;
               }
-            } catch {
-              // fallback to activity panel below
+            }
+            if (shareToken) {
+              try {
+                const preview = await fetchCommunicationNotificationSharePreview(username, shareToken);
+                const sharedReport = preview.battleReport ?? null;
+                if (preview.available && !preview.deleted && sharedReport) {
+                  setBattleReportCacheById((previous) => ({
+                    ...previous,
+                    [sharedReport.id]: sharedReport,
+                  }));
+                  openBattleReportPanel(sharedReport.id);
+                  return;
+                }
+              } catch {
+                // fallback to activity panel below
+              }
             }
             setActivityLastOpenedAt(new Date().toISOString());
             openPanel('activity');
@@ -20195,6 +20308,7 @@ export const GamePage = () => {
   }, [
     mapSettlements,
     battleReportsById,
+    loadBattleReportById,
     openBattleReportPanel,
     openKingdomProfilePanel,
     openPanel,
@@ -20446,8 +20560,13 @@ export const GamePage = () => {
           />
         );
       case 'battleReport': {
-        const report = panel.battleReportId != null ? battleReportsById.get(panel.battleReportId) ?? null : null;
-        return <BattleReportPanel report={report} />;
+        const reportId =
+          panel.battleReportId != null && Number.isFinite(panel.battleReportId)
+            ? Math.floor(panel.battleReportId)
+            : null;
+        const report = reportId != null ? battleReportsById.get(reportId) ?? null : null;
+        const loading = reportId != null ? battleReportPendingById[reportId] === true : false;
+        return <BattleReportPanel report={report} loading={loading} />;
       }
       case 'kingdom':
         return (

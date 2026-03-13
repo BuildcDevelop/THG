@@ -1766,7 +1766,7 @@ export const fetchAdminPlayers = async (): Promise<AdminPlayerRow[]> => {
 };
 
 export const fetchGameState = async (
-  username: string,
+  _username: string,
   villageId?: number | null,
   worldId?: string | null,
   spawnDirection?: SpawnDirection | string | null,
@@ -1774,7 +1774,7 @@ export const fetchGameState = async (
 ): Promise<GameStateResponse> => {
   const resolvedOptions: FetchGameStateOptions =
     typeof options === 'boolean' ? { includeWorldMap: options } : options ?? {};
-  const params = new URLSearchParams({ username });
+  const params = new URLSearchParams();
   if (villageId != null && Number.isFinite(villageId)) {
     params.set('villageId', String(villageId));
   }
@@ -1810,12 +1810,12 @@ export const fetchGameState = async (
 };
 
 export const fetchWorldMapSnapshot = async (
-  username: string,
+  _username: string,
   villageId?: number | null,
   worldId?: string | null,
   spawnDirection?: SpawnDirection | string | null,
 ): Promise<WorldMapSnapshotResponse> => {
-  const params = new URLSearchParams({ username });
+  const params = new URLSearchParams();
   if (villageId != null && Number.isFinite(villageId)) {
     params.set('villageId', String(villageId));
   }
@@ -2401,6 +2401,21 @@ export const fetchBattleReports = async (
   return payload.data;
 };
 
+export const fetchBattleReportById = async (
+  username: string,
+  reportId: number,
+  worldId?: string | null,
+): Promise<BattleReportItem> => {
+  const params = new URLSearchParams({ username });
+  if (worldId != null && String(worldId).trim() !== '') {
+    params.set('worldId', String(worldId).trim());
+  }
+  const payload = await request<ApiOk<BattleReportItem>>(
+    `/api/v1/reports/${encodeURIComponent(String(reportId))}?${params.toString()}`,
+  );
+  return payload.data;
+};
+
 export const fetchBattleReportsSummary = async (
   username: string,
   worldId?: string | null,
@@ -2501,7 +2516,7 @@ export const deleteGameActivity = async (
 ): Promise<GameActivityMutationResult> => mutateGameActivity(username, notificationId, 'delete', worldId);
 
 export const fetchCommunicationInbox = async (
-  username: string,
+  _username: string,
   options?: {
     threadId?: number | null;
     beforeMessageId?: number | null;
@@ -2510,7 +2525,7 @@ export const fetchCommunicationInbox = async (
     search?: string | null;
   },
 ): Promise<CommunicationInboxResponse> => {
-  const params = new URLSearchParams({ username });
+  const params = new URLSearchParams();
   if (options?.threadId != null && Number.isFinite(options.threadId) && Number(options.threadId) > 0) {
     params.set('threadId', String(Math.floor(Number(options.threadId))));
   }

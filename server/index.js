@@ -21,6 +21,7 @@ import {
   createAbandonedVillages,
   conquerVillage,
   getArmyOverview,
+  getBattleReport,
   getBattleReportSummary,
   getPlannerOpenSnapshot,
   getPlayerNotificationSummary,
@@ -1642,6 +1643,23 @@ app.get('/api/v1/reports/summary', async (req, res, next) => {
     const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
     const worldId = parseOptionalWorldId(req.query.worldId);
     const data = await executeWithReadOperation(() => getBattleReportSummary(username, worldId));
+
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.get('/api/v1/reports/:reportId', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.query.worldId);
+    const data = await executeWithReadOperation(() =>
+      getBattleReport(username, req.params.reportId, worldId),
+    );
 
     res.json({
       ok: true,

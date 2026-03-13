@@ -221,6 +221,16 @@ test('stage6: summary endpoints stay consistent and payload is materially smalle
   );
 });
 
+test('battle report detail lookup returns the same report and respects world scoping', () => {
+  const result = runScenario('battle-report-detail-lookup');
+
+  assert.ok(Number(result.listedTotal ?? 0) >= 1);
+  assert.ok(Number(result.listedReportId ?? 0) > 0);
+  assert.equal(Number(result.detailReportId ?? -1), Number(result.listedReportId ?? -2));
+  assert.equal(String(result.detailOutcome ?? ''), String(result.attackOutcome ?? ''));
+  assert.match(String(result.foreignWorldMessage ?? ''), /report nebyl nalezen/i);
+});
+
 test('stage6: read models do not progress queued work without explicit tick', () => {
   const result = runScenario('read-models-no-tick-side-effects');
   const beforeRead = result?.beforeRead ?? {};

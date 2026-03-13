@@ -330,6 +330,22 @@ Entry template:
 - Verification: `node --check server/index.js`; `node --test tests/api/state-auth.test.mjs`; `npm run test:regression`; `npm run build` (padá na existujících TS chybách v `src/pages/GamePage.tsx` mimo tento patch, viz typy kolem `MilitaryPanel`/`ResearchPanel`).
 - Notes: Etapa odpovídá guardrail prioritě `security + correctness` před širším refactorem data-flow a render boundaries.
 
+## 2026-03-13 11:41 | branch: feat/build-0.1.12
+
+- Request: Pokračovat na větvi `feat/build-0.1.12` dalším implementačním krokem.
+- Summary: Navázal jsem dalším krokem po security/persistence etapě: v API klientovi jsem odstranil posílání `username` query parametru u session-bound endpointů (`fetchGameState`, `fetchWorldMapSnapshot`, `fetchCommunicationInbox`). Tyto requesty se teď opírají o server-side session identity z middleware a neposílají zbytečný identifikátor v URL. Tím se zmenšuje request surface a drží se jednotný auth model „session je zdroj pravdy“.
+- Files: src/api/gameApi.ts, arch/chat-changelog.md
+- Verification: `npm run build`; `node --test tests/api/state-auth.test.mjs`; `npm run test:regression`
+- Notes: Změna je kompatibilní s backend middlewarem, který `username` dosazuje ze session; nepřidává žádný nový polling ani nové payloady.
+
+## 2026-03-13 11:54 | branch: feat/build-0.1.12
+
+- Request: Vysvětlit účel neversionovaného adresáře `.codex-runtime/`.
+- Summary: Ověřil jsem aktuální obsah složky a nejde o produkční část aplikace. V repozitáři teď obsahuje jen lokální runtime artefakty a ad-hoc inspekční skripty (`dev.log`, `inspect-battle-report-rows.mjs`, `inspect-battle-reports.mjs`) používané pro dočasné diagnostické kontroly nad daty/reporty.
+- Files: arch/chat-changelog.md
+- Verification: Read-only kontrola obsahu `.codex-runtime/` přes shell; bez implementace a bez testů.
+- Notes: Složku je bezpečné ignorovat v gitu, pokud ji nechceš používat jako lokální scratchpad.
+
 ## 2026-03-13 14:23 | branch: feat/build-0.1.12
 
 - Request: Implementovat žoldácké úpravy z návrhu: přesun sekce z Výzkumu do Armády, doplnit staty v kartě Armáda, přidat stavový progress/hover čas, informace o spawnu+blokaci a výběr cílového léna bez přepínání aktivního léna, bez nového globálního pollingu.
