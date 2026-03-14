@@ -1492,7 +1492,7 @@ export const CommunicationHub = () => {
   return (
     <>
       <button type="button" className={`communication-launcher ${hubOpen ? 'is-open' : ''}`} onClick={toggleHub}>
-        <span>Komunikace</span>
+        <span>Chat</span>
         {badgeCount > 0 ? <strong className="communication-launcher-badge">{launchBadgeLabel}</strong> : null}
       </button>
 

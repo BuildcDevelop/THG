@@ -549,7 +549,7 @@ const PANEL_META: Record<PanelType, PanelMeta> = {
   },
   messages: {
     type: 'messages',
-    label: 'Zprávy',
+    label: 'Komunikace',
     side: 'right',
     width: 480,
     height: 430,
@@ -641,16 +641,21 @@ const NAV_BUTTONS: { type: StaticPanelType; text: string; glyph: string }[] = [
   { type: 'settings', text: 'Nastavení', glyph: '⚙︎' },
 ];
 
+const TOP_NAV_BUTTONS = NAV_BUTTONS.filter((button) => button.type !== 'settings' && button.type !== 'messages');
+
+const MAIN_MENU_PANEL_TYPES = new Set<StaticPanelType>(NAV_BUTTONS.map((button) => button.type));
+
 type MenuButtonProps = {
   text: string;
   title: string;
   onClick: () => void;
   className: string;
   glyph?: string;
+  badgeText?: string | null;
   isOpen?: boolean;
 };
 
-const MenuButton = ({ text, title, onClick, className, glyph, isOpen = false }: MenuButtonProps) => (
+const MenuButton = ({ text, title, onClick, className, glyph, badgeText = null, isOpen = false }: MenuButtonProps) => (
   <button
     className={`menu-button-base ${className} ${isOpen ? 'is-open' : ''}`}
     onClick={onClick}
@@ -662,6 +667,7 @@ const MenuButton = ({ text, title, onClick, className, glyph, isOpen = false }: 
       </span>
     ) : null}
     <span className="nav-action-title">{text}</span>
+    {badgeText ? <span className="nav-action-inline-badge">{badgeText}</span> : null}
   </button>
 );
 
@@ -688,31 +694,20 @@ const resolveResourceGlyph = (resourceName: string): string => {
   return '◈';
 };
 
-const MENU_DOCK_PANEL_TYPES = new Set<StaticPanelType>([
-  'city',
-  'map',
-  'army',
-  'military',
-  'commands',
-  'research',
-  'activity',
-  'kingdom',
-  'rankings',
-  'profile',
-  'settings',
-]);
+const MENU_DOCK_PANEL_TYPES = new Set<StaticPanelType>();
 
 const DEFAULT_STRETCHED_PANEL_TYPES = new Set<StaticPanelType>([
-  ...MENU_DOCK_PANEL_TYPES,
+  ...MAIN_MENU_PANEL_TYPES,
 ]);
-
-const isStretchablePanelType = (panelType: PanelType): boolean => {
-  void panelType;
-  return true;
-};
 
 const isStaticPanelType = (panelType: PanelType): panelType is StaticPanelType =>
   panelType !== 'village' && panelType !== 'building' && panelType !== 'battleReport';
+
+const isMainMenuPanelType = (panelType: PanelType): panelType is StaticPanelType =>
+  isStaticPanelType(panelType) && MAIN_MENU_PANEL_TYPES.has(panelType);
+
+const shouldUseStretchedPanelFrame = (panelType: PanelType): boolean =>
+  isStaticPanelType(panelType) && DEFAULT_STRETCHED_PANEL_TYPES.has(panelType);
 
 const isDockLayoutMode = (mode: PanelLayoutMode): mode is Exclude<PanelLayoutMode, 'floating'> =>
   mode === 'full' || mode === 'split-left' || mode === 'split-right';
@@ -1787,10 +1782,24 @@ type ShortcutBinding = {
   meta: boolean;
 };
 type MapPreviewTravelModifierKey = 'ctrl' | 'alt' | 'shift' | 'meta';
+const SETTLEMENT_COLOR_KEYS = [
+  'active',
+  'own',
+  'bot',
+  'royal',
+  'allied',
+  'nap',
+  'opponent',
+  'enemy',
+  'abandoned',
+] as const;
+type SettlementColorKey = (typeof SETTLEMENT_COLOR_KEYS)[number];
+type SettlementColorPalette = Record<SettlementColorKey, string>;
 type PersistedShortcutSettings = {
   autoHidePinColumns?: unknown;
   bindings?: Partial<Record<ShortcutActionId, unknown>>;
   mapPreviewTravelModifier?: unknown;
+  settlementColors?: unknown;
 };
 
 const MAP_ORDER_ICON_LABELS: Record<MapOrderCommandType, string> = {
@@ -1810,6 +1819,28 @@ const MAP_SETTLEMENT_KIND_LABELS: Record<MapSettlementKind, string> = {
   opponent: 'Protivník',
   enemy: 'Nepřítel',
   abandoned: 'Opuštěná',
+};
+const SETTLEMENT_COLOR_LABELS: Record<SettlementColorKey, string> = {
+  active: 'Aktivní',
+  own: 'Moje',
+  bot: 'Bot',
+  royal: 'Královská',
+  allied: 'Spojenecká',
+  nap: 'NAP',
+  opponent: 'Protivník',
+  enemy: 'Nepřítel',
+  abandoned: 'Opuštěná',
+};
+const DEFAULT_SETTLEMENT_COLOR_PALETTE: SettlementColorPalette = {
+  active: '#f8fbff',
+  own: '#f2c269',
+  bot: '#9f8cff',
+  royal: '#8fc9ff',
+  allied: '#5fbf8f',
+  nap: '#6fc6d8',
+  opponent: '#cfa868',
+  enemy: '#d06767',
+  abandoned: '#8f97a0',
 };
 
 const getArmyCommandSymbol = (commandType: ArmyCommandType | MapOrderCommandType): string => {
@@ -1911,8 +1942,8 @@ const REGION_SIZE = 50;
 const REGION_ORIGIN_X = 200;
 const REGION_ORIGIN_Y = 430;
 const REGION_CELL_SIZE = 25;
-const MAP_ZOOM_MIN = -50;
-const MAP_ZOOM_MAX = 100;
+const MAP_ZOOM_MIN = 0;
+const MAP_ZOOM_MAX = 200;
 const MAP_ZOOM_STEP = 0.5;
 const MAP_ZOOM_WHEEL_SENSITIVITY = 0.022;
 const MAP_ZOOM_WHEEL_MIN_DELTA = 0.35;
@@ -1920,12 +1951,12 @@ const MAP_ZOOM_WHEEL_MAX_DELTA = 2.4;
 const MAP_PAN_TARGET_SMOOTHNESS = 15;
 const MAP_PAN_TARGET_EPSILON_PX = 0.65;
 const MAP_CELL_GAP_PX = 2;
-const MAP_PREVIEW_CARD_WIDTH_PX = 560;
+const MAP_PREVIEW_CARD_WIDTH_PX = 320;
 const MAP_PREVIEW_CARD_OFFSET_PX = 10;
 const MAP_PREVIEW_CARD_SAFE_EDGE_PX = 12;
 const MAP_PREVIEW_CARD_SAFE_TOP_PX = 80;
-const MAP_PREVIEW_CARD_HOVER_HEIGHT_PX = 430;
-const MAP_PREVIEW_CARD_PINNED_HEIGHT_PX = 500;
+const MAP_PREVIEW_CARD_HOVER_HEIGHT_PX = 168;
+const MAP_PREVIEW_CARD_PINNED_HEIGHT_PX = 248;
 const MAP_HOVER_CLEAR_DELAY_MS = 190;
 const MAP_WINDOW_SIZE_STORAGE_KEY = 'tld_map_window_size';
 const LEGACY_MAP_WINDOW_SIZE_STORAGE_KEY = 'thg_map_window_size';
@@ -1938,6 +1969,8 @@ const LAST_OWN_SETTLEMENT_STORAGE_KEY_PREFIX = 'tld_last_own_settlement';
 const LEGACY_LAST_OWN_SETTLEMENT_STORAGE_KEY_PREFIX = 'thg_last_own_settlement';
 const MAP_ZOOM_STORAGE_KEY_PREFIX = 'tld_map_zoom';
 const LEGACY_MAP_ZOOM_STORAGE_KEY_PREFIX = 'thg_map_zoom';
+const MAP_VIEWPORT_STORAGE_KEY_PREFIX = 'tld_map_viewport';
+const LEGACY_MAP_VIEWPORT_STORAGE_KEY_PREFIX = 'thg_map_viewport';
 const ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'tld_active_village';
 const LEGACY_ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'thg_active_village';
 const ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX = 'tld_army_target_history';
@@ -1991,10 +2024,11 @@ const PANEL_CITY_MIN_HEIGHT = 600;
 const PANEL_ARMY_MIN_WIDTH = 760;
 const PANEL_ARMY_MIN_HEIGHT = 520;
 const PANEL_VIEWPORT_MARGIN_X = 32;
-const PANEL_VIEWPORT_MARGIN_Y = 56;
+const PANEL_VIEWPORT_MARGIN_Y = 24;
 const PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH = 280;
 const PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT = 220;
 const FLOATING_PANEL_BASE_Z_INDEX = 2400;
+const MAP_BACKGROUND_PANEL_Z_INDEX = 2050;
 const WORLD_LABELS: Record<string, string> = {
   'dominion-1': 'Dominion I: První úsvit',
   'dominion-1-fire': 'Dominion I: Síla ohně',
@@ -2818,6 +2852,9 @@ const getSettlementMapKind = (
   return 'enemy';
 };
 
+const shouldShowCtrlSettlementBanner = (settlement: Pick<RegionSettlement, 'kind'>): boolean =>
+  settlement.kind === 'own' || settlement.kind === 'player' || settlement.kind === 'bot';
+
 const canTargetSettlementForArmyCommand = ({
   settlement,
   commandType,
@@ -3456,6 +3493,67 @@ const saveStoredMapZoom = (username: string, zoomPercent: number): void => {
   }
 };
 
+type StoredMapViewport = {
+  leftRatio: number;
+  topRatio: number;
+};
+
+const getMapViewportStorageKey = (username: string, regionId: number): string =>
+  `${MAP_VIEWPORT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}:${Math.max(1, Math.floor(Number(regionId) || 1))}`;
+const getLegacyMapViewportStorageKey = (username: string, regionId: number): string =>
+  `${LEGACY_MAP_VIEWPORT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}:${Math.max(1, Math.floor(Number(regionId) || 1))}`;
+
+const readStoredMapViewport = (username: string, regionId: number): StoredMapViewport | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw =
+      window.localStorage.getItem(getMapViewportStorageKey(username, regionId)) ??
+      window.localStorage.getItem(getLegacyMapViewportStorageKey(username, regionId));
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<StoredMapViewport> | null;
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+
+    const leftRatio = Number(parsed.leftRatio);
+    const topRatio = Number(parsed.topRatio);
+    if (!Number.isFinite(leftRatio) || !Number.isFinite(topRatio)) {
+      return null;
+    }
+
+    return {
+      leftRatio: clamp(leftRatio, 0, 1),
+      topRatio: clamp(topRatio, 0, 1),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const saveStoredMapViewport = (username: string, regionId: number, viewport: StoredMapViewport): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      getMapViewportStorageKey(username, regionId),
+      JSON.stringify({
+        leftRatio: clamp(Number(viewport.leftRatio), 0, 1),
+        topRatio: clamp(Number(viewport.topRatio), 0, 1),
+      }),
+    );
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
 const getGameFontScaleStorageKey = (username: string): string =>
   `${GAME_FONT_SCALE_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
 const getLegacyGameFontScaleStorageKey = (username: string): string =>
@@ -3529,18 +3627,45 @@ const normalizeMapPreviewTravelModifier = (value: unknown): MapPreviewTravelModi
     : DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER;
 };
 
+const normalizeHexColor = (value: unknown, fallback: string): string => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLocaleLowerCase('cs-CZ');
+  if (/^#[0-9a-f]{6}$/u.test(normalized)) {
+    return normalized;
+  }
+  if (/^#[0-9a-f]{3}$/u.test(normalized)) {
+    return `#${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}${normalized[3]}${normalized[3]}`;
+  }
+  return fallback;
+};
+
+const normalizeSettlementColorPalette = (value: unknown): SettlementColorPalette => {
+  const normalized: SettlementColorPalette = { ...DEFAULT_SETTLEMENT_COLOR_PALETTE };
+  if (!value || typeof value !== 'object') {
+    return normalized;
+  }
+  const rawPalette = value as Partial<Record<SettlementColorKey, unknown>>;
+  SETTLEMENT_COLOR_KEYS.forEach((key) => {
+    normalized[key] = normalizeHexColor(rawPalette[key], DEFAULT_SETTLEMENT_COLOR_PALETTE[key]);
+  });
+  return normalized;
+};
+
 const readStoredShortcutSettings = (
   username: string,
 ): {
   autoHidePinColumns: boolean;
   customBindings: Partial<Record<ShortcutActionId, ShortcutBinding>>;
   mapPreviewTravelModifier: MapPreviewTravelModifierKey;
+  settlementColors: SettlementColorPalette;
 } => {
   if (typeof window === 'undefined') {
     return {
       autoHidePinColumns: false,
       customBindings: {},
       mapPreviewTravelModifier: DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER,
+      settlementColors: { ...DEFAULT_SETTLEMENT_COLOR_PALETTE },
     };
   }
 
@@ -3553,6 +3678,7 @@ const readStoredShortcutSettings = (
         autoHidePinColumns: false,
         customBindings: {},
         mapPreviewTravelModifier: DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER,
+        settlementColors: { ...DEFAULT_SETTLEMENT_COLOR_PALETTE },
       };
     }
 
@@ -3570,12 +3696,14 @@ const readStoredShortcutSettings = (
       autoHidePinColumns: parsed?.autoHidePinColumns === true,
       customBindings,
       mapPreviewTravelModifier: normalizeMapPreviewTravelModifier(parsed?.mapPreviewTravelModifier),
+      settlementColors: normalizeSettlementColorPalette(parsed?.settlementColors),
     };
   } catch {
     return {
       autoHidePinColumns: false,
       customBindings: {},
       mapPreviewTravelModifier: DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER,
+      settlementColors: { ...DEFAULT_SETTLEMENT_COLOR_PALETTE },
     };
   }
 };
@@ -3586,6 +3714,7 @@ const saveStoredShortcutSettings = (
     autoHidePinColumns: boolean;
     customBindings: Partial<Record<ShortcutActionId, ShortcutBinding>>;
     mapPreviewTravelModifier: MapPreviewTravelModifierKey;
+    settlementColors: SettlementColorPalette;
   },
 ): void => {
   if (typeof window === 'undefined') {
@@ -3608,6 +3737,7 @@ const saveStoredShortcutSettings = (
         autoHidePinColumns: settings.autoHidePinColumns === true,
         bindings: bindingsPayload,
         mapPreviewTravelModifier: normalizeMapPreviewTravelModifier(settings.mapPreviewTravelModifier),
+        settlementColors: normalizeSettlementColorPalette(settings.settlementColors),
       }),
     );
   } catch {
@@ -12614,6 +12744,9 @@ const SettingsPanel = ({
   onResetAllShortcuts,
   onAutoHidePinColumnsChange,
   onMapPreviewTravelModifierChange,
+  settlementColorPalette,
+  onSettlementColorChange,
+  onResetSettlementColors,
 }: {
   username: string;
   avatarUrl: string | null;
@@ -12637,6 +12770,9 @@ const SettingsPanel = ({
   onResetAllShortcuts: () => void;
   onAutoHidePinColumnsChange: (enabled: boolean) => void;
   onMapPreviewTravelModifierChange: (modifier: MapPreviewTravelModifierKey) => void;
+  settlementColorPalette: SettlementColorPalette;
+  onSettlementColorChange: (colorKey: SettlementColorKey, color: string) => void;
+  onResetSettlementColors: () => void;
 }) => {
   const [settingsTab, setSettingsTab] = useState<'account' | 'interface' | 'shortcuts' | 'world'>('account');
   const [avatarSource, setAvatarSource] = useState<AvatarCropSource | null>(null);
@@ -12949,6 +13085,34 @@ const SettingsPanel = ({
           >
             Uložit velikost fontu
           </button>
+          <div className="settings-settlement-colors-section">
+            <h4>Barvy rozlišení lén (RPG paleta)</h4>
+            <p>
+              Přizpůsob si barevné rozlišení lén na mapě. Změna se aplikuje okamžitě a ukládá se pro tvůj účet.
+            </p>
+            <div className="settings-settlement-colors-grid">
+              {SETTLEMENT_COLOR_KEYS.map((colorKey) => (
+                <label
+                  key={`settlement-color-${colorKey}`}
+                  className={`settings-settlement-color-card relation-${colorKey}`}
+                >
+                  <span>{SETTLEMENT_COLOR_LABELS[colorKey]}</span>
+                  <div className="settings-settlement-color-control">
+                    <input
+                      type="color"
+                      value={settlementColorPalette[colorKey]}
+                      onChange={(event) => onSettlementColorChange(colorKey, event.target.value)}
+                      aria-label={`Nastavit barvu: ${SETTLEMENT_COLOR_LABELS[colorKey]}`}
+                    />
+                    <code>{settlementColorPalette[colorKey].toUpperCase()}</code>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <button type="button" className="secondary-action" onClick={onResetSettlementColors}>
+              Obnovit výchozí RPG barvy
+            </button>
+          </div>
         </section>
       ) : null}
 
@@ -13086,17 +13250,16 @@ const MapPanel = memo(({
   regionOriginX,
   regionOriginY,
   focusedSettlementId,
+  isInteractionEnabled,
+  centerRequest,
   activeVillageId,
   currentUsername,
-  previewTravelModifier,
   zoomPercent,
   orderMarkersByVillageId,
   onZoomChange,
   onOpenSettlement,
   onPinSettlement,
   onQuickArmyCommand,
-  onOpenPlayerProfile,
-  onOpenKingdomProfile,
 }: {
   settlements: RegionSettlement[];
   regionId: number;
@@ -13104,27 +13267,21 @@ const MapPanel = memo(({
   regionOriginX: number;
   regionOriginY: number;
   focusedSettlementId: string | null;
+  isInteractionEnabled: boolean;
+  centerRequest: { settlementId: string; nonce: number } | null;
   activeVillageId: number | null;
   currentUsername: string;
-  previewTravelModifier: MapPreviewTravelModifierKey;
   zoomPercent: number;
   orderMarkersByVillageId: Map<number, SettlementOrderMarkerCounts>;
   onZoomChange: (zoomPercent: number) => void;
   onOpenSettlement: (settlement: RegionSettlement) => void;
   onPinSettlement: (settlement: RegionSettlement, side: PinSide) => void;
   onQuickArmyCommand: (commandType: ArmyCommandSelectableType, settlement: RegionSettlement) => void;
-  onOpenPlayerProfile: (username: string) => void;
-  onOpenKingdomProfile: (kingdomName: string) => void;
 }) => {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [pinnedSettlementId, setPinnedSettlementId] = useState<string | null>(null);
-  const [isPreviewTravelModifierPressed, setIsPreviewTravelModifierPressed] = useState(false);
+  const [isCtrlPressed, setIsCtrlPressed] = useState(false);
   const [isMapFullscreen, setIsMapFullscreen] = useState(false);
-  const previewTravelModifierMeta =
-    MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS.find((item) => item.value === previewTravelModifier) ??
-    MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS[0];
-  const previewTravelModifierLabel = previewTravelModifierMeta.label;
-  const previewTravelModifierEventKey = previewTravelModifierMeta.keyboardEventKey;
   const mapPanelRef = useRef<HTMLDivElement | null>(null);
   const gridWrapRef = useRef<HTMLDivElement | null>(null);
   const miniMapRef = useRef<HTMLDivElement | null>(null);
@@ -13158,6 +13315,8 @@ const MapPanel = memo(({
   const zoomCommitTimerRef = useRef<number | null>(null);
   const pendingZoomCommitRef = useRef(localZoomPercent);
   const hasInitialAutoCenterRef = useRef(false);
+  const hasRestoredViewportRef = useRef(false);
+  const viewportPersistTimerRef = useRef<number | null>(null);
   const dragSuppressClickUntilRef = useRef(0);
   const hoverClearTimeoutRef = useRef<number | null>(null);
   const [gridViewportState, setGridViewportState] = useState({
@@ -13193,6 +13352,15 @@ const MapPanel = memo(({
     },
     [clearHoverTimeout],
   );
+
+  useEffect(() => {
+    if (isInteractionEnabled) {
+      return;
+    }
+    clearHoverTimeout();
+    setHoveredId(null);
+    setPinnedSettlementId(null);
+  }, [clearHoverTimeout, isInteractionEnabled]);
 
   useEffect(() => {
     const normalizedIncoming = clamp(Number(zoomPercent), MAP_ZOOM_MIN, MAP_ZOOM_MAX);
@@ -13406,7 +13574,7 @@ const MapPanel = memo(({
     }
     return byId;
   }, [mapDisplaySettlements]);
-  const previewSettlement = pinnedSettlement ?? hoveredSettlement;
+  const previewSettlement = isInteractionEnabled ? pinnedSettlement ?? hoveredSettlement : null;
   const isPreviewPinned = pinnedSettlement != null;
   const previewSettlementCell = useMemo(() => {
     if (!previewSettlement) {
@@ -13426,16 +13594,9 @@ const MapPanel = memo(({
     : null;
   const previewTargetUnderProtection =
     previewSettlement != null && getSettlementProtectionRemainingSec(previewSettlement) > 0;
-  const previewTargetPrestigeBlocked =
-    previewSettlement != null && previewSettlement.prestigeAttackBlockedForViewer === true;
-  const previewRetaliationUnlocked =
-    previewSettlement != null && previewSettlement.retaliationUnlockedForViewer === true;
-  const previewRetaliationUnlockedAtLabel =
-    previewRetaliationUnlocked && previewSettlement?.retaliationUnlockedAt
-      ? formatDateTimeLabel(previewSettlement.retaliationUnlockedAt)
-      : null;
   const isPreviewAbandoned = previewSettlementKind === 'abandoned';
   const isPreviewPlayerSettlement =
+    previewSettlementKind === 'allied' ||
     previewSettlementKind === 'opponent' ||
     previewSettlementKind === 'enemy' ||
     previewSettlementKind === 'nap';
@@ -13466,10 +13627,24 @@ const MapPanel = memo(({
     };
   }, [activeVillageId, currentUsername, previewSettlement]);
   const zoomScale = 1 + localZoomPercent / 100;
-  const zoomLabelValue = Math.round(localZoomPercent * 10) / 10;
+  const zoomLabelValue = Math.round((100 + localZoomPercent) * 10) / 10;
   const zoomSliderValue = normalizeMapZoom(localZoomPercent);
-  const cellSize = Math.max(8, Math.round(REGION_CELL_SIZE * zoomScale));
   const mapCellGapPx = MAP_CELL_GAP_PX;
+  const fitCellSize = useMemo(() => {
+    const viewportWidth = Math.max(0, Number(gridViewportState.clientWidth ?? 0));
+    const viewportHeight = Math.max(0, Number(gridViewportState.clientHeight ?? 0));
+    if (viewportWidth <= 1 || viewportHeight <= 1) {
+      return REGION_CELL_SIZE;
+    }
+
+    const dominantViewportSide = Math.max(viewportWidth, viewportHeight);
+    const totalGap = Math.max(0, regionSize - 1) * mapCellGapPx;
+    const availablePixels = Math.max(96, dominantViewportSide + 8);
+    const nextCellSize = Math.ceil((availablePixels - totalGap) / Math.max(1, regionSize));
+    return Math.max(8, nextCellSize);
+  }, [gridViewportState.clientHeight, gridViewportState.clientWidth, mapCellGapPx, regionSize]);
+  const baseCellSize = fitCellSize;
+  const cellSize = Math.max(8, Math.round(baseCellSize * zoomScale));
   const mapGridSizePx = regionSize * cellSize + Math.max(0, regionSize - 1) * mapCellGapPx;
   const renderedCellRange = useMemo(() => {
     const cellSpan = Math.max(1, cellSize + mapCellGapPx);
@@ -13576,9 +13751,6 @@ const MapPanel = memo(({
   const previewPrestigeTier = previewSettlement
     ? resolveSettlementPrestigeTier(Number(previewSettlement.prestige ?? 0))
     : null;
-  const previewPrestigeMeta = previewSettlement
-    ? resolveSettlementPrestigeMeta(Number(previewSettlement.prestige ?? 0))
-    : null;
   const previewPlayerTotalPrestige = useMemo(() => {
     if (!previewSettlement) {
       return null;
@@ -13601,7 +13773,7 @@ const MapPanel = memo(({
   }, [kingdomPrestigeByName, normalizeKey, previewSettlement]);
   const previewSettlementTypeLabel =
     previewSettlementKind != null ? MAP_SETTLEMENT_KIND_LABELS[previewSettlementKind] : '-';
-  const showPreviewTravelDurations = previewDistanceTiles != null && isPreviewTravelModifierPressed;
+  const showPreviewTravelDurations = isInteractionEnabled && isCtrlPressed && previewDistanceTiles != null;
   const previewTravelRows = useMemo(() => {
     if (previewDistanceTiles == null) {
       return [];
@@ -13619,6 +13791,7 @@ const MapPanel = memo(({
       };
     });
   }, [previewDistanceTiles]);
+  const showSettlementBannerCards = isInteractionEnabled && isCtrlPressed;
 
   const previewCardStyle = useMemo<CSSProperties | null>(() => {
     if (!previewSettlementCell) {
@@ -13771,21 +13944,19 @@ const MapPanel = memo(({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== previewTravelModifierEventKey) {
-        return;
+      if (event.key === 'Control') {
+        setIsCtrlPressed(true);
       }
-      setIsPreviewTravelModifierPressed(true);
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
-      if (event.key !== previewTravelModifierEventKey) {
-        return;
+      if (event.key === 'Control') {
+        setIsCtrlPressed(false);
       }
-      setIsPreviewTravelModifierPressed(false);
     };
 
     const handleWindowBlur = () => {
-      setIsPreviewTravelModifierPressed(false);
+      setIsCtrlPressed(false);
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -13796,7 +13967,7 @@ const MapPanel = memo(({
       window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('blur', handleWindowBlur);
     };
-  }, [previewTravelModifierEventKey]);
+  }, []);
 
   useEffect(
     () => () => {
@@ -13814,6 +13985,10 @@ const MapPanel = memo(({
       if (panAnimationRafRef.current != null) {
         window.cancelAnimationFrame(panAnimationRafRef.current);
         panAnimationRafRef.current = null;
+      }
+      if (viewportPersistTimerRef.current != null) {
+        window.clearTimeout(viewportPersistTimerRef.current);
+        viewportPersistTimerRef.current = null;
       }
       panAnimationLastTimestampRef.current = null;
       panTargetScrollRef.current = null;
@@ -13971,6 +14146,13 @@ const MapPanel = memo(({
   );
 
   useEffect(() => {
+    if (!centerRequest?.settlementId) {
+      return;
+    }
+    centerOnSettlement(centerRequest.settlementId, 'smooth');
+  }, [centerOnSettlement, centerRequest?.nonce, centerRequest?.settlementId]);
+
+  useEffect(() => {
     const wrap = gridWrapRef.current;
     if (!wrap) {
       return;
@@ -13993,7 +14175,73 @@ const MapPanel = memo(({
 
   useEffect(() => {
     hasInitialAutoCenterRef.current = false;
-  }, [regionId]);
+    hasRestoredViewportRef.current = false;
+  }, [currentUsername, regionId]);
+
+  useEffect(() => {
+    if (hasRestoredViewportRef.current) {
+      return;
+    }
+
+    const storedViewport = readStoredMapViewport(currentUsername, regionId);
+    hasRestoredViewportRef.current = true;
+    if (!storedViewport) {
+      return;
+    }
+
+    const rafId = window.requestAnimationFrame(() => {
+      const wrap = gridWrapRef.current;
+      if (!wrap) {
+        return;
+      }
+      const maxLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+      const maxTop = Math.max(0, wrap.scrollHeight - wrap.clientHeight);
+      applyPanTarget(maxLeft * storedViewport.leftRatio, maxTop * storedViewport.topRatio, { immediate: true });
+      hasInitialAutoCenterRef.current = true;
+    });
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [applyPanTarget, currentUsername, mapGridSizePx, regionId]);
+
+  useEffect(() => {
+    if (gridViewportState.clientWidth <= 1 || gridViewportState.clientHeight <= 1) {
+      return;
+    }
+
+    if (viewportPersistTimerRef.current != null) {
+      window.clearTimeout(viewportPersistTimerRef.current);
+    }
+
+    viewportPersistTimerRef.current = window.setTimeout(() => {
+      viewportPersistTimerRef.current = null;
+      const wrap = gridWrapRef.current;
+      if (!wrap) {
+        return;
+      }
+      const maxLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+      const maxTop = Math.max(0, wrap.scrollHeight - wrap.clientHeight);
+      saveStoredMapViewport(currentUsername, regionId, {
+        leftRatio: maxLeft <= 0 ? 0 : clamp(wrap.scrollLeft / maxLeft, 0, 1),
+        topRatio: maxTop <= 0 ? 0 : clamp(wrap.scrollTop / maxTop, 0, 1),
+      });
+    }, 180);
+
+    return () => {
+      if (viewportPersistTimerRef.current != null) {
+        window.clearTimeout(viewportPersistTimerRef.current);
+        viewportPersistTimerRef.current = null;
+      }
+    };
+  }, [
+    currentUsername,
+    gridViewportState.clientHeight,
+    gridViewportState.clientWidth,
+    gridViewportState.scrollLeft,
+    gridViewportState.scrollTop,
+    regionId,
+  ]);
 
   useEffect(() => {
     if (hasInitialAutoCenterRef.current || !focusedSettlementId) {
@@ -14265,6 +14513,23 @@ const MapPanel = memo(({
             }}
             title={`${settlement.name} (${settlement.globalX}|${settlement.globalY}) • ${settlementPrestigeMeta.label} (${settlementPrestigeMeta.letter})`}
           >
+            {showSettlementBannerCards && shouldShowCtrlSettlementBanner(settlement) ? (
+              <span
+                className={`map-settlement-banner ${settlementMapKind} prestige-tier-${settlementPrestigeTier.toLocaleLowerCase('cs-CZ')} ${safeHoveredId === settlement.id || safePinnedSettlementId === settlement.id || focusedSettlementId === settlement.id ? 'is-highlighted' : ''}`}
+                aria-hidden="true"
+              >
+                <span className="map-settlement-banner-kicker">
+                  <span>{MAP_SETTLEMENT_KIND_LABELS[settlementMapKind]}</span>
+                  <span className="map-settlement-banner-divider">✦</span>
+                  <span>{settlementPrestigeMeta.letter}</span>
+                </span>
+                <strong className="map-settlement-banner-title">{settlement.name}</strong>
+                <span className="map-settlement-banner-meta">
+                  <span>{settlement.owner}</span>
+                  <span>{Math.max(0, Math.floor(Number(settlement.prestige ?? 0))).toLocaleString('cs-CZ')}</span>
+                </span>
+              </span>
+            ) : null}
             <span className="settlement-art" aria-hidden="true">
               <img
                 src={settlementPrestigeMeta.imagePath}
@@ -14327,7 +14592,9 @@ const MapPanel = memo(({
       onOpenSettlement,
       orderMarkersByVillageId,
       safeHoveredId,
+      safePinnedSettlementId,
       scheduleHoveredSettlementClear,
+      showSettlementBannerCards,
     ],
   );
 
@@ -14387,283 +14654,148 @@ const MapPanel = memo(({
     previewSettlement,
   ]);
 
-  const renderPreviewSettlementCard = (cardStyle: CSSProperties, usePortal: boolean) => (
-    <article
-      className={`map-settlement-info-card ${usePortal ? 'is-portal' : ''} ${isPreviewPinned ? 'is-pinned' : 'is-hover'} ${isPreviewPlayerSettlement ? 'is-player' : ''} ${previewPrestigeTier ? `prestige-tier-${previewPrestigeTier.toLocaleLowerCase('cs-CZ')}` : ''}`}
-      style={cardStyle}
-      onPointerDown={(event) => event.stopPropagation()}
-      onClick={(event) => event.stopPropagation()}
-      onWheel={handleRegionWheel}
-    >
-      <header>
-        <h4>
-          {previewSettlement?.name} ({previewSettlement?.globalX}|{previewSettlement?.globalY})
-        </h4>
-        <small>
-          Region {previewSettlement?.region} · Grid {previewSettlementCell?.localX ?? '-'}|
-          {previewSettlementCell?.localY ?? '-'}
-        </small>
-      </header>
-      <div className="map-settlement-info-body">
-        <div className="map-settlement-detail-grid">
+  const renderPreviewSettlementCard = (cardStyle: CSSProperties, usePortal: boolean) => {
+    const ownerLabel = isPreviewAbandoned ? 'opuštěná osada' : (previewSettlement?.owner ?? 'neznámý hráč');
+    const settlementPrestige = Math.max(0, Math.floor(Number(previewSettlement?.prestige ?? 0)));
+    const shouldShowPlayerTotalPrestige =
+      previewPlayerTotalPrestige != null &&
+      previewSettlementKind !== 'abandoned' &&
+      previewSettlementKind !== 'bot';
+    const shouldShowKingdomTotalPrestige =
+      previewKingdomTotalPrestige != null &&
+      previewSettlementKind !== 'abandoned' &&
+      previewSettlementKind !== 'bot' &&
+      previewSettlementKind !== 'own' &&
+      previewSettlementKind !== 'active';
+
+    return (
+      <article
+        className={`map-settlement-info-card ${usePortal ? 'is-portal' : ''} ${isPreviewPinned ? 'is-pinned' : 'is-hover'} ${isPreviewPlayerSettlement ? 'is-player' : ''} ${previewPrestigeTier ? `prestige-tier-${previewPrestigeTier.toLocaleLowerCase('cs-CZ')}` : ''}`}
+        style={cardStyle}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+        onWheel={handleRegionWheel}
+      >
+        <header>
+          <h4>
+            {previewSettlement?.name} ({ownerLabel})
+          </h4>
+        </header>
+        <div className="map-settlement-info-body">
           <div className="map-settlement-overview">
-            {isPreviewPinned ? (
-              isPreviewAbandoned ? (
-                <button
-                  type="button"
-                  className="map-settlement-link abandoned"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (previewSettlement) {
-                      onOpenSettlement(previewSettlement);
-                    }
-                  }}
-                >
-                  Opuštěná osada - otevřít profil
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className={`map-settlement-link owner ${isPreviewPlayerSettlement ? 'player-owner' : ''}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (previewSettlement) {
-                      onOpenPlayerProfile(previewSettlement.owner);
-                    }
-                  }}
-                >
-                  <span className="map-settlement-owner-label">Hráč:</span> {previewSettlement?.owner}
-                </button>
-              )
-            ) : (
-              <p className={`map-settlement-owner ${isPreviewPlayerSettlement ? 'player-owner' : ''}`}>
-                <span className="map-settlement-owner-label">Hráč:</span> {previewSettlement?.owner}
-              </p>
-            )}
             <p className="map-settlement-prestige">
-              Prestiž osady <strong>{previewSettlement?.prestige.toLocaleString('cs-CZ')}</strong>{' '}
-              {previewPrestigeMeta ? (
-                <em className="map-prestige-tier-badge">
-                  {previewPrestigeMeta.label} <small>{previewPrestigeMeta.letter}</small>
-                </em>
+              Prestiž léna <strong>{settlementPrestige.toLocaleString('cs-CZ')}</strong>
+              {shouldShowPlayerTotalPrestige ? (
+                <em> (hráč celkem {previewPlayerTotalPrestige.toLocaleString('cs-CZ')})</em>
               ) : null}
             </p>
-            <p className="map-settlement-type">
-              Typ osady <strong>{previewSettlementTypeLabel}</strong>
+            <p className="map-settlement-kingdom">
+              Království <strong>{previewSettlement?.kingdom || '-'}</strong>{' '}
+              <em>
+                ({previewSettlementTypeLabel}
+                {shouldShowKingdomTotalPrestige ? ` · ${previewKingdomTotalPrestige.toLocaleString('cs-CZ')}` : ''})
+              </em>
             </p>
-            <p className="map-settlement-prestige-total">
-              Prestiž hráče{' '}
-              <strong>{previewPlayerTotalPrestige == null ? '-' : previewPlayerTotalPrestige.toLocaleString('cs-CZ')}</strong>
-            </p>
-            <p className="map-settlement-prestige-total">
-              Prestiž království{' '}
-              <strong>
-                {previewKingdomTotalPrestige == null ? '-' : previewKingdomTotalPrestige.toLocaleString('cs-CZ')}
-              </strong>
-            </p>
-            {isPreviewPinned ? (
-              <button
-                type="button"
-                className="map-settlement-link kingdom"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (previewSettlement) {
-                    onOpenKingdomProfile(previewSettlement.kingdom);
-                  }
-                }}
-              >
-                <span className="map-settlement-owner-label">Království:</span> {previewSettlement?.kingdom}
-              </button>
-            ) : (
-              <p className="map-settlement-kingdom">
-                <span className="map-settlement-owner-label">Království:</span> {previewSettlement?.kingdom}
-              </p>
-            )}
             <p className="map-settlement-distance">
               Vzdálenost od <em>{distanceOriginSettlement?.name ?? 'aktivního léna'}</em>{' '}
               <strong>{previewDistanceTiles == null ? '-' : `${previewDistanceTiles} polí`}</strong>
             </p>
-            {previewDistanceTiles != null && !showPreviewTravelDurations ? (
-              <p className="map-settlement-travel-hint">
-                Podrž {previewTravelModifierLabel} pro zobrazení časů přesunu jednotek.
-              </p>
+            {showPreviewTravelDurations ? (
+              <div className="map-settlement-travel-times">
+                <p>
+                  Časy přesunu (<strong>Ctrl</strong>)
+                </p>
+                <ul>
+                  {previewTravelRows.map((row) => (
+                    <li key={`preview-travel-${row.unitId}`}>
+                      <span>{getUnitMetaById(row.unitId).fallbackName}</span>
+                      <span>
+                        Útok: {formatDurationLabel(row.attackDurationSec)}
+                        {row.supportDurationSec != null ? ` · Podpora: ${formatDurationLabel(row.supportDurationSec)}` : ''}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ) : null}
             {previewTargetUnderProtection ? (
               <p className="map-settlement-protection">
                 Nováčkovská ochrana: {formatDurationLabel(Number(previewSettlement?.protectionRemainingSec ?? 0))}
               </p>
             ) : null}
-            {previewTargetPrestigeBlocked ? (
-              <p className="map-settlement-balance-warning is-blocked">
-                Ochrana prestiže: na toto léno teď útočit nemůžeš. Hráč má{' '}
-                <strong>{Math.max(0, Math.floor(Number(previewSettlement?.ownerTotalPrestige ?? 0))).toLocaleString('cs-CZ')}</strong>{' '}
-                prestiže a pro útok potřebuje alespoň{' '}
-                <strong>
-                  {Math.max(
-                    1,
-                    Math.floor(Number(previewSettlement?.prestigeAttackMinimumForViewer ?? 1)),
-                  ).toLocaleString('cs-CZ')}
-                </strong>
-                . Pokud tě napadne jako první, ochrana se zruší a můžeš útok vrátit.
-              </p>
-            ) : null}
-            {previewRetaliationUnlocked ? (
-              <p className="map-settlement-balance-warning is-unlocked">
-                Retaliace aktivní: tento hráč už na tebe útočil, můžeš útok vrátit bez prestižní blokace.
-                {previewRetaliationUnlockedAtLabel ? (
-                  <>
-                    {' '}
-                    Poslední agrese: <strong>{previewRetaliationUnlockedAtLabel}</strong>.
-                  </>
-                ) : null}
-              </p>
-            ) : null}
           </div>
-          {showPreviewTravelDurations ? (
-            <div className="map-settlement-travel">
-              <p className="map-settlement-travel-title">
-                Časy přesunu jednotek ({previewDistanceTiles.toLocaleString('cs-CZ')} polí)
-              </p>
-              <div className="map-settlement-travel-head">
-                <span>Jednotka</span>
-                <span>⌖ Útok</span>
-                <span>🛡 Podpora</span>
-              </div>
-              <div className="map-settlement-travel-list">
-                {previewTravelRows.map((row) => {
-                  const unitMeta = getUnitMetaById(row.unitId);
-                  const attackLabel =
-                    row.attackDurationSec == null ? '—' : formatDurationLabel(row.attackDurationSec);
-                  const supportLabel =
-                    row.supportDurationSec == null ? '—' : formatDurationLabel(row.supportDurationSec);
-
-                  return (
-                    <div key={`${previewSettlement?.id}-travel-${row.unitId}`} className="map-settlement-travel-row">
-                      <span className="map-settlement-travel-unit">
-                        <span className="unit-icon-shell tiny" aria-hidden="true">
-                          <img src={unitMeta.icon} alt="" className="unit-icon-image" loading="lazy" />
-                        </span>
-                        <small>{unitMeta.fallbackName}</small>
-                      </span>
-                      <strong>{attackLabel}</strong>
-                      <strong>{supportLabel}</strong>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
         </div>
-      </div>
-      {isPreviewPinned ? (
-        <>
-          <div className="map-settlement-action-grid">
-            {MAP_ORDER_COMMAND_TYPES.map((commandType) => {
-              if (commandType === 'attack' && previewTargetUnderProtection) {
-                return null;
-              }
+        {isPreviewPinned ? (
+          <>
+            <div className="map-settlement-action-grid">
+              {MAP_ORDER_COMMAND_TYPES.map((commandType) => {
+                if (commandType === 'attack' && previewTargetUnderProtection) {
+                  return null;
+                }
 
-              return (
-                <button
-                  key={`${previewSettlement?.id}-${commandType}-quick`}
-                  type="button"
-                  className={`secondary-action map-settlement-action ${commandType}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (!previewCommandAvailability[commandType] || !previewSettlement) {
-                      return;
+                return (
+                  <button
+                    key={`${previewSettlement?.id}-${commandType}-quick`}
+                    type="button"
+                    className={`secondary-action map-settlement-action ${commandType}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (!previewCommandAvailability[commandType] || !previewSettlement) {
+                        return;
+                      }
+                      onQuickArmyCommand(commandType, previewSettlement);
+                    }}
+                    disabled={!previewCommandAvailability[commandType]}
+                    title={
+                      previewCommandAvailability[commandType]
+                        ? `${ARMY_COMMAND_LABELS[commandType]} z aktivního léna`
+                        : 'Tato akce není pro zvolenou osadu dostupná'
                     }
-                    onQuickArmyCommand(commandType, previewSettlement);
-                  }}
-                  disabled={!previewCommandAvailability[commandType]}
-                  title={
-                    previewCommandAvailability[commandType]
-                      ? `${ARMY_COMMAND_LABELS[commandType]} z aktivního léna`
-                      : 'Tato akce není pro zvolenou osadu dostupná'
+                  >
+                    <span className="symbol">{getArmyCommandSymbol(commandType)}</span>{' '}
+                    {commandType === 'attack' ? 'Zaútočit' : commandType === 'support' ? 'Podpořit' : 'Přesunout jednotky'}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="map-settlement-pin-controls">
+              <button
+                type="button"
+                className="map-settlement-pin-arrow"
+                title="Zapinovat osadu vlevo"
+                aria-label="Zapinovat osadu vlevo"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (previewSettlement) {
+                    onPinSettlement(previewSettlement, 'left');
                   }
-                >
-                  <span className="symbol">{getArmyCommandSymbol(commandType)}</span>{' '}
-                  {commandType === 'attack' ? 'Zaútočit' : commandType === 'support' ? 'Podpořit' : 'Přesunout jednotky'}
-                </button>
-              );
-            })}
-          </div>
-          <div className="map-settlement-pin-controls">
-            <button
-              type="button"
-              className="map-settlement-pin-arrow"
-              title="Zapinovat osadu vlevo"
-              aria-label="Zapinovat osadu vlevo"
-              onClick={(event) => {
-                event.stopPropagation();
-                if (previewSettlement) {
-                  onPinSettlement(previewSettlement, 'left');
-                }
-              }}
-            >
-              ←
-            </button>
-            <button
-              type="button"
-              className="map-settlement-pin-arrow"
-              title="Zapinovat osadu vpravo"
-              aria-label="Zapinovat osadu vpravo"
-              onClick={(event) => {
-                event.stopPropagation();
-                if (previewSettlement) {
-                  onPinSettlement(previewSettlement, 'right');
-                }
-              }}
-            >
-              →
-            </button>
-            <span>Zapinovat osadu</span>
-          </div>
-        </>
-      ) : null}
-    </article>
-  );
+                }}
+              >
+                ←
+              </button>
+              <button
+                type="button"
+                className="map-settlement-pin-arrow"
+                title="Zapinovat osadu vpravo"
+                aria-label="Zapinovat osadu vpravo"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (previewSettlement) {
+                    onPinSettlement(previewSettlement, 'right');
+                  }
+                }}
+              >
+                →
+              </button>
+              <span>Zapinovat osadu</span>
+            </div>
+          </>
+        ) : null}
+      </article>
+    );
+  };
   return (
     <div className={`map-panel ${isMapFullscreen ? 'is-fullscreen' : ''}`} ref={mapPanelRef}>
-      <section className="map-header">
-        <div>
-          <h3>
-            Region {regionId} - mřížka {regionSize}x{regionSize}
-          </h3>
-        </div>
-        <div className="map-header-actions">
-          <button onClick={() => centerOnSettlement(distanceOriginSettlement?.id ?? ownSettlement?.id ?? null, 'smooth')}>
-            Centrovat
-          </button>
-          <button
-            type="button"
-            className="map-fullscreen-toggle"
-            onClick={() => {
-              void toggleMapFullscreen();
-            }}
-            title={isMapFullscreen ? 'Ukončit režim celé obrazovky' : 'Rozšířit mapu na celou obrazovku'}
-            aria-label={isMapFullscreen ? 'Ukončit režim celé obrazovky' : 'Rozšířit mapu na celou obrazovku'}
-          >
-            <span className="symbol" aria-hidden="true">
-              ⛶
-            </span>
-            <span>{isMapFullscreen ? 'Zmenšit mapu' : 'Celá obrazovka'}</span>
-          </button>
-        </div>
-      </section>
-
-      <section className="map-legend">
-        <span className="legend active">Aktuální osada</span>
-        <span className="legend own">Moje osada</span>
-        <span className="legend bot">Bot</span>
-        <span className="legend royal">Královská</span>
-        <span className="legend allied">Spojenecká</span>
-        <span className="legend nap">Dohoda o neútočení</span>
-        <span className="legend opponent">Protivník</span>
-        <span className="legend enemy">Nepřítel</span>
-        <span className="legend abandoned">Opuštěná</span>
-      </section>
-
       <div className="map-workspace">
         <div
           className="region-grid-wrap"
@@ -14688,69 +14820,118 @@ const MapPanel = memo(({
               : null}
           </div>
         </div>
-
-        <section
-          className="map-navigation"
-          onWheel={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-          }}
-        >
-          <div className="mini-map-shell">
-            <h4>Minimapa</h4>
-            <div
-              className="mini-map"
-              ref={miniMapRef}
-              onPointerDown={handleMinimapPointerDown}
-              onPointerMove={handleMinimapPointerMove}
-              onPointerUp={handleMinimapPointerUp}
-              onPointerCancel={handleMinimapPointerCancel}
-              onLostPointerCapture={handleMinimapPointerCancel}
-              onWheel={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-              }}
-              role="button"
-              aria-label="Minimapa pro rychlou navigaci"
-              tabIndex={0}
-            >
-              {miniMapDots}
+        <div className="map-window-overlays">
+          <section className="map-legend map-legend-overlay" aria-label="Legenda barev lén">
+            <span className="legend active">Aktivní</span>
+            <span className="legend own">Moje</span>
+            <span className="legend bot">Bot</span>
+            <span className="legend royal">Královská</span>
+            <span className="legend allied">Spojenecká</span>
+            <span className="legend nap">NAP</span>
+            <span className="legend opponent">Protivník</span>
+            <span className="legend enemy">Nepřítel</span>
+            <span className="legend abandoned">Opuštěná</span>
+          </section>
+          <section
+            className="map-navigation map-navigation-overlay"
+            onWheel={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+          >
+            <div className="mini-map-shell">
+              <div className="mini-map-title-row">
+                <h4>Minimapa</h4>
+                <div className="mini-map-actions">
+                  <button
+                    type="button"
+                    className="mini-map-action-button"
+                    onClick={() => centerOnSettlement(distanceOriginSettlement?.id ?? ownSettlement?.id ?? null, 'smooth')}
+                    title="Centrovat mapu na aktivní léno"
+                    aria-label="Centrovat mapu na aktivní léno"
+                  >
+                    <span className="symbol" aria-hidden="true">
+                      ⌖
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="mini-map-action-button map-fullscreen-toggle icon-only"
+                    onClick={() => {
+                      void toggleMapFullscreen();
+                    }}
+                    title={isMapFullscreen ? 'Ukončit režim celé obrazovky' : 'Celá obrazovka'}
+                    aria-label={isMapFullscreen ? 'Ukončit režim celé obrazovky' : 'Celá obrazovka'}
+                  >
+                    <span className="symbol" aria-hidden="true">
+                      ⛶
+                    </span>
+                  </button>
+                </div>
+              </div>
               <div
-                className="mini-map-viewport"
-                ref={miniViewportRef}
-              />
-            </div>
-            <div className="map-zoom-controls">
-              <label htmlFor="map-zoom-range">
-                Měřítko: {zoomLabelValue > 0 ? `+${zoomLabelValue}` : zoomLabelValue}%
-              </label>
-              <input
-                id="map-zoom-range"
-                type="range"
-                min={MAP_ZOOM_MIN}
-                max={MAP_ZOOM_MAX}
-                step={MAP_ZOOM_STEP}
-                value={zoomSliderValue}
-                onChange={(event) => applyZoom(Number(event.target.value))}
-              />
-              <div className="map-zoom-buttons">
-                <button onClick={() => applyZoom(0)}>0</button>
-                <button onClick={() => applyZoom(60)}>+60%</button>
-                <button onClick={() => applyZoom(70)}>+70%</button>
-                <button onClick={() => applyZoom(100)}>+100%</button>
-                <button onClick={() => applyZoom(MAP_ZOOM_MIN)}>-50%</button>
+                className="mini-map"
+                ref={miniMapRef}
+                onPointerDown={handleMinimapPointerDown}
+                onPointerMove={handleMinimapPointerMove}
+                onPointerUp={handleMinimapPointerUp}
+                onPointerCancel={handleMinimapPointerCancel}
+                onLostPointerCapture={handleMinimapPointerCancel}
+                onWheel={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                role="button"
+                aria-label="Minimapa pro rychlou navigaci"
+                tabIndex={0}
+              >
+                {miniMapDots}
+                <div
+                  className="mini-map-viewport"
+                  ref={miniViewportRef}
+                />
+              </div>
+              <div className="map-zoom-controls">
+                <label htmlFor="map-zoom-range">
+                  Měřítko: {zoomLabelValue}%
+                </label>
+                <input
+                  id="map-zoom-range"
+                  type="range"
+                  min={MAP_ZOOM_MIN}
+                  max={MAP_ZOOM_MAX}
+                  step={MAP_ZOOM_STEP}
+                  value={zoomSliderValue}
+                  onChange={(event) => applyZoom(Number(event.target.value))}
+                />
+                <div className="map-zoom-buttons">
+                  <button
+                    type="button"
+                    className="icon-only"
+                    onClick={() => applyZoom(0)}
+                    title="Nastavit měřítko mapy na 100 %"
+                    aria-label="Nastavit měřítko mapy na 100 %"
+                  >
+                    <span className="symbol" aria-hidden="true">
+                      ⊟
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-only"
+                    onClick={() => applyZoom(200)}
+                    title="Nastavit měřítko mapy na 300 %"
+                    aria-label="Nastavit měřítko mapy na 300 %"
+                  >
+                    <span className="symbol" aria-hidden="true">
+                      ⊞
+                    </span>
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-          <div className="map-nav-hint">
-            <p>
-              Zoom mapy: kolečko myši po {MAP_ZOOM_STEP} %. Rozsah je od {MAP_ZOOM_MIN} % do +
-              {MAP_ZOOM_MAX} %.
-            </p>
-            <p>Náhled časů přesunu: podrž {previewTravelModifierLabel} při najetí na léno.</p>
-            <p>Značky rozkazů: <strong className="order-legend attack">⌖ útok</strong>, <strong className="order-legend support">🛡 podpora</strong>, <strong className="order-legend move">➜ přesun</strong>, <strong className="order-legend knight">♞ pohyb rytíře</strong>.</p>
-          </div>
-        </section>
+          </section>
+        </div>
       </div>
       {previewSettlement && previewCardPortalStyle && typeof document !== 'undefined'
         ? createPortal(renderPreviewSettlementCard(previewCardPortalStyle, true), document.body)
@@ -15294,7 +15475,7 @@ export const GamePage = () => {
 
     hasStoredPanelLayoutRef.current = false;
 
-    return [createPanelWindow('city', 40, 0, { layoutMode: 'full' })];
+    return [createPanelWindow('map', 40, 0, { layoutMode: 'floating' })];
   });
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
   const [activeFullDockPanelId, setActiveFullDockPanelId] = useState<string | null>(null);
@@ -15350,7 +15531,7 @@ export const GamePage = () => {
   const [activitySharePending, setActivitySharePending] = useState(false);
   const [activityShareError, setActivityShareError] = useState<string | null>(null);
   const [communicationBadgeCount, setCommunicationBadgeCount] = useState(0);
-  const [isCommunicationHubOpen, setIsCommunicationHubOpen] = useState(false);
+  const [, setIsCommunicationHubOpen] = useState(false);
   const [availableWorlds, setAvailableWorlds] = useState<WorldPortalItem[]>([]);
   const [isWorldMenuOpen, setIsWorldMenuOpen] = useState(false);
   const [worldMenuError, setWorldMenuError] = useState<string | null>(null);
@@ -15385,7 +15566,7 @@ export const GamePage = () => {
 
     hasStoredPanelLayoutRef.current = false;
     topZ.current = 40;
-    setPanels([createPanelWindow('city', 40, 0, { layoutMode: 'full' })]);
+    setPanels([createPanelWindow('map', 40, 0, { layoutMode: 'floating' })]);
   }, [selectedWorldId, username]);
   useEffect(() => {
     setVillageIntelByVillageId({});
@@ -15432,6 +15613,9 @@ export const GamePage = () => {
   const [mapPreviewTravelModifier, setMapPreviewTravelModifier] = useState<MapPreviewTravelModifierKey>(
     () => readStoredShortcutSettings(username).mapPreviewTravelModifier,
   );
+  const [settlementColorPalette, setSettlementColorPalette] = useState<SettlementColorPalette>(
+    () => readStoredShortcutSettings(username).settlementColors,
+  );
   const [shortcutNotice, setShortcutNotice] = useState<string | null>(null);
   const [isPinColumnsTemporarilyHidden, setIsPinColumnsTemporarilyHidden] = useState(false);
   const [isPinColumnsOverlayVisible, setIsPinColumnsOverlayVisible] = useState(false);
@@ -15449,6 +15633,7 @@ export const GamePage = () => {
     () => readStoredArmyTargetHistory(username),
   );
   const [armyQuickSelection, setArmyQuickSelection] = useState<ArmyQuickSelection | null>(null);
+  const [mapCenterRequest, setMapCenterRequest] = useState<{ settlementId: string; nonce: number } | null>(null);
 
   useEffect(() => {
     mutationPendingRef.current = Boolean(
@@ -15499,6 +15684,7 @@ export const GamePage = () => {
     setShortcutCustomBindings(storedShortcutSettings.customBindings);
     setAutoHidePinColumns(storedShortcutSettings.autoHidePinColumns);
     setMapPreviewTravelModifier(storedShortcutSettings.mapPreviewTravelModifier);
+    setSettlementColorPalette(storedShortcutSettings.settlementColors);
     setShortcutNotice(null);
     setIsPinColumnsTemporarilyHidden(false);
     setIsPinColumnsOverlayVisible(false);
@@ -15552,8 +15738,16 @@ export const GamePage = () => {
       autoHidePinColumns,
       customBindings: shortcutCustomBindings,
       mapPreviewTravelModifier,
+      settlementColors: settlementColorPalette,
     });
-  }, [autoHidePinColumns, mapPreviewTravelModifier, shortcutCustomBindings, shortcutSettingsLoadedForUser, username]);
+  }, [
+    autoHidePinColumns,
+    mapPreviewTravelModifier,
+    settlementColorPalette,
+    shortcutCustomBindings,
+    shortcutSettingsLoadedForUser,
+    username,
+  ]);
 
   const activeGameFontScalePercent = GAME_FONT_SCALE_PERCENT_BY_OPTION[gameFontScaleOption];
   useEffect(() => {
@@ -15576,6 +15770,22 @@ export const GamePage = () => {
       }
     };
   }, [activeGameFontScalePercent, gameFontScaleOption]);
+
+  const settlementColorCssVariables = useMemo(
+    () =>
+      ({
+        '--settlement-color-active': settlementColorPalette.active,
+        '--settlement-color-own': settlementColorPalette.own,
+        '--settlement-color-bot': settlementColorPalette.bot,
+        '--settlement-color-royal': settlementColorPalette.royal,
+        '--settlement-color-allied': settlementColorPalette.allied,
+        '--settlement-color-nap': settlementColorPalette.nap,
+        '--settlement-color-opponent': settlementColorPalette.opponent,
+        '--settlement-color-enemy': settlementColorPalette.enemy,
+        '--settlement-color-abandoned': settlementColorPalette.abandoned,
+      }) as CSSProperties,
+    [settlementColorPalette],
+  );
 
   useEffect(() => {
     const handleCommunicationSummary = (event: Event) => {
@@ -16078,7 +16288,7 @@ export const GamePage = () => {
   const gameCanvasClassName = `game-canvas${autoHidePinColumns ? ' is-pin-columns-auto-mode' : ''}${
     arePinColumnsVisible ? '' : ' is-pin-columns-hidden'
   }${isPinColumnsOverlayVisibleInCanvas ? ' is-pin-columns-overlay-visible' : ''}`;
-  const [, setCanvasViewportRevision] = useState(0);
+  const [canvasViewportRevision, setCanvasViewportRevision] = useState(0);
   useEffect(() => {
     const canvasNode = canvasRef.current;
     let rafId: number | null = null;
@@ -16209,6 +16419,13 @@ export const GamePage = () => {
     () => leaderboardRows.find((entry) => entry.username === username) ?? null,
     [leaderboardRows, username],
   );
+  const leaderboardMenuBadgeLabel = useMemo(() => {
+    const rawRank = Number(playerLeaderboardEntry?.rank ?? 0);
+    if (!Number.isFinite(rawRank) || rawRank <= 0) {
+      return null;
+    }
+    return `#${Math.max(1, Math.floor(rawRank)).toLocaleString('cs-CZ')}`;
+  }, [playerLeaderboardEntry?.rank]);
   const incomingAttackAttentionCount = useMemo(
     () => armyIncomingMovements.filter((movement) => movement.commandType === 'attack').length,
     [armyIncomingMovements],
@@ -17442,21 +17659,24 @@ export const GamePage = () => {
     const leftPinNode = canvasNode?.querySelector('.pin-column.left') as HTMLElement | null;
     const rightPinNode = canvasNode?.querySelector('.pin-column.right') as HTMLElement | null;
     const pinClearance = 12;
+    const stageMarginX = 0;
+    const stageMarginTop = 0;
+    const stageMarginBottom = 0;
 
     const leftPinEnd = shouldReservePinColumnsSpace && leftPinNode
       ? Math.floor(leftPinNode.offsetLeft + leftPinNode.offsetWidth + pinClearance)
-      : 8;
+      : stageMarginX;
     const rightPinStart = shouldReservePinColumnsSpace && rightPinNode
       ? Math.floor(rightPinNode.offsetLeft - pinClearance)
-      : viewportWidth - PANEL_VIEWPORT_MARGIN_X;
+      : viewportWidth - stageMarginX;
     const availableLeft = clamp(
       leftPinEnd,
-      8,
-      Math.max(8, viewportWidth - PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH),
+      stageMarginX,
+      Math.max(stageMarginX, viewportWidth - PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH),
     );
     const maxRight = Math.max(
       availableLeft + PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
-      viewportWidth - PANEL_VIEWPORT_MARGIN_X,
+      viewportWidth - stageMarginX,
     );
     const availableRight = clamp(
       rightPinStart,
@@ -17466,19 +17686,19 @@ export const GamePage = () => {
 
     return {
       x: Math.round(availableLeft),
-      y: 12,
+      y: stageMarginTop,
       width: Math.round(
         clamp(
           availableRight - availableLeft,
           PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
-          viewportWidth - PANEL_VIEWPORT_MARGIN_X,
+          viewportWidth - stageMarginX,
         ),
       ),
       height: Math.round(
         clamp(
-          viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
+          viewportHeight - stageMarginTop - stageMarginBottom,
           PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT,
-          viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
+          viewportHeight - stageMarginTop - stageMarginBottom,
         ),
       ),
     };
@@ -17486,8 +17706,11 @@ export const GamePage = () => {
 
   const openPanel = useCallback((type: StaticPanelType) => {
     setActivePanelId(type);
-    const canDock = canPanelUseDockLayout(type);
     const { viewportWidth, viewportHeight } = getCanvasViewportSize();
+    const shouldSwitchMainMenuPage = isMainMenuPanelType(type);
+    const fallbackMainMenuFrame = shouldSwitchMainMenuPage
+      ? getStretchedPanelFrame(viewportWidth, viewportHeight)
+      : null;
     const panelVillageName =
       type === 'city' || type === 'map' || type === 'army' || type === 'commands'
         ? currentVillageName
@@ -17495,6 +17718,20 @@ export const GamePage = () => {
     let nextMapSize: WindowSize | null = null;
 
     setPanels((previous) => {
+      const mainMenuFrame = shouldSwitchMainMenuPage
+        ? (() => {
+            const mapPanelFrame = previous.find((panel) => panel.type === 'map');
+            if (!mapPanelFrame) {
+              return fallbackMainMenuFrame;
+            }
+            return {
+              x: mapPanelFrame.x,
+              y: mapPanelFrame.y,
+              width: mapPanelFrame.width,
+              height: mapPanelFrame.height,
+            };
+          })()
+        : null;
       const existing = previous.find((panel) => panel.type === type);
       const nextZ = ++topZ.current;
       const rememberedPlacement = storedPanelPlacement[type];
@@ -17502,30 +17739,48 @@ export const GamePage = () => {
 
       if (existing) {
         const nextPanels = previous.map((panel) => {
-          if (panel.type !== type) {
-            return panel;
+          if (panel.type === type) {
+            const adjusted = fitPanelToViewport(
+              {
+                ...panel,
+                z: nextZ,
+                expanded: true,
+                alert: false,
+                label: PANEL_META[type].label,
+                villageName: panelVillageName ?? panel.villageName,
+                side: requestedSide,
+                layoutMode: 'floating',
+                ...(mainMenuFrame ?? {}),
+              },
+              viewportWidth,
+              viewportHeight,
+            );
+            if (adjusted.type === 'map') {
+              nextMapSize = { width: adjusted.width, height: adjusted.height };
+            }
+            return adjusted;
           }
 
-          const adjusted = fitPanelToViewport(
-            {
-              ...panel,
-              z: nextZ,
-              expanded: true,
-              alert: false,
-              label: PANEL_META[type].label,
-              villageName: panelVillageName ?? panel.villageName,
-              side: panel.side,
-              layoutMode: canDock ? 'full' : 'floating',
-            },
-            viewportWidth,
-            viewportHeight,
-          );
-          if (adjusted.type === 'map') {
-            nextMapSize = { width: adjusted.width, height: adjusted.height };
+          if (shouldSwitchMainMenuPage && isMainMenuPanelType(panel.type)) {
+            if (panel.type === 'map') {
+              if (panel.expanded) {
+                return panel;
+              }
+              return {
+                ...panel,
+                expanded: true,
+              };
+            }
+            if (panel.type !== type && panel.expanded) {
+              return {
+                ...panel,
+                expanded: false,
+              };
+            }
           }
-          return adjusted;
+          return panel;
         });
-        return canDock ? moveDockPanelToCenterStage(nextPanels, existing.id) : nextPanels;
+        return nextPanels;
       }
 
       const mapSizeOverride =
@@ -17547,9 +17802,10 @@ export const GamePage = () => {
       const created = fitPanelToViewport(
         createPanelWindow(type, nextZ, previous.length, {
           ...(mapSizeOverride ?? {}),
+          ...(mainMenuFrame ?? {}),
           villageName: panelVillageName,
-          side: canDock ? requestedSide : PANEL_META[type].side,
-          layoutMode: canDock ? 'full' : 'floating',
+          side: requestedSide,
+          layoutMode: 'floating',
         }),
         viewportWidth,
         viewportHeight,
@@ -17558,15 +17814,64 @@ export const GamePage = () => {
       if (nextCreated.type === 'map') {
         nextMapSize = { width: nextCreated.width, height: nextCreated.height };
       }
-      const appendedPanels = [...previous, nextCreated];
-      return canDock ? moveDockPanelToCenterStage(appendedPanels, nextCreated.id) : appendedPanels;
+      const collapsedPrevious = shouldSwitchMainMenuPage
+        ? previous.map((panel) => {
+            if (!isMainMenuPanelType(panel.type)) {
+              return panel;
+            }
+            if (panel.type === 'map') {
+              if (panel.expanded) {
+                return panel;
+              }
+              return {
+                ...panel,
+                expanded: true,
+              };
+            }
+            if (!panel.expanded) {
+              return panel;
+            }
+            return {
+              ...panel,
+              expanded: false,
+            };
+          })
+        : previous;
+      return [...collapsedPrevious, nextCreated];
     });
 
     if (nextMapSize) {
       mapWindowSizeRef.current = nextMapSize;
       saveMapWindowSize(nextMapSize);
     }
-  }, [currentVillageName, getCanvasViewportSize, storedPanelPlacement]);
+  }, [currentVillageName, getCanvasViewportSize, getStretchedPanelFrame, storedPanelPlacement]);
+
+  useEffect(() => {
+    const { viewportWidth, viewportHeight } = getCanvasViewportSize();
+    const stretchedFrame = getStretchedPanelFrame(viewportWidth, viewportHeight);
+    setPanels((previous) => {
+      if (previous.some((panel) => panel.type === 'map')) {
+        return previous;
+      }
+
+      const nextZ = ++topZ.current;
+      const createdMap = fitPanelToViewport(
+        createPanelWindow('map', nextZ, previous.length, {
+          ...stretchedFrame,
+          side: 'left',
+          layoutMode: 'floating',
+          villageName: currentVillageName,
+        }),
+        viewportWidth,
+        viewportHeight,
+      );
+      mapWindowSizeRef.current = {
+        width: createdMap.width,
+        height: createdMap.height,
+      };
+      return [createdMap, ...previous];
+    });
+  }, [currentVillageName, getCanvasViewportSize, getStretchedPanelFrame]);
 
   useEffect(() => {
     if (initialAutoStretchAppliedRef.current) {
@@ -17583,10 +17888,7 @@ export const GamePage = () => {
     setPanels((previous) => {
       let changed = false;
       const nextPanels = previous.map((panel) => {
-        if (
-          panel.layoutMode !== 'floating' ||
-          !DEFAULT_STRETCHED_PANEL_TYPES.has(panel.type as StaticPanelType)
-        ) {
+        if (panel.layoutMode !== 'floating' || !shouldUseStretchedPanelFrame(panel.type)) {
           return panel;
         }
 
@@ -17617,11 +17919,7 @@ export const GamePage = () => {
     setPanels((previous) => {
       let changed = false;
       const nextPanels = previous.map((panel) => {
-        if (
-          !panel.expanded ||
-          panel.layoutMode !== 'floating' ||
-          !DEFAULT_STRETCHED_PANEL_TYPES.has(panel.type as StaticPanelType)
-        ) {
+        if (!panel.expanded || panel.layoutMode !== 'floating' || !shouldUseStretchedPanelFrame(panel.type)) {
           return panel;
         }
         const stretched = fitPanelToViewport(
@@ -17647,7 +17945,13 @@ export const GamePage = () => {
       mapWindowSizeRef.current = nextMapSize;
       saveMapWindowSize(nextMapSize);
     }
-  }, [arePinColumnsVisible, getCanvasViewportSize, getStretchedPanelFrame, shouldReservePinColumnsSpace]);
+  }, [
+    arePinColumnsVisible,
+    canvasViewportRevision,
+    getCanvasViewportSize,
+    getStretchedPanelFrame,
+    shouldReservePinColumnsSpace,
+  ]);
 
   const loadVillageIntel = useCallback(
     async (villageIdRaw: number, options?: { force?: boolean }) => {
@@ -17744,6 +18048,17 @@ export const GamePage = () => {
     [ownedVillageIdSet, selectedSpawnDirection, selectedWorldId, username, villageIntelByVillageId],
   );
 
+  const requestMapCenterOnSettlement = useCallback((settlementId: string | null | undefined) => {
+    const normalizedSettlementId = String(settlementId ?? '').trim();
+    if (!normalizedSettlementId) {
+      return;
+    }
+    setMapCenterRequest((previous) => ({
+      settlementId: normalizedSettlementId,
+      nonce: (previous?.nonce ?? 0) + 1,
+    }));
+  }, []);
+
   const openSettlementPanel = useCallback(
     (settlement: RegionSettlement, options?: { pinSide?: PinSide }) => {
       const pinSide = options?.pinSide ?? null;
@@ -17759,6 +18074,7 @@ export const GamePage = () => {
           : null;
 
       syncOwnSettlementSelection(settlement);
+      requestMapCenterOnSettlement(settlement.id);
 
       if (settlementVillageId != null && ownedVillageIdSet.has(settlementVillageId)) {
         void loadVillageIntel(settlementVillageId);
@@ -17773,23 +18089,31 @@ export const GamePage = () => {
         const nextZ = ++topZ.current;
 
         if (existing) {
-          return previous.map((panel) =>
-            panel.id === id
-              ? fitPanelToViewport(
-                  {
-                    ...panel,
-                    z: nextZ,
-                    settlementId: settlement.id,
-                    label,
-                    side: nextSide,
-                    expanded: !shouldPin,
-                    alert: false,
-                  },
-                  viewportWidth,
-                  viewportHeight,
-                )
-              : panel,
-          );
+          return previous.map((panel) => {
+            if (panel.id === id) {
+              return fitPanelToViewport(
+                {
+                  ...panel,
+                  z: nextZ,
+                  settlementId: settlement.id,
+                  label,
+                  side: nextSide,
+                  expanded: !shouldPin,
+                  alert: false,
+                  layoutMode: 'floating',
+                },
+                viewportWidth,
+                viewportHeight,
+              );
+            }
+            if (!shouldPin && panel.type === 'village' && panel.expanded) {
+              return {
+                ...panel,
+                expanded: false,
+              };
+            }
+            return panel;
+          });
         }
 
         const baseCreated = createPanelWindow('village', nextZ, previous.length, {
@@ -17807,15 +18131,33 @@ export const GamePage = () => {
             side: nextSide,
             expanded: !shouldPin,
             alert: false,
+            layoutMode: 'floating',
           },
           viewportWidth,
           viewportHeight,
         );
 
-        return [...previous, created];
+        const collapsedVillagePanels = shouldPin
+          ? previous
+          : previous.map((panel) =>
+              panel.type === 'village' && panel.expanded
+                ? {
+                    ...panel,
+                    expanded: false,
+                  }
+                : panel,
+            );
+
+        return [...collapsedVillagePanels, created];
       });
     },
-    [getCanvasViewportSize, loadVillageIntel, ownedVillageIdSet, syncOwnSettlementSelection],
+    [
+      getCanvasViewportSize,
+      loadVillageIntel,
+      ownedVillageIdSet,
+      requestMapCenterOnSettlement,
+      syncOwnSettlementSelection,
+    ],
   );
 
   const pinSettlementPanelToSide = useCallback(
@@ -18122,14 +18464,27 @@ export const GamePage = () => {
       }
 
       const nextZ = target.expanded ? target.z : ++topZ.current;
+      const nextExpandedState = !target.expanded;
       const nextPanels = previous.map((panel) => {
+        if (
+          target.type === 'village' &&
+          nextExpandedState &&
+          panel.type === 'village' &&
+          panel.id !== id &&
+          panel.expanded
+        ) {
+          return {
+            ...panel,
+            expanded: false,
+          };
+        }
         if (panel.id !== id) {
           return panel;
         }
 
         const toggled: PanelWindow = {
           ...panel,
-          expanded: !panel.expanded,
+          expanded: nextExpandedState,
           z: nextZ,
           alert: false,
         };
@@ -18155,21 +18510,30 @@ export const GamePage = () => {
   };
 
   const closePanel = useCallback((id: string) => {
-    setActivePanelId((previous) => (previous === id ? null : previous));
-    setPanels((previous) => previous.filter((panel) => panel.id !== id));
+    setPanels((previous) => {
+      const target = previous.find((panel) => panel.id === id);
+      if (!target || target.type === 'map') {
+        return previous;
+      }
+
+      setActivePanelId((activeId) => (activeId === id ? null : activeId));
+      return previous.filter((panel) => panel.id !== id);
+    });
   }, []);
 
   const closePinnedPanelsOnSide = useCallback((side: PinSide) => {
     setPanels((previous) => {
       const removedPanelIds = previous
-        .filter((panel) => canPanelUsePinColumns(panel.type) && panel.side === side)
+        .filter((panel) => canPanelUsePinColumns(panel.type) && panel.type !== 'map' && panel.side === side)
         .map((panel) => panel.id);
       if (removedPanelIds.length <= 0) {
         return previous;
       }
       const removedSet = new Set(removedPanelIds);
       setActivePanelId((activeId) => (activeId != null && removedSet.has(activeId) ? null : activeId));
-      return previous.filter((panel) => !(canPanelUsePinColumns(panel.type) && panel.side === side));
+      return previous.filter(
+        (panel) => !(canPanelUsePinColumns(panel.type) && panel.type !== 'map' && panel.side === side),
+      );
     });
   }, []);
 
@@ -18181,102 +18545,13 @@ export const GamePage = () => {
     setIsPinColumnsTemporarilyHidden((previous) => !previous);
   }, [autoHidePinColumns]);
 
-  const stretchPanelToViewport = useCallback(
-    (id: string) => {
-      const canvasNode = canvasRef.current;
-      const { viewportWidth, viewportHeight } = getCanvasViewportSize();
-      let nextMapSize: WindowSize | null = null;
-
-      const leftPinNode = canvasNode?.querySelector('.pin-column.left') as HTMLElement | null;
-      const rightPinNode = canvasNode?.querySelector('.pin-column.right') as HTMLElement | null;
-      const pinClearance = 12;
-
-      const leftPinEnd = shouldReservePinColumnsSpace && leftPinNode
-        ? Math.floor(leftPinNode.offsetLeft + leftPinNode.offsetWidth + pinClearance)
-        : 8;
-      const rightPinStart = shouldReservePinColumnsSpace && rightPinNode
-        ? Math.floor(rightPinNode.offsetLeft - pinClearance)
-        : viewportWidth - PANEL_VIEWPORT_MARGIN_X;
-
-      setPanels((previous) => {
-        let changed = false;
-        const nextPanels = previous.map((panel) => {
-          if (panel.id !== id || !isStretchablePanelType(panel.type)) {
-            return panel;
-          }
-
-          const availableLeft = clamp(
-            leftPinEnd,
-            8,
-            Math.max(8, viewportWidth - PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH),
-          );
-          const maxRight = Math.max(
-            availableLeft + PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
-            viewportWidth - PANEL_VIEWPORT_MARGIN_X,
-          );
-          const availableRight = clamp(
-            rightPinStart,
-            availableLeft + PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
-            maxRight,
-          );
-          const stretchedWidth = clamp(
-            availableRight - availableLeft,
-            PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
-            viewportWidth - PANEL_VIEWPORT_MARGIN_X,
-          );
-          const stretchedHeight = clamp(
-            viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
-            PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT,
-            viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
-          );
-
-          const adjusted: PanelWindow = {
-            ...panel,
-            x: availableLeft,
-            y: 12,
-            width: stretchedWidth,
-            height: stretchedHeight,
-          };
-
-          if (
-            adjusted.x === panel.x &&
-            adjusted.y === panel.y &&
-            adjusted.width === panel.width &&
-            adjusted.height === panel.height
-          ) {
-            return panel;
-          }
-
-          changed = true;
-          if (panel.type === 'map') {
-            nextMapSize = { width: adjusted.width, height: adjusted.height };
-          }
-          return adjusted;
-        });
-
-        return changed ? nextPanels : previous;
-      });
-
-      if (nextMapSize) {
-        mapWindowSizeRef.current = nextMapSize;
-        saveMapWindowSize(nextMapSize);
-      }
-    },
-    [getCanvasViewportSize, shouldReservePinColumnsSpace],
-  );
-
   const closePanelOnMiddleClick = (
     event: ReactMouseEvent<HTMLElement>,
     panelId: string,
   ): boolean => {
-    if (event.button !== 1) {
-      return false;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    closePanel(panelId);
-    return true;
+    void event;
+    void panelId;
+    return false;
   };
 
   const setPanelDockLayoutMode = useCallback(
@@ -19867,6 +20142,19 @@ export const GamePage = () => {
     setShortcutNotice(`Mapa: časy přesunu zobrazíš podržením ${label}.`);
   }, []);
 
+  const handleSettlementColorChange = useCallback((colorKey: SettlementColorKey, color: string) => {
+    setSettlementColorPalette((previous) => ({
+      ...previous,
+      [colorKey]: normalizeHexColor(color, previous[colorKey]),
+    }));
+    setSettingsNotice(null);
+  }, []);
+
+  const handleResetSettlementColors = useCallback(() => {
+    setSettlementColorPalette({ ...DEFAULT_SETTLEMENT_COLOR_PALETTE });
+    setSettingsNotice('Barevná paleta lén byla vrácena na výchozí RPG nastavení.');
+  }, []);
+
   const handleSaveAvatar = useCallback(
     async (nextAvatarUrl: string | null): Promise<string> => {
       setAvatarPending(true);
@@ -19968,8 +20256,8 @@ export const GamePage = () => {
       }
 
       const requestScopeKey = battleReportScopeKeyRef.current;
-      let requestPromise: Promise<BattleReportItem | null>;
-      requestPromise = (async () => {
+      const requestState: { promise: Promise<BattleReportItem | null> | null } = { promise: null };
+      const requestPromise: Promise<BattleReportItem | null> = (async () => {
         setBattleReportPendingById((previous) => ({
           ...previous,
           [numericReportId]: true,
@@ -19992,7 +20280,7 @@ export const GamePage = () => {
           }
           return null;
         } finally {
-          if (battleReportDetailRequestByIdRef.current[numericReportId] === requestPromise) {
+          if (battleReportDetailRequestByIdRef.current[numericReportId] === requestState.promise) {
             delete battleReportDetailRequestByIdRef.current[numericReportId];
           }
           if (battleReportScopeKeyRef.current === requestScopeKey) {
@@ -20008,6 +20296,7 @@ export const GamePage = () => {
         }
       })();
 
+      requestState.promise = requestPromise;
       battleReportDetailRequestByIdRef.current[numericReportId] = requestPromise;
       return requestPromise;
     },
@@ -20388,8 +20677,20 @@ export const GamePage = () => {
     return `${panel.label} · ${panel.villageName}`;
   }, []);
 
-  const leftPins = panels.filter((panel) => canPanelUsePinColumns(panel.type) && panel.side === 'left');
-  const rightPins = panels.filter((panel) => canPanelUsePinColumns(panel.type) && panel.side === 'right');
+  const leftPins = panels.filter(
+    (panel) => canPanelUsePinColumns(panel.type) && panel.type !== 'map' && panel.side === 'left',
+  );
+  const rightPins = panels.filter(
+    (panel) => canPanelUsePinColumns(panel.type) && panel.type !== 'map' && panel.side === 'right',
+  );
+  const activeMainStagePanel =
+    panels.find(
+      (panel) => panel.id === activePanelId && panel.expanded && isMainMenuPanelType(panel.type),
+    ) ??
+    panels.find((panel) => panel.expanded && isMainMenuPanelType(panel.type) && panel.type !== 'map') ??
+    panels.find((panel) => panel.type === 'map');
+  const activeMainStageLabel = activeMainStagePanel?.label ?? PANEL_META.map.label;
+  const isMapStageActive = activeMainStagePanel?.type === 'map';
 
   const renderPanelContent = (panel: PanelWindow) => {
     switch (panel.type) {
@@ -20428,17 +20729,16 @@ export const GamePage = () => {
             regionOriginX={mapRegionOriginX}
             regionOriginY={mapRegionOriginY}
             focusedSettlementId={focusedOwnSettlementId}
+            isInteractionEnabled={isMapStageActive}
+            centerRequest={mapCenterRequest}
             activeVillageId={gameState?.village.id ?? activeVillageId}
             currentUsername={username}
-            previewTravelModifier={mapPreviewTravelModifier}
             zoomPercent={mapZoomPercent}
             orderMarkersByVillageId={mapOrderMarkersByVillageId}
             onZoomChange={setMapZoomPercent}
             onOpenSettlement={openSettlementPanel}
             onPinSettlement={pinSettlementPanelToSide}
             onQuickArmyCommand={handleMapQuickArmyCommand}
-            onOpenPlayerProfile={openPlayerProfilePanel}
-            onOpenKingdomProfile={openKingdomProfilePanel}
           />
         );
       case 'army':
@@ -20710,6 +21010,9 @@ export const GamePage = () => {
             onResetAllShortcuts={handleShortcutResetAll}
             onAutoHidePinColumnsChange={handleAutoHidePinColumnsChange}
             onMapPreviewTravelModifierChange={handleMapPreviewTravelModifierChange}
+            settlementColorPalette={settlementColorPalette}
+            onSettlementColorChange={handleSettlementColorChange}
+            onResetSettlementColors={handleResetSettlementColors}
           />
         );
       case 'village': {
@@ -20903,11 +21206,20 @@ export const GamePage = () => {
     const isDockedLeft = panelDockMode === 'split-left';
     const isDockedRight = panelDockMode === 'split-right';
     const isDockedFull = panelDockMode === 'full';
+    const isMapPanel = panel.type === 'map';
+    const isVillagePanel = panel.type === 'village';
+    const isMainMenuPanel = isMainMenuPanelType(panel.type);
+    const shouldAnchorVillageToBottom = !isDocked && isVillagePanel;
+    const shouldAutoSizeToContent = !isDocked && !isMapPanel && !isMainMenuPanel;
+    const shouldAnimateMainMenuContent = isMainMenuPanel && !isMapPanel;
+    const shouldRenderHeader = !isMapPanel && !isMainMenuPanel;
+    const shouldRenderQuickWindowActions = !isMainMenuPanel;
+    const shouldRenderWindowVisibilityActions = !isMainMenuPanel;
 
     return (
       <article
         key={panel.id}
-        className={`floating-window${panel.type === 'map' ? ' map-window' : ''}${panel.type === 'battleReport' ? ' battle-report-window' : ''}${isDocked ? ' docked-window' : ''}`}
+        className={`floating-window${isMapPanel ? ' map-window map-main-window' : ''}${!shouldRenderHeader ? ' no-window-header' : ''}${panel.type === 'battleReport' ? ' battle-report-window' : ''}${panel.type === 'village' ? ' village-panel-window' : ''}${shouldAutoSizeToContent ? ' auto-size-window' : ''}${isDocked ? ' docked-window' : ''}${shouldAnimateMainMenuContent ? ' main-menu-page-window' : ''}`}
         ref={(node) => {
           panelElementRefs.current[panel.id] = node;
         }}
@@ -20915,11 +21227,21 @@ export const GamePage = () => {
           isDocked
             ? undefined
             : {
-                left: `${panel.x}px`,
-                top: `${panel.y}px`,
-                zIndex: FLOATING_PANEL_BASE_Z_INDEX + panel.z,
-                width: `${panel.width}px`,
-                height: `${panel.height}px`,
+                left: shouldAnchorVillageToBottom ? '50%' : `${panel.x}px`,
+                top: shouldAnchorVillageToBottom ? undefined : `${panel.y}px`,
+                bottom: shouldAnchorVillageToBottom ? '4.35rem' : undefined,
+                transform: shouldAnchorVillageToBottom ? 'translateX(-50%)' : undefined,
+                zIndex: isMapPanel
+                  ? MAP_BACKGROUND_PANEL_Z_INDEX
+                  : FLOATING_PANEL_BASE_Z_INDEX + panel.z,
+                width: shouldAutoSizeToContent ? 'fit-content' : `${panel.width}px`,
+                height: shouldAutoSizeToContent ? 'fit-content' : `${panel.height}px`,
+                maxWidth: shouldAutoSizeToContent
+                  ? `calc(100vw - ${PANEL_VIEWPORT_MARGIN_X * 2}px)`
+                  : undefined,
+                maxHeight: shouldAutoSizeToContent
+                  ? `calc(100vh - ${PANEL_VIEWPORT_MARGIN_Y}px)`
+                  : undefined,
               }
         }
         onMouseDown={(event) => {
@@ -20929,96 +21251,96 @@ export const GamePage = () => {
           focusPanel(panel.id);
         }}
       >
-        <header
-          className="window-header"
-          onPointerDown={(event) => {
-            if (isDocked) {
-              return;
-            }
-            startDrag(event, panel);
-          }}
-        >
-          <div className="window-title">
-            <span>{panel.label}</span>
-          </div>
-          <div className="window-actions" onPointerDown={(event) => event.stopPropagation()}>
-            {canDock ? (
-              <>
-                <button
-                  className={`window-action-layout${isDockedLeft ? ' is-active' : ''}`}
-                  onClick={() => setPanelDockLayoutMode(panel.id, 'split-left')}
-                  title="Ukotvit vlevo"
-                  aria-label="Ukotvit vlevo"
-                >
-                  ⇤
-                </button>
-                <button
-                  className={`window-action-layout${isDockedFull ? ' is-active' : ''}`}
-                  onClick={() => setPanelDockLayoutMode(panel.id, 'full')}
-                  title="Ukotvit na plnou šířku"
-                  aria-label="Ukotvit na plnou šířku"
-                >
-                  ▣
-                </button>
-                <button
-                  className={`window-action-layout${isDockedRight ? ' is-active' : ''}`}
-                  onClick={() => setPanelDockLayoutMode(panel.id, 'split-right')}
-                  title="Ukotvit vpravo"
-                  aria-label="Ukotvit vpravo"
-                >
-                  ⇥
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  onClick={() => movePinToSideAndMinimize(panel.id, 'left')}
-                  title="Přesunout pin na levou stranu"
-                  aria-label="Přesunout pin na levou stranu"
-                >
-                  ←
-                </button>
-                <button
-                  onClick={() => switchSide(panel.id)}
-                  title="Přesunout pin na druhou stranu"
-                  aria-label="Přesunout pin na druhou stranu"
-                >
-                  ↔
-                </button>
-                <button
-                  onClick={() => movePinToSideAndMinimize(panel.id, 'right')}
-                  title="Přesunout pin na pravou stranu"
-                  aria-label="Přesunout pin na pravou stranu"
-                >
-                  →
-                </button>
-              </>
-            )}
-            {!isDocked && isStretchablePanelType(panel.type) ? (
-              <button
-                className="window-action-fit"
-                onClick={() => stretchPanelToViewport(panel.id)}
-                title="Roztáhnout okno"
-                aria-label="Roztáhnout okno"
-              >
-                Roztáhnout
-              </button>
-            ) : null}
-            <button
-              onClick={() => togglePanelVisibility(panel.id)}
-              title="Sbalit okno"
-              aria-label="Sbalit okno"
-            >
-              −
-            </button>
-            <button onClick={() => closePanel(panel.id)} title="Zavřít okno" aria-label="Zavřít okno">
-              ✕
-            </button>
-          </div>
-        </header>
+        {shouldRenderHeader ? (
+          <header
+            className="window-header"
+            onPointerDown={(event) => {
+              if (isDocked || isMainMenuPanel) {
+                return;
+              }
+              startDrag(event, panel);
+            }}
+          >
+            <div className="window-title">
+              <span>{panel.label}</span>
+            </div>
+            <div className="window-actions" onPointerDown={(event) => event.stopPropagation()}>
+              {shouldRenderQuickWindowActions ? (
+                <>
+                  {canDock ? (
+                    <>
+                      <button
+                        className={`window-action-layout${isDockedLeft ? ' is-active' : ''}`}
+                        onClick={() => setPanelDockLayoutMode(panel.id, 'split-left')}
+                        title="Ukotvit vlevo"
+                        aria-label="Ukotvit vlevo"
+                      >
+                        ⇤
+                      </button>
+                      <button
+                        className={`window-action-layout${isDockedFull ? ' is-active' : ''}`}
+                        onClick={() => setPanelDockLayoutMode(panel.id, 'full')}
+                        title="Ukotvit na plnou šířku"
+                        aria-label="Ukotvit na plnou šířku"
+                      >
+                        ▣
+                      </button>
+                      <button
+                        className={`window-action-layout${isDockedRight ? ' is-active' : ''}`}
+                        onClick={() => setPanelDockLayoutMode(panel.id, 'split-right')}
+                        title="Ukotvit vpravo"
+                        aria-label="Ukotvit vpravo"
+                      >
+                        ⇥
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => movePinToSideAndMinimize(panel.id, 'left')}
+                        title="Přesunout pin na levou stranu"
+                        aria-label="Přesunout pin na levou stranu"
+                      >
+                        ←
+                      </button>
+                      <button
+                        onClick={() => switchSide(panel.id)}
+                        title="Přesunout pin na druhou stranu"
+                        aria-label="Přesunout pin na druhou stranu"
+                      >
+                        ↔
+                      </button>
+                      <button
+                        onClick={() => movePinToSideAndMinimize(panel.id, 'right')}
+                        title="Přesunout pin na pravou stranu"
+                        aria-label="Přesunout pin na pravou stranu"
+                      >
+                        →
+                      </button>
+                    </>
+                  )}
+                </>
+              ) : null}
+              {shouldRenderWindowVisibilityActions ? (
+                <>
+                  <button
+                    onClick={() => togglePanelVisibility(panel.id)}
+                    title="Sbalit okno"
+                    aria-label="Sbalit okno"
+                  >
+                    −
+                  </button>
+                  <button onClick={() => closePanel(panel.id)} title="Zavřít okno" aria-label="Zavřít okno">
+                    ✕
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </header>
+        ) : null}
 
         <div className="window-body">{renderPanelContent(panel)}</div>
-        {!isDocked ? (
+        {!isDocked && !isMapPanel && !isMainMenuPanel ? (
           <div
             className="window-resize-handle"
             onPointerDown={(event) => startResize(event, panel)}
@@ -21043,33 +21365,29 @@ export const GamePage = () => {
     normalizedVillageRenameNotice.includes('beze zmeny');
 
   return (
-    <div className="game-page">
+    <div className="game-page" style={settlementColorCssVariables}>
       <div className="game-bg-layer" />
       <div className="game-grid-layer" />
 
       <div className="app-content-container game-layout-container">
+        <div className="game-canvas-hud">
         <header className="top-navigation">
           <nav>
-            {NAV_BUTTONS.map((button) => {
-              const isPanelOpen = panels.some((panel) => panel.type === button.type && panel.expanded);
-              const isOpen = button.type === 'messages' ? isPanelOpen || isCommunicationHubOpen : isPanelOpen;
+            {TOP_NAV_BUTTONS.map((button) => {
+              const isOpen = activeMainStagePanel?.type === button.type;
+              const leaderboardBadge = button.type === 'rankings' ? leaderboardMenuBadgeLabel : null;
               const buttonTitle =
-                button.type === 'messages'
-                  ? `Otevřít panel: ${button.text} (nové: ${communicationBadgeCount.toLocaleString('cs-CZ')})`
-                  : button.type === 'activity'
-                    ? `Otevřít panel: ${button.text} (nepřečtené: ${activityUnreadCount.toLocaleString('cs-CZ')})`
-                    : `Otevřít panel: ${button.text}`;
+                button.type === 'activity'
+                  ? `Otevřít panel: ${button.text} (nepřečtené: ${activityUnreadCount.toLocaleString('cs-CZ')})`
+                  : button.type === 'rankings' && leaderboardBadge
+                    ? `Otevřít panel: ${button.text} (${leaderboardBadge})`
+                  : `Otevřít panel: ${button.text}`;
               return (
                 <div key={button.type} className="nav-action-stack">
                   <MenuButton
                     className={`nav-action nav-action--${button.type}`}
                     isOpen={isOpen}
                     onClick={() => {
-                      if (button.type === 'messages') {
-                        setIsCommunicationHubOpen(true);
-                        openCommunicationHub();
-                        return;
-                      }
                       if (button.type === 'activity') {
                         setActivityLastOpenedAt(new Date().toISOString());
                       }
@@ -21078,6 +21396,7 @@ export const GamePage = () => {
                     title={buttonTitle}
                     glyph={button.glyph}
                     text={button.text}
+                    badgeText={leaderboardBadge}
                   />
                 </div>
               );
@@ -21239,7 +21558,10 @@ export const GamePage = () => {
             </article>
             <ActiveVillageProtectionTimer notice={activeVillageProtection} />
           </div>
-          <div className="resource-strip-spacer" aria-hidden="true" />
+          <div className="resource-strip-stage-title" aria-live="polite">
+            <h2>{activeMainStageLabel}</h2>
+            <span className="resource-strip-stage-title-glow" aria-hidden="true" />
+          </div>
           <div className="resource-strip-column resource-right-column">
             <button
               type="button"
@@ -21260,6 +21582,7 @@ export const GamePage = () => {
             </button>
           </div>
         </section>
+        </div>
       {isVillageMenuOpen && villageMenuPosition ? (
         <div
           ref={villageMenuOverlayRef}
@@ -21422,7 +21745,12 @@ export const GamePage = () => {
               onMouseDown={(event) => {
                 closePanelOnMiddleClick(event, panel.id);
               }}
-              onClick={() => togglePanelVisibility(panel.id)}
+              onClick={() => {
+                if (panel.type === 'village' && panel.settlementId) {
+                  requestMapCenterOnSettlement(panel.settlementId);
+                }
+                togglePanelVisibility(panel.id);
+              }}
             >
               <span>{getPinnedPanelLabel(panel)}</span>
               {panel.alert ? <i /> : null}
@@ -21468,7 +21796,12 @@ export const GamePage = () => {
               onMouseDown={(event) => {
                 closePanelOnMiddleClick(event, panel.id);
               }}
-              onClick={() => togglePanelVisibility(panel.id)}
+              onClick={() => {
+                if (panel.type === 'village' && panel.settlementId) {
+                  requestMapCenterOnSettlement(panel.settlementId);
+                }
+                togglePanelVisibility(panel.id);
+              }}
             >
               <span>{getPinnedPanelLabel(panel)}</span>
               {panel.alert ? <i /> : null}
@@ -21564,6 +21897,34 @@ export const GamePage = () => {
           </section>
         ) : null}
         {floatingPanels.map((panel) => renderPanelWindow(panel))}
+        </div>
+        <div className="game-persistent-footer" role="complementary" aria-label="Stálé informace hry">
+          <div className="game-persistent-footer-left">
+            <button
+              type="button"
+              className="game-settings-anchor icon-only"
+              onClick={() => openPanel('settings')}
+              title="Otevřít nastavení hry"
+              aria-label="Otevřít nastavení hry"
+            >
+              <span className="symbol" aria-hidden="true">
+                ⚙︎
+              </span>
+            </button>
+            <button
+              type="button"
+              className="game-communication-anchor icon-only"
+              onClick={() => openPanel('messages')}
+              title="Otevřít komunikaci"
+              aria-label="Otevřít komunikaci"
+            >
+              <span className="symbol" aria-hidden="true">
+                ✉︎
+              </span>
+              <strong>{communicationBadgeCount.toLocaleString('cs-CZ')}</strong>
+            </button>
+          </div>
+          <p className="game-version-footer">Verze hry {GAME_VERSION_LABEL}</p>
         </div>
       </div>
     </div>
