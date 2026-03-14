@@ -582,6 +582,8 @@ export type WorldMapSnapshotResponse = {
 
 export type MercenaryContractState = {
   id: number;
+  villageId?: number;
+  villageName?: string;
   status: string;
   orderedAt: string;
   arriveAt: string;
@@ -589,6 +591,22 @@ export type MercenaryContractState = {
   deliveredAt: string | null;
   finishedAt: string | null;
   unitAmount: number;
+};
+
+export type MercenaryHiringOptionState = {
+  villageId: number;
+  villageName: string;
+  coordX: number;
+  coordY: number;
+  coins: number;
+  hasEnoughCoins: boolean;
+  canHire: boolean;
+  blockedReason: string | null;
+  isCurrentVillage: boolean;
+  activeContractStatus: string | null;
+  activeContractArriveAt: string | null;
+  activeContractExpiresAt: string | null;
+  activeContractUnitAmount: number;
 };
 
 export type GameStateResponse = {
@@ -669,10 +687,46 @@ export type GameStateResponse = {
     cap: number;
     available: number;
     academicsUsed?: number;
+    breakdown?: {
+      buildings: number;
+      unitsHome: number;
+      unitsAway: number;
+      academics: number;
+      garrisonReserved: number;
+      recruitmentReserved: number;
+    };
+    overflow?: {
+      amount: number;
+      any: boolean;
+    };
+  };
+  garrison: {
+    isUnlocked?: boolean;
+    activeCap?: number;
+    reservedPopulation: number;
+    totalCap: number;
+    totalUnits: number;
+    lastSyncAt: string | null;
+    units: {
+      militia: {
+        amount: number;
+        cap: number;
+        missing: number;
+        refillSecPerUnit: number;
+        nextRefillSec: number | null;
+      };
+      archer: {
+        amount: number;
+        cap: number;
+        missing: number;
+        refillSecPerUnit: number;
+        nextRefillSec: number | null;
+      };
+    };
   };
   buildings: GameBuildingState[];
   units: GameUnitState[];
-  leaderboard: LeaderboardRow[];
+  leaderboard?: LeaderboardRow[];
   activeUpgrade: {
     id: number;
     buildingId: string;
@@ -737,6 +791,14 @@ export type GameStateResponse = {
   mercenaries?: {
     contracts: MercenaryContractState[];
     cooldownRemainingSec: number;
+    cooldownEndsAt?: string | null;
+    cooldownSec?: number;
+    deliveryDelaySec?: number;
+    durationSec?: number;
+    contractCoinCost?: number;
+    contractUnitAmount?: number;
+    unlocked?: boolean;
+    hiringOptions?: MercenaryHiringOptionState[];
   };
   rules?: {
     nightMode: {
@@ -757,6 +819,16 @@ export type GameStateResponse = {
     maxBuildingLevel: number;
     maxUnitCount: number | null;
   };
+};
+
+export type FetchGameStateOptions = {
+  includeWorldMap?: boolean;
+  includeLeaderboard?: boolean;
+  includeKingdomHub?: boolean;
+  includeResearch?: boolean;
+  includeMarket?: boolean;
+  includeMercenaries?: boolean;
+  includeRules?: boolean;
 };
 
 export type LoginResponse = {
@@ -1116,6 +1188,19 @@ export type CancelBuildingUpgradeResult = {
   refunded: ResourceCost;
 };
 
+export type CancelAllBuildingUpgradesResult = {
+  canceledCount: number;
+  refunded: ResourceCost;
+};
+
+export type ReorderBuildingUpgradeQueueResult = {
+  movedUpgradeId: number;
+  fromIndex: number;
+  toIndex: number;
+  queueLength: number;
+  moved: boolean;
+};
+
 export type CancelRecruitmentResult = {
   canceledRecruitmentId: number;
   unitId: string;
@@ -1157,6 +1242,7 @@ export type AdjustResearchProjectAcademicsResult = {
 export type HireMercenaryContractResult = {
   contractId: number;
   villageId: number;
+  villageName?: string;
   orderedAt: string;
   arriveAt: string;
   expiresAt: string;
@@ -1680,13 +1766,15 @@ export const fetchAdminPlayers = async (): Promise<AdminPlayerRow[]> => {
 };
 
 export const fetchGameState = async (
-  username: string,
+  _username: string,
   villageId?: number | null,
   worldId?: string | null,
   spawnDirection?: SpawnDirection | string | null,
-  includeWorldMap?: boolean,
+  options?: FetchGameStateOptions | boolean,
 ): Promise<GameStateResponse> => {
-  const params = new URLSearchParams({ username });
+  const resolvedOptions: FetchGameStateOptions =
+    typeof options === 'boolean' ? { includeWorldMap: options } : options ?? {};
+  const params = new URLSearchParams();
   if (villageId != null && Number.isFinite(villageId)) {
     params.set('villageId', String(villageId));
   }
@@ -1696,20 +1784,38 @@ export const fetchGameState = async (
   if (spawnDirection != null && String(spawnDirection).trim() !== '') {
     params.set('spawnDirection', String(spawnDirection).trim());
   }
-  if (includeWorldMap === true) {
-    params.set('includeWorldMap', '1');
+  if (resolvedOptions.includeWorldMap != null) {
+    params.set('includeWorldMap', resolvedOptions.includeWorldMap ? '1' : '0');
+  }
+  if (resolvedOptions.includeLeaderboard != null) {
+    params.set('includeLeaderboard', resolvedOptions.includeLeaderboard ? '1' : '0');
+  }
+  if (resolvedOptions.includeKingdomHub != null) {
+    params.set('includeKingdomHub', resolvedOptions.includeKingdomHub ? '1' : '0');
+  }
+  if (resolvedOptions.includeResearch != null) {
+    params.set('includeResearch', resolvedOptions.includeResearch ? '1' : '0');
+  }
+  if (resolvedOptions.includeMarket != null) {
+    params.set('includeMarket', resolvedOptions.includeMarket ? '1' : '0');
+  }
+  if (resolvedOptions.includeMercenaries != null) {
+    params.set('includeMercenaries', resolvedOptions.includeMercenaries ? '1' : '0');
+  }
+  if (resolvedOptions.includeRules != null) {
+    params.set('includeRules', resolvedOptions.includeRules ? '1' : '0');
   }
   const payload = await request<ApiOk<GameStateResponse>>(`/api/v1/state?${params.toString()}`);
   return payload.data;
 };
 
 export const fetchWorldMapSnapshot = async (
-  username: string,
+  _username: string,
   villageId?: number | null,
   worldId?: string | null,
   spawnDirection?: SpawnDirection | string | null,
 ): Promise<WorldMapSnapshotResponse> => {
-  const params = new URLSearchParams({ username });
+  const params = new URLSearchParams();
   if (villageId != null && Number.isFinite(villageId)) {
     params.set('villageId', String(villageId));
   }
@@ -1874,6 +1980,52 @@ export const cancelBuildingUpgrade = async (
     {
       method: 'POST',
       body: JSON.stringify({ username, villageId, worldId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const cancelAllBuildingUpgrades = async (
+  username: string,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: CancelAllBuildingUpgradesResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: CancelAllBuildingUpgradesResult }>(
+    '/api/v1/buildings/upgrades/cancel-all',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, villageId, worldId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const reorderBuildingUpgradeQueue = async (
+  username: string,
+  upgradeId: number,
+  targetIndex: number,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: ReorderBuildingUpgradeQueueResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: ReorderBuildingUpgradeQueueResult }>(
+    '/api/v1/buildings/upgrades/reorder',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        upgradeId,
+        targetIndex,
+        villageId,
+        worldId,
+      }),
     },
   );
 
@@ -2249,6 +2401,21 @@ export const fetchBattleReports = async (
   return payload.data;
 };
 
+export const fetchBattleReportById = async (
+  username: string,
+  reportId: number,
+  worldId?: string | null,
+): Promise<BattleReportItem> => {
+  const params = new URLSearchParams({ username });
+  if (worldId != null && String(worldId).trim() !== '') {
+    params.set('worldId', String(worldId).trim());
+  }
+  const payload = await request<ApiOk<BattleReportItem>>(
+    `/api/v1/reports/${encodeURIComponent(String(reportId))}?${params.toString()}`,
+  );
+  return payload.data;
+};
+
 export const fetchBattleReportsSummary = async (
   username: string,
   worldId?: string | null,
@@ -2349,7 +2516,7 @@ export const deleteGameActivity = async (
 ): Promise<GameActivityMutationResult> => mutateGameActivity(username, notificationId, 'delete', worldId);
 
 export const fetchCommunicationInbox = async (
-  username: string,
+  _username: string,
   options?: {
     threadId?: number | null;
     beforeMessageId?: number | null;
@@ -2358,7 +2525,7 @@ export const fetchCommunicationInbox = async (
     search?: string | null;
   },
 ): Promise<CommunicationInboxResponse> => {
-  const params = new URLSearchParams({ username });
+  const params = new URLSearchParams();
   if (options?.threadId != null && Number.isFinite(options.threadId) && Number(options.threadId) > 0) {
     params.set('threadId', String(Math.floor(Number(options.threadId))));
   }

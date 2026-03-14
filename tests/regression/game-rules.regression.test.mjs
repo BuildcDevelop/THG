@@ -6,7 +6,13 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  calculateMintThroughputPerHour,
+  calculatePopulationCap,
   calculateProductionPerHour,
+  calculateRecruitmentTimeReductionPct,
+  calculateResourceCap,
+  calculateTownhallBuildTimeReductionPct,
+  convertLegacyBuildingLevelToCurrent,
   convertLegacyResourceBuildingLevelToCurrent,
   getMaxBuildingLevel,
 } from '../../server/gameConfig.js';
@@ -215,6 +221,16 @@ test('stage6: summary endpoints stay consistent and payload is materially smalle
   );
 });
 
+test('battle report detail lookup returns the same report and respects world scoping', () => {
+  const result = runScenario('battle-report-detail-lookup');
+
+  assert.ok(Number(result.listedTotal ?? 0) >= 1);
+  assert.ok(Number(result.listedReportId ?? 0) > 0);
+  assert.equal(Number(result.detailReportId ?? -1), Number(result.listedReportId ?? -2));
+  assert.equal(String(result.detailOutcome ?? ''), String(result.attackOutcome ?? ''));
+  assert.match(String(result.foreignWorldMessage ?? ''), /report nebyl nalezen/i);
+});
+
 test('stage6: read models do not progress queued work without explicit tick', () => {
   const result = runScenario('read-models-no-tick-side-effects');
   const beforeRead = result?.beforeRead ?? {};
@@ -284,6 +300,62 @@ test('economy: resource production curves use integer hourly values on 10 levels
   }
 });
 
+test('economy: rebalance max levels and cap curves match the compressed design', () => {
+  assert.equal(getMaxBuildingLevel('warehouse'), 10);
+  assert.equal(getMaxBuildingLevel('townhall'), 10);
+  assert.equal(getMaxBuildingLevel('residential-quarter'), 10);
+  assert.equal(getMaxBuildingLevel('barracks'), 10);
+  assert.equal(getMaxBuildingLevel('stable'), 10);
+  assert.equal(getMaxBuildingLevel('workshop'), 5);
+
+  const expectedWarehouseCaps = [3000, 8000, 18000, 35000, 60000, 95000, 140000, 195000, 245000, 300000];
+  const expectedPopulationCaps = [500, 900, 1450, 2150, 3050, 4200, 5600, 7200, 8900, 10000];
+  for (let level = 1; level <= 10; level += 1) {
+    assert.equal(calculateResourceCap(level), expectedWarehouseCaps[level - 1], `warehouse L${level} cap mismatch`);
+    assert.equal(
+      calculatePopulationCap(level),
+      expectedPopulationCaps[level - 1],
+      `residential-quarter L${level} population mismatch`,
+    );
+  }
+});
+
+test('economy: integer speed and mint throughput curves match rebalance targets', () => {
+  const expectedTownhall = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
+  const expectedBarracks = [5, 10, 16, 22, 28, 33, 38, 42, 46, 50];
+  const expectedStable = [4, 8, 13, 18, 23, 28, 33, 37, 41, 45];
+  const expectedWorkshop = [6, 12, 18, 24, 30];
+
+  for (let level = 1; level <= 10; level += 1) {
+    assert.equal(
+      calculateTownhallBuildTimeReductionPct(level),
+      expectedTownhall[level - 1],
+      `townhall L${level} reduction mismatch`,
+    );
+    assert.equal(
+      calculateRecruitmentTimeReductionPct('barracks', level),
+      expectedBarracks[level - 1],
+      `barracks L${level} reduction mismatch`,
+    );
+    assert.equal(
+      calculateRecruitmentTimeReductionPct('stable', level),
+      expectedStable[level - 1],
+      `stable L${level} reduction mismatch`,
+    );
+    if (level <= 5) {
+      assert.equal(
+        calculateRecruitmentTimeReductionPct('workshop', level),
+        expectedWorkshop[level - 1],
+        `workshop L${level} reduction mismatch`,
+      );
+    }
+  }
+
+  assert.equal(calculateMintThroughputPerHour(1), 6);
+  assert.equal(calculateMintThroughputPerHour(2), 11);
+  assert.equal(calculateMintThroughputPerHour(3), 21);
+});
+
 test('economy: legacy resource levels remap onto the 10-level scale without dropping endpoints', () => {
   assert.equal(convertLegacyResourceBuildingLevelToCurrent('woodcutter', 0), 0);
   assert.equal(convertLegacyResourceBuildingLevelToCurrent('woodcutter', 1), 1);
@@ -292,10 +364,46 @@ test('economy: legacy resource levels remap onto the 10-level scale without drop
   assert.equal(convertLegacyResourceBuildingLevelToCurrent('woodcutter', 30), 10);
 });
 
+test('economy: legacy non-resource building ladders remap to compressed levels', () => {
+  assert.equal(convertLegacyBuildingLevelToCurrent('warehouse', 1), 1);
+  assert.equal(convertLegacyBuildingLevelToCurrent('warehouse', 25), 10);
+  assert.equal(convertLegacyBuildingLevelToCurrent('townhall', 12), 10);
+  assert.equal(convertLegacyBuildingLevelToCurrent('barracks', 16), 10);
+  assert.equal(convertLegacyBuildingLevelToCurrent('stable', 14), 10);
+  assert.equal(convertLegacyBuildingLevelToCurrent('workshop', 7), 5);
+  assert.equal(convertLegacyBuildingLevelToCurrent('residential-quarter', 20), 6);
+});
+
 test('economy: level 1 gold mine yields visible integer income after hourly sync', () => {
   const result = runScenario('gold-mine-integer-production-tick');
   assert.equal(Number(result.productionPerHour ?? -1), 1);
   assert.ok(Number(result.visibleGold ?? 0) >= Number(result.beforeGold ?? 0) + 1);
+});
+
+test('economy: over-cap resources are preserved and passive production pauses', () => {
+  const result = runScenario('resource-overflow-preserved-on-tick');
+  assert.ok(Number(result.cap ?? 0) > 0);
+  assert.ok(Number(result.beforeWood ?? 0) > Number(result.cap ?? 0), 'scenario must start above resource cap');
+  assert.equal(
+    Number(result.storedWood ?? -1),
+    Number(result.beforeWood ?? -2),
+    'overflow wood should be preserved without clamp-down',
+  );
+  assert.equal(Boolean(result.overflowAny), true);
+  assert.equal(Boolean(result.overflowWood), true);
+});
+
+test('economy: population overflow does not dissolve units during sync', () => {
+  const result = runScenario('population-overflow-no-unit-cleanup');
+  assert.ok(Number(result.populationCap ?? 0) > 0);
+  assert.ok(Number(result.beforeMilitia ?? 0) > 0);
+  assert.equal(
+    Number(result.afterMilitia ?? -1),
+    Number(result.beforeMilitia ?? -2),
+    'sync must not dissolve militia due to temporary overflow state',
+  );
+  assert.equal(Boolean(result.populationOverflowAny), true);
+  assert.ok(Number(result.populationOverflowAmount ?? 0) > 0);
 });
 
 test('stage6: map stress culls render scope in dense settlements', () => {

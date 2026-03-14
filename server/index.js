@@ -8,6 +8,7 @@ import {
   cancelArmyCommand,
   cancelPlannerPlan,
   cancelBuildingUpgrade,
+  cancelAllBuildingUpgrades,
   cancelMarketLogistics,
   cancelRecruitment,
   configureMarketGuildAutomation,
@@ -20,6 +21,7 @@ import {
   createAbandonedVillages,
   conquerVillage,
   getArmyOverview,
+  getBattleReport,
   getBattleReportSummary,
   getPlannerOpenSnapshot,
   getPlayerNotificationSummary,
@@ -48,6 +50,7 @@ import {
   sendMarketLogistics,
   startResearchProject,
   startBuildingUpgrade,
+  reorderBuildingUpgradeQueue,
   transferKingdomLeadership,
   unarchivePlayerNotification,
   updatePlannerPlan,
@@ -343,6 +346,48 @@ app.post('/api/v1/auth/register', async (req, res, next) => {
   }
 });
 
+app.use('/api/v1', (req, _res, next) => {
+  if (PUBLIC_AUTH_PATHS.has(String(req.path ?? '').trim())) {
+    next();
+    return;
+  }
+
+  const session = resolveSessionFromRequest(req);
+  if (!session) {
+    next(new GameRuleError('Neplatne prihlasovaci udaje.', 401, 'AUTH_REQUIRED'));
+    return;
+  }
+
+  const bodyUsernameRaw =
+    req.body && typeof req.body === 'object' && 'username' in req.body ? req.body.username : null;
+  const queryUsernameRaw =
+    req.query && typeof req.query === 'object' && 'username' in req.query ? req.query.username : null;
+
+  const bodyUsername = String(bodyUsernameRaw ?? '').trim();
+  const queryUsername = String(queryUsernameRaw ?? '').trim();
+  const sessionComparable = normalizeComparableUsername(session.username);
+
+  if (bodyUsername && normalizeComparableUsername(bodyUsername) !== sessionComparable) {
+    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH'));
+    return;
+  }
+
+  if (queryUsername && normalizeComparableUsername(queryUsername) !== sessionComparable) {
+    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH'));
+    return;
+  }
+
+  if (req.query && typeof req.query === 'object') {
+    req.query.username = session.username;
+  }
+  if (req.body && typeof req.body === 'object') {
+    req.body.username = session.username;
+  }
+
+  req.authSession = session;
+  next();
+});
+
 app.get('/api/v1/worlds', async (req, res, next) => {
   try {
     const username = String(req.query.username ?? '').trim();
@@ -376,10 +421,19 @@ app.get('/api/v1/admin/players', async (_req, res, next) => {
 
 app.get('/api/v1/state', async (req, res, next) => {
   try {
-    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const username = String(req.authSession?.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError('Neplatne prihlasovaci udaje.', 401, 'AUTH_REQUIRED');
+    }
     const worldId = parseOptionalWorldId(req.query.worldId);
     const spawnDirection = parseOptionalSpawnDirection(req.query.spawnDirection);
     const includeWorldMap = parseOptionalBoolean(req.query.includeWorldMap, false);
+    const includeLeaderboard = parseOptionalBoolean(req.query.includeLeaderboard, true);
+    const includeKingdomHub = parseOptionalBoolean(req.query.includeKingdomHub, true);
+    const includeResearch = parseOptionalBoolean(req.query.includeResearch, true);
+    const includeMarket = parseOptionalBoolean(req.query.includeMarket, true);
+    const includeMercenaries = parseOptionalBoolean(req.query.includeMercenaries, true);
+    const includeRules = parseOptionalBoolean(req.query.includeRules, true);
     const villageIdRaw = req.query.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -387,7 +441,15 @@ app.get('/api/v1/state', async (req, res, next) => {
         : Number(String(villageIdRaw).trim());
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const resolvedState = await executeWithReadOperation(() =>
-      getVillageSnapshot(username, normalizedVillageId, worldId, spawnDirection, { includeWorldMap }),
+      getVillageSnapshot(username, normalizedVillageId, worldId, spawnDirection, {
+        includeWorldMap,
+        includeLeaderboard,
+        includeKingdomHub,
+        includeResearch,
+        includeMarket,
+        includeMercenaries,
+        includeRules,
+      }),
     );
 
     res.json({
@@ -452,48 +514,6 @@ app.post('/api/v1/auth/logout', async (req, res, next) => {
   } catch (error) {
     next(toGameRuleError(error));
   }
-});
-
-app.use('/api/v1', (req, _res, next) => {
-  if (PUBLIC_AUTH_PATHS.has(String(req.path ?? '').trim())) {
-    next();
-    return;
-  }
-
-  const session = resolveSessionFromRequest(req);
-  if (!session) {
-    next(new GameRuleError('Neplatne prihlasovaci udaje.', 401, 'AUTH_REQUIRED'));
-    return;
-  }
-
-  const bodyUsernameRaw =
-    req.body && typeof req.body === 'object' && 'username' in req.body ? req.body.username : null;
-  const queryUsernameRaw =
-    req.query && typeof req.query === 'object' && 'username' in req.query ? req.query.username : null;
-
-  const bodyUsername = String(bodyUsernameRaw ?? '').trim();
-  const queryUsername = String(queryUsernameRaw ?? '').trim();
-  const sessionComparable = normalizeComparableUsername(session.username);
-
-  if (bodyUsername && normalizeComparableUsername(bodyUsername) !== sessionComparable) {
-    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH'));
-    return;
-  }
-
-  if (queryUsername && normalizeComparableUsername(queryUsername) !== sessionComparable) {
-    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH'));
-    return;
-  }
-
-  if (req.query && typeof req.query === 'object') {
-    req.query.username = session.username;
-  }
-  if (req.body && typeof req.body === 'object') {
-    req.body.username = session.username;
-  }
-
-  req.authSession = session;
-  next();
 });
 
 app.get('/api/v1/army/overview', async (req, res, next) => {
@@ -1146,6 +1166,68 @@ app.post('/api/v1/buildings/upgrades/:upgradeId/cancel', async (req, res, next) 
   }
 });
 
+app.post('/api/v1/buildings/upgrades/cancel-all', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = cancelAllBuildingUpgrades(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
+      return { result, state };
+    });
+
+    res.json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/buildings/upgrades/reorder', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const upgradeId = Number(req.body?.upgradeId ?? 0);
+    const targetIndex = Number(req.body?.targetIndex ?? Number.NaN);
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = reorderBuildingUpgradeQueue(
+        username,
+        upgradeId,
+        targetIndex,
+        normalizedVillageId,
+        worldId,
+      );
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
+      return { result, state };
+    });
+
+    res.json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
 app.post('/api/v1/units/:unitId/recruit', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
@@ -1561,6 +1643,23 @@ app.get('/api/v1/reports/summary', async (req, res, next) => {
     const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
     const worldId = parseOptionalWorldId(req.query.worldId);
     const data = await executeWithReadOperation(() => getBattleReportSummary(username, worldId));
+
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.get('/api/v1/reports/:reportId', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.query.worldId);
+    const data = await executeWithReadOperation(() =>
+      getBattleReport(username, req.params.reportId, worldId),
+    );
 
     res.json({
       ok: true,
