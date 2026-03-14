@@ -1066,7 +1066,7 @@ const runScenarioBattleReportDetailLookup = () => {
     detailReportId: Number(detail?.id ?? 0),
     detailOriginVillageId: Number(detail?.originVillageId ?? 0),
     detailOutcome: String(detail?.payload?.outcome ?? ''),
-    attackOutcome: String(attackPayload?.outcome ?? ''),
+    attackOutcome: String(attackPayload?.payload?.outcome ?? ''),
     foreignWorldMessage,
   };
 };
