@@ -544,3 +544,107 @@ Entry template:
 - Files: arch/chat-changelog.md
 - Verification: `Get-NetTCPConnection` před/po; `taskkill /PID 107716 /PID 107760 /F`
 - Notes: Šlo pouze o ukončení lokálních procesů; bez zásahu do produkce, Netlify nebo vzdálených herních dat.
+
+## 2026-03-14 20:47 | branch: feat/build-0.1.13
+
+- Request: Zapnout localhost na aktuální větvi `feat/build-0.1.13`.
+- Summary: Ověřil jsem, že aktivní branch je `feat/build-0.1.13` a porty `3001/5173` jsou volné. Následně jsem spustil `npm run dev` jako detached proces pro tento workspace. Backend běží na `3001` a vrací health check `200`; frontend běží na `localhost:5173` a vrací `200`.
+- Files: arch/chat-changelog.md
+- Verification: `git rev-parse --abbrev-ref HEAD`; `Get-NetTCPConnection`; `Invoke-WebRequest http://127.0.0.1:3001/api/health`; `Invoke-WebRequest http://localhost:5173`
+- Notes: `vite` se zde binduje přes IPv6/localhost, proto byla finální kontrola frontendu provedena přes `http://localhost:5173`.
+
+## 2026-03-14 21:39 | branch: feat/build-0.1.13
+
+- Request: Upravit mapové okno/léno UX: odebrat hlavičku léna v obsahu, přestavět jednotky do karet (vlastní vs podpora), přesunout mapové „pin“ chování na pravé tlačítko, opravit centrování a minimapu, odstranit text `Minimapa`, přesunout centrum/fullscreen pod zoom a odebrat pořadí hráče z pravého footeru.
+- Summary: Ve `VillagePanel` jsem dokončil nový jednotkový přehled po typech (ikona jednotky + dvě výrazná žlutá čísla: horní vlastní jednotky, spodní v závorce podpora) a zachoval data-flow z `GameUnitState.stationedSupportCount`; obsahovou hlavičku léna jsem odstranil. V mapě jsem změnil interakci tak, že levý klik jen otevře léno, zatímco pravý klik přepíná pinned preview léna. Centrování mapy je nově sjednocené přes interní `applyPanTarget` (bez nativního smooth `scrollTo`) a výpočet středu zohledňuje vnitřní inset kontejneru; klik na minimapu nově centruje na střed viewportu místo mapování na levý horní roh. V minimapě jsem odstranil titul `Minimapa` a přesunul tlačítka centrování/fullscreen pod zoom ovládání do jedné kompaktní komponenty. Z persistentního footeru jsem odstranil `Pořadí hráče` vedle verze hry.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: Feature contract: čistě frontend map/UI interakce bez nového pollingu a bez backend změn. Hlavní výkonové riziko bylo nekonzistentní scroll/centering animace a samovolné viewport skoky; mitigace je jednotný pan-target model + vypnutí `overflow-anchor` na map wrapperu.
+
+## 2026-03-14 22:05 | branch: feat/build-0.1.13
+
+- Request: Opravit samovolné vracení mapy na poslední centrované léno (centrovat jen při explicitní akci), nastavit množství jednotek v léně na `0.86rem`, dát obrázek jednotky na pozadí karty, držet karty spíše vertikální a šířku podle obsahu, a přidat tooltip detailu posádky (obsah, maximum, ztráty, čas doplnění).
+- Summary: V mapě jsem doplnil „consume“ lifecycle pro `centerRequest`: `MapPanel` nyní potvrzuje zpracovaný nonce do parentu a požadavek se po úspěšném centru smaže (`setMapCenterRequest(null)` pro konkrétní nonce), takže se při pozdějších rerenderech/remountech neaplikuje znovu poslední kliknuté léno. Současně `centerOnSettlement` vrací `boolean`, aby se request nesmazal, pokud v daný moment ještě nelze cílové léno rozlišit. V `VillagePanel` zůstaly karty po typech (vlastní/podpora), množství je na `0.86rem`, karta používá obrázek jednotky jako background layer přes CSS custom property a layout je orientovaný vertikálně s šířkou podle obsahu. Do karty „Posádka“ jsem přidal hover tooltip s detaily jednotek (`amount/cap`, `missing`, `+1 za ...`, `⏱ další doplnění za ...`).
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: Feature contract: čistě frontend map/UI změna bez nového pollingu/network toku. Hlavní výkonové riziko bylo opakované centrování vyvolané stale `centerRequest` během rerenderu; mitigace je nonce-based consume flow + lokální guard na úspěšné zacílení.
+
+## 2026-03-14 22:24 | branch: feat/build-0.1.13
+
+- Request: Změnit UI léna: snížit font množství jednotek na `0.25rem` (včetně posádky), vrátit název/hlavičku léna dovnitř karty na vrchol, a zafixovat okno léna napevno dole uprostřed bez ručního přesunu a bez scrollu v okně.
+- Summary: Ve `VillagePanel` jsem přidal interní titulkový blok s názvem léna + souřadnicemi (a owner/kingdom/region) přímo do horní části obsahu karty. U karet jednotek jsem nastavil oba počty (`h1` i spodní závorku) na `0.25rem`, stejně tak hlavní číselný údaj v kartě `Posádka` přes samostatnou class `village-garrison-card`. V renderu floating window jsem pro `village` panel vypnul manuální drag na hlavičce a skryl externí textový titul v horní liště (zůstávají jen akce), takže název už není mimo obsah. Dále jsem přepnul village panel na auto-size režim a v CSS vypnul vertikální/horizontální scroll v `window-body` pro `village-panel-window`, aby se léno drželo pevně dole uprostřed bez vnitřního scrollbaru.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: Feature contract: čistě frontend UI/layout změna bez síťových/polling zásahů. Hlavní riziko byla regresní změna chování floating panelů; mitigace je scope pouze na `village-panel-window` a explicitní guard v drag handleru.
+
+## 2026-03-14 22:27 | branch: feat/build-0.1.13
+
+- Request: Změnit fonty množství jednotek na `1.85rem` v léně i v posádce.
+- Summary: Upravil jsem velikost fontu pro oba číselné řádky na kartách jednotek v léně (`h1` vlastní + spodní podpora) a pro hlavní počet v kartě `Posádka` na `1.85rem`.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: UI-only změna typografie bez zásahu do datového toku nebo mapové logiky.
+
+## 2026-03-14 22:32 | branch: feat/build-0.1.13
+
+- Request: Nastavit font množství jednotek (v léně i posádce) na stejnou velikost jako text `Aktivní léno` v kartě seznamu lén.
+- Summary: Dohledal jsem referenční velikost labelu `Aktivní léno` přes `.resource-strip p` (`0.74rem`) a stejnou hodnotu jsem aplikoval na počty jednotek v kartách léna (`h1` + spodní podpora) i na hlavní číselný údaj v kartě `Posádka`.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: UI-only typografická změna bez zásahu do map/logiky/datového toku.
+
+## 2026-03-14 22:36 | branch: feat/build-0.1.13
+
+- Request: Zmenšit fonty množství jednotek o 80 %.
+- Summary: Snížil jsem velikosti fontu počtů jednotek v kartách léna a v kartě posádky z `0.74rem` na `0.148rem` (20 % původní velikosti).
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: UI-only typografická změna bez zásahu do datového toku, mapových interakcí nebo backendu.
+
+## 2026-03-14 22:45 | branch: feat/build-0.1.13
+
+- Request: Nastavit čísla jednotek v okně léna na malý font jako u názvů jednotek (včetně posádky).
+- Summary: Upravil jsem velikost fontu počtů jednotek v kartách léna (`h1` + spodní hodnota podpory) i hlavního čísla v kartě `Posádka` na `0.7rem`, tedy stejnou hodnotu jako u názvů jednotek (`.village-unit-type-header strong`).
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: UI-only typografická úprava; bez změny mapové logiky, pollingu nebo backendu.
+
+## 2026-03-14 22:48 | branch: feat/build-0.1.13
+
+- Request: Opravit obří font v hlavičce karty léna (název osady + druhý řádek owner/kingdom/region).
+- Summary: Identifikoval jsem konflikt s globálním dark-medieval pravidlem pro `h3` (`!important`), které přepisovalo lokální velikost titulku v kartě léna. Přidal jsem cílený override pouze pro `village-panel-window .village-float-title-block`, kde je `h3` fixně na `0.74rem` a druhý řádek `p` na `0.62rem`, včetně kompaktních margin/line-height hodnot.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: UI-only typografická oprava scoped na village panel; bez zásahu do mapové logiky, backendu nebo datového toku.
+
+## 2026-03-14 22:51 | branch: feat/build-0.1.13
+
+- Request: Opravit stále příliš velký font čísel jednotek v kartě léna (včetně posádky).
+- Summary: Zjistil jsem, že lokální velikosti byly přepisované globálními dark-medieval typografickými pravidly pro `h1`/`p`/`strong`. Přidal jsem scoped override pouze pro `village-panel-window`, který fixuje čísla jednotek (`h1`, spodní podpora `p`) a hlavní číslo v `village-garrison-card` na `0.7rem` s vyšší prioritou (`!important`).
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: UI-only typografická oprava; bez zásahu do mapové logiky, backendu a datových toků.
+
+## 2026-03-14 22:57 | branch: feat/build-0.1.13
+
+- Request: Analyzovat nekonzistenci okna léna (místo široké karty bez scrollu se zobrazuje úzká vysoká „nudle“ přes obrazovku) a opravit.
+- Summary: Kořen problému byl v renderu panelu: `village` panel byl chybně zařazen do `auto-size` režimu (`fit-content` šířka/výška), zatímco CSS zároveň blokovalo scroll v `window-body`. Kombinace způsobila, že panel počítal příliš úzkou šířku a obsah se zalamoval do výšky. Opravil jsem to vrácením `village` panelu zpět do landscape fixed-size režimu (bez `auto-size`), takže znovu používá panelové limity (min. 820x470) a stabilní spodní středové ukotvení.
+- Files: src/pages/GamePage.tsx, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: Feature contract: UI/layout-only fix bez zásahu do mapových interakcí, pollingu nebo backendu. Hlavní riziko byla regresní šířka/výška panelu; mitigace je návrat na existující panel sizing model používaný pro landscape panely.
+
+## 2026-03-14 23:11 | branch: feat/build-0.1.13
+
+- Request: Vrátit čitelné velikosti názvu léna, zvětšit názvy/počty jednotek (včetně posádky) a sjednotit čitelnost i v tooltipu; zároveň odstranit nekonzistentní přetaženou výšku/„nudli“ u karty léna.
+- Summary: U village panelu jsem navýšil typografii v jednotkových kartách (název jednotky + obě hodnoty) i hlavní číslo posádky na `0.86rem`, a stejnou velikost jsem použil pro řádky `village-intel-tooltip`. Titulkový blok léna jsem vrátil na čitelnější velikosti (`h3` `1.02rem`, metadata `0.78rem`). Pro konzistentní landscape chování bez zbytečné výšky jsem upravil sizing model village panelu: min size na `860x360` a runtime/open rozměr na `920x380` (pro nové i znovu otevřené village panely), čímž se odstraní úzké/vertikálně přepálené zobrazení a ustřihávání názvů při přetečení.
+- Files: src/App.css, src/pages/GamePage.tsx, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: Feature contract: čistě frontend UI/layout/typografie; bez změn mapových requestů, pollingu nebo backendu. Hlavní riziko byla nekonzistentní výška/šířka panelu po předchozích override; mitigace je návrat na jednotný fixed landscape sizing pro všechny village panely.
+
+## 2026-03-14 23:17 | branch: feat/build-0.1.13
+
+- Request: Když jsou jednotky ve dvou řádcích, karta léna se ustřihává; odstranit textové názvy jednotek, aby se problém vyřešil.
+- Summary: Ve vykreslení `VillagePanel` jsem z jednotkových karet odstranil textové labely názvů jednotek a ponechal pouze ikonu + číselné hodnoty (vlastní a podpora). Tím se sníží vertikální nárok každé buňky a při dvou řádcích je menší riziko ustřihnutí obsahu v pevném landscape panelu.
+- Files: src/pages/GamePage.tsx, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: UI-only změna prezentace; bez změny datového modelu, mapových interakcí nebo backendu.

@@ -365,18 +365,24 @@ type VillageIntelRecruitQueueItem = {
   remainingSec: number;
 };
 
-type VillageIntelArmyUnitItem = {
+type VillageIntelUnitSummaryItem = {
   unitId: string;
   unitName: string;
-  amount: number;
+  ownAmount: number;
+  supportAmount: number;
+  icon: string;
+  order: number;
 };
 
-type VillageIntelArmyTemplate = {
-  id: string;
-  generalName: string;
-  label: string;
-  totalUnits: number;
-  units: VillageIntelArmyUnitItem[];
+type VillageIntelGarrisonUnitDetail = {
+  unitId: string;
+  unitName: string;
+  icon: string;
+  amount: number;
+  cap: number;
+  missing: number;
+  refillSecPerUnit: number;
+  nextRefillSec: number | null;
 };
 
 type VillageIntelData = {
@@ -388,8 +394,9 @@ type VillageIntelData = {
   gateLevel: number;
   garrisonUnits: number;
   garrisonUnlocked: boolean;
+  garrisonDetails: VillageIntelGarrisonUnitDetail[];
   resources: Pick<GameStateResponse['resources'], 'wood' | 'stone' | 'iron' | 'gold' | 'coins'>;
-  armies: VillageIntelArmyTemplate[];
+  unitSummaries: VillageIntelUnitSummaryItem[];
 };
 
 type VillageIntelStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -966,64 +973,31 @@ const getUnitMetaById = (unitId: string): { fallbackName: string; fallbackRole: 
   };
 };
 
-const VILLAGE_ARMY_TEMPLATE_DEFS: Array<{ id: string; generalName: string; label: string }> = [
-  { id: 'vanguard', generalName: 'Generál Orion', label: 'Předvoj' },
-  { id: 'core', generalName: 'Generál Darius', label: 'Hlavní šik' },
-  { id: 'reserve', generalName: 'Generál Lysandra', label: 'Záloha' },
-];
-const VILLAGE_ARMY_TEMPLATE_SHARES = [0.46, 0.34, 0.2] as const;
+const buildVillageUnitSummaries = (units: GameStateResponse['units']): VillageIntelUnitSummaryItem[] =>
+  [...units]
+    .map((unit) => {
+      const unitId = String(unit.id);
+      const unitMeta = getUnitMetaById(unitId);
+      const ownAmount = Math.max(0, Math.floor(Number(unit.amount ?? 0)));
+      const supportAmount = Math.max(0, Math.floor(Number(unit.stationedSupportCount ?? 0)));
+      const order = COMMAND_UNIT_ORDER.indexOf(unitId as CommandUnitId);
 
-const buildVillageArmyTemplates = (units: GameStateResponse['units']): VillageIntelArmyTemplate[] => {
-  const templates = VILLAGE_ARMY_TEMPLATE_DEFS.map((definition) => ({
-    ...definition,
-    totalUnits: 0,
-    units: [] as VillageIntelArmyUnitItem[],
-  }));
-
-  const positiveUnits = [...units]
-    .map((unit) => ({
-      unitId: String(unit.id),
-      unitName: getUnitMetaById(String(unit.id)).fallbackName,
-      amount: Math.max(0, Math.floor(Number(unit.amount ?? 0))),
-    }))
-    .filter((unit) => unit.amount > 0)
-    .sort((left, right) => right.amount - left.amount);
-
-  for (const unit of positiveUnits) {
-    let remaining = unit.amount;
-    templates.forEach((template, index) => {
-      const isLastTemplate = index === templates.length - 1;
-      const allocated = isLastTemplate
-        ? remaining
-        : Math.min(remaining, Math.max(0, Math.floor(unit.amount * VILLAGE_ARMY_TEMPLATE_SHARES[index])));
-      if (allocated <= 0) {
-        return;
+      return {
+        unitId,
+        unitName: unitMeta.fallbackName,
+        ownAmount,
+        supportAmount,
+        icon: unitMeta.icon,
+        order: order >= 0 ? order : Number.MAX_SAFE_INTEGER,
+      };
+    })
+    .filter((unit) => unit.ownAmount > 0 || unit.supportAmount > 0)
+    .sort((left, right) => {
+      if (left.order !== right.order) {
+        return left.order - right.order;
       }
-      remaining -= allocated;
-      template.units.push({
-        unitId: unit.unitId,
-        unitName: unit.unitName,
-        amount: allocated,
-      });
-      template.totalUnits += allocated;
+      return left.unitName.localeCompare(right.unitName, 'cs-CZ');
     });
-  }
-
-  const populatedTemplates = templates.filter((template) => template.totalUnits > 0);
-  if (populatedTemplates.length > 0) {
-    return populatedTemplates;
-  }
-
-  return [
-    {
-      id: 'reserve-empty',
-      generalName: 'Generál Nezařazen',
-      label: 'Rezervní oddíl',
-      totalUnits: 0,
-      units: [],
-    },
-  ];
-};
 
 const toVillageIntelData = (state: GameStateResponse): VillageIntelData => {
   const sortedBuildingQueue = [...(state.activeUpgrades ?? [])].sort(
@@ -1044,6 +1018,23 @@ const toVillageIntelData = (state: GameStateResponse): VillageIntelData => {
       ),
     ),
   );
+  const garrisonMilitia = state.garrison?.units?.militia;
+  const garrisonArcher = state.garrison?.units?.archer;
+  const garrisonDetails: VillageIntelGarrisonUnitDetail[] = ['militia', 'archer'].map((unitId) => {
+    const garrisonUnit = unitId === 'militia' ? garrisonMilitia : garrisonArcher;
+    const unitMeta = getUnitMetaById(unitId);
+    return {
+      unitId,
+      unitName: unitMeta.fallbackName,
+      icon: unitMeta.icon,
+      amount: Math.max(0, Math.floor(Number(garrisonUnit?.amount ?? 0))),
+      cap: Math.max(0, Math.floor(Number(garrisonUnit?.cap ?? 0))),
+      missing: Math.max(0, Math.floor(Number(garrisonUnit?.missing ?? 0))),
+      refillSecPerUnit: Math.max(0, Math.floor(Number(garrisonUnit?.refillSecPerUnit ?? 0))),
+      nextRefillSec:
+        garrisonUnit?.nextRefillSec == null ? null : Math.max(0, Math.floor(Number(garrisonUnit.nextRefillSec))),
+    };
+  });
 
   return {
     villageId: Math.max(0, Math.floor(Number(state.village.id))),
@@ -1072,6 +1063,7 @@ const toVillageIntelData = (state: GameStateResponse): VillageIntelData => {
     gateLevel: Math.max(0, Math.floor(Number(buildingLevelById.get('gate') ?? 0))),
     garrisonUnits,
     garrisonUnlocked: Boolean(state.garrison?.isUnlocked ?? true),
+    garrisonDetails,
     resources: {
       wood: Math.max(0, Math.floor(Number(state.resources?.wood ?? 0))),
       stone: Math.max(0, Math.floor(Number(state.resources?.stone ?? 0))),
@@ -1079,7 +1071,7 @@ const toVillageIntelData = (state: GameStateResponse): VillageIntelData => {
       gold: Math.max(0, Math.floor(Number(state.resources?.gold ?? 0))),
       coins: Math.max(0, Math.floor(Number(state.resources?.coins ?? 0))),
     },
-    armies: buildVillageArmyTemplates(state.units ?? []),
+    unitSummaries: buildVillageUnitSummaries(state.units ?? []),
   };
 };
 
@@ -3090,7 +3082,7 @@ const getPanelMinSize = (type: PanelType): WindowSize => {
     return { width: 960, height: 560 };
   }
   if (type === 'village') {
-    return { width: 820, height: 470 };
+    return { width: 860, height: 360 };
   }
   if (type === 'profile') {
     return { width: 700, height: 430 };
@@ -13333,6 +13325,7 @@ const MapPanel = memo(({
   focusedSettlementId,
   isInteractionEnabled,
   centerRequest,
+  onCenterRequestHandled,
   activeVillageId,
   currentUsername,
   zoomPercent,
@@ -13350,6 +13343,7 @@ const MapPanel = memo(({
   focusedSettlementId: string | null;
   isInteractionEnabled: boolean;
   centerRequest: { settlementId: string; nonce: number } | null;
+  onCenterRequestHandled: (nonce: number) => void;
   activeVillageId: number | null;
   currentUsername: string;
   zoomPercent: number;
@@ -13399,6 +13393,7 @@ const MapPanel = memo(({
   const hasRestoredViewportRef = useRef(false);
   const viewportPersistTimerRef = useRef<number | null>(null);
   const dragSuppressClickUntilRef = useRef(0);
+  const processedCenterRequestNonceRef = useRef<number | null>(null);
   const hoverClearTimeoutRef = useRef<number | null>(null);
   const [gridViewportState, setGridViewportState] = useState({
     scrollLeft: 0,
@@ -14193,45 +14188,68 @@ const MapPanel = memo(({
     [clampPanTarget, startSmoothPanAnimation, updateMiniViewport],
   );
 
+  const readWrapContentInset = useCallback((wrap: HTMLDivElement) => {
+    const style = window.getComputedStyle(wrap);
+    const left = Number.parseFloat(style.paddingLeft);
+    const top = Number.parseFloat(style.paddingTop);
+    return {
+      left: Number.isFinite(left) ? left : 0,
+      top: Number.isFinite(top) ? top : 0,
+    };
+  }, []);
+
   const centerOnSettlement = useCallback(
-    (settlementId: string | null, behavior: ScrollBehavior = 'auto') => {
+    (settlementId: string | null, behavior: ScrollBehavior = 'auto'): boolean => {
       if (!settlementId) {
-        return;
+        return false;
       }
 
       const wrap = gridWrapRef.current;
       if (!wrap) {
-        return;
+        return false;
       }
 
       const visibleEntry = mapDisplaySettlementById.get(settlementId) ?? null;
       const targetSettlement = visibleEntry?.settlement ?? settlementsById.get(settlementId) ?? null;
       if (!targetSettlement) {
-        return;
+        return false;
       }
       const localPosition = visibleEntry
         ? { x: visibleEntry.localX, y: visibleEntry.localY }
         : resolveSettlementGridCoords(targetSettlement);
       const pixelPosition = toGridPixelPosition(localPosition, cellSize, mapCellGapPx);
-      const targetLeft = pixelPosition.left + cellSize / 2 - wrap.clientWidth / 2;
-      const targetTop = pixelPosition.top + cellSize / 2 - wrap.clientHeight / 2;
+      const contentInset = readWrapContentInset(wrap);
+      const targetLeft = contentInset.left + pixelPosition.left + cellSize / 2 - wrap.clientWidth / 2;
+      const targetTop = contentInset.top + pixelPosition.top + cellSize / 2 - wrap.clientHeight / 2;
 
-      wrap.scrollTo({
-        left: targetLeft,
-        top: targetTop,
-        behavior,
-      });
-      updateMiniViewport();
+      applyPanTarget(targetLeft, targetTop, { immediate: behavior !== 'smooth' });
+      return true;
     },
-    [cellSize, mapCellGapPx, mapDisplaySettlementById, resolveSettlementGridCoords, settlementsById, updateMiniViewport],
+    [
+      applyPanTarget,
+      cellSize,
+      mapCellGapPx,
+      mapDisplaySettlementById,
+      readWrapContentInset,
+      resolveSettlementGridCoords,
+      settlementsById,
+    ],
   );
 
   useEffect(() => {
     if (!centerRequest?.settlementId) {
       return;
     }
-    centerOnSettlement(centerRequest.settlementId, 'smooth');
-  }, [centerOnSettlement, centerRequest?.nonce, centerRequest?.settlementId]);
+    if (processedCenterRequestNonceRef.current === centerRequest.nonce) {
+      return;
+    }
+    const didCenter = centerOnSettlement(centerRequest.settlementId, 'smooth');
+    if (!didCenter) {
+      return;
+    }
+    processedCenterRequestNonceRef.current = centerRequest.nonce;
+    onCenterRequestHandled(centerRequest.nonce);
+  }, [centerOnSettlement, centerRequest?.nonce, centerRequest?.settlementId, onCenterRequestHandled]);
 
   useEffect(() => {
     const wrap = gridWrapRef.current;
@@ -14257,6 +14275,7 @@ const MapPanel = memo(({
   useEffect(() => {
     hasInitialAutoCenterRef.current = false;
     hasRestoredViewportRef.current = false;
+    processedCenterRequestNonceRef.current = null;
   }, [currentUsername, regionId]);
 
   useEffect(() => {
@@ -14483,18 +14502,19 @@ const MapPanel = memo(({
       }
 
       const rect = miniMap.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
       const ratioX = clamp((clientX - rect.left) / rect.width, 0, 1);
       const ratioY = clamp((clientY - rect.top) / rect.height, 0, 1);
-      const maxLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
-      const maxTop = Math.max(0, wrap.scrollHeight - wrap.clientHeight);
+      const contentInset = readWrapContentInset(wrap);
+      const mapSpanPx = Math.max(cellSize, mapGridSizePx);
+      const targetLeft = contentInset.left + ratioX * mapSpanPx - wrap.clientWidth / 2;
+      const targetTop = contentInset.top + ratioY * mapSpanPx - wrap.clientHeight / 2;
 
-      applyPanTarget(
-        ratioX * maxLeft,
-        ratioY * maxTop,
-        options,
-      );
+      applyPanTarget(targetLeft, targetTop, options);
     },
-    [applyPanTarget],
+    [applyPanTarget, cellSize, mapGridSizePx, readWrapContentInset],
   );
 
   const handleMinimapPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -14589,7 +14609,16 @@ const MapPanel = memo(({
               }
               clearHoverTimeout();
               onOpenSettlement(settlement);
-              setPinnedSettlementId(settlement.id);
+              setHoveredId(settlement.id);
+            }}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (Date.now() < dragSuppressClickUntilRef.current) {
+                return;
+              }
+              clearHoverTimeout();
+              setPinnedSettlementId((previous) => (previous === settlement.id ? null : settlement.id));
               setHoveredId(settlement.id);
             }}
             title={`${settlement.name} (${settlement.globalX}|${settlement.globalY}) • ${settlementPrestigeMeta.label} (${settlementPrestigeMeta.letter})`}
@@ -14921,35 +14950,6 @@ const MapPanel = memo(({
             }}
           >
             <div className="mini-map-shell">
-              <div className="mini-map-title-row">
-                <h4>Minimapa</h4>
-                <div className="mini-map-actions">
-                  <button
-                    type="button"
-                    className="mini-map-action-button"
-                    onClick={() => centerOnSettlement(distanceOriginSettlement?.id ?? ownSettlement?.id ?? null, 'smooth')}
-                    title="Centrovat mapu na aktivní léno"
-                    aria-label="Centrovat mapu na aktivní léno"
-                  >
-                    <span className="symbol" aria-hidden="true">
-                      ⌖
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="mini-map-action-button map-fullscreen-toggle icon-only"
-                    onClick={() => {
-                      void toggleMapFullscreen();
-                    }}
-                    title={isMapFullscreen ? 'Ukončit režim celé obrazovky' : 'Celá obrazovka'}
-                    aria-label={isMapFullscreen ? 'Ukončit režim celé obrazovky' : 'Celá obrazovka'}
-                  >
-                    <span className="symbol" aria-hidden="true">
-                      ⛶
-                    </span>
-                  </button>
-                </div>
-              </div>
               <div
                 className="mini-map"
                 ref={miniMapRef}
@@ -15006,6 +15006,32 @@ const MapPanel = memo(({
                   >
                     <span className="symbol" aria-hidden="true">
                       ⊞
+                    </span>
+                  </button>
+                </div>
+                <div className="mini-map-actions">
+                  <button
+                    type="button"
+                    className="mini-map-action-button"
+                    onClick={() => centerOnSettlement(distanceOriginSettlement?.id ?? ownSettlement?.id ?? null, 'smooth')}
+                    title="Centrovat mapu na aktivní léno"
+                    aria-label="Centrovat mapu na aktivní léno"
+                  >
+                    <span className="symbol" aria-hidden="true">
+                      ⌖
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="mini-map-action-button map-fullscreen-toggle icon-only"
+                    onClick={() => {
+                      void toggleMapFullscreen();
+                    }}
+                    title={isMapFullscreen ? 'Ukončit režim celé obrazovky' : 'Celá obrazovka'}
+                    aria-label={isMapFullscreen ? 'Ukončit režim celé obrazovky' : 'Celá obrazovka'}
+                  >
+                    <span className="symbol" aria-hidden="true">
+                      ⛶
                     </span>
                   </button>
                 </div>
@@ -15082,6 +15108,45 @@ const VillagePanel = memo(({
             value: isVillageIntelLoading ? 'Načítám…' : 'Bez položek ve frontě.',
           },
         ];
+  const garrisonTooltipRows = useMemo(() => {
+    if (isVillageIntelLoading) {
+      return [
+        {
+          label: 'Posádka',
+          value: 'Načítám detail složení…',
+        },
+      ];
+    }
+    if (!hasVillageIntel || !villageIntelData) {
+      return [
+        {
+          label: 'Posádka',
+          value: 'Detail posádky není dostupný.',
+        },
+      ];
+    }
+    if (!villageIntelData.garrisonUnlocked) {
+      return [
+        {
+          label: 'Posádka je uzamčena',
+          value: 'Odemyká se od Radnice 5. Rezervace 300 populace je aktivní hned.',
+        },
+      ];
+    }
+    return villageIntelData.garrisonDetails.map((unit) => {
+      const amountLabel = `${unit.amount.toLocaleString('cs-CZ')}/${unit.cap.toLocaleString('cs-CZ')}`;
+      const lossLabel =
+        unit.missing > 0 ? `ztráty ${unit.missing.toLocaleString('cs-CZ')}` : 'bez ztrát';
+      const refillStepLabel =
+        unit.refillSecPerUnit > 0 ? `+1 za ${formatDurationLabel(unit.refillSecPerUnit)}` : 'doplnění n/a';
+      const nextTickLabel =
+        unit.nextRefillSec != null ? `⏱ další doplnění za ${formatDurationLabel(unit.nextRefillSec)}` : '⏱ bez čekajícího doplnění';
+      return {
+        label: `${unit.unitName}: ${amountLabel}`,
+        value: `${lossLabel} · ${refillStepLabel} · ${nextTickLabel}`,
+      };
+    });
+  }, [hasVillageIntel, isVillageIntelLoading, villageIntelData]);
   const compactResourceRows = useMemo(
     () => [
       { key: 'wood', label: 'Dřevo', value: formatCompactResourceAmount(villageIntelData?.resources.wood ?? 0) },
@@ -15098,44 +15163,10 @@ const VillagePanel = memo(({
         villageIntelData?.resources.wood,
     ],
   );
-  const villageUnitSummaryCards = useMemo(() => {
-    const aggregatedUnits = new Map<
-      string,
-      { unitId: string; unitName: string; amount: number; icon: string; order: number }
-    >();
-
-    for (const unit of villageIntelData?.armies.flatMap((template) => template.units) ?? []) {
-      const unitId = String(unit.unitId);
-      const amount = Math.max(0, Math.floor(Number(unit.amount ?? 0)));
-      if (!unitId || amount <= 0) {
-        continue;
-      }
-      const unitMeta = getUnitMetaById(unitId);
-      const current = aggregatedUnits.get(unitId);
-      aggregatedUnits.set(unitId, {
-        unitId,
-        unitName: unitMeta.fallbackName,
-        amount: (current?.amount ?? 0) + amount,
-        icon: unitMeta.icon,
-        order: COMMAND_UNIT_ORDER.indexOf(unitId as CommandUnitId),
-      });
-    }
-
-    const orderedUnits = [...aggregatedUnits.values()].sort((left, right) => {
-      const leftOrder = left.order >= 0 ? left.order : Number.MAX_SAFE_INTEGER;
-      const rightOrder = right.order >= 0 ? right.order : Number.MAX_SAFE_INTEGER;
-      if (leftOrder !== rightOrder) {
-        return leftOrder - rightOrder;
-      }
-      return left.unitName.localeCompare(right.unitName, 'cs-CZ');
-    });
-
-    const cards = Array.from({ length: 3 }, () => [] as typeof orderedUnits);
-    for (const [index, unit] of orderedUnits.entries()) {
-      cards[index % cards.length].push(unit);
-    }
-    return cards;
-  }, [villageIntelData?.armies]);
+  const villageUnitSummaryItems = useMemo(
+    () => villageIntelData?.unitSummaries ?? [],
+    [villageIntelData?.unitSummaries],
+  );
 
   useEffect(() => {
     if (!canLoadVillageIntel || targetVillageId == null) {
@@ -15243,31 +15274,28 @@ const VillagePanel = memo(({
         </header>
 
         <div className="village-unit-summary-grid" aria-label="Jednotky v léně">
-          {villageUnitSummaryCards.map((cardUnits, cardIndex) => (
-            <article
-              key={`village-unit-card-${cardIndex}`}
-              className={`village-unit-summary-card${cardUnits.length === 0 ? ' is-empty' : ''}`}
-            >
-              {cardUnits.length > 0 ? (
-                cardUnits.map((unit) => (
-                  <div
-                    key={`village-unit-summary-${cardIndex}-${unit.unitId}`}
-                    className="village-unit-summary-item"
-                    aria-label={`${unit.unitName}: ${unit.amount.toLocaleString('cs-CZ')}`}
-                  >
-                    <span className="unit-icon-shell tiny" aria-hidden="true">
-                      <img src={unit.icon} alt="" className="unit-icon-image" loading="lazy" />
-                    </span>
-                    <strong>{unit.amount.toLocaleString('cs-CZ')}</strong>
-                  </div>
-                ))
-              ) : (
-                <span className="village-unit-summary-empty">
-                  {hasVillageIntel ? 'Bez jednotek' : isVillageIntelLoading ? 'Načítám...' : 'Bez dat'}
-                </span>
-              )}
-            </article>
-          ))}
+          {villageUnitSummaryItems.length > 0 ? (
+            villageUnitSummaryItems.map((unit) => (
+              <article
+                key={`village-unit-summary-${unit.unitId}`}
+                className="village-unit-summary-card village-unit-type-card"
+                aria-label={`${unit.unitName}: vlastní ${unit.ownAmount.toLocaleString('cs-CZ')}, podpora ${unit.supportAmount.toLocaleString('cs-CZ')}`}
+                style={{ '--unit-card-image': `url("${unit.icon}")` } as CSSProperties}
+              >
+                <div className="village-unit-type-header">
+                  <span className="unit-icon-shell" aria-hidden="true">
+                    <img src={unit.icon} alt="" className="unit-icon-image" loading="lazy" />
+                  </span>
+                </div>
+                <h1>{unit.ownAmount.toLocaleString('cs-CZ')}</h1>
+                <p>({unit.supportAmount.toLocaleString('cs-CZ')})</p>
+              </article>
+            ))
+          ) : (
+            <p className="village-unit-summary-empty">
+              {hasVillageIntel ? 'Bez jednotek' : isVillageIntelLoading ? 'Načítám...' : 'Bez dat'}
+            </p>
+          )}
         </div>
 
         <div className="village-float-intel-grid">
@@ -15285,7 +15313,22 @@ const VillagePanel = memo(({
             </div>
           </article>
 
-          <article className="village-float-intel-card">
+          <article
+            className={`village-float-intel-card village-garrison-card has-army-tooltip${hoveredIntelTooltipKey === 'garrison-detail' ? ' is-tooltip-open' : ''}`}
+            onMouseEnter={(event) => {
+              handleIntelTooltipEnter('garrison-detail', { x: event.clientX, y: event.clientY });
+            }}
+            onMouseMove={(event) => {
+              if (hoveredIntelTooltipKey !== 'garrison-detail') {
+                return;
+              }
+              setIntelTooltipCursorPosition({ x: event.clientX, y: event.clientY });
+            }}
+            onMouseLeave={() => {
+              handleIntelTooltipLeave('garrison-detail');
+            }}
+            aria-label="Detail posádky"
+          >
             <h4>Posádka</h4>
             <strong>
               {hasVillageIntel
@@ -15318,6 +15361,13 @@ const VillagePanel = memo(({
         <VillageIntelTooltip
           title="Fronta výstavby"
           rows={queueTooltipRows}
+          cursorPosition={intelTooltipCursorPosition}
+        />
+      ) : null}
+      {hoveredIntelTooltipKey === 'garrison-detail' ? (
+        <VillageIntelTooltip
+          title="Posádka"
+          rows={garrisonTooltipRows}
           cursorPosition={intelTooltipCursorPosition}
         />
       ) : null}
@@ -16551,7 +16601,6 @@ export const GamePage = () => {
     }
     return `#${resolvedPlayerRank.toLocaleString('cs-CZ')}`;
   }, [resolvedPlayerRank]);
-  const persistentPlayerRankLabel = resolvedPlayerRank != null ? `#${resolvedPlayerRank.toLocaleString('cs-CZ')}` : 'N/A';
   const incomingAttackAttentionCount = useMemo(
     () => armyIncomingMovements.filter((movement) => movement.commandType === 'attack').length,
     [armyIncomingMovements],
@@ -18188,6 +18237,14 @@ export const GamePage = () => {
       nonce: (previous?.nonce ?? 0) + 1,
     }));
   }, []);
+  const handleMapCenterRequestHandled = useCallback((nonce: number) => {
+    setMapCenterRequest((previous) => {
+      if (!previous || previous.nonce !== nonce) {
+        return previous;
+      }
+      return null;
+    });
+  }, []);
 
   const openSettlementPanel = useCallback(
     (settlement: RegionSettlement, options?: { pinSide?: PinSide }) => {
@@ -18228,6 +18285,8 @@ export const GamePage = () => {
                   settlementId: settlement.id,
                   label,
                   side: nextSide,
+                  width: 920,
+                  height: 380,
                   expanded: !shouldPin,
                   alert: false,
                   layoutMode: 'floating',
@@ -18251,8 +18310,8 @@ export const GamePage = () => {
           settlementId: settlement.id,
           label,
           side: nextSide,
-          width: 680,
-          height: 500,
+          width: 920,
+          height: 380,
         });
 
         const created = fitPanelToViewport(
@@ -20861,6 +20920,7 @@ export const GamePage = () => {
             focusedSettlementId={focusedOwnSettlementId}
             isInteractionEnabled={isMapStageActive}
             centerRequest={mapCenterRequest}
+            onCenterRequestHandled={handleMapCenterRequestHandled}
             activeVillageId={gameState?.village.id ?? activeVillageId}
             currentUsername={username}
             zoomPercent={mapZoomPercent}
@@ -21392,16 +21452,16 @@ export const GamePage = () => {
       >
         {shouldRenderHeader ? (
           <header
-            className="window-header"
+            className={`window-header${isVillagePanel ? ' village-window-header' : ''}`}
             onPointerDown={(event) => {
-              if (isDocked || isMainMenuPanel) {
+              if (isDocked || isMainMenuPanel || isVillagePanel) {
                 return;
               }
               startDrag(event, panel);
             }}
           >
             <div className="window-title">
-              <span>{panel.label}</span>
+              {!isVillagePanel ? <span>{panel.label}</span> : null}
             </div>
             <div className="window-actions" onPointerDown={(event) => event.stopPropagation()}>
               {shouldRenderQuickWindowActions ? (
@@ -22048,9 +22108,6 @@ export const GamePage = () => {
             />
           </div>
           <div className="game-persistent-footer-right">
-            <p className="game-rank-footer" aria-live="polite">
-              Pořadí hráče <strong>{persistentPlayerRankLabel}</strong>
-            </p>
             <p className="game-version-footer">Verze hry {GAME_VERSION_LABEL}</p>
           </div>
         </div>
