@@ -504,3 +504,11 @@ Entry template:
 - Files: arch/chat-changelog.md
 - Verification: `npm run build` (OK)
 - Notes: Ověření bez dalších funkčních zásahů; změny v `src/components/CommunicationHub.tsx` a neznámý `.codex-runtime/verify-battle-report-read.mjs` zůstaly beze změny.
+
+## 2026-03-14 17:46 | branch: develop
+
+- Request: Sloučit `feat/build-0.1.12` do `develop`, ověřit testy, resetovat localhost a ukázat výsledek merge; zároveň zkontrolovat skills kontext/složku `skills` v gitu.
+- Summary: Proveden merge `feat/build-0.1.12` -> `develop` s konfliktem pouze v `arch/chat-changelog.md` (vyřešeno zachováním obou historií). Během verifikace odhalen pád regresního testu `battle-report-detail-lookup`; opraven scénář na správné čtení `attackPayload.payload.outcome`. Následně proveden restart lokálního běhu (ukončení starých procesů na 5173/3001, nový `npm run dev`) a ověření frontend + health endpointu.
+- Files: arch/chat-changelog.md, tests/regression/game-rules.scenario.mjs, plus merge změny z `feat/build-0.1.12` (server/db.js, server/gameConfig.js, server/gameService.js, server/index.js, src/App.css, src/api/gameApi.ts, src/components/CommunicationHub.tsx, src/pages/GamePage.tsx, tests/api/state-auth.test.mjs, tests/regression/game-rules.regression.test.mjs, .codex-runtime/*)
+- Verification: `npx tsc -b`; `npx vite build`; `npm run test:regression`; `node --test tests/api/state-auth.test.mjs`; `Invoke-WebRequest http://localhost:5173`; `Invoke-WebRequest http://localhost:3001/api/health`
+- Notes: V kořeni repa není sledovaná složka `skills`; dostupné skills byly načteny z `C:/Users/Patrik/.codex/skills/...`.
