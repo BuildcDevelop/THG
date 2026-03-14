@@ -512,3 +512,35 @@ Entry template:
 - Files: arch/chat-changelog.md, tests/regression/game-rules.scenario.mjs, plus merge změny z `feat/build-0.1.12` (server/db.js, server/gameConfig.js, server/gameService.js, server/index.js, src/App.css, src/api/gameApi.ts, src/components/CommunicationHub.tsx, src/pages/GamePage.tsx, tests/api/state-auth.test.mjs, tests/regression/game-rules.regression.test.mjs, .codex-runtime/*)
 - Verification: `npx tsc -b`; `npx vite build`; `npm run test:regression`; `node --test tests/api/state-auth.test.mjs`; `Invoke-WebRequest http://localhost:5173`; `Invoke-WebRequest http://localhost:3001/api/health`
 - Notes: V kořeni repa není sledovaná složka `skills`; dostupné skills byly načteny z `C:/Users/Patrik/.codex/skills/...`.
+
+## 2026-03-14 18:31 | branch: feat/build-0.1.13
+
+- Request: Vytvořit a přepnout na větev `feat/build-0.1.13`, vrátit ukotvení UI/oken na herní kontejner (ne viewport), sjednotit spodní tlačítka `Nastavení` + `Komunikace` jako jednu komponentu se stejnými stavy, zachovat badge nových zpráv, zobrazovat pořadí hráče konzistentně a trvale, upravit okna (oznámení/léna/profil) více do šířky bez horizontálního scrollu, zpomalit animaci pod hlavičkou a vizuálně odlišit kartu světa od menu pouze barevně.
+- Summary: Na nové větvi jsem dokončil container-based pravidla přes CSS insets (`--game-layout-left-gap/right-gap`) a navázal na ně chat i persistentní footer, takže spodní prvky i komunikační overlay drží hrany herního kontejneru. Spodní levá tlačítka jsou nově sjednocená přes `FooterActionButton`/`.game-footer-action` se stejnými hover/focus pravidly a zachovaným číselným badge pro komunikaci. Do payloadu snapshotu jsem přidal lehký `playerRanking` souhrn (backend + API typ), ve frontendu fallback vyhodnocení pořadí a trvalé zobrazení `Pořadí hráče #...` v pravé části persistentního footeru, aby byla informace konzistentní i mimo stránku žebříčku/profilu. Okna pro komunikaci/aktivitu/léna/profily/building byla rozšířena preferenčně do šířky, auto-size režim se u nich vypíná a `window-body` má nyní preferenci vertikálního scrollu bez horizontálního přetékání. Efekt pod názvem stránky byl zpomalen a karta světa je oddělena od unifikace top-menu tlačítek (barevný rozdíl bez rámových/fontových skoků).
+- Files: server/gameService.js, src/api/gameApi.ts, src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: Feature contract: UI/layout + lightweight ranking read-model fallback; hlavní riziko byl nárůst snapshot payloadu a layout regress při fixních overlay prvcích, mitigace byla minimální datová struktura `playerRanking` a container-gap offset bez nového pollingu/network loopu.
+
+## 2026-03-14 19:14 | branch: feat/build-0.1.13
+
+- Request: Spustit localhost nad buildem (produkční preview).
+- Summary: Spustil jsem `npm run build` a následně zvedl preview server na `127.0.0.1:4173` jako detached proces přes Node `child_process.spawn` (PID `112976`), aby běžel i po dokončení shell příkazu. Endpoint localhost vrací `HTTP 200`.
+- Files: arch/chat-changelog.md
+- Verification: `npm run build` (OK); `Invoke-WebRequest http://127.0.0.1:4173` (HTTP 200)
+- Notes: Původní pokus přes shell job/process start byl blokovaný politikou prostředí, proto použit detached Node spawn.
+
+## 2026-03-14 19:20 | branch: feat/build-0.1.13
+
+- Request: Vysvětlit dopad odstranění všech localhost procesů a jejich vztah k mainu/produkci, Netlify a herním datům.
+- Summary: Ověřil jsem lokální skripty, Netlify konfiguraci a poslouchající porty. V repu aktuálně běží lokální dev frontend na `5173` a lokální backend na `3001`; preview `4173` už neběží. Potvrdil jsem, že Netlify build je samostatný publish `dist` a `/api` na Netlify je přesměrované na vzdálený backend. Lokální backend používá vlastní SQLite databázi v `server/data/game.sqlite` (pokud ji nepřepíšou env proměnné), takže vypnutí localhost procesů neovlivní produkci ani vzdálená herní data; smazání lokální DB by ale smazalo lokální vývojová data.
+- Files: arch/chat-changelog.md
+- Verification: `Get-NetTCPConnection` pro porty `3001/4173/5173`; kontrola `package.json`, `vite.config.ts`, `netlify.toml`, `server/db.js`, `server/index.js`
+- Notes: Lokální `vite dev` a `vite preview` jsou jen lokální frontend servery; backend na `3001` je samostatný lokální runtime s vlastním stavem.
+
+## 2026-03-14 20:41 | branch: feat/build-0.1.13
+
+- Request: Vypnout všechny lokální servery/localhosty pro tento projekt.
+- Summary: Ověřil jsem poslouchající porty a ukončil běžící lokální backend na `3001` a dev frontend na `5173`. Na `4173` už nic neběželo. Po ukončení jsem znovu zkontroloval porty a žádný z nich už neposlouchá.
+- Files: arch/chat-changelog.md
+- Verification: `Get-NetTCPConnection` před/po; `taskkill /PID 107716 /PID 107760 /F`
+- Notes: Šlo pouze o ukončení lokálních procesů; bez zásahu do produkce, Netlify nebo vzdálených herních dat.

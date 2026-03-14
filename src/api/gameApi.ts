@@ -382,6 +382,13 @@ export type LeaderboardRow = {
   supporterRank?: number | null;
 };
 
+export type PlayerRankingSummary = {
+  rank: number | null;
+  attackerRank: number | null;
+  defenderRank: number | null;
+  supporterRank: number | null;
+};
+
 export type KingdomHubMember = {
   playerId: number;
   username: string;
@@ -616,6 +623,7 @@ export type GameStateResponse = {
     id: number;
     username: string;
   };
+  playerRanking: PlayerRankingSummary;
   kingdomHub?: KingdomHubState;
   villages: {
     id: number;

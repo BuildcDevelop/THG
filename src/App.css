@@ -1423,7 +1423,8 @@ html {
 .window-body {
   position: relative;
   height: calc(100% - 42px);
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 0.9rem;
   background:
     linear-gradient(165deg, rgba(18, 16, 14, 0.72), rgba(10, 10, 11, 0.82)),
@@ -10168,12 +10169,14 @@ html {
 
 
 :root {
+  --game-layout-left-gap: 0px;
+  --game-layout-right-gap: 0px;
   --communication-horizontal-shift: min(10vw, 180px);
 }
 
 .communication-launcher {
   position: fixed;
-  right: calc(18px + var(--communication-horizontal-shift));
+  right: calc(var(--game-layout-right-gap, 0px) + 18px + var(--communication-horizontal-shift));
   bottom: 18px;
   z-index: 1800;
   border: 1px solid rgba(153, 197, 236, 0.46);
@@ -10215,9 +10218,9 @@ html {
 
 .communication-hub {
   position: fixed;
-  right: calc(18px + var(--communication-horizontal-shift));
+  right: calc(var(--game-layout-right-gap, 0px) + 18px + var(--communication-horizontal-shift));
   bottom: 68px;
-  width: min(430px, calc(100vw - 28px));
+  width: min(430px, calc(100vw - var(--game-layout-left-gap, 0px) - var(--game-layout-right-gap, 0px) - 28px));
   max-height: min(76vh, 760px);
   z-index: 1790;
   border: 1px solid rgba(157, 201, 238, 0.38);
@@ -10236,7 +10239,8 @@ html {
   inset: 8px;
   width: auto;
   max-height: none;
-  right: 8px;
+  left: calc(var(--game-layout-left-gap, 0px) + 8px);
+  right: calc(var(--game-layout-right-gap, 0px) + 8px);
   bottom: 8px;
 }
 
@@ -10450,9 +10454,9 @@ html {
 
 .communication-chat-overlay {
   position: fixed;
-  right: calc(22px + var(--communication-horizontal-shift));
+  right: calc(var(--game-layout-right-gap, 0px) + 22px + var(--communication-horizontal-shift));
   bottom: 68px;
-  width: min(360px, calc(100vw - 30px));
+  width: min(360px, calc(100vw - var(--game-layout-left-gap, 0px) - var(--game-layout-right-gap, 0px) - 30px));
   max-height: min(76vh, 760px);
   z-index: 1780;
   border: 1px solid rgba(148, 194, 230, 0.36);
@@ -10465,7 +10469,7 @@ html {
 
 .communication-chat-dock {
   position: fixed;
-  right: calc(190px + var(--communication-horizontal-shift));
+  right: calc(var(--game-layout-right-gap, 0px) + 190px + var(--communication-horizontal-shift));
   bottom: 18px;
   z-index: 1780;
   display: flex;
@@ -10473,7 +10477,7 @@ html {
   justify-content: flex-start;
   gap: 0.62rem;
   width: max-content;
-  max-width: calc(100vw - 208px);
+  max-width: calc(100vw - var(--game-layout-left-gap, 0px) - var(--game-layout-right-gap, 0px) - 208px);
   overflow-x: auto;
   overflow-y: visible;
   padding: 0;
@@ -10481,7 +10485,7 @@ html {
 }
 
 .communication-chat-dock.with-hub {
-  right: calc(460px + var(--communication-horizontal-shift));
+  right: calc(var(--game-layout-right-gap, 0px) + 460px + var(--communication-horizontal-shift));
   bottom: 18px;
 }
 
@@ -10498,7 +10502,7 @@ html {
   position: relative;
   right: auto;
   bottom: auto;
-  width: min(330px, calc(100vw - 30px));
+  width: min(330px, calc(100vw - var(--game-layout-left-gap, 0px) - var(--game-layout-right-gap, 0px) - 30px));
   height: min(76vh, 760px);
   max-height: min(76vh, 760px);
 }
@@ -11449,29 +11453,30 @@ html {
   }
 
   .communication-launcher {
-    right: 10px;
+    right: calc(var(--game-layout-right-gap, 0px) + 10px);
     bottom: 10px;
   }
 
   .communication-hub,
   .communication-chat-overlay {
     inset: 8px;
+    left: calc(var(--game-layout-left-gap, 0px) + 8px);
     width: auto;
-    right: 8px;
+    right: calc(var(--game-layout-right-gap, 0px) + 8px);
     bottom: 8px;
     max-height: none;
   }
 
   .communication-chat-dock {
-    right: 8px;
+    right: calc(var(--game-layout-right-gap, 0px) + 8px);
     bottom: 8px;
     width: auto;
-    max-width: calc(100vw - 16px);
+    max-width: calc(100vw - var(--game-layout-left-gap, 0px) - var(--game-layout-right-gap, 0px) - 16px);
     overflow-x: auto;
   }
 
   .communication-chat-dock.with-hub {
-    right: 8px;
+    right: calc(var(--game-layout-right-gap, 0px) + 8px);
   }
 
   .communication-chat-dock .communication-chat-overlay {
@@ -13532,8 +13537,7 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
   padding: 0 !important;
 }
 
-.game-page .top-navigation nav .menu-button-base.nav-action,
-.game-page .top-navigation .world-indicator-trigger {
+.game-page .top-navigation nav .menu-button-base.nav-action {
   border: 0 !important;
   border-radius: 0 !important;
   background: rgba(96, 106, 120, 0.34) !important;
@@ -13542,16 +13546,14 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
   color: #d8e0eb;
 }
 
-.game-page .top-navigation nav .menu-button-base.nav-action:hover,
-.game-page .top-navigation .world-indicator-trigger:hover {
+.game-page .top-navigation nav .menu-button-base.nav-action:hover {
   border: 0 !important;
   background: rgba(120, 130, 146, 0.4) !important;
   box-shadow: none !important;
   color: #f2f7ff;
 }
 
-.game-page .top-navigation nav .menu-button-base.nav-action.is-open,
-.game-page .top-navigation .world-indicator-trigger.is-open {
+.game-page .top-navigation nav .menu-button-base.nav-action.is-open {
   border: 0 !important;
   background: rgba(108, 118, 132, 0.44) !important;
   box-shadow: none !important;
@@ -13561,8 +13563,7 @@ body[data-ui-skin='dark-medieval'] .game-page :is(
   display: none !important;
 }
 
-body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-base.nav-action,
-body[data-ui-skin='dark-medieval'] .game-page .top-navigation .world-indicator-trigger {
+body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-base.nav-action {
   border: 0 !important;
   box-shadow: none !important;
   outline: none !important;
@@ -13571,9 +13572,7 @@ body[data-ui-skin='dark-medieval'] .game-page .top-navigation .world-indicator-t
 }
 
 body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-base.nav-action:hover,
-body[data-ui-skin='dark-medieval'] .game-page .top-navigation .world-indicator-trigger:hover,
 body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-base.nav-action.is-open,
-body[data-ui-skin='dark-medieval'] .game-page .top-navigation .world-indicator-trigger.is-open,
 body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-base.nav-action:active {
   border: 0 !important;
   box-shadow: none !important;
@@ -13858,8 +13857,8 @@ body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-b
   min-height: 0;
   min-width: 0;
   max-width: 100%;
-  overflow: auto;
-  overflow-x: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .game-page .floating-window.docked-window :is(.map-panel, .map-workspace, .region-grid-wrap, .city-panel, .city-overview-layout, .city-layout, .city-core-view, .city-upgrade-board) {
@@ -13976,8 +13975,8 @@ body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-b
 }
 
 .game-page .window-body {
-  overflow: auto !important;
-  overflow-x: auto !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
   overscroll-behavior: contain;
 }
 
@@ -14059,15 +14058,17 @@ body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-b
 
 /* Main screen takeover: map-first layout without dock chrome. */
 .game-page .app-content-container.game-layout-container {
-  max-width: none;
-  margin: 0;
-  padding-left: 0;
-  padding-right: 0;
+  max-width: 1800px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 20px;
+  padding-right: 20px;
 }
 
 .game-page .game-layout-container {
   /* Keep identical with base rule to prevent accidental stage shrink. */
   grid-template-rows: auto minmax(0, 1fr);
+  padding-bottom: 2.8rem;
 }
 
 .game-page .game-canvas {
@@ -14177,7 +14178,7 @@ body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-b
     radial-gradient(ellipse at 50% 55%, rgba(252, 176, 76, 0.5) 0%, rgba(236, 96, 43, 0.34) 42%, rgba(167, 36, 19, 0.08) 72%, transparent 100%),
     linear-gradient(90deg, transparent 0%, rgba(249, 143, 54, 0.32) 25%, rgba(255, 197, 119, 0.44) 50%, rgba(245, 111, 46, 0.32) 75%, transparent 100%);
   filter: blur(0.35px);
-  animation: map-title-flame-flicker 2.2s ease-in-out infinite;
+  animation: map-title-flame-flicker 5.4s ease-in-out infinite;
 }
 
 .game-page .resource-strip-stage-title-glow::before,
@@ -14192,35 +14193,30 @@ body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-b
 .game-page .resource-strip-stage-title-glow::before {
   background: radial-gradient(ellipse at 50% 50%, rgba(255, 214, 139, 0.28), transparent 72%);
   filter: blur(1px);
-  animation: map-title-flame-flicker 1.8s ease-in-out infinite;
+  animation: map-title-flame-flicker 6.2s ease-in-out infinite;
 }
 
 .game-page .resource-strip-stage-title-glow::after {
   background: radial-gradient(ellipse at 50% 45%, rgba(235, 70, 34, 0.3), transparent 68%);
   filter: blur(1.4px);
-  animation: map-title-flame-flicker 2.6s ease-in-out infinite reverse;
+  animation: map-title-flame-flicker 7.4s ease-in-out infinite reverse;
 }
 
 @keyframes map-title-flame-flicker {
   0%,
   100% {
-    opacity: 0.52;
-    transform: scaleX(0.95) translateY(0);
+    opacity: 0.46;
+    transform: scaleX(0.97) translateY(0);
   }
 
-  30% {
-    opacity: 0.76;
-    transform: scaleX(1.01) translateY(-0.5px);
-  }
-
-  50% {
-    opacity: 0.62;
-    transform: scaleX(0.98) translateY(0.5px);
+  35% {
+    opacity: 0.6;
+    transform: scaleX(1) translateY(-0.2px);
   }
 
   70% {
-    opacity: 0.82;
-    transform: scaleX(1.02) translateY(-0.35px);
+    opacity: 0.54;
+    transform: scaleX(0.99) translateY(0.2px);
   }
 }
 
@@ -14252,7 +14248,8 @@ body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-b
   height: auto !important;
   min-height: 0;
   max-height: min(92vh, calc(100vh - 3rem));
-  overflow: auto !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
 }
 
 .game-page .floating-window.no-window-header:not(.map-main-window) .window-body {
@@ -14397,68 +14394,63 @@ body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-b
 
 .game-page .game-persistent-footer {
   position: fixed;
-  left: 0.18rem;
-  right: 0.18rem;
+  left: calc(var(--game-layout-left-gap, 0px) + 0.18rem);
+  right: calc(var(--game-layout-right-gap, 0px) + 0.18rem);
   bottom: 0.14rem;
   z-index: 88;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.34rem;
   pointer-events: none;
 }
 
-.game-page .game-persistent-footer-left {
+.game-page .game-persistent-footer-left,
+.game-page .game-persistent-footer-right {
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
   gap: 0.34rem;
 }
 
-.game-page :is(.game-settings-anchor, .game-communication-anchor) {
+.game-page .game-persistent-footer-right {
+  margin-left: auto;
+}
+
+.game-page .game-footer-action {
   pointer-events: auto;
   border: 0;
   background: rgba(5, 10, 18, 0.56);
   color: #d0ddef;
   border-radius: 6px;
-  padding: 0.28rem 0.5rem;
+  padding: 0.42rem 0.63rem;
+  min-width: 3rem;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.3rem;
   font-size: 0.7rem;
   letter-spacing: 0.04em;
+  line-height: 1;
+  transition: background-color 160ms ease, color 160ms ease;
 }
 
-.game-page .game-settings-anchor {
-  color: #c7d7ea;
-}
-
-.game-page .game-settings-anchor.icon-only {
-  padding: 0.42rem 0.63rem;
-  min-width: 3rem;
-  justify-content: center;
-  gap: 0;
-}
-
-.game-page .game-settings-anchor.icon-only .symbol {
+.game-page .game-footer-action .symbol {
   font-size: 1.34rem;
   line-height: 1;
 }
 
-.game-page .game-communication-anchor.icon-only {
-  padding: 0.42rem 0.63rem;
-  min-width: 3.36rem;
-  justify-content: center;
-}
-
-.game-page .game-communication-anchor.icon-only .symbol {
-  font-size: 1.34rem;
-  line-height: 1;
-}
-
-.game-page .game-communication-anchor.icon-only strong {
+.game-page .game-footer-action strong {
   min-width: 1.3rem;
-  font-size: 1.1rem;
+  font-size: 0.78rem;
+  line-height: 1;
   text-align: right;
+  color: #f2e5bf;
+}
+
+.game-page .game-footer-action:is(:hover, :focus-visible, :active) {
+  background: rgba(16, 30, 47, 0.8);
+  color: #e5f0ff;
 }
 
 .game-page .top-navigation nav .menu-button-base.nav-action.nav-action--messages {
@@ -14470,9 +14462,19 @@ body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-b
   display: none !important;
 }
 
-.game-page .game-communication-anchor strong {
+.game-page .game-rank-footer {
+  pointer-events: auto;
+  margin: 0;
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  color: #b9cde0;
+  background: rgba(5, 10, 18, 0.44);
+  border-radius: 6px;
+  padding: 0.2rem 0.42rem;
+}
+
+.game-page .game-rank-footer strong {
   color: #f2e5bf;
-  font-size: 0.74rem;
 }
 
 .game-page .game-version-footer {
@@ -14519,23 +14521,21 @@ body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-b
   }
 
   .game-page .game-persistent-footer {
-    left: 0.14rem;
-    right: 0.14rem;
+    left: calc(var(--game-layout-left-gap, 0px) + 0.14rem);
+    right: calc(var(--game-layout-right-gap, 0px) + 0.14rem);
     bottom: 0.1rem;
   }
 
   .game-page .game-version-footer,
-  .game-page .game-settings-anchor,
-  .game-page .game-communication-anchor {
+  .game-page .game-rank-footer,
+  .game-page .game-footer-action {
     font-size: 0.64rem;
   }
 }
 
 /* Final menu state unification: every top nav button behaves identically (no gold borders). */
 .game-page .game-canvas-hud .top-navigation nav .menu-button-base.nav-action,
-.game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger,
-body[data-ui-skin='dark-medieval'] .game-page .game-canvas-hud .top-navigation nav .menu-button-base.nav-action,
-body[data-ui-skin='dark-medieval'] .game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger {
+body[data-ui-skin='dark-medieval'] .game-page .game-canvas-hud .top-navigation nav .menu-button-base.nav-action {
   border: 0 !important;
   border-radius: 0 !important;
   outline: none !important;
@@ -14546,40 +14546,21 @@ body[data-ui-skin='dark-medieval'] .game-page .game-canvas-hud .top-navigation .
   min-height: 2.72rem !important;
 }
 
-.game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger,
-body[data-ui-skin='dark-medieval'] .game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.44rem 0.68rem !important;
-  line-height: 1;
-}
-
 .game-page .game-canvas-hud .top-navigation nav .menu-button-base.nav-action::before,
 .game-page .game-canvas-hud .top-navigation nav .menu-button-base.nav-action::after,
-.game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger::before,
-.game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger::after,
 body[data-ui-skin='dark-medieval'] .game-page .game-canvas-hud .top-navigation nav .menu-button-base.nav-action::before,
-body[data-ui-skin='dark-medieval'] .game-page .game-canvas-hud .top-navigation nav .menu-button-base.nav-action::after,
-body[data-ui-skin='dark-medieval'] .game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger::before,
-body[data-ui-skin='dark-medieval'] .game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger::after {
+body[data-ui-skin='dark-medieval'] .game-page .game-canvas-hud .top-navigation nav .menu-button-base.nav-action::after {
   display: none !important;
   content: none !important;
 }
 
 .game-page .game-canvas-hud .top-navigation nav .menu-button-base.nav-action:is(:hover, :focus-visible, .is-open, :active),
-.game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger:is(:hover, :focus-visible, .is-open, :active),
 body[data-ui-skin='dark-medieval']
   .game-page
   .game-canvas-hud
   .top-navigation
   nav
-  .menu-button-base.nav-action:is(:hover, :focus-visible, .is-open, :active),
-body[data-ui-skin='dark-medieval']
-  .game-page
-  .game-canvas-hud
-  .top-navigation
-  .world-indicator.world-indicator-trigger:is(:hover, :focus-visible, .is-open, :active) {
+  .menu-button-base.nav-action:is(:hover, :focus-visible, .is-open, :active) {
   border: 0 !important;
   border-radius: 0 !important;
   outline: none !important;
@@ -14598,6 +14579,47 @@ body[data-ui-skin='dark-medieval']
   font-size: 0.72rem;
   line-height: 1;
   letter-spacing: 0.02em;
+}
+
+.game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger,
+body[data-ui-skin='dark-medieval'] .game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger {
+  border: 0 !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+  transform: none !important;
+  font: inherit !important;
+  letter-spacing: inherit !important;
+  background: rgba(34, 46, 61, 0.9) !important;
+  color: #d7e5f8 !important;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.44rem 0.68rem !important;
+  line-height: 1;
+  transition: background-color 220ms ease, color 220ms ease;
+}
+
+.game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger::before,
+.game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger::after,
+body[data-ui-skin='dark-medieval'] .game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger::before,
+body[data-ui-skin='dark-medieval'] .game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger::after {
+  display: none !important;
+  content: none !important;
+}
+
+.game-page .game-canvas-hud .top-navigation .world-indicator.world-indicator-trigger:is(:hover, :focus-visible, .is-open, :active),
+body[data-ui-skin='dark-medieval']
+  .game-page
+  .game-canvas-hud
+  .top-navigation
+  .world-indicator.world-indicator-trigger:is(:hover, :focus-visible, .is-open, :active) {
+  border: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+  transform: none !important;
+  background: rgba(67, 97, 128, 0.92) !important;
+  color: #f2f7ff !important;
 }
 
 .game-page .map-zoom-buttons button.icon-only {

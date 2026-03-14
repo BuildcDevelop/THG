@@ -781,6 +781,50 @@ const selectLeaderboardByRegionStmt = db.prepare(
    GROUP BY p.id, p.username
    ORDER BY prestige DESC, villageCount DESC, p.username COLLATE NOCASE ASC`,
 );
+const selectLeaderboardRankByRegionStmt = db.prepare(
+  `WITH me AS (
+      SELECT
+        p.username AS username,
+        COUNT(v.id) AS villageCount,
+        COALESCE(SUM(v.prestige), 0) AS prestige
+      FROM players p
+      INNER JOIN villages v ON v.player_id = p.id
+      WHERE p.id = ?
+        AND p.is_bot = 0
+        AND p.username NOT GLOB '__abandoned_ai__*'
+        AND v.region = ?
+      GROUP BY p.id, p.username
+    ),
+    leaderboard AS (
+      SELECT
+        p.username AS username,
+        COUNT(v.id) AS villageCount,
+        COALESCE(SUM(v.prestige), 0) AS prestige
+      FROM players p
+      INNER JOIN villages v ON v.player_id = p.id
+      WHERE p.is_bot = 0
+        AND p.username NOT GLOB '__abandoned_ai__*'
+        AND v.region = ?
+      GROUP BY p.id, p.username
+    )
+   SELECT
+     CASE
+       WHEN EXISTS (SELECT 1 FROM me)
+         THEN 1 + (
+           SELECT COUNT(*)
+           FROM leaderboard lb
+           CROSS JOIN me
+           WHERE lb.prestige > me.prestige
+             OR (lb.prestige = me.prestige AND lb.villageCount > me.villageCount)
+             OR (
+               lb.prestige = me.prestige
+               AND lb.villageCount = me.villageCount
+               AND lb.username COLLATE NOCASE < me.username COLLATE NOCASE
+             )
+         )
+       ELSE NULL
+     END AS rank`,
+);
 const selectGameStateStmt = db.prepare('SELECT last_tick_at AS lastTickAt FROM game_state WHERE id = 1');
 const updateGameStateTickStmt = db.prepare('UPDATE game_state SET last_tick_at = ? WHERE id = 1');
 const selectDatabaseChangeCounterStmt = db.prepare('SELECT total_changes() AS totalChanges');
@@ -11617,6 +11661,21 @@ export const getVillageSnapshot = (
       })
     : null;
   const leaderboard = includeLeaderboard ? listPlayerLeaderboard(world.id) : null;
+  const leaderboardEntry = leaderboard?.find((entry) => Number(entry.playerId) === Number(player.id)) ?? null;
+  const fallbackPlayerRankRow = leaderboardEntry
+    ? null
+    : selectLeaderboardRankByRegionStmt.get(Number(player.id), Number(world.region), Number(world.region));
+  const fallbackPlayerRankValue = Number(fallbackPlayerRankRow?.rank);
+  const fallbackPlayerRank =
+    Number.isFinite(fallbackPlayerRankValue) && fallbackPlayerRankValue > 0
+      ? Math.max(1, Math.floor(fallbackPlayerRankValue))
+      : null;
+  const playerRanking = {
+    rank: leaderboardEntry?.rank ?? fallbackPlayerRank,
+    attackerRank: leaderboardEntry?.attackerRank ?? null,
+    defenderRank: leaderboardEntry?.defenderRank ?? null,
+    supporterRank: leaderboardEntry?.supporterRank ?? null,
+  };
   const kingdomHub = includeKingdomHub ? buildKingdomHubState(player, village) : null;
   const recentLogisticsRoutes = includeMarket
     ? selectRecentLogisticsByVillageStmt.all(Number(village.id), Number(village.id), Number(world.region)).map((route) => {
@@ -11675,6 +11734,7 @@ export const getVillageSnapshot = (
       id: Number(player.id),
       username: player.username,
     },
+    playerRanking,
     ...(includeKingdomHub ? { kingdomHub } : {}),
     villages: villages.map((entry) => ({
       id: Number(entry.id),

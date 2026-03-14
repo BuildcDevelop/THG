@@ -87,6 +87,7 @@ import {
   type LeaderboardRow,
   type LootPriority,
   type MarketGuildVillageEconomyState,
+  type PlayerRankingSummary,
   type PlannerOpenResponse,
   type WorldPortalItem,
 } from '../api/gameApi';
@@ -551,14 +552,14 @@ const PANEL_META: Record<PanelType, PanelMeta> = {
     type: 'messages',
     label: 'Komunikace',
     side: 'right',
-    width: 480,
-    height: 430,
+    width: 760,
+    height: 460,
   },
   activity: {
     type: 'activity',
     label: 'Záznamy',
     side: 'right',
-    width: 920,
+    width: 1020,
     height: 620,
   },
   battleReport: {
@@ -586,42 +587,42 @@ const PANEL_META: Record<PanelType, PanelMeta> = {
     type: 'profile',
     label: 'Profil',
     side: 'left',
-    width: 460,
-    height: 420,
+    width: 700,
+    height: 440,
   },
   settings: {
     type: 'settings',
     label: 'Nastavení',
     side: 'left',
-    width: 420,
-    height: 390,
+    width: 700,
+    height: 460,
   },
   kingdomProfile: {
     type: 'kingdomProfile',
     label: 'Profil království',
     side: 'right',
-    width: 660,
+    width: 900,
     height: 560,
   },
   playerProfile: {
     type: 'playerProfile',
     label: 'Profil hráče',
     side: 'left',
-    width: 640,
+    width: 900,
     height: 560,
   },
   village: {
     type: 'village',
     label: 'Profil osady',
     side: 'right',
-    width: 500,
-    height: 480,
+    width: 860,
+    height: 500,
   },
   building: {
     type: 'building',
     label: 'Detail budovy',
     side: 'left',
-    width: 520,
+    width: 760,
     height: 520,
   },
 };
@@ -668,6 +669,22 @@ const MenuButton = ({ text, title, onClick, className, glyph, badgeText = null, 
     ) : null}
     <span className="nav-action-title">{text}</span>
     {badgeText ? <span className="nav-action-inline-badge">{badgeText}</span> : null}
+  </button>
+);
+
+type FooterActionButtonProps = {
+  icon: string;
+  label: string;
+  onClick: () => void;
+  badgeText?: string | null;
+};
+
+const FooterActionButton = ({ icon, label, onClick, badgeText = null }: FooterActionButtonProps) => (
+  <button type="button" className="game-footer-action icon-only" onClick={onClick} title={label} aria-label={label}>
+    <span className="symbol" aria-hidden="true">
+      {icon}
+    </span>
+    {badgeText ? <strong>{badgeText}</strong> : null}
   </button>
 );
 
@@ -2017,6 +2034,16 @@ const KINGDOM_HUB_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['kingdom', 'messag
 const RESEARCH_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['research']);
 const MERCENARY_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['military']);
 const MARKET_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['commands']);
+const LANDSCAPE_PANEL_TYPES = new Set<PanelType>([
+  'messages',
+  'activity',
+  'village',
+  'profile',
+  'settings',
+  'kingdomProfile',
+  'playerProfile',
+  'building',
+]);
 const PANEL_DEFAULT_MIN_WIDTH = 360;
 const PANEL_DEFAULT_MIN_HEIGHT = 280;
 const PANEL_CITY_MIN_WIDTH = 1080;
@@ -2027,12 +2054,38 @@ const PANEL_VIEWPORT_MARGIN_X = 32;
 const PANEL_VIEWPORT_MARGIN_Y = 24;
 const PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH = 280;
 const PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT = 220;
+const GAME_LAYOUT_MAX_WIDTH = 1800;
+const GAME_LAYOUT_HORIZONTAL_PADDING = 40;
 const FLOATING_PANEL_BASE_Z_INDEX = 2400;
 const MAP_BACKGROUND_PANEL_Z_INDEX = 2050;
 const WORLD_LABELS: Record<string, string> = {
   'dominion-1': 'Dominion I: První úsvit',
   'dominion-1-fire': 'Dominion I: Síla ohně',
 };
+
+const getInitialGameLayoutViewportSize = (): WindowSize => {
+  if (typeof window === 'undefined') {
+    return {
+      width: 1440,
+      height: 900,
+    };
+  }
+
+  const viewportWidth = Math.max(
+    PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH + PANEL_VIEWPORT_MARGIN_X,
+    Math.min(GAME_LAYOUT_MAX_WIDTH, window.innerWidth) - GAME_LAYOUT_HORIZONTAL_PADDING,
+  );
+  const viewportHeight = Math.max(
+    PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT + PANEL_VIEWPORT_MARGIN_Y,
+    window.innerHeight - 120,
+  );
+
+  return {
+    width: Math.floor(viewportWidth),
+    height: Math.floor(viewportHeight),
+  };
+};
+
 const GAME_FONT_SCALE_OPTIONS: { value: GameFontScaleOption; label: string; scalePercent: number }[] = [
   { value: 'base', label: 'Aktuální', scalePercent: 100 },
   { value: 'plus5', label: 'Zvětšit font o 5 %', scalePercent: 105 },
@@ -2915,6 +2968,14 @@ const isNeutralKingdom = (kingdom: string): boolean => {
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(Math.max(value, min), max);
 
+const normalizeRankValue = (value: unknown): number | null => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.max(1, Math.floor(parsed));
+};
+
 const calculateCellDistance = (
   fromX: number,
   fromY: number,
@@ -3022,11 +3083,29 @@ const getPanelMinSize = (type: PanelType): WindowSize => {
   if (type === 'army') {
     return { width: PANEL_ARMY_MIN_WIDTH, height: PANEL_ARMY_MIN_HEIGHT };
   }
+  if (type === 'messages') {
+    return { width: 760, height: 440 };
+  }
+  if (type === 'activity') {
+    return { width: 960, height: 560 };
+  }
+  if (type === 'village') {
+    return { width: 820, height: 470 };
+  }
+  if (type === 'profile') {
+    return { width: 700, height: 430 };
+  }
+  if (type === 'settings') {
+    return { width: 700, height: 440 };
+  }
+  if (type === 'building') {
+    return { width: 720, height: 480 };
+  }
   if (type === 'rankings') {
-    return { width: 760, height: 420 };
+    return { width: 840, height: 500 };
   }
   if (type === 'kingdomProfile' || type === 'playerProfile' || type === 'battleReport') {
-    return { width: 560, height: 420 };
+    return { width: 820, height: 500 };
   }
 
   return { width: PANEL_DEFAULT_MIN_WIDTH, height: PANEL_DEFAULT_MIN_HEIGHT };
@@ -3875,8 +3954,9 @@ const sanitizeStoredPanel = (value: unknown, index: number): PanelWindow | null 
 
   const meta = PANEL_META[candidate.type];
   const side: PinSide = candidate.side === 'right' ? 'right' : 'left';
-  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1440;
-  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 900;
+  const initialViewport = getInitialGameLayoutViewportSize();
+  const viewportWidth = initialViewport.width;
+  const viewportHeight = initialViewport.height;
   const minSize = getPanelMinSize(candidate.type);
   const minWidth = Math.min(
     minSize.width,
@@ -4058,8 +4138,9 @@ const createPanelWindow = (
   > = {},
 ): PanelWindow => {
   const meta = PANEL_META[type];
-  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1440;
-  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 900;
+  const initialViewport = getInitialGameLayoutViewportSize();
+  const viewportWidth = initialViewport.width;
+  const viewportHeight = initialViewport.height;
   const minSize = getPanelMinSize(type);
   const minWidth = Math.min(
     minSize.width,
@@ -16322,6 +16403,29 @@ export const GamePage = () => {
       resizeObserver?.disconnect();
     };
   }, [gameCanvasClassName]);
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const applyContainerInsets = () => {
+      const layoutContainer = (canvasRef.current?.closest('.game-layout-container') as HTMLElement | null) ?? null;
+      const rect = layoutContainer?.getBoundingClientRect();
+      const leftGap = Math.max(0, Math.floor(rect?.left ?? 0));
+      const rightGap = Math.max(0, Math.floor(window.innerWidth - (rect?.right ?? window.innerWidth)));
+      document.documentElement.style.setProperty('--game-layout-left-gap', `${leftGap}px`);
+      document.documentElement.style.setProperty('--game-layout-right-gap', `${rightGap}px`);
+    };
+
+    applyContainerInsets();
+    window.addEventListener('resize', applyContainerInsets);
+
+    return () => {
+      window.removeEventListener('resize', applyContainerInsets);
+      document.documentElement.style.setProperty('--game-layout-left-gap', '0px');
+      document.documentElement.style.setProperty('--game-layout-right-gap', '0px');
+    };
+  }, [canvasViewportRevision]);
   const activeVillageProtection = useMemo<ActiveVillageProtectionNotice | null>(() => {
     const protectionRuleDays = Math.max(0, Number(gameState?.village.protectionRuleDays ?? 0));
     const protectionUntil = gameState?.village.protectionUntil;
@@ -16415,17 +16519,39 @@ export const GamePage = () => {
     return rows.filter((entry) => !entry.username.startsWith('__abandoned_ai__'));
   }, [gameState]);
   const kingdomHub = gameState?.kingdomHub ?? null;
+  const playerRankingSummary = useMemo<PlayerRankingSummary | null>(() => {
+    const ranking = gameState?.playerRanking;
+    if (!ranking) {
+      return null;
+    }
+    return {
+      rank: normalizeRankValue(ranking.rank),
+      attackerRank: normalizeRankValue(ranking.attackerRank),
+      defenderRank: normalizeRankValue(ranking.defenderRank),
+      supporterRank: normalizeRankValue(ranking.supporterRank),
+    };
+  }, [gameState?.playerRanking]);
   const playerLeaderboardEntry = useMemo(
     () => leaderboardRows.find((entry) => entry.username === username) ?? null,
     [leaderboardRows, username],
   );
+  const resolvedPlayerRank = normalizeRankValue(playerLeaderboardEntry?.rank ?? playerRankingSummary?.rank);
+  const resolvedPlayerAttackerRank = normalizeRankValue(
+    playerLeaderboardEntry?.attackerRank ?? playerRankingSummary?.attackerRank,
+  );
+  const resolvedPlayerDefenderRank = normalizeRankValue(
+    playerLeaderboardEntry?.defenderRank ?? playerRankingSummary?.defenderRank,
+  );
+  const resolvedPlayerSupporterRank = normalizeRankValue(
+    playerLeaderboardEntry?.supporterRank ?? playerRankingSummary?.supporterRank,
+  );
   const leaderboardMenuBadgeLabel = useMemo(() => {
-    const rawRank = Number(playerLeaderboardEntry?.rank ?? 0);
-    if (!Number.isFinite(rawRank) || rawRank <= 0) {
+    if (resolvedPlayerRank == null) {
       return null;
     }
-    return `#${Math.max(1, Math.floor(rawRank)).toLocaleString('cs-CZ')}`;
-  }, [playerLeaderboardEntry?.rank]);
+    return `#${resolvedPlayerRank.toLocaleString('cs-CZ')}`;
+  }, [resolvedPlayerRank]);
+  const persistentPlayerRankLabel = resolvedPlayerRank != null ? `#${resolvedPlayerRank.toLocaleString('cs-CZ')}` : 'N/A';
   const incomingAttackAttentionCount = useMemo(
     () => armyIncomingMovements.filter((movement) => movement.commandType === 'attack').length,
     [armyIncomingMovements],
@@ -17562,9 +17688,13 @@ export const GamePage = () => {
     }
 
     const rect = trigger.getBoundingClientRect();
-    const width = Math.max(280, Math.floor(rect.width));
-    const safeLeft = clamp(Math.floor(rect.left), 8, Math.max(8, window.innerWidth - width - 8));
-    const safeTop = Math.floor(rect.bottom + 8);
+    const layoutContainer = (canvasRef.current?.closest('.game-layout-container') as HTMLElement | null) ?? null;
+    const layoutRect = layoutContainer?.getBoundingClientRect();
+    const viewportWidth = Math.max(320, Math.floor(layoutRect?.width ?? window.innerWidth));
+    const baseLeft = Math.floor(rect.left - (layoutRect?.left ?? 0));
+    const width = clamp(Math.max(280, Math.floor(rect.width)), 280, Math.max(280, viewportWidth - 16));
+    const safeLeft = clamp(baseLeft, 8, Math.max(8, viewportWidth - width - 8));
+    const safeTop = Math.floor(rect.bottom - (layoutRect?.top ?? 0) + 8);
 
     setVillageMenuPosition({
       left: safeLeft,
@@ -20978,11 +21108,11 @@ export const GamePage = () => {
             username={username}
             kingdom={gameState?.village.kingdom ?? 'Neznámé království'}
             prestige={gameState?.village.prestige ?? 0}
-            villageCount={playerLeaderboardEntry?.villages ?? 1}
-            rank={playerLeaderboardEntry?.rank ?? null}
-            attackerRank={playerLeaderboardEntry?.attackerRank ?? null}
-            defenderRank={playerLeaderboardEntry?.defenderRank ?? null}
-            supporterRank={playerLeaderboardEntry?.supporterRank ?? null}
+            villageCount={playerLeaderboardEntry?.villages ?? gameState?.villages.length ?? 1}
+            rank={resolvedPlayerRank}
+            attackerRank={resolvedPlayerAttackerRank}
+            defenderRank={resolvedPlayerDefenderRank}
+            supporterRank={resolvedPlayerSupporterRank}
           />
         );
       case 'settings':
@@ -21209,8 +21339,17 @@ export const GamePage = () => {
     const isMapPanel = panel.type === 'map';
     const isVillagePanel = panel.type === 'village';
     const isMainMenuPanel = isMainMenuPanelType(panel.type);
+    const shouldPreferLandscapeFrame = LANDSCAPE_PANEL_TYPES.has(panel.type);
     const shouldAnchorVillageToBottom = !isDocked && isVillagePanel;
-    const shouldAutoSizeToContent = !isDocked && !isMapPanel && !isMainMenuPanel;
+    const shouldAutoSizeToContent = !isDocked && !isMapPanel && !isMainMenuPanel && !shouldPreferLandscapeFrame;
+    const autoSizeMaxWidthPx = Math.max(
+      PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
+      currentCanvasViewport.viewportWidth - PANEL_VIEWPORT_MARGIN_X * 2,
+    );
+    const autoSizeMaxHeightPx = Math.max(
+      PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT,
+      currentCanvasViewport.viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
+    );
     const shouldAnimateMainMenuContent = isMainMenuPanel && !isMapPanel;
     const shouldRenderHeader = !isMapPanel && !isMainMenuPanel;
     const shouldRenderQuickWindowActions = !isMainMenuPanel;
@@ -21237,10 +21376,10 @@ export const GamePage = () => {
                 width: shouldAutoSizeToContent ? 'fit-content' : `${panel.width}px`,
                 height: shouldAutoSizeToContent ? 'fit-content' : `${panel.height}px`,
                 maxWidth: shouldAutoSizeToContent
-                  ? `calc(100vw - ${PANEL_VIEWPORT_MARGIN_X * 2}px)`
+                  ? `${Math.round(autoSizeMaxWidthPx)}px`
                   : undefined,
                 maxHeight: shouldAutoSizeToContent
-                  ? `calc(100vh - ${PANEL_VIEWPORT_MARGIN_Y}px)`
+                  ? `${Math.round(autoSizeMaxHeightPx)}px`
                   : undefined,
               }
         }
@@ -21900,31 +22039,20 @@ export const GamePage = () => {
         </div>
         <div className="game-persistent-footer" role="complementary" aria-label="Stálé informace hry">
           <div className="game-persistent-footer-left">
-            <button
-              type="button"
-              className="game-settings-anchor icon-only"
-              onClick={() => openPanel('settings')}
-              title="Otevřít nastavení hry"
-              aria-label="Otevřít nastavení hry"
-            >
-              <span className="symbol" aria-hidden="true">
-                ⚙︎
-              </span>
-            </button>
-            <button
-              type="button"
-              className="game-communication-anchor icon-only"
+            <FooterActionButton icon="⚙︎" label="Otevřít nastavení hry" onClick={() => openPanel('settings')} />
+            <FooterActionButton
+              icon="✉︎"
+              label="Otevřít komunikaci"
               onClick={() => openPanel('messages')}
-              title="Otevřít komunikaci"
-              aria-label="Otevřít komunikaci"
-            >
-              <span className="symbol" aria-hidden="true">
-                ✉︎
-              </span>
-              <strong>{communicationBadgeCount.toLocaleString('cs-CZ')}</strong>
-            </button>
+              badgeText={communicationBadgeCount.toLocaleString('cs-CZ')}
+            />
           </div>
-          <p className="game-version-footer">Verze hry {GAME_VERSION_LABEL}</p>
+          <div className="game-persistent-footer-right">
+            <p className="game-rank-footer" aria-live="polite">
+              Pořadí hráče <strong>{persistentPlayerRankLabel}</strong>
+            </p>
+            <p className="game-version-footer">Verze hry {GAME_VERSION_LABEL}</p>
+          </div>
         </div>
       </div>
     </div>
