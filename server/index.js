@@ -6,10 +6,13 @@ import {
   acceptKingdomInvite,
   archivePlayerNotification,
   cancelArmyCommand,
+  cancelPlannerPlan,
   cancelBuildingUpgrade,
+  cancelAllBuildingUpgrades,
   cancelMarketLogistics,
   cancelRecruitment,
   configureMarketGuildAutomation,
+  createPlannerPlan,
   createPlayerAccount,
   createKingdom,
   deletePlayerNotification,
@@ -17,7 +20,10 @@ import {
   authenticatePlayer,
   createAbandonedVillages,
   conquerVillage,
+  getArmyOverview,
+  getBattleReport,
   getBattleReportSummary,
+  getPlannerOpenSnapshot,
   getPlayerNotificationSummary,
   getVillageSnapshot,
   getWorldMapSnapshot,
@@ -27,6 +33,7 @@ import {
   hireMercenaryContract,
   kickKingdomMember,
   leaveKingdom,
+  listPlannerPlanEvents,
   listPlayerNotifications,
   listAdminPlayers,
   listBattleReports,
@@ -44,9 +51,13 @@ import {
   sendMarketLogistics,
   startResearchProject,
   startBuildingUpgrade,
+  reorderBuildingUpgradeQueue,
   transferKingdomLeadership,
   unarchivePlayerNotification,
   wipeWorldData,
+  updatePlannerPlan,
+  validatePlannerPlan,
+  reconfirmPlannerPlan,
 } from './gameService.js';
 import {
   archiveCommunicationThread,
@@ -80,7 +91,8 @@ import {
 const app = express();
 const port = Number(process.env.PORT ?? 3001);
 const tickSchedule = process.env.GAME_TICK_SCHEDULE ?? '* * * * * *';
-const versionLabel = String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.09').trim() || 'build-0.1.09';
+const versionLabel =
+  String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.11').trim() || 'build-0.1.11';
 const buildId =
   String(process.env.TLD_BUILD_ID ?? process.env.NETLIFY_COMMIT_REF ?? process.env.COMMIT_REF ?? versionLabel).trim() ||
   versionLabel;
@@ -171,6 +183,13 @@ const parseOptionalWorldId = (value) => {
   const normalized = String(value ?? '').trim();
   return normalized.length > 0 ? normalized : null;
 };
+const parseRequiredPlannerWorldId = (value) => {
+  const worldId = parseOptionalWorldId(value);
+  if (!worldId) {
+    throw new GameRuleError("Pole 'worldId' je povinne.", 400, 'PLANNER_WORLD_REQUIRED');
+  }
+  return worldId;
+};
 const parseOptionalSpawnDirection = (value) => {
   const normalized = String(value ?? '')
     .trim()
@@ -187,6 +206,17 @@ const parseOptionalPositiveNumber = (value) => {
   }
   const parsed = Number(normalized);
   if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
+};
+const parseOptionalNonNegativeInteger = (value) => {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) {
+    return null;
+  }
+  const parsed = Number(normalized);
+  if (!Number.isInteger(parsed) || parsed < 0) {
     return null;
   }
   return parsed;
@@ -215,10 +245,13 @@ const toGameRuleError = (error) => {
 
   const message = error instanceof Error ? error.message : String(error ?? 'Interni chyba serveru.');
   if (message.includes('Neplatne prihlasovaci udaje')) {
-    return new GameRuleError('Neplatne prihlasovaci udaje.', 401);
+    return new GameRuleError('Neplatne prihlasovaci udaje.', 401, 'AUTH_REQUIRED');
   }
   if (message.includes('Tento ucet nema zalozene leno')) {
     return new GameRuleError('Tento ucet nema zalozene leno.', 404);
+  }
+  if (message.includes('Ucet v requestu neodpovida prihlasene session')) {
+    return new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH');
   }
   if (message.includes("Hrac '") && message.includes('neexistuje')) {
     return new GameRuleError(message, 404);
@@ -336,6 +369,48 @@ app.post('/api/v1/auth/register', async (req, res, next) => {
   }
 });
 
+app.use('/api/v1', (req, _res, next) => {
+  if (PUBLIC_AUTH_PATHS.has(String(req.path ?? '').trim())) {
+    next();
+    return;
+  }
+
+  const session = resolveSessionFromRequest(req);
+  if (!session) {
+    next(new GameRuleError('Neplatne prihlasovaci udaje.', 401, 'AUTH_REQUIRED'));
+    return;
+  }
+
+  const bodyUsernameRaw =
+    req.body && typeof req.body === 'object' && 'username' in req.body ? req.body.username : null;
+  const queryUsernameRaw =
+    req.query && typeof req.query === 'object' && 'username' in req.query ? req.query.username : null;
+
+  const bodyUsername = String(bodyUsernameRaw ?? '').trim();
+  const queryUsername = String(queryUsernameRaw ?? '').trim();
+  const sessionComparable = normalizeComparableUsername(session.username);
+
+  if (bodyUsername && normalizeComparableUsername(bodyUsername) !== sessionComparable) {
+    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH'));
+    return;
+  }
+
+  if (queryUsername && normalizeComparableUsername(queryUsername) !== sessionComparable) {
+    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403, 'SESSION_USERNAME_MISMATCH'));
+    return;
+  }
+
+  if (req.query && typeof req.query === 'object') {
+    req.query.username = session.username;
+  }
+  if (req.body && typeof req.body === 'object') {
+    req.body.username = session.username;
+  }
+
+  req.authSession = session;
+  next();
+});
+
 app.get('/api/v1/worlds', async (req, res, next) => {
   try {
     const username = String(req.query.username ?? '').trim();
@@ -369,10 +444,19 @@ app.get('/api/v1/admin/players', async (_req, res, next) => {
 
 app.get('/api/v1/state', async (req, res, next) => {
   try {
-    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const username = String(req.authSession?.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError('Neplatne prihlasovaci udaje.', 401, 'AUTH_REQUIRED');
+    }
     const worldId = parseOptionalWorldId(req.query.worldId);
     const spawnDirection = parseOptionalSpawnDirection(req.query.spawnDirection);
     const includeWorldMap = parseOptionalBoolean(req.query.includeWorldMap, false);
+    const includeLeaderboard = parseOptionalBoolean(req.query.includeLeaderboard, true);
+    const includeKingdomHub = parseOptionalBoolean(req.query.includeKingdomHub, true);
+    const includeResearch = parseOptionalBoolean(req.query.includeResearch, true);
+    const includeMarket = parseOptionalBoolean(req.query.includeMarket, true);
+    const includeMercenaries = parseOptionalBoolean(req.query.includeMercenaries, true);
+    const includeRules = parseOptionalBoolean(req.query.includeRules, true);
     const villageIdRaw = req.query.villageId;
     const villageId =
       villageIdRaw == null || String(villageIdRaw).trim() === ''
@@ -380,7 +464,15 @@ app.get('/api/v1/state', async (req, res, next) => {
         : Number(String(villageIdRaw).trim());
     const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
     const resolvedState = await executeWithReadOperation(() =>
-      getVillageSnapshot(username, normalizedVillageId, worldId, spawnDirection, { includeWorldMap }),
+      getVillageSnapshot(username, normalizedVillageId, worldId, spawnDirection, {
+        includeWorldMap,
+        includeLeaderboard,
+        includeKingdomHub,
+        includeResearch,
+        includeMarket,
+        includeMercenaries,
+        includeRules,
+      }),
     );
 
     res.json({
@@ -447,46 +539,134 @@ app.post('/api/v1/auth/logout', async (req, res, next) => {
   }
 });
 
-app.use('/api/v1', (req, _res, next) => {
-  if (PUBLIC_AUTH_PATHS.has(String(req.path ?? '').trim())) {
-    next();
-    return;
+app.get('/api/v1/army/overview', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.query.worldId);
+    const data = await executeWithReadOperation(() => getArmyOverview(username, worldId));
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
   }
+});
 
-  const session = resolveSessionFromRequest(req);
-  if (!session) {
-    next(new GameRuleError('Neplatne prihlasovaci udaje.', 401));
-    return;
+app.get('/api/v1/planner/open', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseRequiredPlannerWorldId(req.query.worldId);
+    const data = await executeWithReadOperation(() => getPlannerOpenSnapshot(username, worldId));
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
   }
+});
 
-  const bodyUsernameRaw =
-    req.body && typeof req.body === 'object' && 'username' in req.body ? req.body.username : null;
-  const queryUsernameRaw =
-    req.query && typeof req.query === 'object' && 'username' in req.query ? req.query.username : null;
-
-  const bodyUsername = String(bodyUsernameRaw ?? '').trim();
-  const queryUsername = String(queryUsernameRaw ?? '').trim();
-  const sessionComparable = normalizeComparableUsername(session.username);
-
-  if (bodyUsername && normalizeComparableUsername(bodyUsername) !== sessionComparable) {
-    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403));
-    return;
+app.post('/api/v1/planner/validate', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseRequiredPlannerWorldId(req.body?.worldId);
+    const data = await executeWithReadOperation(() => validatePlannerPlan(username, req.body ?? {}, worldId));
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
   }
+});
 
-  if (queryUsername && normalizeComparableUsername(queryUsername) !== sessionComparable) {
-    next(new GameRuleError('Ucet v requestu neodpovida prihlasene session.', 403));
-    return;
+app.post('/api/v1/planner/plans', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseRequiredPlannerWorldId(req.body?.worldId);
+    const data = await executeWithWriteOperation(() => createPlannerPlan(username, req.body ?? {}, worldId));
+    res.status(201).json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
   }
+});
 
-  if (req.query && typeof req.query === 'object') {
-    req.query.username = session.username;
+app.patch('/api/v1/planner/plans/:planId', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseRequiredPlannerWorldId(req.body?.worldId);
+    const planId = String(req.params.planId ?? '').trim();
+    const data = await executeWithWriteOperation(() => updatePlannerPlan(username, planId, req.body ?? {}, worldId));
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
   }
-  if (req.body && typeof req.body === 'object') {
-    req.body.username = session.username;
-  }
+});
 
-  req.authSession = session;
-  next();
+app.post('/api/v1/planner/plans/:planId/reconfirm', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseRequiredPlannerWorldId(req.body?.worldId);
+    const planId = String(req.params.planId ?? '').trim();
+    const data = await executeWithWriteOperation(() =>
+      reconfirmPlannerPlan(username, planId, req.body ?? {}, worldId),
+    );
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/planner/plans/:planId/cancel', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseRequiredPlannerWorldId(req.body?.worldId);
+    const planId = String(req.params.planId ?? '').trim();
+    const data = await executeWithWriteOperation(() => cancelPlannerPlan(username, planId, req.body ?? {}, worldId));
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.get('/api/v1/planner/plans/:planId/events', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseRequiredPlannerWorldId(req.query.worldId);
+    const planId = String(req.params.planId ?? '').trim();
+    const limitRaw = parseOptionalPositiveNumber(req.query.limit);
+    const cursor = parseOptionalNonNegativeInteger(req.query.cursor);
+    const data = await executeWithReadOperation(() =>
+      listPlannerPlanEvents(
+        username,
+        planId,
+        {
+          ...(limitRaw == null ? {} : { limit: Math.floor(Number(limitRaw)) }),
+          ...(cursor == null ? {} : { cursor }),
+        },
+        worldId,
+      ),
+    );
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
 });
 
 app.post('/api/v1/worlds/:worldId/spawn', async (req, res, next) => {
@@ -1041,6 +1221,68 @@ app.post('/api/v1/buildings/upgrades/:upgradeId/cancel', async (req, res, next) 
   }
 });
 
+app.post('/api/v1/buildings/upgrades/cancel-all', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = cancelAllBuildingUpgrades(username, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
+      return { result, state };
+    });
+
+    res.json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/buildings/upgrades/reorder', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const upgradeId = Number(req.body?.upgradeId ?? 0);
+    const targetIndex = Number(req.body?.targetIndex ?? Number.NaN);
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = reorderBuildingUpgradeQueue(
+        username,
+        upgradeId,
+        targetIndex,
+        normalizedVillageId,
+        worldId,
+      );
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
+      return { result, state };
+    });
+
+    res.json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
 app.post('/api/v1/units/:unitId/recruit', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
@@ -1497,6 +1739,23 @@ app.get('/api/v1/reports/summary', async (req, res, next) => {
   }
 });
 
+app.get('/api/v1/reports/:reportId', async (req, res, next) => {
+  try {
+    const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
+    const worldId = parseOptionalWorldId(req.query.worldId);
+    const data = await executeWithReadOperation(() =>
+      getBattleReport(username, req.params.reportId, worldId),
+    );
+
+    res.json({
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
 app.get('/api/v1/world-map', async (req, res, next) => {
   try {
     const username = String(req.query.username ?? 'Hayato').trim() || 'Hayato';
@@ -1808,10 +2067,17 @@ app.use((error, _req, res, _next) => {
   }
 
   if (error instanceof GameRuleError) {
-    res.status(error.statusCode ?? 400).json({
+    const payload = {
       ok: false,
       error: error.message,
-    });
+    };
+    if (error.errorCode) {
+      payload.errorCode = String(error.errorCode);
+    }
+    if (error.details && typeof error.details === 'object') {
+      payload.details = error.details;
+    }
+    res.status(error.statusCode ?? 400).json(payload);
     return;
   }
 
@@ -1825,19 +2091,24 @@ app.use((error, _req, res, _next) => {
 let cronTask = null;
 
 if (!isServerlessRuntime) {
-  cronTask = cron.schedule(tickSchedule, () => {
-    executeWithWriteOperation(() => {
-      runGameTick();
-      runCommunicationRetentionCleanup();
-    }).catch((error) => {
-      console.error('[backend] Tick failure:', error);
+  const server = app.listen(port, () => {
+    cronTask = cron.schedule(tickSchedule, () => {
+      executeWithWriteOperation(() => {
+        runGameTick();
+        runCommunicationRetentionCleanup();
+      }).catch((error) => {
+        console.error('[backend] Tick failure:', error);
+      });
     });
-  });
-
-  app.listen(port, () => {
     console.log(`[backend] Listening on http://localhost:${port}`);
     console.log(`[backend] Tick schedule: ${tickSchedule}`);
     console.log('[backend] Storage mode: sqlite');
+  });
+
+  server.on('error', (error) => {
+    console.error('[backend] Server start failed:', error);
+    cronTask?.stop();
+    process.exit(1);
   });
 
   process.on('SIGINT', () => {

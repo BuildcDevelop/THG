@@ -2,6 +2,7 @@
 import type {
   ChangeEvent,
   CSSProperties,
+  FocusEvent as ReactFocusEvent,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
@@ -10,23 +11,30 @@ import type {
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { getSession, logout, setSelectedWorld } from '../auth';
+import { GAME_VERSION_LABEL } from '../version';
 import {
   acceptKingdomInvite as acceptKingdomInviteRequest,
   cancelArmyCommand as cancelArmyCommandRequest,
+  cancelAllBuildingUpgrades as cancelAllBuildingUpgradesRequest,
   cancelBuildingUpgrade as cancelBuildingUpgradeRequest,
   cancelMarketLogistics as cancelMarketLogisticsRequest,
+  cancelPlannerPlan as cancelPlannerPlanRequest,
   cancelRecruitment as cancelRecruitmentRequest,
   configureMarketGuildAutomation as configureMarketGuildAutomationRequest,
+  createPlannerPlan as createPlannerPlanRequest,
   createCommunicationNotificationShare,
   createKingdom as createKingdomRequest,
+  fetchBattleReportById,
+  fetchBattleReportsSummary,
   fetchCommunicationInbox,
   fetchCommunicationNotificationSharePreview,
   fetchCommunicationTokenSuggestions,
-  fetchGameActivity,
   fetchGameActivitySummary,
+  fetchGameActivity,
   fetchBattleReports,
-  fetchBattleReportsSummary,
+  fetchArmyOverview,
   fetchGameState,
+  fetchPlannerOpen,
   fetchWorldMapSnapshot,
   fetchWorlds,
   markAllGameActivityRead,
@@ -43,7 +51,9 @@ import {
   leaveKingdom as leaveKingdomRequest,
   rejectKingdomInvite as rejectKingdomInviteRequest,
   recallKnight as recallKnightRequest,
+  reconfirmPlannerPlan as reconfirmPlannerPlanRequest,
   recruitUnit,
+  reorderBuildingUpgradeQueue as reorderBuildingUpgradeQueueRequest,
   renameVillage as renameVillageRequest,
   restartVillageProgress as restartVillageProgressRequest,
   sendMarketLogistics as sendMarketLogisticsRequest,
@@ -52,10 +62,14 @@ import {
   startResearchProject as startResearchProjectRequest,
   setCommunicationAvatarRequest,
   transferKingdomLeadership as transferKingdomLeadershipRequest,
+  updatePlannerPlan as updatePlannerPlanRequest,
   upgradeBuilding,
+  validatePlannerPlan as validatePlannerPlanRequest,
   type ArmyCommandType,
   type BattleReportItem,
   type ArmyMovementState,
+  type ArmyOverviewResponse,
+  type ArmyVillageSummary,
   type BattleReportListResponse,
   type BattleReportSummaryResponse,
   type BattleReportPayload,
@@ -69,12 +83,14 @@ import {
   type KingdomHubState,
   type KingdomIncomingInvite,
   type KingdomAvailableSummary,
-    type KingdomAuditLogEntry,
-    type LeaderboardRow,
-    type LootPriority,
-    type MarketGuildVillageEconomyState,
-    type WorldPortalItem,
-  } from '../api/gameApi';
+  type KingdomAuditLogEntry,
+  type LeaderboardRow,
+  type LootPriority,
+  type MarketGuildVillageEconomyState,
+  type PlayerRankingSummary,
+  type PlannerOpenResponse,
+  type WorldPortalItem,
+} from '../api/gameApi';
 import {
   COMMUNICATION_SUMMARY_EVENT,
   openCommunicationHub,
@@ -171,6 +187,8 @@ type PanelMeta = {
   height: number;
 };
 
+type PanelLayoutMode = 'floating' | 'full' | 'split-left' | 'split-right';
+
 type PanelWindow = PanelMeta & {
   id: string;
   settlementId?: string;
@@ -184,26 +202,20 @@ type PanelWindow = PanelMeta & {
   z: number;
   expanded: boolean;
   alert: boolean;
-};
-
-type ResourceStock = {
-  name: string;
-  amount: number;
-  delta: string;
-  boostLabel: string | null;
-  cap: number;
-  buildingId: string;
-  buildingName: string;
-  buildingLevel: number;
-  upgradeQueueCount: number;
+  layoutMode: PanelLayoutMode;
 };
 
 type TownhallDeveloperBoostNotice = {
   isActive: boolean;
   label: string;
   reason: string;
-  remainingSec: number;
+  endsAt: string;
   endsAtLabel: string;
+};
+
+type ActiveVillageProtectionNotice = {
+  protectionUntil: string;
+  formattedUntil: string;
 };
 
 type WorldSwitchOption = {
@@ -216,6 +228,37 @@ type ResourceCost = {
   wood: number;
   stone: number;
   iron: number;
+};
+
+type CityPanelResourceSnapshot = Pick<
+  GameStateResponse['resources'],
+  'wood' | 'stone' | 'iron' | 'gold' | 'coins' | 'cap' | 'goldCap' | 'coinsCap'
+> & {
+  populationUsed: number;
+  populationCap: number;
+  productionPerHour: Pick<GameStateResponse['resources']['productionPerHour'], 'wood' | 'stone' | 'iron' | 'gold' | 'mintCoins'>;
+  protection: Pick<GameStateResponse['resources']['protection'], 'wood' | 'stone' | 'iron' | 'gold' | 'coins'>;
+};
+
+type CityPanelResourceDefinition = {
+  key: 'wood' | 'stone' | 'iron' | 'gold' | 'coins';
+  label: string;
+  buildingId: string;
+  productionField: 'wood' | 'stone' | 'iron' | 'gold' | 'mintCoins';
+  protectionField: 'wood' | 'stone' | 'iron' | 'gold' | 'coins';
+  capacityField: 'cap' | 'goldCap' | 'coinsCap';
+};
+
+type CityPanelResourceRow = {
+  key: string;
+  label: string;
+  icon: string;
+  amount: number;
+  productionPerHour: number | null;
+  capacity: number;
+  protectedAmount: number;
+  buildingLevel: number;
+  buildingName: string;
 };
 
 type Building = {
@@ -251,6 +294,37 @@ type Unit = {
   maxRecruitable: number;
 };
 
+type PlannerLegDraft = {
+  originVillageId: number;
+  impactAtUtc: string;
+  units: Partial<Record<CommandUnitId, number>>;
+};
+
+type PlannerDraftState = {
+  targetPlayerUsername: string;
+  targetVillageId: number | null;
+  legs: PlannerLegDraft[];
+  updatedAt: string;
+};
+
+type PlannerValidationIssue = {
+  code: string;
+  severity: 'warning' | 'blocked';
+  message: string;
+  scope?: 'plan' | 'target' | 'leg';
+  legOriginVillageId?: number;
+};
+
+type PlannerConstraints = PlannerOpenResponse['constraints'];
+type PlannerDraftStage = 'draft' | 'confirmation';
+
+type PlannerDraftNormalizationMeta = {
+  removedLegCount: number;
+  targetReset: boolean;
+  timelineAdjusted: boolean;
+  unitAmountsAdjusted: boolean;
+};
+
 type RecruitQueueOrder = {
   id: number;
   unitId: string;
@@ -265,8 +339,73 @@ type BuildingUpgradeQueueOrder = {
   buildingId: string;
   fromLevel: number;
   toLevel: number;
+  startedAt: string;
   remainingSec: number;
   finishAt: string;
+};
+
+type VillageIntelBuildingQueueItem = {
+  id: number;
+  buildingId: string;
+  buildingName: string;
+  fromLevel: number;
+  toLevel: number;
+  startedAt: string;
+  finishAt: string;
+  remainingSec: number;
+};
+
+type VillageIntelRecruitQueueItem = {
+  id: number;
+  unitId: string;
+  unitName: string;
+  amount: number;
+  startedAt: string;
+  finishAt: string;
+  remainingSec: number;
+};
+
+type VillageIntelUnitSummaryItem = {
+  unitId: string;
+  unitName: string;
+  ownAmount: number;
+  supportAmount: number;
+  icon: string;
+  order: number;
+};
+
+type VillageIntelGarrisonUnitDetail = {
+  unitId: string;
+  unitName: string;
+  icon: string;
+  amount: number;
+  cap: number;
+  missing: number;
+  refillSecPerUnit: number;
+  nextRefillSec: number | null;
+};
+
+type VillageIntelData = {
+  villageId: number;
+  villageName: string;
+  buildingQueue: VillageIntelBuildingQueueItem[];
+  recruitQueue: VillageIntelRecruitQueueItem[];
+  fortificationLevel: number;
+  gateLevel: number;
+  garrisonUnits: number;
+  garrisonUnlocked: boolean;
+  garrisonDetails: VillageIntelGarrisonUnitDetail[];
+  resources: Pick<GameStateResponse['resources'], 'wood' | 'stone' | 'iron' | 'gold' | 'coins'>;
+  unitSummaries: VillageIntelUnitSummaryItem[];
+};
+
+type VillageIntelStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+type VillageIntelEntry = {
+  status: VillageIntelStatus;
+  data: VillageIntelData | null;
+  error: string | null;
+  fetchedAt: number | null;
 };
 
 type RankingMode = 'players' | 'kingdoms' | 'attacker' | 'defender' | 'supporter';
@@ -354,12 +493,23 @@ type PersistedPanelWindow = Pick<
   | 'z'
   | 'expanded'
   | 'alert'
+  | 'layoutMode'
   | 'settlementId'
   | 'buildingId'
   | 'battleReportId'
   | 'villageName'
   | 'kingdomName'
   | 'playerUsername'
+>;
+
+type StoredPanelPlacementByType = Partial<
+  Record<
+    StaticPanelType,
+    {
+      side: PinSide;
+      layoutMode: PanelLayoutMode;
+    }
+  >
 >;
 
 const PANEL_META: Record<PanelType, PanelMeta> = {
@@ -407,16 +557,16 @@ const PANEL_META: Record<PanelType, PanelMeta> = {
   },
   messages: {
     type: 'messages',
-    label: 'Zprávy',
+    label: 'Komunikace',
     side: 'right',
-    width: 480,
-    height: 430,
+    width: 760,
+    height: 460,
   },
   activity: {
     type: 'activity',
     label: 'Záznamy',
     side: 'right',
-    width: 920,
+    width: 1020,
     height: 620,
   },
   battleReport: {
@@ -444,42 +594,42 @@ const PANEL_META: Record<PanelType, PanelMeta> = {
     type: 'profile',
     label: 'Profil',
     side: 'left',
-    width: 460,
-    height: 420,
+    width: 700,
+    height: 440,
   },
   settings: {
     type: 'settings',
     label: 'Nastavení',
     side: 'left',
-    width: 420,
-    height: 390,
+    width: 700,
+    height: 460,
   },
   kingdomProfile: {
     type: 'kingdomProfile',
     label: 'Profil království',
     side: 'right',
-    width: 660,
+    width: 900,
     height: 560,
   },
   playerProfile: {
     type: 'playerProfile',
     label: 'Profil hráče',
     side: 'left',
-    width: 640,
+    width: 900,
     height: 560,
   },
   village: {
     type: 'village',
     label: 'Profil osady',
     side: 'right',
-    width: 500,
-    height: 480,
+    width: 860,
+    height: 500,
   },
   building: {
     type: 'building',
     label: 'Detail budovy',
     side: 'left',
-    width: 520,
+    width: 760,
     height: 520,
   },
 };
@@ -499,16 +649,21 @@ const NAV_BUTTONS: { type: StaticPanelType; text: string; glyph: string }[] = [
   { type: 'settings', text: 'Nastavení', glyph: '⚙︎' },
 ];
 
+const TOP_NAV_BUTTONS = NAV_BUTTONS.filter((button) => button.type !== 'settings' && button.type !== 'messages');
+
+const MAIN_MENU_PANEL_TYPES = new Set<StaticPanelType>(NAV_BUTTONS.map((button) => button.type));
+
 type MenuButtonProps = {
   text: string;
   title: string;
   onClick: () => void;
   className: string;
   glyph?: string;
+  badgeText?: string | null;
   isOpen?: boolean;
 };
 
-const MenuButton = ({ text, title, onClick, className, glyph, isOpen = false }: MenuButtonProps) => (
+const MenuButton = ({ text, title, onClick, className, glyph, badgeText = null, isOpen = false }: MenuButtonProps) => (
   <button
     className={`menu-button-base ${className} ${isOpen ? 'is-open' : ''}`}
     onClick={onClick}
@@ -520,6 +675,23 @@ const MenuButton = ({ text, title, onClick, className, glyph, isOpen = false }: 
       </span>
     ) : null}
     <span className="nav-action-title">{text}</span>
+    {badgeText ? <span className="nav-action-inline-badge">{badgeText}</span> : null}
+  </button>
+);
+
+type FooterActionButtonProps = {
+  icon: string;
+  label: string;
+  onClick: () => void;
+  badgeText?: string | null;
+};
+
+const FooterActionButton = ({ icon, label, onClick, badgeText = null }: FooterActionButtonProps) => (
+  <button type="button" className="game-footer-action icon-only" onClick={onClick} title={label} aria-label={label}>
+    <span className="symbol" aria-hidden="true">
+      {icon}
+    </span>
+    {badgeText ? <strong>{badgeText}</strong> : null}
   </button>
 );
 
@@ -546,42 +718,93 @@ const resolveResourceGlyph = (resourceName: string): string => {
   return '◈';
 };
 
-const resolveResourceTone = (resourceName: string): string => {
-  const normalized = resourceName.toLocaleLowerCase('cs-CZ');
-  if (normalized.includes('dře') || normalized.includes('dre')) {
-    return 'wood';
-  }
-  if (normalized.includes('ká') || normalized.includes('ka')) {
-    return 'stone';
-  }
-  if (normalized.includes('žele') || normalized.includes('zele')) {
-    return 'iron';
-  }
-  if (normalized.includes('zlat') || normalized.includes('gold')) {
-    return 'gold';
-  }
-  return 'neutral';
-};
+const MENU_DOCK_PANEL_TYPES = new Set<StaticPanelType>();
 
 const DEFAULT_STRETCHED_PANEL_TYPES = new Set<StaticPanelType>([
-  'city',
-  'map',
-  'army',
-  'military',
-  'commands',
-  'research',
-  'messages',
-  'activity',
-  'kingdom',
-  'rankings',
-  'profile',
-  'settings',
+  ...MAIN_MENU_PANEL_TYPES,
 ]);
 
-const isStretchablePanelType = (panelType: PanelType): boolean => {
-  void panelType;
-  return true;
+const isStaticPanelType = (panelType: PanelType): panelType is StaticPanelType =>
+  panelType !== 'village' && panelType !== 'building' && panelType !== 'battleReport';
+
+const isMainMenuPanelType = (panelType: PanelType): panelType is StaticPanelType =>
+  isStaticPanelType(panelType) && MAIN_MENU_PANEL_TYPES.has(panelType);
+
+const shouldUseStretchedPanelFrame = (panelType: PanelType): boolean =>
+  isStaticPanelType(panelType) && DEFAULT_STRETCHED_PANEL_TYPES.has(panelType);
+
+const isDockLayoutMode = (mode: PanelLayoutMode): mode is Exclude<PanelLayoutMode, 'floating'> =>
+  mode === 'full' || mode === 'split-left' || mode === 'split-right';
+
+const canPanelUseDockLayout = (panelType: PanelType): boolean =>
+  isStaticPanelType(panelType) && MENU_DOCK_PANEL_TYPES.has(panelType);
+
+const canPanelUsePinColumns = (panelType: PanelType): boolean => !canPanelUseDockLayout(panelType);
+
+const resolvePanelDockLayoutMode = (
+  panel: Pick<PanelWindow, 'type' | 'layoutMode' | 'side'>,
+): PanelLayoutMode => {
+  if (panel.layoutMode !== 'floating') {
+    return panel.layoutMode;
+  }
+  if (!canPanelUseDockLayout(panel.type)) {
+    return 'floating';
+  }
+  return panel.side === 'right' ? 'split-right' : 'split-left';
 };
+
+const resolveSplitModeBySide = (
+  side: PinSide,
+): Extract<PanelLayoutMode, 'split-left' | 'split-right'> =>
+  side === 'right' ? 'split-right' : 'split-left';
+
+const moveDockPanelToCenterStage = (panels: PanelWindow[], targetPanelId: string): PanelWindow[] => {
+  const targetPanel = panels.find(
+    (panel) =>
+      panel.id === targetPanelId &&
+      panel.expanded &&
+      canPanelUseDockLayout(panel.type),
+  );
+  if (!targetPanel) {
+    return panels;
+  }
+
+  let changed = false;
+  const nextPanels: PanelWindow[] = panels.map((panel): PanelWindow => {
+    if (!panel.expanded || !canPanelUseDockLayout(panel.type)) {
+      return panel;
+    }
+
+    if (panel.id === targetPanelId) {
+      if (panel.layoutMode === 'full' && !panel.alert) {
+        return panel;
+      }
+      changed = true;
+      return {
+        ...panel,
+        layoutMode: 'full' as PanelLayoutMode,
+        alert: false,
+      };
+    }
+
+    if (resolvePanelDockLayoutMode(panel) !== 'full') {
+      return panel;
+    }
+
+    const parkedLayoutMode = resolveSplitModeBySide(panel.side);
+    if (panel.layoutMode === parkedLayoutMode) {
+      return panel;
+    }
+    changed = true;
+    return {
+      ...panel,
+      layoutMode: parkedLayoutMode,
+    };
+  });
+
+  return changed ? nextPanels : panels;
+};
+
 const BUILDING_ICON_BASE_PATH = '/assets/buildings';
 const getBuildingIconPath = (fileName: string): string => `${BUILDING_ICON_BASE_PATH}/${fileName}`;
 const DEFAULT_BUILDING_ICON = getBuildingIconPath('warehouse.png');
@@ -749,6 +972,110 @@ const getUnitMetaById = (unitId: string): { fallbackName: string; fallbackRole: 
     icon: DEFAULT_UNIT_ICON,
   };
 };
+
+const buildVillageUnitSummaries = (units: GameStateResponse['units']): VillageIntelUnitSummaryItem[] =>
+  [...units]
+    .map((unit) => {
+      const unitId = String(unit.id);
+      const unitMeta = getUnitMetaById(unitId);
+      const ownAmount = Math.max(0, Math.floor(Number(unit.amount ?? 0)));
+      const supportAmount = Math.max(0, Math.floor(Number(unit.stationedSupportCount ?? 0)));
+      const order = COMMAND_UNIT_ORDER.indexOf(unitId as CommandUnitId);
+
+      return {
+        unitId,
+        unitName: unitMeta.fallbackName,
+        ownAmount,
+        supportAmount,
+        icon: unitMeta.icon,
+        order: order >= 0 ? order : Number.MAX_SAFE_INTEGER,
+      };
+    })
+    .filter((unit) => unit.ownAmount > 0 || unit.supportAmount > 0)
+    .sort((left, right) => {
+      if (left.order !== right.order) {
+        return left.order - right.order;
+      }
+      return left.unitName.localeCompare(right.unitName, 'cs-CZ');
+    });
+
+const toVillageIntelData = (state: GameStateResponse): VillageIntelData => {
+  const sortedBuildingQueue = [...(state.activeUpgrades ?? [])].sort(
+    (left, right) => left.remainingSec - right.remainingSec || left.id - right.id,
+  );
+  const sortedRecruitQueue = [...(state.activeRecruitments ?? [])].sort(
+    (left, right) => left.remainingSec - right.remainingSec || left.id - right.id,
+  );
+  const buildingLevelById = new Map(
+    (state.buildings ?? []).map((building) => [String(building.id), Math.max(0, Math.floor(Number(building.level ?? 0)))]),
+  );
+  const garrisonUnits = Math.max(
+    0,
+    Math.floor(
+      Number(
+        state.garrison?.totalUnits ??
+          (state.units ?? []).reduce((sum, unit) => sum + Math.max(0, Math.floor(Number(unit.amount ?? 0))), 0),
+      ),
+    ),
+  );
+  const garrisonMilitia = state.garrison?.units?.militia;
+  const garrisonArcher = state.garrison?.units?.archer;
+  const garrisonDetails: VillageIntelGarrisonUnitDetail[] = ['militia', 'archer'].map((unitId) => {
+    const garrisonUnit = unitId === 'militia' ? garrisonMilitia : garrisonArcher;
+    const unitMeta = getUnitMetaById(unitId);
+    return {
+      unitId,
+      unitName: unitMeta.fallbackName,
+      icon: unitMeta.icon,
+      amount: Math.max(0, Math.floor(Number(garrisonUnit?.amount ?? 0))),
+      cap: Math.max(0, Math.floor(Number(garrisonUnit?.cap ?? 0))),
+      missing: Math.max(0, Math.floor(Number(garrisonUnit?.missing ?? 0))),
+      refillSecPerUnit: Math.max(0, Math.floor(Number(garrisonUnit?.refillSecPerUnit ?? 0))),
+      nextRefillSec:
+        garrisonUnit?.nextRefillSec == null ? null : Math.max(0, Math.floor(Number(garrisonUnit.nextRefillSec))),
+    };
+  });
+
+  return {
+    villageId: Math.max(0, Math.floor(Number(state.village.id))),
+    villageName: String(state.village.name ?? ''),
+    buildingQueue: sortedBuildingQueue.map((queueItem) => ({
+      id: Number(queueItem.id),
+      buildingId: String(queueItem.buildingId),
+      buildingName:
+        BUILDING_ART[String(queueItem.buildingId)]?.fallbackName ?? String(queueItem.buildingId),
+      fromLevel: Math.max(0, Math.floor(Number(queueItem.fromLevel ?? 0))),
+      toLevel: Math.max(0, Math.floor(Number(queueItem.toLevel ?? 0))),
+      startedAt: String(queueItem.startedAt),
+      finishAt: String(queueItem.finishAt),
+      remainingSec: Math.max(0, Math.floor(Number(queueItem.remainingSec ?? 0))),
+    })),
+    recruitQueue: sortedRecruitQueue.map((queueItem) => ({
+      id: Number(queueItem.id),
+      unitId: String(queueItem.unitId),
+      unitName: getUnitMetaById(String(queueItem.unitId)).fallbackName,
+      amount: Math.max(0, Math.floor(Number(queueItem.amount ?? 0))),
+      startedAt: String(queueItem.startedAt),
+      finishAt: String(queueItem.finishAt),
+      remainingSec: Math.max(0, Math.floor(Number(queueItem.remainingSec ?? 0))),
+    })),
+    fortificationLevel: Math.max(0, Math.floor(Number(buildingLevelById.get('fortification') ?? 0))),
+    gateLevel: Math.max(0, Math.floor(Number(buildingLevelById.get('gate') ?? 0))),
+    garrisonUnits,
+    garrisonUnlocked: Boolean(state.garrison?.isUnlocked ?? true),
+    garrisonDetails,
+    resources: {
+      wood: Math.max(0, Math.floor(Number(state.resources?.wood ?? 0))),
+      stone: Math.max(0, Math.floor(Number(state.resources?.stone ?? 0))),
+      iron: Math.max(0, Math.floor(Number(state.resources?.iron ?? 0))),
+      gold: Math.max(0, Math.floor(Number(state.resources?.gold ?? 0))),
+      coins: Math.max(0, Math.floor(Number(state.resources?.coins ?? 0))),
+    },
+    unitSummaries: buildVillageUnitSummaries(state.units ?? []),
+  };
+};
+
+const MERCENARY_UNIT_ID = 'mercenary';
 const COMMAND_UNIT_ORDER = ['militia', 'archer', 'cavalry', 'scout', 'knight', 'ram', 'caravan'] as const;
 type CommandUnitId = (typeof COMMAND_UNIT_ORDER)[number];
 const UNIT_ATTACK_POWER: Record<CommandUnitId, number> = {
@@ -778,6 +1105,27 @@ const UNIT_LOOT_CAPACITY: Record<CommandUnitId, number> = {
   knight: 45,
   ram: 0,
   caravan: 250,
+};
+const resolveCombatPowerUnitId = (unitIdRaw: string): CommandUnitId | null => {
+  if (unitIdRaw === MERCENARY_UNIT_ID) {
+    return 'militia';
+  }
+  return COMMAND_UNIT_ORDER.includes(unitIdRaw as CommandUnitId) ? (unitIdRaw as CommandUnitId) : null;
+};
+const resolveAttackPowerByUnitId = (unitIdRaw: string): number => {
+  const powerUnitId = resolveCombatPowerUnitId(unitIdRaw);
+  return powerUnitId ? UNIT_ATTACK_POWER[powerUnitId] : 0;
+};
+const resolveDefensePowerByUnitId = (unitIdRaw: string): number => {
+  const powerUnitId = resolveCombatPowerUnitId(unitIdRaw);
+  return powerUnitId ? UNIT_DEFENSE_POWER[powerUnitId] : 0;
+};
+const resolveLootCapacityByUnitId = (unitIdRaw: string): number => {
+  if (unitIdRaw === MERCENARY_UNIT_ID) {
+    return 0;
+  }
+  const powerUnitId = resolveCombatPowerUnitId(unitIdRaw);
+  return powerUnitId ? UNIT_LOOT_CAPACITY[powerUnitId] : 0;
 };
 const UNIT_TRAVEL_SPEED_TILES_PER_HOUR: Record<CommandUnitId, number> = {
   militia: 18,
@@ -951,9 +1299,26 @@ const MovementArmyTooltip = ({
 
 const BuildingUpgradePreviewTooltip = ({
   building,
+  statusText,
+  queueInfoLabel,
+  isPositiveNotice,
+  notice,
+  isMaxed,
+  costRows,
   cursorPosition,
 }: {
   building: Building;
+  statusText: string;
+  queueInfoLabel: string;
+  isPositiveNotice: boolean;
+  notice: string;
+  isMaxed: boolean;
+  costRows: Array<{
+    resourceType: keyof ResourceCost;
+    requiredAmount: number;
+    availableAmount: number;
+    canAffordResource: boolean;
+  }>;
   cursorPosition?: TooltipCursorPosition | null;
 }) => {
   const preview = building.nextLevelPreview;
@@ -976,35 +1341,58 @@ const BuildingUpgradePreviewTooltip = ({
     );
   }, [cursorPosition]);
 
-  if (!hasPreviewContent || !preview) {
+  if (!resolvedCursorPosition) {
     return null;
   }
-
-  const tooltipStyle: CSSProperties | undefined =
-    resolvedCursorPosition
-      ? {
-          left: `${resolvedCursorPosition.x}px`,
-          top: `${resolvedCursorPosition.y}px`,
-        }
-      : undefined;
 
   const tooltipNode = (
     <div
       className={`commands-army-tooltip building-upgrade-tooltip${cursorPosition ? ' is-follow-cursor' : ''}`}
-      style={tooltipStyle}
+      style={{
+        left: `${resolvedCursorPosition.x}px`,
+        top: `${resolvedCursorPosition.y}px`,
+      }}
       role="tooltip"
     >
       <p>
-        Další úroveň {preview.fromLevel} → {preview.toLevel}
+        {building.name} · Úroveň {building.level}
+        {isMaxed ? ' (max)' : ''}
       </p>
-      {deltaLines.length > 0 ? (
-        <ul className="building-upgrade-tooltip-list">
-          {deltaLines.map((line, index) => (
-            <li key={`${building.id}-delta-${index}`}>{line}</li>
-          ))}
-        </ul>
+      <p className="building-upgrade-tooltip-subtitle">{statusText}</p>
+      <p className="building-upgrade-tooltip-subtitle">{queueInfoLabel}</p>
+      {costRows.length > 0 ? (
+        <>
+          <p className="building-upgrade-tooltip-subtitle">Cena rozšíření</p>
+          <ul className="building-upgrade-tooltip-list">
+            {costRows.map((row) => (
+              <li key={`${building.id}-cost-${row.resourceType}`}>
+                <span>{LOOT_PRIORITY_LABELS[row.resourceType]}</span>
+                <strong className={row.canAffordResource ? 'ok' : 'missing'}>
+                  {row.requiredAmount.toLocaleString('cs-CZ')} · máš {row.availableAmount.toLocaleString('cs-CZ')}
+                </strong>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="building-upgrade-tooltip-subtitle">Cena rozšíření: Max úroveň</p>
+      )}
+      {notice ? (
+        <p className={`building-upgrade-tooltip-subtitle ${isPositiveNotice ? 'success' : 'error'}`}>{notice}</p>
       ) : null}
-      {unlockLines.length > 0 ? (
+      {hasPreviewContent && preview && deltaLines.length > 0 ? (
+        <>
+          <p className="building-upgrade-tooltip-subtitle">
+            Další úroveň {preview.fromLevel} → {preview.toLevel}
+          </p>
+          <ul className="building-upgrade-tooltip-list">
+            {deltaLines.map((line, index) => (
+              <li key={`${building.id}-delta-${index}`}>{line}</li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+      {hasPreviewContent && preview && unlockLines.length > 0 ? (
         <>
           <p className="building-upgrade-tooltip-subtitle">Co se odemkne</p>
           <ul className="building-upgrade-tooltip-list">
@@ -1013,6 +1401,11 @@ const BuildingUpgradePreviewTooltip = ({
             ))}
           </ul>
         </>
+      ) : null}
+      {!hasPreviewContent ? (
+        <ul className="building-upgrade-tooltip-list">
+          <li>Další informace k rozšíření budou dostupné po odemčení další úrovně.</li>
+        </ul>
       ) : null}
     </div>
   );
@@ -1094,6 +1487,197 @@ const ResearchCollaborationTooltip = ({
   return tooltipNode;
 };
 
+const CityResourceSummaryTooltip = ({
+  rows,
+  cursorPosition,
+}: {
+  rows: CityPanelResourceRow[];
+  cursorPosition?: TooltipCursorPosition | null;
+}) => {
+  const isTwoColumnLayout = rows.length > 4;
+  const resolvedCursorPosition = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+    const estimatedTooltipWidth = isTwoColumnLayout
+      ? Math.max(420, Math.min(660, Math.floor(window.innerWidth * 0.62)))
+      : Math.max(320, Math.min(460, Math.floor(window.innerWidth * 0.44)));
+    const estimatedTooltipHeight = isTwoColumnLayout ? 300 : 380;
+    const preferredCursor = cursorPosition ?? {
+      x: Math.floor(window.innerWidth * 0.54),
+      y: Math.floor(window.innerHeight * 0.24),
+    };
+    return clampTooltipPosition(
+      preferredCursor,
+      estimatedTooltipWidth,
+      estimatedTooltipHeight,
+      window.innerWidth,
+      window.innerHeight,
+    );
+  }, [cursorPosition, isTwoColumnLayout]);
+
+  if (rows.length <= 0 || !resolvedCursorPosition) {
+    return null;
+  }
+
+  const tooltipNode = (
+    <div
+      className={`commands-army-tooltip city-resource-stock-tooltip-overlay is-follow-cursor ${isTwoColumnLayout ? 'is-two-columns' : ''}`}
+      style={{
+        left: `${resolvedCursorPosition.x}px`,
+        top: `${resolvedCursorPosition.y}px`,
+      }}
+      role="tooltip"
+    >
+      <p>Detail surovin</p>
+      <ul>
+        {rows.map((resource) => (
+          <li key={`city-resource-tooltip-${resource.key}`}>
+            <span className="city-resource-tooltip-head">
+              <span className="city-resource-stock-icon" aria-hidden="true">
+                {resource.icon.startsWith('/') ? (
+                  <img src={resource.icon} alt="" loading="lazy" decoding="async" draggable={false} />
+                ) : (
+                  resource.icon
+                )}
+              </span>
+              <strong>{resource.label}</strong>
+            </span>
+            <span>
+              {resource.productionPerHour == null
+                ? `Kapacita ${resource.capacity.toLocaleString('cs-CZ')}`
+                : `Produkce +${resource.productionPerHour.toLocaleString('cs-CZ')} / h · Kapacita ${resource.capacity.toLocaleString('cs-CZ')}`}
+            </span>
+            <span>
+              {resource.buildingName} · Úroveň {resource.buildingLevel.toLocaleString('cs-CZ')} · Ukryto před lupem{' '}
+              {resource.protectedAmount.toLocaleString('cs-CZ')}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+
+  if (typeof document !== 'undefined') {
+    return createPortal(tooltipNode, document.body);
+  }
+
+  return tooltipNode;
+};
+
+const QueueActionTooltip = ({
+  title,
+  description,
+  cursorPosition,
+}: {
+  title: string;
+  description: string;
+  cursorPosition: TooltipCursorPosition | null;
+}) => {
+  const resolvedCursorPosition = useMemo(() => {
+    if (typeof window === 'undefined' || !cursorPosition) {
+      return null;
+    }
+    const estimatedTooltipWidth = Math.max(240, Math.min(360, Math.floor(window.innerWidth * 0.32)));
+    const estimatedTooltipHeight = 132;
+    return clampTooltipPosition(
+      cursorPosition,
+      estimatedTooltipWidth,
+      estimatedTooltipHeight,
+      window.innerWidth,
+      window.innerHeight,
+    );
+  }, [cursorPosition]);
+
+  if (!resolvedCursorPosition || !title.trim() || !description.trim()) {
+    return null;
+  }
+
+  const tooltipNode = (
+    <div
+      className="commands-army-tooltip city-queue-action-tooltip is-follow-cursor"
+      style={{
+        left: `${resolvedCursorPosition.x}px`,
+        top: `${resolvedCursorPosition.y}px`,
+      }}
+      role="tooltip"
+    >
+      <p>{title}</p>
+      <ul>
+        <li>
+          <span>{description}</span>
+        </li>
+      </ul>
+    </div>
+  );
+
+  if (typeof document !== 'undefined') {
+    return createPortal(tooltipNode, document.body);
+  }
+
+  return tooltipNode;
+};
+
+const VillageIntelTooltip = ({
+  title,
+  rows,
+  cursorPosition,
+}: {
+  title: string;
+  rows: Array<{ label: string; value: string }>;
+  cursorPosition?: TooltipCursorPosition | null;
+}) => {
+  const resolvedCursorPosition = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+    const estimatedTooltipWidth = Math.max(300, Math.min(460, Math.floor(window.innerWidth * 0.42)));
+    const estimatedTooltipHeight = Math.max(180, Math.min(420, 96 + rows.length * 44));
+    const preferredCursor = cursorPosition ?? {
+      x: Math.floor(window.innerWidth * 0.52),
+      y: Math.floor(window.innerHeight * 0.26),
+    };
+    return clampTooltipPosition(
+      preferredCursor,
+      estimatedTooltipWidth,
+      estimatedTooltipHeight,
+      window.innerWidth,
+      window.innerHeight,
+    );
+  }, [cursorPosition, rows.length]);
+
+  if (rows.length <= 0 || !resolvedCursorPosition) {
+    return null;
+  }
+
+  const tooltipNode = (
+    <div
+      className="commands-army-tooltip village-intel-tooltip is-follow-cursor"
+      style={{
+        left: `${resolvedCursorPosition.x}px`,
+        top: `${resolvedCursorPosition.y}px`,
+      }}
+      role="tooltip"
+    >
+      <p>{title}</p>
+      <ul>
+        {rows.map((row, index) => (
+          <li key={`village-intel-tooltip-row-${index}`}>
+            <span>{row.label}</span>
+            <strong>{row.value}</strong>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+
+  if (typeof document !== 'undefined') {
+    return createPortal(tooltipNode, document.body);
+  }
+
+  return tooltipNode;
+};
+
 const RESOURCE_COST_TYPES: (keyof ResourceCost)[] = ['wood', 'stone', 'iron'];
 
 const CITY_OVERVIEW_GROUPS: {
@@ -1125,6 +1709,49 @@ const CITY_OVERVIEW_GROUPS: {
     label: 'Obrana',
     subtitle: 'Pevnostní a vstupní prvky',
     buildingIds: ['fortification', 'gate'],
+  },
+];
+
+const CITY_PANEL_RESOURCE_DEFINITIONS: CityPanelResourceDefinition[] = [
+  {
+    key: 'wood',
+    label: 'Dřevo',
+    buildingId: 'woodcutter',
+    productionField: 'wood',
+    protectionField: 'wood',
+    capacityField: 'cap',
+  },
+  {
+    key: 'stone',
+    label: 'Kámen',
+    buildingId: 'quarry',
+    productionField: 'stone',
+    protectionField: 'stone',
+    capacityField: 'cap',
+  },
+  {
+    key: 'iron',
+    label: 'Železo',
+    buildingId: 'iron-mine',
+    productionField: 'iron',
+    protectionField: 'iron',
+    capacityField: 'cap',
+  },
+  {
+    key: 'gold',
+    label: 'Zlato',
+    buildingId: 'gold-mine',
+    productionField: 'gold',
+    protectionField: 'gold',
+    capacityField: 'goldCap',
+  },
+  {
+    key: 'coins',
+    label: 'Mince',
+    buildingId: 'mint',
+    productionField: 'mintCoins',
+    protectionField: 'coins',
+    capacityField: 'coinsCap',
   },
 ];
 
@@ -1163,9 +1790,25 @@ type ShortcutBinding = {
   shift: boolean;
   meta: boolean;
 };
+type MapPreviewTravelModifierKey = 'ctrl' | 'alt' | 'shift' | 'meta';
+const SETTLEMENT_COLOR_KEYS = [
+  'active',
+  'own',
+  'bot',
+  'royal',
+  'allied',
+  'nap',
+  'opponent',
+  'enemy',
+  'abandoned',
+] as const;
+type SettlementColorKey = (typeof SETTLEMENT_COLOR_KEYS)[number];
+type SettlementColorPalette = Record<SettlementColorKey, string>;
 type PersistedShortcutSettings = {
   autoHidePinColumns?: unknown;
   bindings?: Partial<Record<ShortcutActionId, unknown>>;
+  mapPreviewTravelModifier?: unknown;
+  settlementColors?: unknown;
 };
 
 const MAP_ORDER_ICON_LABELS: Record<MapOrderCommandType, string> = {
@@ -1175,6 +1818,39 @@ const MAP_ORDER_ICON_LABELS: Record<MapOrderCommandType, string> = {
 };
 
 const MAP_ORDER_COMMAND_TYPES: MapOrderCommandType[] = ['attack', 'support', 'move'];
+const MAP_SETTLEMENT_KIND_LABELS: Record<MapSettlementKind, string> = {
+  active: 'Aktuální osada',
+  own: 'Moje osada',
+  bot: 'Bot',
+  royal: 'Královská',
+  allied: 'Spojenecká',
+  nap: 'Dohoda o neútočení',
+  opponent: 'Protivník',
+  enemy: 'Nepřítel',
+  abandoned: 'Opuštěná',
+};
+const SETTLEMENT_COLOR_LABELS: Record<SettlementColorKey, string> = {
+  active: 'Aktivní',
+  own: 'Moje',
+  bot: 'Bot',
+  royal: 'Královská',
+  allied: 'Spojenecká',
+  nap: 'NAP',
+  opponent: 'Protivník',
+  enemy: 'Nepřítel',
+  abandoned: 'Opuštěná',
+};
+const DEFAULT_SETTLEMENT_COLOR_PALETTE: SettlementColorPalette = {
+  active: '#f8fbff',
+  own: '#f2c269',
+  bot: '#9f8cff',
+  royal: '#8fc9ff',
+  allied: '#5fbf8f',
+  nap: '#6fc6d8',
+  opponent: '#cfa868',
+  enemy: '#d06767',
+  abandoned: '#8f97a0',
+};
 
 const getArmyCommandSymbol = (commandType: ArmyCommandType | MapOrderCommandType): string => {
   if (commandType === 'attack') {
@@ -1187,26 +1863,6 @@ const getArmyCommandSymbol = (commandType: ArmyCommandType | MapOrderCommandType
     return '➜';
   }
   return '↩';
-};
-
-const parseArmyOrderCommandType = (order: string): ArmyCommandType | null => {
-  const normalized = order.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
-  if (!normalized.includes('armada:')) {
-    return null;
-  }
-  if (normalized.includes('utok')) {
-    return 'attack';
-  }
-  if (normalized.includes('podpora')) {
-    return 'support';
-  }
-  if (normalized.includes('presun')) {
-    return 'move';
-  }
-  if (normalized.includes('navrat')) {
-    return 'return';
-  }
-  return null;
 };
 
 const normalizeRecruitBlockedReason = (blockedReason: string | null): string =>
@@ -1281,11 +1937,6 @@ const calculateDefensePowerFromSelection = (selection: Record<CommandUnitId, num
 const calculateLootCapacityFromSelection = (selection: Record<CommandUnitId, number>): number =>
   COMMAND_UNIT_ORDER.reduce((sum, unitId) => sum + Number(selection[unitId] ?? 0) * UNIT_LOOT_CAPACITY[unitId], 0);
 
-const FALLBACK_ACTIVE_ORDERS = [
-  'Výstavba: žádná aktivní fronta',
-  'Ekonomika běží na backend cron tiku.',
-  'Nábor a upgrady zapisují změny do databáze.',
-];
 const ACADEMIC_HIRE_COIN_COST = 250;
 const RESEARCH_MAX_ASSIGNED_ACADEMICS = 3;
 const MERCENARY_CONTRACT_COIN_COST = 1500;
@@ -1300,45 +1951,91 @@ const REGION_SIZE = 50;
 const REGION_ORIGIN_X = 200;
 const REGION_ORIGIN_Y = 430;
 const REGION_CELL_SIZE = 25;
-const MAP_ZOOM_MIN = -50;
-const MAP_ZOOM_MAX = 100;
+const MAP_ZOOM_MIN = 0;
+const MAP_ZOOM_MAX = 200;
 const MAP_ZOOM_STEP = 0.5;
 const MAP_ZOOM_WHEEL_SENSITIVITY = 0.022;
 const MAP_ZOOM_WHEEL_MIN_DELTA = 0.35;
 const MAP_ZOOM_WHEEL_MAX_DELTA = 2.4;
+const MAP_PAN_TARGET_SMOOTHNESS = 15;
+const MAP_PAN_TARGET_EPSILON_PX = 0.65;
 const MAP_CELL_GAP_PX = 2;
-const MAP_PREVIEW_CARD_WIDTH_PX = 560;
+const MAP_PREVIEW_CARD_WIDTH_PX = 320;
 const MAP_PREVIEW_CARD_OFFSET_PX = 10;
 const MAP_PREVIEW_CARD_SAFE_EDGE_PX = 12;
 const MAP_PREVIEW_CARD_SAFE_TOP_PX = 80;
-const MAP_PREVIEW_CARD_HOVER_HEIGHT_PX = 430;
-const MAP_PREVIEW_CARD_PINNED_HEIGHT_PX = 500;
-const MAP_HOVER_CLEAR_DELAY_MS = 110;
+const MAP_PREVIEW_CARD_HOVER_HEIGHT_PX = 168;
+const MAP_PREVIEW_CARD_PINNED_HEIGHT_PX = 248;
+const MAP_HOVER_CLEAR_DELAY_MS = 190;
 const MAP_WINDOW_SIZE_STORAGE_KEY = 'tld_map_window_size';
 const LEGACY_MAP_WINDOW_SIZE_STORAGE_KEY = 'thg_map_window_size';
+const PANEL_STORAGE_SCHEMA_VERSION = 'v2';
 const PANEL_LAYOUT_STORAGE_KEY_PREFIX = 'tld_panel_layout';
 const LEGACY_PANEL_LAYOUT_STORAGE_KEY_PREFIX = 'thg_panel_layout';
+const PANEL_PLACEMENT_STORAGE_KEY_PREFIX = 'tld_panel_placement';
+const LEGACY_PANEL_PLACEMENT_STORAGE_KEY_PREFIX = 'thg_panel_placement';
 const LAST_OWN_SETTLEMENT_STORAGE_KEY_PREFIX = 'tld_last_own_settlement';
 const LEGACY_LAST_OWN_SETTLEMENT_STORAGE_KEY_PREFIX = 'thg_last_own_settlement';
 const MAP_ZOOM_STORAGE_KEY_PREFIX = 'tld_map_zoom';
 const LEGACY_MAP_ZOOM_STORAGE_KEY_PREFIX = 'thg_map_zoom';
+const MAP_VIEWPORT_STORAGE_KEY_PREFIX = 'tld_map_viewport';
+const LEGACY_MAP_VIEWPORT_STORAGE_KEY_PREFIX = 'thg_map_viewport';
 const ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'tld_active_village';
 const LEGACY_ACTIVE_VILLAGE_STORAGE_KEY_PREFIX = 'thg_active_village';
 const ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX = 'tld_army_target_history';
 const LEGACY_ARMY_TARGET_HISTORY_STORAGE_KEY_PREFIX = 'thg_army_target_history';
+const PLANNER_LAST_SESSION_STORAGE_KEY_PREFIX = 'tld_planner_last_session';
+const LEGACY_PLANNER_LAST_SESSION_STORAGE_KEY_PREFIX = 'thg_planner_last_session';
 const GAME_FONT_SCALE_STORAGE_KEY_PREFIX = 'tld_game_font_scale';
 const LEGACY_GAME_FONT_SCALE_STORAGE_KEY_PREFIX = 'thg_game_font_scale';
 const SHORTCUT_SETTINGS_STORAGE_KEY_PREFIX = 'tld_shortcut_settings';
 const LEGACY_SHORTCUT_SETTINGS_STORAGE_KEY_PREFIX = 'thg_shortcut_settings';
+const DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER: MapPreviewTravelModifierKey = 'ctrl';
+const MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS: Array<{
+  value: MapPreviewTravelModifierKey;
+  label: string;
+  keyboardEventKey: 'Control' | 'Alt' | 'Shift' | 'Meta';
+}> = [
+  { value: 'ctrl', label: 'Ctrl', keyboardEventKey: 'Control' },
+  { value: 'alt', label: 'Alt', keyboardEventKey: 'Alt' },
+  { value: 'shift', label: 'Shift', keyboardEventKey: 'Shift' },
+  { value: 'meta', label: 'Meta (Win/Cmd)', keyboardEventKey: 'Meta' },
+];
+const DEFAULT_PLANNER_BANNER_TEXT = 'Planovac je zatim mozne vyuzit jen pro jeden cil z vice len.';
+const DEFAULT_PLANNER_MAX_LEGS = 10;
+const DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES = 1;
+const DEFAULT_PLANNER_LEAD_TIME_SEC = 5 * 60;
+const RESEARCH_SPOTLIGHT_SIMILAR_PROGRESS_DELTA_PERCENT = 1;
+const PRAGUE_TIMEZONE = 'Europe/Prague';
 const MAP_WINDOW_MIN_WIDTH = 620;
 const MAP_WINDOW_MIN_HEIGHT = 460;
 const STATE_POLL_INTERVAL_MS = 15000;
 const REPORTS_POLL_INTERVAL_MS = 25000;
-const REPORTS_IDLE_POLL_INTERVAL_MS = 120000;
-const ACTIVITY_IDLE_POLL_INTERVAL_MS = 120000;
 const MAP_OPEN_POLL_INTERVAL_MS = 30000;
-const MAP_IDLE_POLL_INTERVAL_MS = 180000;
 const MAP_RENDER_MARGIN_CELLS = 2;
+const WORLD_MAP_DEPENDENT_PANEL_TYPES = new Set<PanelType>([
+  'map',
+  'army',
+  'commands',
+  'village',
+  'kingdomProfile',
+  'playerProfile',
+]);
+const LEADERBOARD_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['rankings', 'profile', 'kingdomProfile', 'playerProfile']);
+const KINGDOM_HUB_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['kingdom', 'messages']);
+const RESEARCH_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['research']);
+const MERCENARY_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['military']);
+const MARKET_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['commands']);
+const LANDSCAPE_PANEL_TYPES = new Set<PanelType>([
+  'messages',
+  'activity',
+  'village',
+  'profile',
+  'settings',
+  'kingdomProfile',
+  'playerProfile',
+  'building',
+]);
 const PANEL_DEFAULT_MIN_WIDTH = 360;
 const PANEL_DEFAULT_MIN_HEIGHT = 280;
 const PANEL_CITY_MIN_WIDTH = 1080;
@@ -1346,13 +2043,41 @@ const PANEL_CITY_MIN_HEIGHT = 600;
 const PANEL_ARMY_MIN_WIDTH = 760;
 const PANEL_ARMY_MIN_HEIGHT = 520;
 const PANEL_VIEWPORT_MARGIN_X = 32;
-const PANEL_VIEWPORT_MARGIN_Y = 56;
+const PANEL_VIEWPORT_MARGIN_Y = 24;
 const PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH = 280;
 const PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT = 220;
+const GAME_LAYOUT_MAX_WIDTH = 1800;
+const GAME_LAYOUT_HORIZONTAL_PADDING = 40;
+const FLOATING_PANEL_BASE_Z_INDEX = 2400;
+const MAP_BACKGROUND_PANEL_Z_INDEX = 2050;
 const WORLD_LABELS: Record<string, string> = {
   'dominion-1': 'Dominion I: První úsvit',
   'dominion-1-fire': 'Dominion I: Síla ohně',
 };
+
+const getInitialGameLayoutViewportSize = (): WindowSize => {
+  if (typeof window === 'undefined') {
+    return {
+      width: 1440,
+      height: 900,
+    };
+  }
+
+  const viewportWidth = Math.max(
+    PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH + PANEL_VIEWPORT_MARGIN_X,
+    Math.min(GAME_LAYOUT_MAX_WIDTH, window.innerWidth) - GAME_LAYOUT_HORIZONTAL_PADDING,
+  );
+  const viewportHeight = Math.max(
+    PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT + PANEL_VIEWPORT_MARGIN_Y,
+    window.innerHeight - 120,
+  );
+
+  return {
+    width: Math.floor(viewportWidth),
+    height: Math.floor(viewportHeight),
+  };
+};
+
 const GAME_FONT_SCALE_OPTIONS: { value: GameFontScaleOption; label: string; scalePercent: number }[] = [
   { value: 'base', label: 'Aktuální', scalePercent: 100 },
   { value: 'plus5', label: 'Zvětšit font o 5 %', scalePercent: 105 },
@@ -1757,12 +2482,6 @@ const normalizeGameStateForUi = (state: GameStateResponse): GameStateResponse =>
   };
 };
 
-const buildStableGameStateSignature = (state: GameStateResponse): string => {
-  const stableState = { ...state } as Record<string, unknown>;
-  delete stableState.serverTime;
-  return JSON.stringify(stableState);
-};
-
 const clampAvatarValue = (value: number, min: number, max: number): number => Math.min(Math.max(value, min), max);
 
 const computeAvatarCropMetrics = (
@@ -2080,18 +2799,6 @@ const REGION_SETTLEMENTS: RegionSettlement[] = [
   },
 ];
 
-const settlementKindLabel: Record<MapSettlementKind, string> = {
-  active: 'Aktuální osada',
-  own: 'Moje osada',
-  bot: 'Bot osada',
-  royal: 'Královská osada',
-  allied: 'Spojenecká osada',
-  nap: 'Dohoda o neútočení',
-  opponent: 'Protivník',
-  enemy: 'Nepřítel',
-  abandoned: 'Opuštěná osada',
-};
-
 const VILLAGE_SCOPED_BUILDING_IDS = new Set<string>([
   'woodcutter',
   'quarry',
@@ -2119,10 +2826,21 @@ const hasVillageContext = (panel: Pick<PanelWindow, 'type' | 'buildingId'>): boo
   return false;
 };
 
+const getSettlementProtectionRemainingSec = (
+  settlement: Pick<RegionSettlement, 'protectionUntil' | 'protectionRemainingSec'>,
+  referenceMs = Date.now(),
+): number => {
+  const remainingFromIso = getRemainingSecondsToIso(settlement.protectionUntil, referenceMs);
+  if (remainingFromIso > 0 || settlement.protectionUntil) {
+    return remainingFromIso;
+  }
+  return Math.max(0, Number(settlement.protectionRemainingSec ?? 0));
+};
+
 const getSettlementMapKind = (
   settlement: Pick<
     RegionSettlement,
-    'kind' | 'relation' | 'owner' | 'villageId' | 'protectionRemainingSec' | 'note' | 'kingdom'
+    'kind' | 'relation' | 'owner' | 'villageId' | 'protectionRemainingSec' | 'protectionUntil' | 'note' | 'kingdom'
   >,
   activeVillageId: number | null = null,
 ): MapSettlementKind => {
@@ -2162,7 +2880,7 @@ const getSettlementMapKind = (
     return 'opponent';
   }
 
-  const protectionRemainingSec = Math.max(0, Number(settlement.protectionRemainingSec ?? 0));
+  const protectionRemainingSec = getSettlementProtectionRemainingSec(settlement);
   const noteNormalized = String(settlement.note ?? '').toLowerCase();
   if (protectionRemainingSec > 0 || /(nap|neútočení|neutoceni|pakt|příměří|primiri|dohoda)/i.test(noteNormalized)) {
     return 'nap';
@@ -2179,6 +2897,9 @@ const getSettlementMapKind = (
   return 'enemy';
 };
 
+const shouldShowCtrlSettlementBanner = (settlement: Pick<RegionSettlement, 'kind'>): boolean =>
+  settlement.kind === 'own' || settlement.kind === 'player' || settlement.kind === 'bot';
+
 const canTargetSettlementForArmyCommand = ({
   settlement,
   commandType,
@@ -2187,7 +2908,7 @@ const canTargetSettlementForArmyCommand = ({
 }: {
   settlement: Pick<
     RegionSettlement,
-    'villageId' | 'owner' | 'relation' | 'protectionRemainingSec' | 'prestigeAttackBlockedForViewer'
+    'villageId' | 'owner' | 'relation' | 'protectionRemainingSec' | 'protectionUntil' | 'prestigeAttackBlockedForViewer'
   >;
   commandType: ArmyCommandSelectableType;
   currentVillageId: number | null;
@@ -2218,7 +2939,7 @@ const canTargetSettlementForArmyCommand = ({
     return isOwnSettlement;
   }
 
-  const targetProtectionRemainingSec = Math.max(0, Number(settlement.protectionRemainingSec ?? 0));
+  const targetProtectionRemainingSec = getSettlementProtectionRemainingSec(settlement);
   if (targetProtectionRemainingSec > 0) {
     return false;
   }
@@ -2238,6 +2959,14 @@ const isNeutralKingdom = (kingdom: string): boolean => {
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(Math.max(value, min), max);
+
+const normalizeRankValue = (value: unknown): number | null => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.max(1, Math.floor(parsed));
+};
 
 const calculateCellDistance = (
   fromX: number,
@@ -2290,16 +3019,16 @@ const SETTLEMENT_PRESTIGE_META_BY_TIER: Record<SettlementPrestigeTier, Settlemen
 
 const resolveSettlementPrestigeTier = (prestigeRaw: number): SettlementPrestigeTier => {
   const prestige = Math.max(0, Math.floor(Number(prestigeRaw ?? 0)));
-  if (prestige >= 20000) {
+  if (prestige >= 16000) {
     return 'E';
   }
-  if (prestige >= 10000) {
+  if (prestige >= 9000) {
     return 'D';
   }
-  if (prestige >= 6000) {
+  if (prestige >= 4500) {
     return 'C';
   }
-  if (prestige >= 3000) {
+  if (prestige >= 1500) {
     return 'B';
   }
   return 'A';
@@ -2346,11 +3075,29 @@ const getPanelMinSize = (type: PanelType): WindowSize => {
   if (type === 'army') {
     return { width: PANEL_ARMY_MIN_WIDTH, height: PANEL_ARMY_MIN_HEIGHT };
   }
+  if (type === 'messages') {
+    return { width: 760, height: 440 };
+  }
+  if (type === 'activity') {
+    return { width: 960, height: 560 };
+  }
+  if (type === 'village') {
+    return { width: 860, height: 360 };
+  }
+  if (type === 'profile') {
+    return { width: 700, height: 430 };
+  }
+  if (type === 'settings') {
+    return { width: 700, height: 440 };
+  }
+  if (type === 'building') {
+    return { width: 720, height: 480 };
+  }
   if (type === 'rankings') {
-    return { width: 760, height: 420 };
+    return { width: 840, height: 500 };
   }
   if (type === 'kingdomProfile' || type === 'playerProfile' || type === 'battleReport') {
-    return { width: 560, height: 420 };
+    return { width: 820, height: 500 };
   }
 
   return { width: PANEL_DEFAULT_MIN_WIDTH, height: PANEL_DEFAULT_MIN_HEIGHT };
@@ -2649,6 +3396,128 @@ const saveStoredArmyTargetHistory = (username: string, history: ArmyTargetHistor
   }
 };
 
+const getPlannerLastSessionStorageKey = (username: string, worldId: string): string =>
+  `${PLANNER_LAST_SESSION_STORAGE_KEY_PREFIX}:${username.toLowerCase()}:${worldId.toLowerCase()}`;
+const getLegacyPlannerLastSessionStorageKey = (username: string, worldId: string): string =>
+  `${LEGACY_PLANNER_LAST_SESSION_STORAGE_KEY_PREFIX}:${username.toLowerCase()}:${worldId.toLowerCase()}`;
+
+const normalizePlannerLegDraft = (value: unknown): PlannerLegDraft | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const candidate = value as Partial<PlannerLegDraft>;
+  const originVillageId = Math.floor(Number(candidate.originVillageId ?? 0));
+  const impactAtUtc = String(candidate.impactAtUtc ?? '').trim();
+  if (!Number.isFinite(originVillageId) || originVillageId <= 0 || !impactAtUtc) {
+    return null;
+  }
+
+  const parsedImpact = Date.parse(impactAtUtc);
+  if (!Number.isFinite(parsedImpact)) {
+    return null;
+  }
+
+  const units: Partial<Record<CommandUnitId, number>> = {};
+  const rawUnits =
+    candidate.units && typeof candidate.units === 'object'
+      ? (candidate.units as Partial<Record<CommandUnitId, unknown>>)
+      : {};
+  for (const unitId of COMMAND_UNIT_ORDER) {
+    const amountRaw = Math.floor(Number(rawUnits[unitId] ?? 0));
+    if (!Number.isFinite(amountRaw) || amountRaw <= 0) {
+      continue;
+    }
+    units[unitId] = amountRaw;
+  }
+
+  return {
+    originVillageId,
+    impactAtUtc: new Date(parsedImpact).toISOString(),
+    units,
+  };
+};
+
+const readStoredPlannerLastSessionDraft = (username: string, worldId: string): PlannerDraftState | null => {
+  if (typeof window === 'undefined' || !worldId) {
+    return null;
+  }
+
+  try {
+    const raw =
+      window.localStorage.getItem(getPlannerLastSessionStorageKey(username, worldId)) ??
+      window.localStorage.getItem(getLegacyPlannerLastSessionStorageKey(username, worldId));
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<PlannerDraftState>;
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+
+    const targetPlayerUsername = String(parsed.targetPlayerUsername ?? '').trim();
+    const targetVillageIdRaw = Number(parsed.targetVillageId ?? 0);
+    const targetVillageId =
+      Number.isFinite(targetVillageIdRaw) && targetVillageIdRaw > 0 ? Math.floor(targetVillageIdRaw) : null;
+    const parsedUpdatedAtMs = Date.parse(String(parsed.updatedAt ?? ''));
+    const rawLegs = Array.isArray(parsed.legs) ? parsed.legs : [];
+    const legs = rawLegs
+      .map((leg) => normalizePlannerLegDraft(leg))
+      .filter((leg): leg is PlannerLegDraft => leg != null);
+
+    if (legs.length <= 0 && !targetPlayerUsername && targetVillageId == null) {
+      return null;
+    }
+
+    return {
+      targetPlayerUsername,
+      targetVillageId,
+      legs,
+      updatedAt: Number.isFinite(parsedUpdatedAtMs)
+        ? new Date(parsedUpdatedAtMs).toISOString()
+        : new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const saveStoredPlannerLastSessionDraft = (
+  username: string,
+  worldId: string,
+  draft: PlannerDraftState | null,
+): void => {
+  if (typeof window === 'undefined' || !worldId) {
+    return;
+  }
+
+  const key = getPlannerLastSessionStorageKey(username, worldId);
+  try {
+    if (!draft || (!draft.targetPlayerUsername && draft.targetVillageId == null && draft.legs.length <= 0)) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    const draftUpdatedAtMs = Date.parse(String(draft.updatedAt ?? ''));
+    const normalizedLegs = draft.legs
+      .map((leg) => normalizePlannerLegDraft(leg))
+      .filter((leg): leg is PlannerLegDraft => leg != null);
+    const payload: PlannerDraftState = {
+      targetPlayerUsername: String(draft.targetPlayerUsername ?? '').trim(),
+      targetVillageId:
+        draft.targetVillageId != null && Number.isFinite(Number(draft.targetVillageId))
+          ? Math.floor(Number(draft.targetVillageId))
+          : null,
+      legs: normalizedLegs,
+      updatedAt: Number.isFinite(draftUpdatedAtMs)
+        ? new Date(draftUpdatedAtMs).toISOString()
+        : new Date().toISOString(),
+    };
+    window.localStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
 const getMapZoomStorageKey = (username: string): string =>
   `${MAP_ZOOM_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
 const getLegacyMapZoomStorageKey = (username: string): string =>
@@ -2690,6 +3559,67 @@ const saveStoredMapZoom = (username: string, zoomPercent: number): void => {
 
   try {
     window.localStorage.setItem(getMapZoomStorageKey(username), String(normalizeMapZoom(zoomPercent)));
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
+type StoredMapViewport = {
+  leftRatio: number;
+  topRatio: number;
+};
+
+const getMapViewportStorageKey = (username: string, regionId: number): string =>
+  `${MAP_VIEWPORT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}:${Math.max(1, Math.floor(Number(regionId) || 1))}`;
+const getLegacyMapViewportStorageKey = (username: string, regionId: number): string =>
+  `${LEGACY_MAP_VIEWPORT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}:${Math.max(1, Math.floor(Number(regionId) || 1))}`;
+
+const readStoredMapViewport = (username: string, regionId: number): StoredMapViewport | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw =
+      window.localStorage.getItem(getMapViewportStorageKey(username, regionId)) ??
+      window.localStorage.getItem(getLegacyMapViewportStorageKey(username, regionId));
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<StoredMapViewport> | null;
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+
+    const leftRatio = Number(parsed.leftRatio);
+    const topRatio = Number(parsed.topRatio);
+    if (!Number.isFinite(leftRatio) || !Number.isFinite(topRatio)) {
+      return null;
+    }
+
+    return {
+      leftRatio: clamp(leftRatio, 0, 1),
+      topRatio: clamp(topRatio, 0, 1),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const saveStoredMapViewport = (username: string, regionId: number, viewport: StoredMapViewport): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      getMapViewportStorageKey(username, regionId),
+      JSON.stringify({
+        leftRatio: clamp(Number(viewport.leftRatio), 0, 1),
+        topRatio: clamp(Number(viewport.topRatio), 0, 1),
+      }),
+    );
   } catch {
     // Ignore storage errors.
   }
@@ -2759,13 +3689,54 @@ const getShortcutSettingsStorageKey = (username: string): string =>
 const getLegacyShortcutSettingsStorageKey = (username: string): string =>
   `${LEGACY_SHORTCUT_SETTINGS_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
 
+const normalizeMapPreviewTravelModifier = (value: unknown): MapPreviewTravelModifierKey => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLocaleLowerCase('cs-CZ');
+  return MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS.some((item) => item.value === normalized)
+    ? (normalized as MapPreviewTravelModifierKey)
+    : DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER;
+};
+
+const normalizeHexColor = (value: unknown, fallback: string): string => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLocaleLowerCase('cs-CZ');
+  if (/^#[0-9a-f]{6}$/u.test(normalized)) {
+    return normalized;
+  }
+  if (/^#[0-9a-f]{3}$/u.test(normalized)) {
+    return `#${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}${normalized[3]}${normalized[3]}`;
+  }
+  return fallback;
+};
+
+const normalizeSettlementColorPalette = (value: unknown): SettlementColorPalette => {
+  const normalized: SettlementColorPalette = { ...DEFAULT_SETTLEMENT_COLOR_PALETTE };
+  if (!value || typeof value !== 'object') {
+    return normalized;
+  }
+  const rawPalette = value as Partial<Record<SettlementColorKey, unknown>>;
+  SETTLEMENT_COLOR_KEYS.forEach((key) => {
+    normalized[key] = normalizeHexColor(rawPalette[key], DEFAULT_SETTLEMENT_COLOR_PALETTE[key]);
+  });
+  return normalized;
+};
+
 const readStoredShortcutSettings = (
   username: string,
-): { autoHidePinColumns: boolean; customBindings: Partial<Record<ShortcutActionId, ShortcutBinding>> } => {
+): {
+  autoHidePinColumns: boolean;
+  customBindings: Partial<Record<ShortcutActionId, ShortcutBinding>>;
+  mapPreviewTravelModifier: MapPreviewTravelModifierKey;
+  settlementColors: SettlementColorPalette;
+} => {
   if (typeof window === 'undefined') {
     return {
       autoHidePinColumns: false,
       customBindings: {},
+      mapPreviewTravelModifier: DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER,
+      settlementColors: { ...DEFAULT_SETTLEMENT_COLOR_PALETTE },
     };
   }
 
@@ -2777,6 +3748,8 @@ const readStoredShortcutSettings = (
       return {
         autoHidePinColumns: false,
         customBindings: {},
+        mapPreviewTravelModifier: DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER,
+        settlementColors: { ...DEFAULT_SETTLEMENT_COLOR_PALETTE },
       };
     }
 
@@ -2793,18 +3766,27 @@ const readStoredShortcutSettings = (
     return {
       autoHidePinColumns: parsed?.autoHidePinColumns === true,
       customBindings,
+      mapPreviewTravelModifier: normalizeMapPreviewTravelModifier(parsed?.mapPreviewTravelModifier),
+      settlementColors: normalizeSettlementColorPalette(parsed?.settlementColors),
     };
   } catch {
     return {
       autoHidePinColumns: false,
       customBindings: {},
+      mapPreviewTravelModifier: DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER,
+      settlementColors: { ...DEFAULT_SETTLEMENT_COLOR_PALETTE },
     };
   }
 };
 
 const saveStoredShortcutSettings = (
   username: string,
-  settings: { autoHidePinColumns: boolean; customBindings: Partial<Record<ShortcutActionId, ShortcutBinding>> },
+  settings: {
+    autoHidePinColumns: boolean;
+    customBindings: Partial<Record<ShortcutActionId, ShortcutBinding>>;
+    mapPreviewTravelModifier: MapPreviewTravelModifierKey;
+    settlementColors: SettlementColorPalette;
+  },
 ): void => {
   if (typeof window === 'undefined') {
     return;
@@ -2825,6 +3807,8 @@ const saveStoredShortcutSettings = (
       JSON.stringify({
         autoHidePinColumns: settings.autoHidePinColumns === true,
         bindings: bindingsPayload,
+        mapPreviewTravelModifier: normalizeMapPreviewTravelModifier(settings.mapPreviewTravelModifier),
+        settlementColors: normalizeSettlementColorPalette(settings.settlementColors),
       }),
     );
   } catch {
@@ -2832,10 +3816,120 @@ const saveStoredShortcutSettings = (
   }
 };
 
-const getPanelLayoutStorageKey = (username: string): string =>
-  `${PANEL_LAYOUT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+const normalizePanelStorageScope = (worldId: string | null | undefined): string => {
+  const normalized = String(worldId ?? '').trim().toLocaleLowerCase('cs-CZ');
+  return normalized.length > 0 ? normalized : 'global';
+};
+const getPanelLayoutStorageKey = (username: string, worldId: string | null | undefined): string =>
+  `${PANEL_LAYOUT_STORAGE_KEY_PREFIX}:${PANEL_STORAGE_SCHEMA_VERSION}:${username.toLocaleLowerCase('cs-CZ')}:${normalizePanelStorageScope(worldId)}`;
 const getLegacyPanelLayoutStorageKey = (username: string): string =>
-  `${LEGACY_PANEL_LAYOUT_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+  `${LEGACY_PANEL_LAYOUT_STORAGE_KEY_PREFIX}:${username.toLocaleLowerCase('cs-CZ')}`;
+const getPanelPlacementStorageKey = (username: string, worldId: string | null | undefined): string =>
+  `${PANEL_PLACEMENT_STORAGE_KEY_PREFIX}:${PANEL_STORAGE_SCHEMA_VERSION}:${username.toLocaleLowerCase('cs-CZ')}:${normalizePanelStorageScope(worldId)}`;
+const getLegacyPanelPlacementStorageKey = (username: string): string =>
+  `${LEGACY_PANEL_PLACEMENT_STORAGE_KEY_PREFIX}:${username.toLocaleLowerCase('cs-CZ')}`;
+
+const isPanelLayoutMode = (value: unknown): value is PanelLayoutMode =>
+  value === 'floating' || value === 'full' || value === 'split-left' || value === 'split-right';
+
+const readStoredPanelPlacement = (
+  username: string,
+  worldId: string | null | undefined,
+): StoredPanelPlacementByType => {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  try {
+    const scopedRaw = window.localStorage.getItem(getPanelPlacementStorageKey(username, worldId));
+    const raw =
+      scopedRaw ??
+      (normalizePanelStorageScope(worldId) === 'global'
+        ? window.localStorage.getItem(getLegacyPanelPlacementStorageKey(username))
+        : null);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') {
+      return {};
+    }
+
+    const placement: StoredPanelPlacementByType = {};
+    for (const [panelTypeRaw, value] of Object.entries(parsed)) {
+      if (typeof panelTypeRaw !== 'string') {
+        continue;
+      }
+      if (!(panelTypeRaw in PANEL_META)) {
+        continue;
+      }
+      const panelType = panelTypeRaw as PanelType;
+      if (!isStaticPanelType(panelType)) {
+        continue;
+      }
+      if (!value || typeof value !== 'object') {
+        continue;
+      }
+      const candidate = value as Partial<{ side: PinSide; layoutMode: PanelLayoutMode }>;
+      const side: PinSide = candidate.side === 'right' ? 'right' : 'left';
+      const layoutMode: PanelLayoutMode = isPanelLayoutMode(candidate.layoutMode)
+        ? candidate.layoutMode
+        : side === 'right'
+          ? 'split-right'
+          : 'split-left';
+
+      placement[panelType] = {
+        side,
+        layoutMode,
+      };
+    }
+
+    return placement;
+  } catch {
+    return {};
+  }
+};
+
+const saveStoredPanelPlacement = (
+  username: string,
+  worldId: string | null | undefined,
+  placement: StoredPanelPlacementByType,
+): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const payload: Record<string, { side: PinSide; layoutMode: PanelLayoutMode }> = {};
+  for (const [panelTypeRaw, value] of Object.entries(placement)) {
+    if (typeof panelTypeRaw !== 'string') {
+      continue;
+    }
+    if (!(panelTypeRaw in PANEL_META)) {
+      continue;
+    }
+    const panelType = panelTypeRaw as PanelType;
+    if (!isStaticPanelType(panelType)) {
+      continue;
+    }
+    if (!value || typeof value !== 'object') {
+      continue;
+    }
+    const side: PinSide = value.side === 'right' ? 'right' : 'left';
+    const layoutMode: PanelLayoutMode = isPanelLayoutMode(value.layoutMode)
+      ? value.layoutMode
+      : side === 'right'
+        ? 'split-right'
+        : 'split-left';
+    payload[panelType] = { side, layoutMode };
+  }
+
+  try {
+    window.localStorage.setItem(getPanelPlacementStorageKey(username, worldId), JSON.stringify(payload));
+  } catch {
+    // Ignore storage errors.
+  }
+};
 
 const isPanelType = (value: unknown): value is PanelType =>
   typeof value === 'string' && value in PANEL_META;
@@ -2852,8 +3946,9 @@ const sanitizeStoredPanel = (value: unknown, index: number): PanelWindow | null 
 
   const meta = PANEL_META[candidate.type];
   const side: PinSide = candidate.side === 'right' ? 'right' : 'left';
-  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1440;
-  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 900;
+  const initialViewport = getInitialGameLayoutViewportSize();
+  const viewportWidth = initialViewport.width;
+  const viewportHeight = initialViewport.height;
   const minSize = getPanelMinSize(candidate.type);
   const minWidth = Math.min(
     minSize.width,
@@ -2893,6 +3988,23 @@ const sanitizeStoredPanel = (value: unknown, index: number): PanelWindow | null 
     typeof candidate.id === 'string' && candidate.id.trim().length > 0 ? candidate.id : `${meta.type}-${index}`;
   const label =
     typeof candidate.label === 'string' && candidate.label.trim().length > 0 ? candidate.label : meta.label;
+  const persistedLayoutMode = candidate.layoutMode;
+  const layoutMode: PanelLayoutMode =
+    persistedLayoutMode === 'full' ||
+    persistedLayoutMode === 'split-left' ||
+    persistedLayoutMode === 'split-right' ||
+    persistedLayoutMode === 'floating'
+      ? persistedLayoutMode
+      : canPanelUseDockLayout(meta.type)
+        ? 'full'
+        : 'floating';
+  const normalizedLayoutMode: PanelLayoutMode = !canPanelUseDockLayout(meta.type)
+    ? 'floating'
+    : layoutMode === 'floating'
+      ? side === 'right'
+        ? 'split-right'
+        : 'split-left'
+      : layoutMode;
 
   return {
     ...meta,
@@ -2907,6 +4019,7 @@ const sanitizeStoredPanel = (value: unknown, index: number): PanelWindow | null 
     z,
     expanded: candidate.expanded !== false,
     alert: false,
+    layoutMode: normalizedLayoutMode,
     settlementId: typeof candidate.settlementId === 'string' ? candidate.settlementId : undefined,
     buildingId: typeof candidate.buildingId === 'string' ? candidate.buildingId : undefined,
     battleReportId: Number.isFinite(Number(candidate.battleReportId))
@@ -2918,15 +4031,18 @@ const sanitizeStoredPanel = (value: unknown, index: number): PanelWindow | null 
   };
 };
 
-const readStoredPanelLayout = (username: string): PanelWindow[] | null => {
+const readStoredPanelLayout = (username: string, worldId: string | null | undefined): PanelWindow[] | null => {
   if (typeof window === 'undefined') {
     return null;
   }
 
   try {
+    const scopedRaw = window.localStorage.getItem(getPanelLayoutStorageKey(username, worldId));
     const raw =
-      window.localStorage.getItem(getPanelLayoutStorageKey(username)) ??
-      window.localStorage.getItem(getLegacyPanelLayoutStorageKey(username));
+      scopedRaw ??
+      (normalizePanelStorageScope(worldId) === 'global'
+        ? window.localStorage.getItem(getLegacyPanelLayoutStorageKey(username))
+        : null);
     if (!raw) {
       return null;
     }
@@ -2954,7 +4070,11 @@ const readStoredPanelLayout = (username: string): PanelWindow[] | null => {
   }
 };
 
-const savePanelLayout = (username: string, panels: PanelWindow[]): void => {
+const savePanelLayout = (
+  username: string,
+  worldId: string | null | undefined,
+  panels: PanelWindow[],
+): void => {
   if (typeof window === 'undefined') {
     return;
   }
@@ -2971,6 +4091,7 @@ const savePanelLayout = (username: string, panels: PanelWindow[]): void => {
     z: panel.z,
     expanded: panel.expanded,
     alert: false,
+    layoutMode: panel.layoutMode,
     settlementId: panel.settlementId,
     buildingId: panel.buildingId,
     battleReportId: panel.battleReportId,
@@ -2980,7 +4101,7 @@ const savePanelLayout = (username: string, panels: PanelWindow[]): void => {
   }));
 
   try {
-    window.localStorage.setItem(getPanelLayoutStorageKey(username), JSON.stringify(payload));
+    window.localStorage.setItem(getPanelLayoutStorageKey(username, worldId), JSON.stringify(payload));
   } catch {
     // Ignore storage errors in private mode/quota pressure.
   }
@@ -2998,6 +4119,7 @@ const createPanelWindow = (
       | 'side'
       | 'width'
       | 'height'
+      | 'layoutMode'
       | 'settlementId'
       | 'buildingId'
       | 'battleReportId'
@@ -3008,8 +4130,9 @@ const createPanelWindow = (
   > = {},
 ): PanelWindow => {
   const meta = PANEL_META[type];
-  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1440;
-  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 900;
+  const initialViewport = getInitialGameLayoutViewportSize();
+  const viewportWidth = initialViewport.width;
+  const viewportHeight = initialViewport.height;
   const minSize = getPanelMinSize(type);
   const minWidth = Math.min(
     minSize.width,
@@ -3049,6 +4172,7 @@ const createPanelWindow = (
     y: 136 + rowOffset * 34,
     expanded: true,
     alert: false,
+    layoutMode: overrides.layoutMode ?? 'floating',
   };
 
   return fitPanelToViewport(created, viewportWidth, viewportHeight);
@@ -3085,6 +4209,21 @@ const formatDurationLabel = (seconds: number | null): string => {
   return `${secs}s`;
 };
 
+const formatCompactResourceAmount = (amountRaw: number): string => {
+  const amount = Math.max(0, Math.floor(Number(amountRaw ?? 0)));
+  if (amount >= 1_000_000) {
+    const value = amount / 1_000_000;
+    const formatted = value >= 10 ? value.toFixed(0) : value.toFixed(1);
+    return `${formatted.replace(/\.0$/, '').replace('.', ',')}m`;
+  }
+  if (amount >= 1_000) {
+    const value = amount / 1_000;
+    const formatted = value >= 100 ? value.toFixed(0) : value.toFixed(1);
+    return `${formatted.replace(/\.0$/, '').replace('.', ',')}k`;
+  }
+  return amount.toLocaleString('cs-CZ');
+};
+
 const formatCzechCountLabel = (countRaw: number, one: string, few: string, many: string): string => {
   const count = Math.abs(Math.floor(Number(countRaw)));
   if (count % 10 === 1 && count % 100 !== 11) {
@@ -3112,6 +4251,334 @@ const formatDateTimeLabel = (value: string | number | Date | null | undefined): 
     minute: '2-digit',
     second: '2-digit',
   }).format(new Date(timestampMs));
+};
+
+const getRemainingSecondsToIso = (value: string | null | undefined, referenceMs = Date.now()): number => {
+  if (!value) {
+    return 0;
+  }
+  const targetMs = Date.parse(String(value));
+  if (!Number.isFinite(targetMs)) {
+    return 0;
+  }
+  return Math.max(0, Math.ceil((targetMs - referenceMs) / 1000));
+};
+
+const getWorldSnapshotVersion = (
+  world: Pick<GameStateResponse['world'], 'snapshotKey' | 'version'> | null | undefined,
+): string | null => {
+  const snapshotKey = String(world?.snapshotKey ?? '').trim();
+  if (snapshotKey) {
+    return snapshotKey;
+  }
+  const version = String(world?.version ?? '').trim();
+  return version || null;
+};
+
+const useSecondClock = (enabled = true): number => {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [enabled]);
+
+  useEffect(() => {
+    if (enabled) {
+      setNowMs(Date.now());
+    }
+  }, [enabled]);
+
+  return nowMs;
+};
+
+const formatDateTimePragueLabel = (value: string | number | Date | null | undefined): string => {
+  if (value == null) {
+    return '-';
+  }
+  const timestampMs = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  if (!Number.isFinite(timestampMs)) {
+    return '-';
+  }
+  return new Intl.DateTimeFormat('cs-CZ', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZone: PRAGUE_TIMEZONE,
+  }).format(new Date(timestampMs));
+};
+
+const roundIsoToWholeMinute = (isoValue: string): string => {
+  const parsed = Date.parse(String(isoValue));
+  if (!Number.isFinite(parsed)) {
+    return new Date().toISOString();
+  }
+  const roundedMs = Math.ceil(parsed / 60000) * 60000;
+  return new Date(roundedMs).toISOString();
+};
+
+const addMinutesToIso = (isoValue: string, deltaMinutes: number): string => {
+  const parsed = Date.parse(String(isoValue));
+  const safeParsed = Number.isFinite(parsed) ? parsed : Date.now();
+  const deltaMs = Math.round(Number(deltaMinutes ?? 0) * 60_000);
+  return new Date(safeParsed + deltaMs).toISOString();
+};
+
+const calculatePlannerTravelDurationSec = (
+  units: Partial<Record<CommandUnitId, number>>,
+  originVillage: Pick<ArmyVillageSummary, 'coordX' | 'coordY'>,
+  targetVillage: Pick<RegionSettlement, 'globalX' | 'globalY'>,
+): number => {
+  const distanceTiles = Math.max(
+    Math.abs(Number(targetVillage.globalX) - Number(originVillage.coordX)),
+    Math.abs(Number(targetVillage.globalY) - Number(originVillage.coordY)),
+  );
+  if (!Number.isFinite(distanceTiles) || distanceTiles <= 0) {
+    return MIN_ARMY_TRAVEL_DURATION_SEC;
+  }
+
+  let slowestSpeed = Number.POSITIVE_INFINITY;
+  let hasUnits = false;
+  for (const unitId of COMMAND_UNIT_ORDER) {
+    const amount = Math.max(0, Math.floor(Number(units[unitId] ?? 0)));
+    if (amount <= 0) {
+      continue;
+    }
+    const unitSpeed = Math.max(0, Number(UNIT_TRAVEL_SPEED_TILES_PER_HOUR[unitId] ?? 0));
+    if (unitSpeed <= 0) {
+      continue;
+    }
+    hasUnits = true;
+    slowestSpeed = Math.min(slowestSpeed, unitSpeed);
+  }
+
+  if (!hasUnits || !Number.isFinite(slowestSpeed) || slowestSpeed <= 0) {
+    return MIN_ARMY_TRAVEL_DURATION_SEC;
+  }
+
+  const durationSec = (distanceTiles / slowestSpeed) * 3600 * ARMY_TRAVEL_TIME_MULTIPLIER;
+  return Math.max(MIN_ARMY_TRAVEL_DURATION_SEC, Math.round(durationSec));
+};
+
+const normalizePlannerLegTimeline = (
+  legs: PlannerLegDraft[],
+  constraints: PlannerConstraints,
+  referenceMs: number = Date.now(),
+): PlannerLegDraft[] => {
+  if (legs.length <= 0) {
+    return [];
+  }
+  const minGapMinutes = Math.max(1, Math.floor(Number(constraints.minImpactGapMinutes ?? DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES)));
+  const leadTimeSec = Math.max(0, Math.floor(Number(constraints.leadTimeSec ?? DEFAULT_PLANNER_LEAD_TIME_SEC)));
+  const firstAllowedMs = referenceMs + leadTimeSec * 1000;
+
+  const normalized: PlannerLegDraft[] = [];
+  let previousImpactMs = 0;
+  for (let index = 0; index < legs.length; index += 1) {
+    const leg = legs[index];
+    const parsedImpactMs = Date.parse(String(leg.impactAtUtc ?? ''));
+    const fallbackImpactMs = firstAllowedMs + index * minGapMinutes * 60_000;
+    const sourceImpactMs = Number.isFinite(parsedImpactMs) ? parsedImpactMs : fallbackImpactMs;
+    const minAllowedForLegMs =
+      index === 0 ? firstAllowedMs : previousImpactMs + minGapMinutes * 60_000;
+    const nextImpactMs = Math.max(minAllowedForLegMs, sourceImpactMs);
+    previousImpactMs = nextImpactMs;
+    normalized.push({
+      ...leg,
+      impactAtUtc: new Date(nextImpactMs).toISOString(),
+    });
+  }
+
+  return normalized;
+};
+
+const normalizePlannerLegTimelineForwardOneMinute = (
+  legs: PlannerLegDraft[],
+  constraints: PlannerConstraints,
+  referenceMs: number = Date.now(),
+): PlannerLegDraft[] => {
+  if (legs.length <= 0) {
+    return [];
+  }
+
+  const leadTimeSec = Math.max(0, Math.floor(Number(constraints.leadTimeSec ?? DEFAULT_PLANNER_LEAD_TIME_SEC)));
+  const firstAllowedMs = referenceMs + leadTimeSec * 1000;
+  const parsedFirstImpactMs = Date.parse(String(legs[0]?.impactAtUtc ?? ''));
+  const firstImpactMs = Math.max(
+    firstAllowedMs,
+    Number.isFinite(parsedFirstImpactMs) ? parsedFirstImpactMs : firstAllowedMs,
+  );
+
+  return legs.map((leg, index) => ({
+    ...leg,
+    impactAtUtc: new Date(firstImpactMs + index * 60_000).toISOString(),
+  }));
+};
+
+const normalizePlannerLegTimelineFromLast = (
+  legs: PlannerLegDraft[],
+  constraints: PlannerConstraints,
+  referenceMs: number = Date.now(),
+): PlannerLegDraft[] => {
+  if (legs.length <= 0) {
+    return [];
+  }
+
+  const minGapMinutes = Math.max(
+    1,
+    Math.floor(Number(constraints.minImpactGapMinutes ?? DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES)),
+  );
+  const gapMs = minGapMinutes * 60_000;
+  const leadTimeSec = Math.max(0, Math.floor(Number(constraints.leadTimeSec ?? DEFAULT_PLANNER_LEAD_TIME_SEC)));
+  const firstAllowedMs = referenceMs + leadTimeSec * 1000;
+  const lastIndex = legs.length - 1;
+  const minimumLastImpactMs = firstAllowedMs + lastIndex * gapMs;
+  const parsedLastImpactMs = Date.parse(String(legs[lastIndex]?.impactAtUtc ?? ''));
+  const anchorLastImpactMs = Math.max(
+    minimumLastImpactMs,
+    Number.isFinite(parsedLastImpactMs) ? parsedLastImpactMs : minimumLastImpactMs,
+  );
+
+  const impactByIndex: number[] = new Array(legs.length).fill(0);
+  impactByIndex[lastIndex] = anchorLastImpactMs;
+  for (let index = lastIndex - 1; index >= 0; index -= 1) {
+    const parsedImpactMs = Date.parse(String(legs[index]?.impactAtUtc ?? ''));
+    const fallbackImpactMs = anchorLastImpactMs - (lastIndex - index) * gapMs;
+    const sourceImpactMs = Number.isFinite(parsedImpactMs) ? parsedImpactMs : fallbackImpactMs;
+    const maxAllowedMs = impactByIndex[index + 1] - gapMs;
+    impactByIndex[index] = Math.min(sourceImpactMs, maxAllowedMs);
+  }
+
+  if (impactByIndex[0] < firstAllowedMs) {
+    const shiftMs = firstAllowedMs - impactByIndex[0];
+    for (let index = 0; index < impactByIndex.length; index += 1) {
+      impactByIndex[index] += shiftMs;
+    }
+  }
+
+  return legs.map((leg, index) => ({
+    ...leg,
+    impactAtUtc: new Date(impactByIndex[index]).toISOString(),
+  }));
+};
+
+const toPlannerRequestLegs = (
+  legRows: Array<{
+    order: number;
+    key: number;
+    impactAtUtc: string;
+    units: Partial<Record<CommandUnitId, number>>;
+  }>,
+) =>
+  legRows.map((legRow) => ({
+    order: Math.max(1, Math.floor(Number(legRow.order ?? 1))),
+    originVillageId: Math.max(1, Math.floor(Number(legRow.key ?? 1))),
+    impactAtPrague: String(legRow.impactAtUtc),
+    units: COMMAND_UNIT_ORDER
+      .map((unitId) => ({
+        unitId,
+        amount: Math.max(0, Math.floor(Number(legRow.units?.[unitId] ?? 0))),
+      }))
+      .filter((item) => item.amount > 0),
+  }));
+
+const resolvePlannerPlanStatusMeta = (
+  statusRaw: string | null | undefined,
+): { label: string; tone: 'ok' | 'warning' | 'blocked' | 'neutral' } => {
+  const status = String(statusRaw ?? '').toLocaleLowerCase('cs-CZ');
+  if (status === 'scheduled') {
+    return { label: 'Naplánováno', tone: 'ok' };
+  }
+  if (status === 'needs_reconfirmation') {
+    return { label: 'Čeká na potvrzení', tone: 'warning' };
+  }
+  if (status === 'dispatching') {
+    return { label: 'Odesílá se', tone: 'neutral' };
+  }
+  if (status === 'completed') {
+    return { label: 'Dokončeno', tone: 'ok' };
+  }
+  if (status === 'failed') {
+    return { label: 'Selhalo', tone: 'blocked' };
+  }
+  if (status === 'canceled') {
+    return { label: 'Zrušeno', tone: 'blocked' };
+  }
+  return { label: 'Neznámý stav', tone: 'neutral' };
+};
+
+const resolvePlannerLegStatusMeta = (
+  statusRaw: string | null | undefined,
+): { label: string; tone: 'ok' | 'warning' | 'blocked' | 'neutral' } => {
+  const status = String(statusRaw ?? '').toLocaleLowerCase('cs-CZ');
+  if (status === 'scheduled') {
+    return { label: 'Naplánováno', tone: 'ok' };
+  }
+  if (status === 'sent') {
+    return { label: 'Odesláno', tone: 'ok' };
+  }
+  if (status === 'failed') {
+    return { label: 'Selhalo', tone: 'blocked' };
+  }
+  if (status === 'canceled') {
+    return { label: 'Zrušeno', tone: 'blocked' };
+  }
+  return { label: 'Neznámý stav', tone: 'neutral' };
+};
+
+const buildPlannerDraftFromActivePlan = (
+  activePlan: PlannerOpenResponse['activePlan'],
+): PlannerDraftState => {
+  if (!activePlan) {
+    return {
+      targetPlayerUsername: '',
+      targetVillageId: null,
+      legs: [],
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  const legs = [...(activePlan.legs ?? [])]
+    .sort((left, right) => Number(left.order ?? 0) - Number(right.order ?? 0))
+    .map((leg) => {
+      const units: Partial<Record<CommandUnitId, number>> = {};
+      for (const item of leg.units ?? []) {
+        const unitId = String(item.unitId ?? '') as CommandUnitId;
+        if (!COMMAND_UNIT_ORDER.includes(unitId)) {
+          continue;
+        }
+        const plannedAmount = Math.max(0, Math.floor(Number(item.plannedAmount ?? 0)));
+        if (plannedAmount <= 0) {
+          continue;
+        }
+        units[unitId] = plannedAmount;
+      }
+      return {
+        originVillageId: Math.max(0, Math.floor(Number(leg.originVillageId ?? 0))),
+        impactAtUtc: String(leg.impactAtUtc ?? ''),
+        units,
+      };
+    })
+    .filter((leg) => Number.isFinite(leg.originVillageId) && leg.originVillageId > 0);
+
+  const targetVillageId = Math.floor(Number(activePlan.plan.targetVillageId ?? 0));
+  return {
+    targetPlayerUsername: String(activePlan.plan.targetPlayerUsernameSnapshot ?? '').trim(),
+    targetVillageId: Number.isFinite(targetVillageId) && targetVillageId > 0 ? targetVillageId : null,
+    legs,
+    updatedAt: new Date().toISOString(),
+  };
 };
 
 const getErrorMessage = (error: unknown): string => {
@@ -3168,73 +4635,120 @@ const extractVillageBaseName = (label: string): string => {
     .trim();
 };
 
-const CityPanel = ({
+const CityPanel = memo(({
   villageLabel,
   regionLabel,
-  ownerName,
   prestige,
-  loyalty,
+  cityResourceSnapshot,
   availableResources,
   buildings,
-  units,
-  orders,
-  armyMovementOrders,
-  recruitQueueOrders,
   onOpenBuilding,
-  onOpenArmyRecruitment,
-  onRenameVillage,
   onUpgradeBuilding,
   onCancelBuildingUpgrade,
-  onCancelRecruitment,
+  onCancelAllBuildingUpgrades,
+  onReorderBuildingUpgrade,
   buildingUpgradeQueueByBuilding,
   upgradePendingBuildingId,
-  isRenameVillagePending,
   cancelUpgradePendingOrderId,
-  cancelRecruitmentPendingId,
+  reorderUpgradePendingOrderId,
+  cancelUpgradeQueuePending,
   buildingNotices,
 }: {
   villageLabel: string;
   regionLabel: string;
-  ownerName: string;
   prestige: number;
-  loyalty: number;
+  cityResourceSnapshot: CityPanelResourceSnapshot;
   availableResources: ResourceCost;
   buildings: Building[];
-  units: Unit[];
-  orders: string[];
-  armyMovementOrders: ArmyMovementState[];
-  recruitQueueOrders: RecruitQueueOrder[];
   onOpenBuilding: (building: Building) => void;
-  onOpenArmyRecruitment: () => void;
-  onRenameVillage: (nextName: string) => Promise<string>;
   onUpgradeBuilding: (building: Building) => void;
   onCancelBuildingUpgrade: (upgradeOrderId: number, buildingId: string) => void;
-  onCancelRecruitment: (order: RecruitQueueOrder) => void;
+  onCancelAllBuildingUpgrades: () => void;
+  onReorderBuildingUpgrade: (upgradeOrderId: number, targetIndex: number) => void;
   buildingUpgradeQueueByBuilding: Map<string, BuildingUpgradeQueueOrder[]>;
   upgradePendingBuildingId: string | null;
-  isRenameVillagePending: boolean;
   cancelUpgradePendingOrderId: number | null;
-  cancelRecruitmentPendingId: number | null;
+  reorderUpgradePendingOrderId: number | null;
+  cancelUpgradeQueuePending: boolean;
   buildingNotices: Record<string, string>;
 }) => {
-  const [renameDraft, setRenameDraft] = useState(() => extractVillageBaseName(villageLabel));
-  const [renameNotice, setRenameNotice] = useState<string | null>(null);
   const [hoveredBuildingId, setHoveredBuildingId] = useState<string | null>(null);
   const [buildingTooltipCursorPosition, setBuildingTooltipCursorPosition] = useState<TooltipCursorPosition | null>(
     null,
   );
-  const [hoveredArmyOrderKey, setHoveredArmyOrderKey] = useState<string | null>(null);
-  const [armyOrderTooltipCursorPosition, setArmyOrderTooltipCursorPosition] = useState<TooltipCursorPosition | null>(
-    null,
+  const [isCityResourceTooltipOpen, setIsCityResourceTooltipOpen] = useState(false);
+  const [cityResourceTooltipCursorPosition, setCityResourceTooltipCursorPosition] =
+    useState<TooltipCursorPosition | null>(null);
+  const [draggedQueueOrderId, setDraggedQueueOrderId] = useState<number | null>(null);
+  const [queueActionTooltip, setQueueActionTooltip] = useState<{
+    title: string;
+    description: string;
+    cursorPosition: TooltipCursorPosition | null;
+  } | null>(null);
+  const openQueueActionTooltipAtCursor = useCallback(
+    (event: ReactMouseEvent<HTMLElement>, title: string, description: string) => {
+      setQueueActionTooltip({
+        title,
+        description,
+        cursorPosition: {
+          x: event.clientX,
+          y: event.clientY,
+        },
+      });
+    },
+    [],
+  );
+  const openQueueActionTooltipAtElement = useCallback(
+    (event: ReactFocusEvent<HTMLElement>, title: string, description: string) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      setQueueActionTooltip({
+        title,
+        description,
+        cursorPosition: {
+          x: Math.floor(rect.left + rect.width * 0.5),
+          y: Math.floor(rect.top + rect.height * 0.5),
+        },
+      });
+    },
+    [],
+  );
+  const moveQueueActionTooltip = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    setQueueActionTooltip((previous) =>
+      previous
+        ? {
+            ...previous,
+            cursorPosition: {
+              x: event.clientX,
+              y: event.clientY,
+            },
+          }
+        : previous,
+    );
+  }, []);
+  const closeQueueActionTooltip = useCallback(() => {
+    setQueueActionTooltip(null);
+  }, []);
+  const bindQueueActionTooltip = useCallback(
+    (title: string, description: string) => ({
+      onMouseEnter: (event: ReactMouseEvent<HTMLElement>) =>
+        openQueueActionTooltipAtCursor(event, title, description),
+      onMouseMove: moveQueueActionTooltip,
+      onMouseLeave: closeQueueActionTooltip,
+      onFocus: (event: ReactFocusEvent<HTMLElement>) =>
+        openQueueActionTooltipAtElement(event, title, description),
+      onBlur: closeQueueActionTooltip,
+    }),
+    [
+      closeQueueActionTooltip,
+      moveQueueActionTooltip,
+      openQueueActionTooltipAtCursor,
+      openQueueActionTooltipAtElement,
+    ],
   );
   const buildingsById = useMemo(
     () => new Map(buildings.map((building) => [building.id, building])),
     [buildings],
   );
-
-  useEffect(() => {
-    setRenameDraft(extractVillageBaseName(villageLabel));
-  }, [villageLabel]);
 
   const groupedBuildings = useMemo(() => {
     const seenBuildingIds = new Set<string>();
@@ -3269,84 +4783,183 @@ const CityPanel = ({
     return grouped;
   }, [buildings, buildingsById]);
 
-  const activeUpgradeOrders = useMemo(() => {
-    const merged = Array.from(buildingUpgradeQueueByBuilding.values()).flat();
-    return [...merged].sort((a, b) => {
-      const byEta = a.remainingSec - b.remainingSec;
-      if (byEta !== 0) {
-        return byEta;
+  const cityResourceRows = useMemo<CityPanelResourceRow[]>(
+    () =>
+      [
+        ...CITY_PANEL_RESOURCE_DEFINITIONS.map((definition) => {
+          const building = buildingsById.get(definition.buildingId);
+          const resourceLabel = definition.label;
+          const resourceIcon = resolveResourceGlyph(resourceLabel);
+
+          return {
+            key: definition.key,
+            label: definition.label,
+            icon: resourceIcon,
+            amount: Math.max(0, Math.floor(Number(cityResourceSnapshot[definition.key] ?? 0))),
+            productionPerHour: Math.max(
+              0,
+              Math.floor(Number(cityResourceSnapshot.productionPerHour[definition.productionField] ?? 0)),
+            ),
+            capacity: Math.max(0, Math.floor(Number(cityResourceSnapshot[definition.capacityField] ?? 0))),
+            protectedAmount: Math.max(
+              0,
+              Math.floor(Number(cityResourceSnapshot.protection[definition.protectionField] ?? 0)),
+            ),
+            buildingLevel: Math.max(0, Math.floor(Number(building?.level ?? 0))),
+            buildingName:
+              building?.name ?? BUILDING_ART[definition.buildingId]?.fallbackName ?? definition.buildingId,
+          };
+        }),
+        {
+          key: 'population',
+          label: 'Populace',
+          icon: resolveResourceGlyph('Populace'),
+          amount: Math.max(0, Math.floor(Number(cityResourceSnapshot.populationUsed ?? 0))),
+          productionPerHour: null,
+          capacity: Math.max(0, Math.floor(Number(cityResourceSnapshot.populationCap ?? 0))),
+          protectedAmount: 0,
+          buildingLevel: Math.max(0, Math.floor(Number(buildingsById.get('residential-quarter')?.level ?? 0))),
+          buildingName:
+            buildingsById.get('residential-quarter')?.name ??
+            BUILDING_ART['residential-quarter']?.fallbackName ??
+            'residential-quarter',
+        },
+      ],
+    [buildingsById, cityResourceSnapshot],
+  );
+  const cityResourceTooltipRows = useMemo(() => {
+    const desiredOrder = ['wood', 'gold', 'stone', 'coins', 'iron', 'population'];
+    const rowByKey = new Map(cityResourceRows.map((row) => [row.key, row]));
+    const ordered = desiredOrder
+      .map((key) => rowByKey.get(key))
+      .filter((row): row is CityPanelResourceRow => row != null);
+    if (ordered.length >= cityResourceRows.length) {
+      return ordered;
+    }
+    const usedKeys = new Set(ordered.map((row) => row.key));
+    const remaining = cityResourceRows.filter((row) => !usedKeys.has(row.key));
+    return [...ordered, ...remaining];
+  }, [cityResourceRows]);
+
+  const upgradeQueueRows = useMemo(() => {
+    const allOrders = Array.from(buildingUpgradeQueueByBuilding.values()).flatMap((orders) => orders);
+    const sortedOrders = [...allOrders].sort((left, right) => {
+      const leftFinishMs = Date.parse(String(left.finishAt));
+      const rightFinishMs = Date.parse(String(right.finishAt));
+      if (Number.isFinite(leftFinishMs) && Number.isFinite(rightFinishMs) && leftFinishMs !== rightFinishMs) {
+        return leftFinishMs - rightFinishMs;
       }
-      return a.id - b.id;
+      return Number(left.id) - Number(right.id);
     });
-  }, [buildingUpgradeQueueByBuilding]);
 
-  const remainingOrders = useMemo(() => {
-    return orders.filter((order) => {
-      const normalized = order.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
-      return !normalized.startsWith('vystavba:') && !normalized.startsWith('nabor:');
+    return sortedOrders.map((order, index) => {
+      const startsInSec = index <= 0 ? 0 : Math.max(0, Math.floor(Number(sortedOrders[index - 1]?.remainingSec ?? 0)));
+      return {
+        ...order,
+        queueIndex: index,
+        isActive: index === 0,
+        startsInSec,
+        buildingIcon:
+          buildingsById.get(order.buildingId)?.icon ??
+          BUILDING_ART[order.buildingId]?.icon ??
+          DEFAULT_BUILDING_ICON,
+        buildingName:
+          buildingsById.get(order.buildingId)?.name ??
+          BUILDING_ART[order.buildingId]?.fallbackName ??
+          order.buildingId,
+      };
     });
-  }, [orders]);
-
-  const handleRenameSubmit = useCallback(async () => {
-    const notice = await onRenameVillage(renameDraft);
-    setRenameNotice(notice);
-  }, [onRenameVillage, renameDraft]);
+  }, [buildingUpgradeQueueByBuilding, buildingsById]);
+  const firstQueueOrderIdByBuilding = useMemo(() => {
+    const byBuilding = new Map<string, number>();
+    for (const order of upgradeQueueRows) {
+      if (!byBuilding.has(order.buildingId)) {
+        byBuilding.set(order.buildingId, order.id);
+      }
+    }
+    return byBuilding;
+  }, [upgradeQueueRows]);
+  const isQueueActionPending =
+    cancelUpgradeQueuePending || cancelUpgradePendingOrderId != null || reorderUpgradePendingOrderId != null;
 
   return (
     <div className="city-panel">
       <div className="city-overview-layout">
-        <aside className="city-stats-grid">
-          <article>
-            <h4>Město</h4>
-            <strong>{villageLabel}</strong>
-            <span>{regionLabel}</span>
-            <div className="settings-avatar-input">
-              <label>
-                Změnit název léna
-                <input
-                  type="text"
-                  value={renameDraft}
-                  maxLength={14}
-                  onChange={(event) => {
-                    setRenameDraft(event.target.value);
-                    setRenameNotice(null);
-                  }}
-                  onKeyDown={(event) => handleActionOnEnter(event, () => void handleRenameSubmit())}
-                  disabled={isRenameVillagePending}
-                />
-              </label>
-              <small className="row-help">Souřadnice se nemění a zůstávají vždy za názvem léna.</small>
-              <button
-                type="button"
-                className="secondary-action"
-                onClick={() => {
-                  void handleRenameSubmit();
-                }}
-                disabled={isRenameVillagePending || !renameDraft.trim()}
-              >
-                {isRenameVillagePending ? 'Ukládám...' : 'Přejmenovat'}
-              </button>
-              {renameNotice ? <small className="row-help">{renameNotice}</small> : null}
-            </div>
-          </article>
-          <article>
-            <h4>Prestiž</h4>
-            <strong>{prestige.toLocaleString('cs-CZ')} bodů</strong>
-            <span>Tier: opevněné město</span>
-          </article>
-          <article>
-            <h4>Vlastník</h4>
-            <strong>{ownerName}</strong>
-            <span>Aktuální držitel léna</span>
-          </article>
-          <article>
-            <h4>Oddanost</h4>
-            <strong>{loyalty} %</strong>
-            <span>Bez rizika převzetí</span>
-          </article>
-        </aside>
-
         <div className="city-layout">
+          <section className="city-stats-grid city-overview-summary">
+            <article>
+              <h4>Město</h4>
+              <strong>{villageLabel}</strong>
+              <span>{regionLabel}</span>
+            </article>
+            <article>
+              <h4>Prestiž</h4>
+              <strong>{prestige.toLocaleString('cs-CZ')} bodů</strong>
+              <span>Tier: opevněné město</span>
+            </article>
+            <article
+              className="city-resource-stock-card"
+              tabIndex={0}
+              onMouseEnter={(event) => {
+                setIsCityResourceTooltipOpen(true);
+                setCityResourceTooltipCursorPosition({ x: event.clientX, y: event.clientY });
+              }}
+              onMouseMove={(event) => {
+                if (!isCityResourceTooltipOpen) {
+                  return;
+                }
+                setCityResourceTooltipCursorPosition({ x: event.clientX, y: event.clientY });
+              }}
+              onMouseLeave={() => {
+                setIsCityResourceTooltipOpen(false);
+                setCityResourceTooltipCursorPosition(null);
+              }}
+              onFocus={() => {
+                setIsCityResourceTooltipOpen(true);
+                if (typeof window !== 'undefined') {
+                  setCityResourceTooltipCursorPosition({
+                    x: Math.floor(window.innerWidth * 0.58),
+                    y: Math.floor(window.innerHeight * 0.28),
+                  });
+                }
+              }}
+              onBlur={() => {
+                setIsCityResourceTooltipOpen(false);
+                setCityResourceTooltipCursorPosition(null);
+              }}
+            >
+              <h4>Suroviny v léně</h4>
+              <ul className="city-resource-stock-list">
+                {cityResourceRows.map((resource) => (
+                  <li
+                    key={`city-resource-stock-${resource.key}`}
+                    title={`${resource.label}: ${resource.amount.toLocaleString('cs-CZ')}`}
+                    aria-label={`${resource.label}: ${resource.amount.toLocaleString('cs-CZ')}`}
+                  >
+                    <span className="city-resource-stock-icon" aria-hidden="true">
+                      {resource.icon.startsWith('/') ? (
+                        <img src={resource.icon} alt="" loading="lazy" decoding="async" draggable={false} />
+                      ) : (
+                        resource.icon
+                      )}
+                    </span>
+                    <strong className="ui-type-resource-value city-resource-stock-amount">
+                      {resource.key === 'population'
+                        ? `${resource.amount.toLocaleString('cs-CZ')} / ${resource.capacity.toLocaleString('cs-CZ')}`
+                        : resource.amount.toLocaleString('cs-CZ')}
+                    </strong>
+                  </li>
+                ))}
+              </ul>
+              {isCityResourceTooltipOpen ? (
+                <CityResourceSummaryTooltip
+                  rows={cityResourceTooltipRows}
+                  cursorPosition={cityResourceTooltipCursorPosition}
+                />
+              ) : null}
+            </article>
+          </section>
+
           <section className="city-core-view">
             <div className="city-upgrade-board">
               {groupedBuildings.map((group) => (
@@ -3364,16 +4977,20 @@ const CityPanel = ({
                         .replace(/\p{Diacritic}/gu, '')
                         .toLowerCase();
                       const isPositiveNotice = normalizedNotice.includes('uspesne');
+                      const normalizedBlockedReason = (building.blockedReason ?? '')
+                        .normalize('NFD')
+                        .replace(/\p{Diacritic}/gu, '')
+                        .toLowerCase();
+                      const isMaxed =
+                        (!building.nextCostRaw && !building.canUpgrade) ||
+                        normalizedBlockedReason.includes('maximalni') ||
+                        normalizedBlockedReason.includes('max urov');
+                      const isReadyForUpgrade = building.canUpgrade && !building.isInProgress;
                       const statusText = building.isInProgress
                         ? `Probíhá upgrade (${building.nextTime})`
-                        : building.canUpgrade
+                        : isReadyForUpgrade
                           ? `Připraveno (${building.nextTime})`
-                          : building.blockedReason ?? 'Max úroveň';
-                      const statusToneClass = building.isInProgress
-                        ? 'progress'
-                        : building.canUpgrade
-                          ? 'ready'
-                          : 'blocked';
+                          : building.blockedReason ?? (isMaxed ? 'Max úroveň' : 'Čeká na podmínky');
                       const upgradeQueue = buildingUpgradeQueueByBuilding.get(building.id) ?? [];
                       const canCancelUpgrade = upgradeQueue.length > 0;
                       const cancelOrderId = canCancelUpgrade ? upgradeQueue[0].id : null;
@@ -3388,11 +5005,23 @@ const CityPanel = ({
                         'položky',
                         'položek',
                       )}`;
+                      const costRows = building.nextCostRaw
+                        ? RESOURCE_COST_TYPES.map((resourceType) => {
+                            const requiredAmount = building.nextCostRaw?.[resourceType] ?? 0;
+                            const availableAmount = availableResources[resourceType];
+                            return {
+                              resourceType,
+                              requiredAmount,
+                              availableAmount,
+                              canAffordResource: availableAmount >= requiredAmount,
+                            };
+                          })
+                        : [];
 
                       return (
                         <article
                           key={building.id}
-                          className={`city-building-card has-army-tooltip ${building.isInProgress ? 'is-progress' : ''} ${isUnbuilt ? 'is-unbuilt' : ''} ${hoveredBuildingId === building.id ? 'is-tooltip-open' : ''}`}
+                          className={`city-building-card has-army-tooltip ${building.isInProgress ? 'is-progress' : ''} ${isReadyForUpgrade ? 'is-ready' : ''} ${isMaxed ? 'is-maxed' : ''} ${isUnbuilt ? 'is-unbuilt' : ''} ${hoveredBuildingId === building.id ? 'is-tooltip-open' : ''}`}
                           role="button"
                           tabIndex={0}
                           title={
@@ -3412,9 +5041,6 @@ const CityPanel = ({
                             onOpenBuilding(building);
                           }}
                           onMouseEnter={(event) => {
-                            if (!building.nextLevelPreview) {
-                              return;
-                            }
                             setHoveredBuildingId(building.id);
                             setBuildingTooltipCursorPosition({ x: event.clientX, y: event.clientY });
                           }}
@@ -3441,63 +5067,39 @@ const CityPanel = ({
                             <img src={building.icon} alt={building.name} loading="lazy" />
                             <div>
                               <strong>{building.name}</strong>
-                              <em>Úroveň {building.level}</em>
-                              {isUnbuilt ? (
-                                <small className="city-building-unbuilt-label">Neaktivní budova</small>
+                              <em>
+                                Úroveň {building.level}
+                                {isMaxed ? ' (max)' : ''}
+                              </em>
+                              {canCancelUpgrade && cancelOrderId != null ? (
+                                <button
+                                  type="button"
+                                  className="inline-cancel-button city-building-cancel-inline"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    onCancelBuildingUpgrade(cancelOrderId, building.id);
+                                  }}
+                                  onContextMenu={(event) => {
+                                    event.stopPropagation();
+                                  }}
+                                  disabled={isCancelPending}
+                                  title="Zrušit aktivní upgrade této budovy"
+                                  aria-label="Zrušit upgrade budovy"
+                                >
+                                  {isCancelPending ? '…' : '✕'}
+                                </button>
                               ) : null}
                             </div>
                           </div>
-                          <div className="city-building-status-row">
-                            <p className={`city-building-status ${statusToneClass}`}>{statusText}</p>
-                            {canCancelUpgrade && cancelOrderId != null ? (
-                              <button
-                                type="button"
-                                className="inline-cancel-button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  onCancelBuildingUpgrade(cancelOrderId, building.id);
-                                }}
-                                onContextMenu={(event) => {
-                                  event.stopPropagation();
-                                }}
-                                disabled={isCancelPending}
-                                title="Zrušit tento upgrade a navazující položky ve frontě"
-                                aria-label="Zrušit upgrade budovy"
-                              >
-                                {isCancelPending ? '…' : '✕'}
-                              </button>
-                            ) : null}
-                          </div>
-                          <small className="row-help">{queueInfoLabel}</small>
-                          <div className="city-building-costs">
-                            {building.nextCostRaw ? (
-                              RESOURCE_COST_TYPES.map((resourceType) => {
-                                const requiredAmount = building.nextCostRaw?.[resourceType] ?? 0;
-                                const availableAmount = availableResources[resourceType];
-                                const canAffordResource = availableAmount >= requiredAmount;
-                                return (
-                                  <span
-                                    key={`${building.id}-${resourceType}`}
-                                    className={`city-cost-chip ${canAffordResource ? 'ok' : 'missing'}`}
-                                    title={`${LOOT_PRIORITY_LABELS[resourceType]}: máš ${availableAmount.toLocaleString('cs-CZ')}`}
-                                  >
-                                    <b>{LOOT_PRIORITY_LABELS[resourceType]}</b>
-                                    <i>{requiredAmount.toLocaleString('cs-CZ')}</i>
-                                  </span>
-                                );
-                              })
-                            ) : (
-                              <span className="city-cost-chip maxed">Max úroveň</span>
-                            )}
-                          </div>
-                          {notice ? (
-                            <p className={`city-building-notice ${isPositiveNotice ? 'success' : 'error'}`}>
-                              {notice}
-                            </p>
-                          ) : null}
                           {hoveredBuildingId === building.id ? (
                             <BuildingUpgradePreviewTooltip
                               building={building}
+                              statusText={statusText}
+                              queueInfoLabel={queueInfoLabel}
+                              isPositiveNotice={isPositiveNotice}
+                              notice={notice}
+                              isMaxed={isMaxed}
+                              costRows={costRows}
                               cursorPosition={buildingTooltipCursorPosition}
                             />
                           ) : null}
@@ -3510,204 +5112,197 @@ const CityPanel = ({
             </div>
           </section>
 
-          <aside className="city-side-info">
-            <section>
-              <h3>Jednotky ve městě</h3>
-              <ul>
-                {units.map((unit) => (
-                  <li
-                    key={unit.id}
-                    className="city-unit-line"
-                    role="button"
-                    tabIndex={0}
-                    title="Levé kliknutí: otevřít okno Armáda a nábor"
-                    onClick={() => onOpenArmyRecruitment()}
-                    onKeyDown={(event) =>
-                      handleActionOnEnter(event, () => {
-                        onOpenArmyRecruitment();
-                      })
-                    }
-                  >
-                    <div className="city-unit-header">
-                      <span className="unit-name-with-icon">
-                        <span className="unit-icon-shell" aria-hidden="true">
-                          <img
-                            src={getUnitMetaById(unit.id).icon}
-                            alt=""
-                            className="unit-icon-image"
-                            loading="lazy"
-                          />
-                        </span>
-                        <span>{unit.name}</span>
-                      </span>
-                      <strong className="city-unit-amount">
-                        {unit.amount.toLocaleString('cs-CZ')}
-                        {unit.stationedSupportCount > 0
-                          ? ` (+${unit.stationedSupportCount.toLocaleString('cs-CZ')})`
-                          : ''}
-                      </strong>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </section>
-
-            <section>
-              <h3>Aktivní rozkazy</h3>
-              <ul>
-                {activeUpgradeOrders.length > 0 ? (
-                  activeUpgradeOrders.map((order) => {
-                    const queuedBuilding = buildingsById.get(order.buildingId);
-                    const buildingName = queuedBuilding?.name ?? order.buildingId;
-                    const buildingIcon = queuedBuilding?.icon ?? BUILDING_ART[order.buildingId]?.icon ?? DEFAULT_BUILDING_ICON;
+          <section className="city-upgrade-queue-panel">
+            <header className="city-upgrade-queue-header">
+              <div className="city-upgrade-queue-title">
+                <h4>Stavební fronta</h4>
+                <small>Zrušení položky vrací 100 % surovin.</small>
+              </div>
+              <button
+                type="button"
+                className="city-upgrade-queue-stop-all"
+                {...bindQueueActionTooltip(
+                  'Ukončit stávající frontu',
+                  'Po potvrzení zruší všechny aktivní i čekající upgrady v této frontě a vrátí suroviny.',
+                )}
+                onClick={() => onCancelAllBuildingUpgrades()}
+                disabled={isQueueActionPending || upgradeQueueRows.length <= 0}
+              >
+                Ukončit stávající frontu
+              </button>
+            </header>
+            {upgradeQueueRows.length > 0 ? (
+              <div className="city-upgrade-queue-scroll">
+                <ul>
+                  {upgradeQueueRows.map((order) => {
                     const isCancelPending = cancelUpgradePendingOrderId === order.id;
+                    const cancelBuildingOrderId = firstQueueOrderIdByBuilding.get(order.buildingId) ?? order.id;
+                    const isCancelBuildingPending = cancelUpgradePendingOrderId === cancelBuildingOrderId;
+                    const isReorderPending = reorderUpgradePendingOrderId === order.id;
+                    const canMoveWithinQueue = !order.isActive && !isQueueActionPending;
+                    const canMoveUp = canMoveWithinQueue && order.queueIndex > 1;
+                    const canMoveDown = canMoveWithinQueue && order.queueIndex < upgradeQueueRows.length - 1;
+                    const isDragSource = draggedQueueOrderId === order.id;
+                    const isDragTarget =
+                      draggedQueueOrderId != null && draggedQueueOrderId !== order.id && !order.isActive;
+                    const leadTimeLabel = order.isActive
+                      ? formatDurationLabel(order.remainingSec)
+                      : formatDurationLabel(order.startsInSec);
+                    const finishTimeLabel = formatDateTimeLabel(order.finishAt);
+
                     return (
-                      <li key={`active-upgrade-${order.id}`} className="order-line order-line-action">
-                        <span className="order-line-text queue-order-text">
-                          <span className="queue-order-icon-shell" aria-hidden="true">
-                            <img
-                              src={buildingIcon}
-                              alt=""
-                              className="queue-order-icon-image building"
-                              loading="lazy"
-                            />
-                          </span>
-                          <span>
-                            Vystavba: {buildingName} {order.fromLevel} -&gt; {order.toLevel} (zbyva{' '}
-                            {formatDurationLabel(order.remainingSec)})
-                          </span>
-                        </span>
-                        <button
-                          type="button"
-                          className="inline-cancel-button"
-                          onClick={() => onCancelBuildingUpgrade(order.id, order.buildingId)}
-                          disabled={isCancelPending}
-                          title="Zrušit tento upgrade a navazující položky ve frontě"
-                          aria-label="Zrušit upgrade ve frontě"
-                        >
-                          {isCancelPending ? '…' : '✕'}
-                        </button>
-                      </li>
-                    );
-                  })
-                ) : (
-                  <li className="order-line">
-                    <span>Vystavba: zadna aktivni fronta</span>
-                  </li>
-                )}
-                {recruitQueueOrders.length > 0 ? (
-                  recruitQueueOrders.map((order) => {
-                    const isCancelPending = cancelRecruitmentPendingId === order.id;
-                    return (
-                      <li key={`active-recruit-${order.id}`} className="order-line order-line-action">
-                        <span className="order-line-text queue-order-text">
-                          <span className="queue-order-icon-shell unit" aria-hidden="true">
-                            <img
-                              src={getUnitMetaById(order.unitId).icon}
-                              alt=""
-                              className="queue-order-icon-image unit"
-                              loading="lazy"
-                            />
-                          </span>
-                          <span>
-                            Nabor: {order.unitName} +{order.amount} (zbyva {formatDurationLabel(order.remainingSec)})
-                          </span>
-                        </span>
-                        <button
-                          type="button"
-                          className="inline-cancel-button"
-                          onClick={() => onCancelRecruitment(order)}
-                          disabled={isCancelPending}
-                          title="Zrušit tuto položku náboru"
-                          aria-label="Zrušit nábor ve frontě"
-                        >
-                          {isCancelPending ? '…' : '✕'}
-                        </button>
-                      </li>
-                    );
-                  })
-                ) : (
-                  <li className="order-line">
-                    <span>Nabor: zadna aktivni fronta</span>
-                  </li>
-                )}
-                {remainingOrders.map((order, index) => {
-                  const commandType = parseArmyOrderCommandType(order);
-                  return (
-                    <li key={`${index}-${order}`} className={commandType ? 'order-line with-icon' : 'order-line'}>
-                      {commandType ? (
-                        <span
-                          className={`command-badge ${commandType} compact`}
-                          aria-label={ARMY_COMMAND_LABELS[commandType]}
-                          title={ARMY_COMMAND_LABELS[commandType]}
-                        >
-                          <span className="symbol">{getArmyCommandSymbol(commandType)}</span>
-                        </span>
-                      ) : null}
-                      <span>{order}</span>
-                    </li>
-                  );
-                })}
-                {armyMovementOrders.map((movement) => {
-                  const movementKey = `city-movement-${movement.commandType}-${movement.id}-${movement.originVillageId}-${movement.targetVillageId}`;
-                  const unitsTotal = getMovementUnitsTotal(movement);
-                  const isIncoming = movement.isIncoming === true;
-                  return (
-                    <li
-                      key={movementKey}
-                      className={`order-line with-icon city-army-order-line has-army-tooltip${
-                        hoveredArmyOrderKey === movementKey ? ' is-tooltip-open' : ''
-                      }`}
-                      onMouseEnter={(event) => {
-                        setHoveredArmyOrderKey(movementKey);
-                        setArmyOrderTooltipCursorPosition({ x: event.clientX, y: event.clientY });
-                      }}
-                      onMouseMove={(event) => {
-                        setArmyOrderTooltipCursorPosition({ x: event.clientX, y: event.clientY });
-                      }}
-                      onMouseLeave={() => {
-                        setHoveredArmyOrderKey((previous) => (previous === movementKey ? null : previous));
-                        setArmyOrderTooltipCursorPosition(null);
-                      }}
-                    >
-                      <span
-                        className={`command-badge ${movement.commandType} compact`}
-                        aria-label={ARMY_COMMAND_LABELS[movement.commandType]}
-                        title={ARMY_COMMAND_LABELS[movement.commandType]}
+                      <li
+                        key={`city-queue-${order.id}`}
+                        className={`city-upgrade-queue-item ${order.isActive ? 'is-active' : ''} ${isDragSource ? 'is-drag-source' : ''} ${isDragTarget ? 'is-drag-target' : ''}`}
+                        draggable={canMoveWithinQueue}
+                        onDragStart={() => {
+                          closeQueueActionTooltip();
+                          setDraggedQueueOrderId(order.id);
+                        }}
+                        onDragOver={(event) => {
+                          if (draggedQueueOrderId == null || draggedQueueOrderId === order.id || order.isActive) {
+                            return;
+                          }
+                          event.preventDefault();
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          if (draggedQueueOrderId == null || draggedQueueOrderId === order.id || order.isActive) {
+                            return;
+                          }
+                          onReorderBuildingUpgrade(draggedQueueOrderId, order.queueIndex);
+                          setDraggedQueueOrderId(null);
+                        }}
+                        onDragEnd={() => setDraggedQueueOrderId(null)}
                       >
-                        <span className="symbol">{getArmyCommandSymbol(movement.commandType)}</span>
-                      </span>
-                      <div className="city-army-order-content">
-                        <span>
-                          {ARMY_COMMAND_LABELS[movement.commandType]}
-                          {isIncoming ? ' (příchozí)' : ''}: {movement.originName} → {movement.targetName}
+                        <span
+                          className="city-upgrade-queue-grip"
+                          aria-hidden="true"
+                          {...bindQueueActionTooltip(
+                            'Přetažení pořadí',
+                            'Uchop kartu a přetáhni ji na novou pozici ve stavební frontě.',
+                          )}
+                        >
+                          <i />
+                          <i />
+                          <i />
                         </span>
-                        <small>
-                          Jednotky: {unitsTotal.toLocaleString('cs-CZ')} · ETA{' '}
-                          {formatDurationLabel(Math.max(0, movement.remainingSec))}
-                        </small>
-                      </div>
-                      {hoveredArmyOrderKey === movementKey ? (
-                        <MovementArmyTooltip movement={movement} cursorPosition={armyOrderTooltipCursorPosition} />
-                      ) : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          </aside>
+                        <div className="city-upgrade-queue-item-main">
+                          <div className="city-upgrade-queue-item-head">
+                            <span
+                              className={`city-upgrade-queue-status-icon ${order.isActive ? 'is-live' : 'is-waiting'}`}
+                              aria-label={order.isActive ? 'Aktivní stavba' : 'Čekající stavba'}
+                            >
+                              {order.isActive ? '●' : '○'}
+                            </span>
+                            <div className="city-upgrade-queue-time-row">
+                              <span className="city-upgrade-queue-time-chip">
+                                <span aria-hidden="true">⏱</span>
+                                {leadTimeLabel}
+                              </span>
+                              <span className="city-upgrade-queue-time-chip muted">
+                                <span aria-hidden="true">⌚</span>
+                                {finishTimeLabel}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="city-upgrade-queue-building">
+                            <img src={order.buildingIcon} alt="" loading="lazy" decoding="async" draggable={false} />
+                            <div>
+                              <strong>{order.buildingName}</strong>
+                              <span>
+                                L{order.fromLevel} → L{order.toLevel}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="city-upgrade-queue-rank" aria-label={`Pořadí fronty ${order.queueIndex + 1}`}>
+                          {order.queueIndex + 1}
+                        </div>
+                        <div className="city-upgrade-queue-actions">
+                          <button
+                            type="button"
+                            className="city-upgrade-queue-action"
+                            {...bindQueueActionTooltip(
+                              'Posunout výše',
+                              'Posune tuto kartu o jednu pozici výš. Aktivní první pozici nelze přeskočit.',
+                            )}
+                            onClick={() => onReorderBuildingUpgrade(order.id, order.queueIndex - 1)}
+                            disabled={!canMoveUp || isReorderPending}
+                            aria-label="Posunout výše"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            className="city-upgrade-queue-action"
+                            {...bindQueueActionTooltip(
+                              'Posunout níže',
+                              'Posune tuto kartu o jednu pozici níž ve frontě.',
+                            )}
+                            onClick={() => onReorderBuildingUpgrade(order.id, order.queueIndex + 1)}
+                            disabled={!canMoveDown || isReorderPending}
+                            aria-label="Posunout níže"
+                          >
+                            ↓
+                          </button>
+                          <button
+                            type="button"
+                            className="city-upgrade-queue-action is-danger"
+                            {...bindQueueActionTooltip(
+                              'Zrušit kartu',
+                              'Zruší pouze tuto konkrétní položku stavební fronty a vrátí její suroviny.',
+                            )}
+                            onClick={() => onCancelBuildingUpgrade(order.id, order.buildingId)}
+                            disabled={isQueueActionPending || isCancelPending}
+                            aria-label="Zrušit tuto konkrétní kartu z fronty"
+                          >
+                            {isCancelPending ? '…' : '✕'}
+                          </button>
+                          <button
+                            type="button"
+                            className="city-upgrade-queue-action is-warning"
+                            {...bindQueueActionTooltip(
+                              'Zrušit budovu',
+                              'Zruší všechny navazující položky této budovy ve stavební frontě.',
+                            )}
+                            onClick={() => onCancelBuildingUpgrade(cancelBuildingOrderId, order.buildingId)}
+                            disabled={isQueueActionPending || isCancelBuildingPending}
+                            aria-label="Zrušit všechny položky této budovy"
+                          >
+                            {isCancelBuildingPending ? '…' : '▣'}
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ) : (
+              <p className="row-help">Ve frontě zatím není žádná stavba.</p>
+            )}
+          </section>
+          {queueActionTooltip ? (
+            <QueueActionTooltip
+              title={queueActionTooltip.title}
+              description={queueActionTooltip.description}
+              cursorPosition={queueActionTooltip.cursorPosition}
+            />
+          ) : null}
         </div>
       </div>
     </div>
   );
-};
+});
 
-const ArmyPanel = ({
+const ArmyPanel = memo(({
   units,
   buildings,
   recruitQueueOrders,
   settlements,
   currentUsername,
+  worldId,
+  isExpanded,
   onRecruit,
   onCancelRecruitment,
   onUpgradeBuilding,
@@ -3725,6 +5320,8 @@ const ArmyPanel = ({
   recruitQueueOrders: RecruitQueueOrder[];
   settlements: RegionSettlement[];
   currentUsername: string;
+  worldId: string | null;
+  isExpanded: boolean;
   onRecruit: (unit: Unit, amount: number) => Promise<boolean>;
   onCancelRecruitment: (order: RecruitQueueOrder) => void;
   onUpgradeBuilding: (building: Building) => void;
@@ -3742,12 +5339,35 @@ const ArmyPanel = ({
   noticeUnitId: string | null;
 }) => {
   const [recruitDraftAmounts, setRecruitDraftAmounts] = useState<Record<string, string>>({});
-  const [armyViewMode, setArmyViewMode] = useState<'selectedVillage' | 'multiVillage'>('selectedVillage');
+  const [armyViewMode, setArmyViewMode] = useState<'armadaPlanner' | 'selectedVillage' | 'multiVillage'>(
+    'selectedVillage',
+  );
   const [multiVillageBuildingDraftById, setMultiVillageBuildingDraftById] = useState<Record<number, string>>({});
   const [multiVillageUnitDraftById, setMultiVillageUnitDraftById] = useState<Record<number, string>>({});
   const [multiVillageAmountDraftById, setMultiVillageAmountDraftById] = useState<Record<number, string>>({});
   const [multiVillageNoticeById, setMultiVillageNoticeById] = useState<Record<number, string>>({});
   const [multiVillagePendingById, setMultiVillagePendingById] = useState<Record<number, boolean>>({});
+  const [armyOverview, setArmyOverview] = useState<ArmyOverviewResponse | null>(null);
+  const [armyOverviewLoading, setArmyOverviewLoading] = useState(false);
+  const [armyOverviewError, setArmyOverviewError] = useState<string | null>(null);
+  const [plannerOpenSnapshot, setPlannerOpenSnapshot] = useState<PlannerOpenResponse | null>(null);
+  const [plannerOpenLoading, setPlannerOpenLoading] = useState(false);
+  const [plannerOpenError, setPlannerOpenError] = useState<string | null>(null);
+  const [plannerRefreshToken, setPlannerRefreshToken] = useState(0);
+  const [plannerDraft, setPlannerDraft] = useState<PlannerDraftState>({
+    targetPlayerUsername: '',
+    targetVillageId: null,
+    legs: [],
+    updatedAt: new Date().toISOString(),
+  });
+  const [plannerDraftStage, setPlannerDraftStage] = useState<PlannerDraftStage>('draft');
+  const [plannerDraftDirty, setPlannerDraftDirty] = useState(false);
+  const [storedPlannerDraftAvailable, setStoredPlannerDraftAvailable] = useState<PlannerDraftState | null>(null);
+  const [plannerNoticeMessage, setPlannerNoticeMessage] = useState<string | null>(null);
+  const [plannerForceDraftMode, setPlannerForceDraftMode] = useState(false);
+  const [focusedPlannerLegOriginVillageId, setFocusedPlannerLegOriginVillageId] = useState<number | null>(null);
+  const [draggedPlannerLegOriginVillageId, setDraggedPlannerLegOriginVillageId] = useState<number | null>(null);
+  const [plannerMutationPending, setPlannerMutationPending] = useState(false);
   const isRecruitMutationPending = recruitPendingUnitId != null;
 
   const lockedRecruitUnits = useMemo(
@@ -3930,6 +5550,1068 @@ const ArmyPanel = ({
     ],
   );
 
+  const plannerConstraints = useMemo<PlannerConstraints>(
+    () => ({
+      maxLegs: Math.max(
+        1,
+        Math.floor(Number(plannerOpenSnapshot?.constraints?.maxLegs ?? DEFAULT_PLANNER_MAX_LEGS)),
+      ) as PlannerConstraints['maxLegs'],
+      minImpactGapMinutes: Math.max(
+        1,
+        Math.floor(
+          Number(plannerOpenSnapshot?.constraints?.minImpactGapMinutes ?? DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES),
+        ),
+      ) as PlannerConstraints['minImpactGapMinutes'],
+      leadTimeSec: Math.max(
+        0,
+        Math.floor(Number(plannerOpenSnapshot?.constraints?.leadTimeSec ?? DEFAULT_PLANNER_LEAD_TIME_SEC)),
+      ),
+      activePlansPerPlayerPerWorld: 1,
+    }),
+    [plannerOpenSnapshot?.constraints?.leadTimeSec, plannerOpenSnapshot?.constraints?.maxLegs, plannerOpenSnapshot?.constraints?.minImpactGapMinutes],
+  );
+  const plannerBannerText = String(plannerOpenSnapshot?.bannerText ?? DEFAULT_PLANNER_BANNER_TEXT);
+  const plannerActivePlan = plannerOpenSnapshot?.activePlan ?? null;
+  const plannerLastCompletedPlan = plannerOpenSnapshot?.lastCompletedPlan ?? null;
+  const plannerActivePlanStatusMeta = plannerActivePlan
+    ? resolvePlannerPlanStatusMeta(plannerActivePlan.plan.status)
+    : null;
+  const plannerCanReturnToDraftFromActivePlan =
+    plannerActivePlanStatusMeta?.tone === 'warning' || plannerActivePlanStatusMeta?.tone === 'blocked';
+  const plannerIsDraftMode = plannerActivePlan == null || plannerForceDraftMode;
+
+  useEffect(() => {
+    if (!plannerIsDraftMode) {
+      setPlannerDraftStage('draft');
+    }
+  }, [plannerIsDraftMode]);
+
+  useEffect(() => {
+    setPlannerDraft({
+      targetPlayerUsername: '',
+      targetVillageId: null,
+      legs: [],
+      updatedAt: new Date().toISOString(),
+    });
+    setPlannerDraftStage('draft');
+    setPlannerDraftDirty(false);
+    setStoredPlannerDraftAvailable(worldId ? readStoredPlannerLastSessionDraft(currentUsername, worldId) : null);
+    setPlannerNoticeMessage(null);
+    setPlannerForceDraftMode(false);
+    setFocusedPlannerLegOriginVillageId(null);
+    setDraggedPlannerLegOriginVillageId(null);
+    setPlannerMutationPending(false);
+  }, [currentUsername, worldId]);
+
+  useEffect(() => {
+    if (!isExpanded || !worldId) {
+      return;
+    }
+
+    let cancelled = false;
+    setArmyOverviewLoading(true);
+    setArmyOverviewError(null);
+    void fetchArmyOverview(currentUsername, worldId)
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+        setArmyOverview(response);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setArmyOverviewError(getErrorMessage(error));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setArmyOverviewLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUsername, isExpanded, plannerRefreshToken, worldId]);
+
+  useEffect(() => {
+    if (!isExpanded || !worldId) {
+      return;
+    }
+
+    let cancelled = false;
+    setPlannerOpenLoading(true);
+    setPlannerOpenError(null);
+    void fetchPlannerOpen(currentUsername, worldId)
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+        setPlannerOpenSnapshot(response);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setPlannerOpenError(getErrorMessage(error));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setPlannerOpenLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUsername, isExpanded, plannerRefreshToken, worldId]);
+
+  const plannerVillageById = useMemo(
+    () => new Map((armyOverview?.villages ?? []).map((village) => [Number(village.villageId), village])),
+    [armyOverview?.villages],
+  );
+  const plannerTargetCandidates = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        username: string;
+        villages: RegionSettlement[];
+      }
+    >();
+    for (const settlement of settlements) {
+      const villageId = Number(settlement.villageId ?? 0);
+      const playerId = Number(settlement.playerId ?? 0);
+      const username = String(settlement.owner ?? '').trim();
+      if (!Number.isFinite(villageId) || villageId <= 0) {
+        continue;
+      }
+      if (!Number.isFinite(playerId) || playerId <= 0) {
+        continue;
+      }
+      if (!username) {
+        continue;
+      }
+      const comparableOwner = username.toLocaleLowerCase('cs-CZ');
+      const comparableCurrent = String(currentUsername ?? '').trim().toLocaleLowerCase('cs-CZ');
+      if (comparableOwner === comparableCurrent) {
+        continue;
+      }
+      if (settlement.kind === 'bot' || settlement.kind === 'abandoned' || settlement.relation === 'self') {
+        continue;
+      }
+      const key = comparableOwner;
+      const bucket = groups.get(key) ?? { username, villages: [] };
+      bucket.villages.push(settlement);
+      groups.set(key, bucket);
+    }
+
+    return [...groups.values()]
+      .filter((group) => group.villages.length === 1)
+      .map((group) => {
+        const village = group.villages[0];
+        return {
+          username: group.username,
+          villageId: Number(village.villageId),
+          villageName: String(village.name ?? ''),
+          playerId: Number(village.playerId ?? 0),
+          kingdom: String(village.kingdom ?? 'Neutral'),
+          coordX: Number(village.globalX ?? 0),
+          coordY: Number(village.globalY ?? 0),
+          settlement: village,
+        };
+      })
+      .sort((left, right) =>
+        left.username.localeCompare(right.username, 'cs-CZ', { sensitivity: 'base', numeric: true }),
+      );
+  }, [currentUsername, settlements]);
+  const plannerTargetByVillageId = useMemo(
+    () => new Map(plannerTargetCandidates.map((candidate) => [Number(candidate.villageId), candidate])),
+    [plannerTargetCandidates],
+  );
+  const plannerTargetByUsername = useMemo(
+    () =>
+      new Map(
+        plannerTargetCandidates.map((candidate) => [
+          candidate.username.toLocaleLowerCase('cs-CZ'),
+          candidate,
+        ]),
+      ),
+    [plannerTargetCandidates],
+  );
+
+  const normalizePlannerDraftStateWithMeta = useCallback(
+    (draft: PlannerDraftState): { draft: PlannerDraftState; meta: PlannerDraftNormalizationMeta } => {
+      const maxLegs = Math.max(1, Number(plannerConstraints.maxLegs ?? DEFAULT_PLANNER_MAX_LEGS));
+      const seenOrigins = new Set<number>();
+      const normalizedLegs: PlannerLegDraft[] = [];
+      let unitAmountsAdjusted = false;
+
+      for (const leg of draft.legs) {
+        if (normalizedLegs.length >= maxLegs) {
+          break;
+        }
+        const originVillageId = Math.floor(Number(leg.originVillageId ?? 0));
+        if (!Number.isFinite(originVillageId) || originVillageId <= 0 || seenOrigins.has(originVillageId)) {
+          continue;
+        }
+        const originVillage = plannerVillageById.get(originVillageId);
+        if (!originVillage) {
+          continue;
+        }
+        seenOrigins.add(originVillageId);
+        const allowedByUnitId = new Map(
+          (originVillage.units ?? []).map((unit) => [
+            String(unit.unitId),
+            Math.max(0, Math.floor(Number(unit.availableForPlanning ?? 0))),
+          ]),
+        );
+        const normalizedUnits: Partial<Record<CommandUnitId, number>> = {};
+        for (const unitId of COMMAND_UNIT_ORDER) {
+          const allowed = Math.max(0, Math.floor(Number(allowedByUnitId.get(unitId) ?? 0)));
+          const amount = Math.max(0, Math.floor(Number(leg.units?.[unitId] ?? 0)));
+          if (amount > 0 && allowed <= 0) {
+            unitAmountsAdjusted = true;
+            continue;
+          }
+          if (amount <= 0 || allowed <= 0) {
+            continue;
+          }
+          const nextAmount = Math.min(allowed, amount);
+          if (nextAmount !== amount) {
+            unitAmountsAdjusted = true;
+          }
+          normalizedUnits[unitId] = nextAmount;
+        }
+        normalizedLegs.push({
+          originVillageId,
+          impactAtUtc: String(leg.impactAtUtc ?? ''),
+          units: normalizedUnits,
+        });
+      }
+
+      const timelineNormalizedLegs = normalizePlannerLegTimeline(normalizedLegs, plannerConstraints);
+      const timelineAdjusted = timelineNormalizedLegs.some(
+        (leg, index) => String(leg.impactAtUtc) !== String(normalizedLegs[index]?.impactAtUtc ?? ''),
+      );
+      const targetVillageIdRaw = Number(draft.targetVillageId ?? 0);
+      const targetVillageId =
+        Number.isFinite(targetVillageIdRaw) && targetVillageIdRaw > 0 ? Math.floor(targetVillageIdRaw) : null;
+      const targetCandidate =
+        (targetVillageId != null ? plannerTargetByVillageId.get(targetVillageId) : null) ??
+        plannerTargetByUsername.get(String(draft.targetPlayerUsername ?? '').trim().toLocaleLowerCase('cs-CZ')) ??
+        null;
+      const sourceHasTarget =
+        (Number.isFinite(targetVillageIdRaw) && targetVillageIdRaw > 0) ||
+        String(draft.targetPlayerUsername ?? '').trim().length > 0;
+      const updatedAtMs = Date.parse(String(draft.updatedAt ?? ''));
+
+      return {
+        draft: {
+          targetPlayerUsername: targetCandidate?.username ?? '',
+          targetVillageId: targetCandidate?.villageId ?? null,
+          legs: timelineNormalizedLegs,
+          updatedAt: Number.isFinite(updatedAtMs)
+            ? new Date(updatedAtMs).toISOString()
+            : new Date().toISOString(),
+        },
+        meta: {
+          removedLegCount: Math.max(0, Number(draft.legs.length ?? 0) - timelineNormalizedLegs.length),
+          targetReset: sourceHasTarget && targetCandidate == null,
+          timelineAdjusted,
+          unitAmountsAdjusted,
+        },
+      };
+    },
+    [plannerConstraints, plannerTargetByUsername, plannerTargetByVillageId, plannerVillageById],
+  );
+
+  const normalizePlannerDraftState = useCallback(
+    (draft: PlannerDraftState): PlannerDraftState => normalizePlannerDraftStateWithMeta(draft).draft,
+    [normalizePlannerDraftStateWithMeta],
+  );
+
+  const buildPlannerNormalizationNoticeMessage = useCallback(
+    (meta: PlannerDraftNormalizationMeta): string | null => {
+      const details: string[] = [];
+      if (meta.removedLegCount > 0) {
+        details.push(`odebráno legů: ${meta.removedLegCount.toLocaleString('cs-CZ')}`);
+      }
+      if (meta.targetReset) {
+        details.push('cíl už není validní');
+      }
+      if (meta.unitAmountsAdjusted) {
+        details.push('počty jednotek byly upraveny podle dostupnosti');
+      }
+      if (meta.timelineAdjusted) {
+        details.push('časová osa byla srovnána podle minimálních mezer');
+      }
+      if (details.length <= 0) {
+        return null;
+      }
+      return `Koncept byl upraven podle aktuálních dat: ${details.join('; ')}.`;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (plannerActivePlan && !plannerForceDraftMode) {
+      return;
+    }
+    setPlannerDraft((previous) => {
+      const normalizedWithMeta = normalizePlannerDraftStateWithMeta(previous);
+      if (JSON.stringify(normalizedWithMeta.draft) === JSON.stringify(previous)) {
+        return previous;
+      }
+      const normalizationNotice = buildPlannerNormalizationNoticeMessage(normalizedWithMeta.meta);
+      if (normalizationNotice) {
+        setPlannerNoticeMessage(normalizationNotice);
+      }
+      return normalizedWithMeta.draft;
+    });
+  }, [
+    buildPlannerNormalizationNoticeMessage,
+    normalizePlannerDraftStateWithMeta,
+    plannerActivePlan,
+    plannerForceDraftMode,
+  ]);
+
+  useEffect(() => {
+    if (!worldId || !plannerDraftDirty || (!plannerIsDraftMode && plannerActivePlan)) {
+      return;
+    }
+    saveStoredPlannerLastSessionDraft(
+      currentUsername,
+      worldId,
+      normalizePlannerDraftState(plannerDraft),
+    );
+  }, [
+    currentUsername,
+    normalizePlannerDraftState,
+    plannerActivePlan,
+    plannerDraft,
+    plannerDraftDirty,
+    plannerIsDraftMode,
+    worldId,
+  ]);
+
+  const applyPlannerDraftMutation = useCallback(
+    (updater: (previous: PlannerDraftState) => PlannerDraftState) => {
+      setPlannerDraft((previous) => normalizePlannerDraftState(updater(previous)));
+      setPlannerDraftDirty(true);
+      setPlannerDraftStage('draft');
+    },
+    [normalizePlannerDraftState],
+  );
+
+  const plannerSelectedOriginIds = useMemo(
+    () => new Set(plannerDraft.legs.map((leg) => Number(leg.originVillageId)).filter((villageId) => Number.isFinite(villageId) && villageId > 0)),
+    [plannerDraft.legs],
+  );
+  const armyOverviewVillages = useMemo(
+    () =>
+      (armyOverview?.villages ?? []).map((village) => ({
+        ...village,
+        plannerSelected: plannerSelectedOriginIds.has(Number(village.villageId)),
+      })),
+    [armyOverview?.villages, plannerSelectedOriginIds],
+  );
+
+  const plannerLegRows = useMemo(() => {
+    const targetCandidate = plannerDraft.targetVillageId != null ? plannerTargetByVillageId.get(plannerDraft.targetVillageId) ?? null : null;
+    return plannerDraft.legs.map((leg, index) => {
+      const originVillage = plannerVillageById.get(Number(leg.originVillageId)) ?? null;
+      const travelDurationSec =
+        originVillage && targetCandidate
+          ? calculatePlannerTravelDurationSec(
+              leg.units,
+              { coordX: originVillage.coordX, coordY: originVillage.coordY },
+              { globalX: targetCandidate.coordX, globalY: targetCandidate.coordY },
+            )
+          : MIN_ARMY_TRAVEL_DURATION_SEC;
+      const impactAtMs = Date.parse(String(leg.impactAtUtc ?? ''));
+      const sendAtUtc =
+        Number.isFinite(impactAtMs) ? new Date(impactAtMs - travelDurationSec * 1000).toISOString() : null;
+      const unitsTotal = COMMAND_UNIT_ORDER.reduce(
+        (sum, unitId) => sum + Math.max(0, Math.floor(Number(leg.units?.[unitId] ?? 0))),
+        0,
+      );
+      return {
+        key: Number(leg.originVillageId),
+        order: index + 1,
+        originVillage,
+        impactAtUtc: leg.impactAtUtc,
+        sendAtUtc,
+        travelDurationSec,
+        units: leg.units,
+        unitsTotal,
+      };
+    });
+  }, [plannerDraft.legs, plannerDraft.targetVillageId, plannerTargetByVillageId, plannerVillageById]);
+
+  const plannerValidation = useMemo(() => {
+    const issues: PlannerValidationIssue[] = [];
+    const nowMs = Date.now();
+    const leadTimeSec = Math.max(0, Number(plannerConstraints.leadTimeSec ?? DEFAULT_PLANNER_LEAD_TIME_SEC));
+    const minGapMinutes = Math.max(1, Number(plannerConstraints.minImpactGapMinutes ?? DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES));
+    if (!plannerDraft.targetPlayerUsername || plannerDraft.targetVillageId == null) {
+      issues.push({
+        code: 'missing_target',
+        severity: 'blocked',
+        message: 'Vyber cílového hráče s právě jedním lénem.',
+      });
+    }
+    if (plannerLegRows.length <= 0) {
+      issues.push({
+        code: 'missing_legs',
+        severity: 'blocked',
+        message: 'Přidej alespoň jedno vlastní léno do plánu.',
+      });
+    }
+    if (plannerLegRows.length > Number(plannerConstraints.maxLegs ?? DEFAULT_PLANNER_MAX_LEGS)) {
+      issues.push({
+        code: 'legs_over_limit',
+        severity: 'blocked',
+        message: `Maximální počet legů je ${Number(plannerConstraints.maxLegs ?? DEFAULT_PLANNER_MAX_LEGS)}.`,
+      });
+    }
+
+    let previousImpactMs: number | null = null;
+    for (const leg of plannerLegRows) {
+      if (!leg.originVillage) {
+        issues.push({
+          code: `origin_missing_${leg.key}`,
+          severity: 'blocked',
+          message: `Leg #${leg.order} odkazuje na nedostupné léno.`,
+          legOriginVillageId: leg.key,
+        });
+      }
+      if (leg.unitsTotal <= 0) {
+        issues.push({
+          code: `units_missing_${leg.key}`,
+          severity: 'blocked',
+          message: `Leg #${leg.order} musí mít vybrané jednotky.`,
+          legOriginVillageId: leg.key,
+        });
+      }
+      const impactAtMs = Date.parse(String(leg.impactAtUtc ?? ''));
+      if (!Number.isFinite(impactAtMs)) {
+        issues.push({
+          code: `impact_invalid_${leg.key}`,
+          severity: 'blocked',
+          message: `Leg #${leg.order} má neplatný čas dopadu.`,
+          legOriginVillageId: leg.key,
+        });
+        continue;
+      }
+      if (previousImpactMs != null && impactAtMs - previousImpactMs < minGapMinutes * 60_000) {
+        issues.push({
+          code: `impact_gap_${leg.key}`,
+          severity: 'blocked',
+          message: `Mezi dopady musí být minimálně ${minGapMinutes} minuta.`,
+          legOriginVillageId: leg.key,
+        });
+      }
+      previousImpactMs = impactAtMs;
+      if (leg.sendAtUtc) {
+        const sendAtMs = Date.parse(leg.sendAtUtc);
+        if (Number.isFinite(sendAtMs) && sendAtMs < nowMs + leadTimeSec * 1000) {
+          issues.push({
+            code: `lead_time_${leg.key}`,
+            severity: 'blocked',
+            message: `Leg #${leg.order} porušuje lead time (${Math.ceil(leadTimeSec / 60)} min).`,
+            legOriginVillageId: leg.key,
+          });
+        }
+      }
+    }
+
+    const hasBlocked = issues.some((issue) => issue.severity === 'blocked');
+    const hasWarning = issues.some((issue) => issue.severity === 'warning');
+    return {
+      status: hasBlocked ? 'blocked' : hasWarning ? 'warning' : 'ok',
+      issues,
+    };
+  }, [plannerConstraints.leadTimeSec, plannerConstraints.maxLegs, plannerConstraints.minImpactGapMinutes, plannerDraft.targetPlayerUsername, plannerDraft.targetVillageId, plannerLegRows]);
+
+  const plannerValidationIssuesByLegOriginVillageId = useMemo(() => {
+    const byOriginVillageId = new Map<number, PlannerValidationIssue[]>();
+    for (const issue of plannerValidation.issues) {
+      const originVillageId = Number(issue.legOriginVillageId ?? 0);
+      if (!Number.isFinite(originVillageId) || originVillageId <= 0) {
+        continue;
+      }
+      const bucket = byOriginVillageId.get(originVillageId) ?? [];
+      bucket.push(issue);
+      byOriginVillageId.set(originVillageId, bucket);
+    }
+    return byOriginVillageId;
+  }, [plannerValidation.issues]);
+
+  const plannerRequestLegs = useMemo(() => toPlannerRequestLegs(plannerLegRows), [plannerLegRows]);
+  const plannerCanOpenConfirmation =
+    plannerValidation.status === 'ok' &&
+    plannerRequestLegs.length > 0 &&
+    plannerDraft.targetVillageId != null &&
+    plannerDraft.targetPlayerUsername.length > 0 &&
+    !plannerMutationPending;
+
+  const plannerActivePlanProgress = useMemo(() => {
+    if (!plannerActivePlan) {
+      return null;
+    }
+    const totalLegs = Math.max(0, plannerActivePlan.legs.length);
+    const sentLegs = plannerActivePlan.legs.reduce(
+      (sum, leg) => sum + (String(leg.status ?? '') === 'sent' ? 1 : 0),
+      0,
+    );
+    const firstSendAtMs = Date.parse(
+      String(
+        [...plannerActivePlan.legs]
+          .sort((left, right) => Number(left.order ?? 0) - Number(right.order ?? 0))
+          .at(0)?.sendAtUtc ?? '',
+      ),
+    );
+    const countdownSec = Number.isFinite(firstSendAtMs)
+      ? Math.max(0, Math.ceil((firstSendAtMs - Date.now()) / 1000))
+      : null;
+
+    return {
+      totalLegs,
+      sentLegs,
+      percent: totalLegs > 0 ? Math.round((sentLegs / totalLegs) * 100) : 0,
+      countdownSec,
+    };
+  }, [plannerActivePlan]);
+
+  const handleRefreshArmadaAndPlanner = useCallback(() => {
+    setPlannerRefreshToken((previous) => previous + 1);
+  }, []);
+
+  const handleRestorePlannerDraft = useCallback(() => {
+    if (!storedPlannerDraftAvailable || plannerActivePlan) {
+      return;
+    }
+    const restoredWithMeta = normalizePlannerDraftStateWithMeta(storedPlannerDraftAvailable);
+    const restored = restoredWithMeta.draft;
+    setPlannerDraft(restored);
+    setPlannerDraftDirty(true);
+    setPlannerDraftStage('draft');
+    setPlannerNoticeMessage(
+      buildPlannerNormalizationNoticeMessage(restoredWithMeta.meta) ??
+        'Poslední lokální koncept byl obnoven.',
+    );
+    setPlannerForceDraftMode(true);
+    setFocusedPlannerLegOriginVillageId(restored.legs[0]?.originVillageId ?? null);
+  }, [
+    buildPlannerNormalizationNoticeMessage,
+    normalizePlannerDraftStateWithMeta,
+    plannerActivePlan,
+    storedPlannerDraftAvailable,
+  ]);
+
+  const handlePlannerBackToActivePlan = useCallback(() => {
+    if (!plannerActivePlan) {
+      return;
+    }
+    setPlannerForceDraftMode(false);
+    setPlannerDraftStage('draft');
+    setPlannerNoticeMessage('Zobrazen je aktivní serverový plán.');
+  }, [plannerActivePlan]);
+
+  const handlePlannerReturnToDraft = useCallback(() => {
+    if (!plannerActivePlan) {
+      return;
+    }
+    const draftFromActivePlan = buildPlannerDraftFromActivePlan(plannerActivePlan);
+    const normalizedWithMeta = normalizePlannerDraftStateWithMeta(draftFromActivePlan);
+    const nextDraft = normalizedWithMeta.draft;
+    setPlannerDraft(nextDraft);
+    setPlannerDraftDirty(true);
+    setPlannerDraftStage('draft');
+    setPlannerForceDraftMode(true);
+    setFocusedPlannerLegOriginVillageId(nextDraft.legs[0]?.originVillageId ?? null);
+    setPlannerNoticeMessage(
+      buildPlannerNormalizationNoticeMessage(normalizedWithMeta.meta) ??
+        'Do lokálního konceptu byla načtena poslední serverová verze plánu.',
+    );
+  }, [buildPlannerNormalizationNoticeMessage, normalizePlannerDraftStateWithMeta, plannerActivePlan]);
+
+  const handleClearPlannerDraft = useCallback(() => {
+    setPlannerDraft({
+      targetPlayerUsername: '',
+      targetVillageId: null,
+      legs: [],
+      updatedAt: new Date().toISOString(),
+    });
+    setPlannerDraftDirty(true);
+    setPlannerDraftStage('draft');
+    setPlannerForceDraftMode(true);
+    setFocusedPlannerLegOriginVillageId(null);
+    setPlannerNoticeMessage('Koncept byl vrácen do prázdného stavu.');
+  }, []);
+
+  const handlePlannerAutoAlignForward = useCallback(() => {
+    applyPlannerDraftMutation((previous) => ({
+      ...previous,
+      legs: normalizePlannerLegTimelineForwardOneMinute(previous.legs, plannerConstraints),
+      updatedAt: new Date().toISOString(),
+    }));
+    setPlannerNoticeMessage('Časy dopadů byly srovnány od prvního legu po jedné minutě.');
+  }, [applyPlannerDraftMutation, plannerConstraints]);
+
+  const handlePlannerAutoAlignBackward = useCallback(() => {
+    applyPlannerDraftMutation((previous) => ({
+      ...previous,
+      legs: normalizePlannerLegTimelineFromLast(previous.legs, plannerConstraints),
+      updatedAt: new Date().toISOString(),
+    }));
+    setPlannerNoticeMessage('Časy dopadů byly srovnány od posledního legu zpět.');
+  }, [applyPlannerDraftMutation, plannerConstraints]);
+
+  const handlePlannerFillLegAll = useCallback(
+    (originVillageIdRaw: number) => {
+      const originVillageId = Math.floor(Number(originVillageIdRaw));
+      if (!Number.isFinite(originVillageId) || originVillageId <= 0) {
+        return;
+      }
+      const originVillage = plannerVillageById.get(originVillageId);
+      if (!originVillage) {
+        return;
+      }
+      const amountByUnitId = new Map(
+        originVillage.units.map((unit) => [
+          String(unit.unitId),
+          Math.max(0, Math.floor(Number(unit.availableForPlanning ?? 0))),
+        ]),
+      );
+      applyPlannerDraftMutation((previous) => ({
+        ...previous,
+        legs: previous.legs.map((leg) => {
+          if (Number(leg.originVillageId) !== originVillageId) {
+            return leg;
+          }
+          const nextUnits: Partial<Record<CommandUnitId, number>> = {};
+          (['cavalry', 'ram', 'scout'] as const).forEach((unitId) => {
+            const nextAmount = Math.max(0, Math.floor(Number(amountByUnitId.get(unitId) ?? 0)));
+            if (nextAmount > 0) {
+              nextUnits[unitId] = nextAmount;
+            }
+          });
+          return {
+            ...leg,
+            units: nextUnits,
+          };
+        }),
+        updatedAt: new Date().toISOString(),
+      }));
+      setPlannerNoticeMessage('Leg byl vyplněn útočnými jednotkami (Jezdec, Zvěd, Beranidlo).');
+    },
+    [applyPlannerDraftMutation, plannerVillageById],
+  );
+
+  const handlePlannerOpenConfirmation = useCallback(() => {
+    if (!plannerCanOpenConfirmation) {
+      setPlannerNoticeMessage('Koncept není validní. Nejprve oprav blokace a poté otevři potvrzení.');
+      return;
+    }
+    setPlannerDraftStage('confirmation');
+    setPlannerNoticeMessage('Potvrzení plánu: zkontroluj souhrn a potvrď uložení.');
+  }, [plannerCanOpenConfirmation]);
+
+  const handlePlannerBackToDraftFromConfirmation = useCallback(() => {
+    setPlannerDraftStage('draft');
+    setPlannerNoticeMessage('Vráceno do konceptu plánu.');
+  }, []);
+
+  const handlePlannerSaveConfirmed = useCallback(async () => {
+    if (!worldId) {
+      setPlannerNoticeMessage('Chybí worldId pro planner akci.');
+      return;
+    }
+    if (plannerMutationPending) {
+      return;
+    }
+    if (plannerDraftStage !== 'confirmation') {
+      setPlannerNoticeMessage('Nejprve otevři krok Potvrzení plánu.');
+      return;
+    }
+    if (!plannerCanOpenConfirmation) {
+      setPlannerDraftStage('draft');
+      setPlannerNoticeMessage('Koncept není validní. Oprav blokace a potvrď plán znovu.');
+      return;
+    }
+
+    setPlannerMutationPending(true);
+    try {
+      const validationResponse = await validatePlannerPlanRequest({
+        username: currentUsername,
+        worldId,
+        targetPlayerUsername: plannerDraft.targetPlayerUsername,
+        targetVillageId: plannerDraft.targetVillageId,
+        legs: plannerRequestLegs,
+      });
+      if (validationResponse.validation.status === 'blocked') {
+        const messages = validationResponse.validation.issues
+          .slice(0, 3)
+          .map((issue) => String(issue.message ?? '').trim())
+          .filter(Boolean);
+        const summaryMessage =
+          messages.length > 0
+            ? `Server validace: ${messages.join(' | ')}`
+            : 'Server validace zablokovala koncept plánu.';
+        setPlannerDraftStage('draft');
+        setPlannerNoticeMessage(summaryMessage);
+        return;
+      }
+
+      if (plannerActivePlan && plannerForceDraftMode) {
+        const updated = await updatePlannerPlanRequest(String(plannerActivePlan.plan.id), {
+          username: currentUsername,
+          worldId,
+          expectedRevision: Math.max(1, Math.floor(Number(plannerActivePlan.plan.revision ?? 1))),
+          targetPlayerUsername: plannerDraft.targetPlayerUsername,
+          targetVillageId: plannerDraft.targetVillageId,
+          legs: plannerRequestLegs,
+        });
+        setPlannerOpenSnapshot((previous) =>
+          previous
+            ? {
+                ...previous,
+                activePlan: updated.activePlan ?? previous.activePlan,
+              }
+            : null,
+        );
+        setPlannerNoticeMessage('Plán byl potvrzen a aktualizován.');
+      } else {
+        const created = await createPlannerPlanRequest({
+          username: currentUsername,
+          worldId,
+          targetPlayerUsername: plannerDraft.targetPlayerUsername,
+          targetVillageId: plannerDraft.targetVillageId,
+          legs: plannerRequestLegs,
+          confirmation: {
+            confirmedByPlayer: true,
+            clientValidatedAt: new Date().toISOString(),
+          },
+        });
+        setPlannerOpenSnapshot((previous) =>
+          previous
+            ? {
+                ...previous,
+                activePlan: created.activePlan,
+                lastCompletedPlan: created.lastCompletedPlan,
+              }
+            : null,
+        );
+        setPlannerNoticeMessage('Plán byl potvrzen a uložen.');
+      }
+
+      setPlannerDraftStage('draft');
+      setPlannerForceDraftMode(false);
+      setPlannerDraftDirty(false);
+      saveStoredPlannerLastSessionDraft(currentUsername, worldId, null);
+      setStoredPlannerDraftAvailable(null);
+      setPlannerRefreshToken((previous) => previous + 1);
+    } catch (error) {
+      setPlannerDraftStage('draft');
+      setPlannerNoticeMessage(getErrorMessage(error));
+    } finally {
+      setPlannerMutationPending(false);
+    }
+  }, [
+    currentUsername,
+    plannerActivePlan,
+    plannerCanOpenConfirmation,
+    plannerDraft.targetPlayerUsername,
+    plannerDraft.targetVillageId,
+    plannerDraftStage,
+    plannerForceDraftMode,
+    plannerMutationPending,
+    plannerRequestLegs,
+    worldId,
+  ]);
+
+  const handlePlannerCancelActivePlan = useCallback(async () => {
+    if (!plannerActivePlan || !worldId || plannerMutationPending) {
+      return;
+    }
+    const status = String(plannerActivePlan.plan.status ?? '');
+    if (status !== 'scheduled' && status !== 'needs_reconfirmation') {
+      setPlannerNoticeMessage('Tento plán už nelze zrušit.');
+      return;
+    }
+    const confirmed = window.confirm('Opravdu chceš aktivní plán zrušit?');
+    if (!confirmed) {
+      return;
+    }
+
+    setPlannerMutationPending(true);
+    try {
+      const response = await cancelPlannerPlanRequest(String(plannerActivePlan.plan.id), {
+        username: currentUsername,
+        worldId,
+        expectedRevision: Math.max(1, Math.floor(Number(plannerActivePlan.plan.revision ?? 1))),
+      });
+      setPlannerOpenSnapshot((previous) =>
+        previous
+          ? {
+              ...previous,
+              activePlan: response.activePlan,
+            }
+          : null,
+      );
+      setPlannerForceDraftMode(true);
+      setPlannerDraftStage('draft');
+      setPlannerNoticeMessage('Aktivní plán byl zrušen.');
+      setPlannerRefreshToken((previous) => previous + 1);
+    } catch (error) {
+      setPlannerNoticeMessage(getErrorMessage(error));
+    } finally {
+      setPlannerMutationPending(false);
+    }
+  }, [currentUsername, plannerActivePlan, plannerMutationPending, worldId]);
+
+  const handlePlannerReconfirmActivePlan = useCallback(async () => {
+    if (!plannerActivePlan || !worldId || plannerMutationPending) {
+      return;
+    }
+    if (String(plannerActivePlan.plan.status ?? '') !== 'needs_reconfirmation') {
+      setPlannerNoticeMessage('Reconfirm je dostupný jen pro plán ve stavu needs_reconfirmation.');
+      return;
+    }
+    const confirmed = window.confirm(
+      'Cíl se změnil. Potvrdit plán i s následky?',
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setPlannerMutationPending(true);
+    try {
+      const response = await reconfirmPlannerPlanRequest(String(plannerActivePlan.plan.id), {
+        username: currentUsername,
+        worldId,
+        expectedRevision: Math.max(1, Math.floor(Number(plannerActivePlan.plan.revision ?? 1))),
+        confirmWithConsequences: true,
+      });
+      setPlannerOpenSnapshot((previous) =>
+        previous
+          ? {
+              ...previous,
+              activePlan: response.activePlan,
+            }
+          : null,
+      );
+      setPlannerForceDraftMode(false);
+      setPlannerDraftStage('draft');
+      setPlannerNoticeMessage('Plán byl znovu potvrzen i se změněným cílem.');
+      setPlannerRefreshToken((previous) => previous + 1);
+    } catch (error) {
+      setPlannerNoticeMessage(getErrorMessage(error));
+    } finally {
+      setPlannerMutationPending(false);
+    }
+  }, [currentUsername, plannerActivePlan, plannerMutationPending, worldId]);
+
+  const handleArmadaVillageCardClick = useCallback(
+    (village: ArmyVillageSummary) => {
+      if (plannerMutationPending) {
+        return;
+      }
+      const villageId = Math.floor(Number(village.villageId));
+      if (!Number.isFinite(villageId) || villageId <= 0) {
+        return;
+      }
+      if (plannerActivePlan && !plannerForceDraftMode) {
+        setPlannerNoticeMessage('Aktivní serverový plán má prioritu. Nejprve dokonči nebo zruš aktivní plán.');
+        return;
+      }
+
+      const existingLegIndex = plannerDraft.legs.findIndex((leg) => Number(leg.originVillageId) === villageId);
+      if (existingLegIndex >= 0) {
+        setFocusedPlannerLegOriginVillageId(villageId);
+        setPlannerNoticeMessage('Toto léno je už v konceptu. Fokus přesunut na existující leg.');
+        return;
+      }
+
+      if (plannerDraft.legs.length >= Number(plannerConstraints.maxLegs ?? DEFAULT_PLANNER_MAX_LEGS)) {
+        setPlannerNoticeMessage(`Maximální počet legů je ${Number(plannerConstraints.maxLegs ?? DEFAULT_PLANNER_MAX_LEGS)}.`);
+        return;
+      }
+
+      const lastImpactAtUtc = plannerDraft.legs[plannerDraft.legs.length - 1]?.impactAtUtc ?? null;
+      const defaultFirstImpactAtUtc = roundIsoToWholeMinute(
+        new Date(Date.now() + Number(plannerConstraints.leadTimeSec ?? DEFAULT_PLANNER_LEAD_TIME_SEC) * 1000).toISOString(),
+      );
+      const nextImpactAtUtc =
+        lastImpactAtUtc != null
+          ? addMinutesToIso(lastImpactAtUtc, Number(plannerConstraints.minImpactGapMinutes ?? DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES))
+          : defaultFirstImpactAtUtc;
+
+      applyPlannerDraftMutation((previous) => ({
+        ...previous,
+        legs: [
+          ...previous.legs,
+          {
+            originVillageId: villageId,
+            impactAtUtc: nextImpactAtUtc,
+            units: {},
+          },
+        ],
+        updatedAt: new Date().toISOString(),
+      }));
+      setFocusedPlannerLegOriginVillageId(villageId);
+      setPlannerNoticeMessage(`Léno ${village.villageName} bylo přidáno do plánovače.`);
+    },
+    [
+      applyPlannerDraftMutation,
+      plannerActivePlan,
+      plannerConstraints.leadTimeSec,
+      plannerConstraints.maxLegs,
+      plannerConstraints.minImpactGapMinutes,
+      plannerDraft.legs,
+      plannerForceDraftMode,
+      plannerMutationPending,
+    ],
+  );
+
+  const handlePlannerTargetChange = useCallback(
+    (targetVillageIdRaw: number | null) => {
+      const targetVillageId =
+        targetVillageIdRaw != null && Number.isFinite(Number(targetVillageIdRaw))
+          ? Math.floor(Number(targetVillageIdRaw))
+          : null;
+      const targetCandidate =
+        targetVillageId != null ? plannerTargetByVillageId.get(targetVillageId) ?? null : null;
+      applyPlannerDraftMutation((previous) => ({
+        ...previous,
+        targetPlayerUsername: targetCandidate?.username ?? '',
+        targetVillageId: targetCandidate?.villageId ?? null,
+        updatedAt: new Date().toISOString(),
+      }));
+    },
+    [applyPlannerDraftMutation, plannerTargetByVillageId],
+  );
+
+  const handlePlannerLegRemove = useCallback(
+    (originVillageIdRaw: number) => {
+      const originVillageId = Math.floor(Number(originVillageIdRaw));
+      if (!Number.isFinite(originVillageId) || originVillageId <= 0) {
+        return;
+      }
+      applyPlannerDraftMutation((previous) => ({
+        ...previous,
+        legs: previous.legs.filter((leg) => Number(leg.originVillageId) !== originVillageId),
+        updatedAt: new Date().toISOString(),
+      }));
+      setFocusedPlannerLegOriginVillageId((previous) =>
+        previous === originVillageId ? null : previous,
+      );
+    },
+    [applyPlannerDraftMutation],
+  );
+
+  const handlePlannerLegImpactShift = useCallback(
+    (originVillageIdRaw: number, deltaMinutes: number) => {
+      const originVillageId = Math.floor(Number(originVillageIdRaw));
+      if (!Number.isFinite(originVillageId) || originVillageId <= 0) {
+        return;
+      }
+      applyPlannerDraftMutation((previous) => ({
+        ...previous,
+        legs: previous.legs.map((leg) =>
+          Number(leg.originVillageId) === originVillageId
+            ? {
+                ...leg,
+                impactAtUtc: addMinutesToIso(leg.impactAtUtc, deltaMinutes),
+              }
+            : leg,
+        ),
+        updatedAt: new Date().toISOString(),
+      }));
+      setFocusedPlannerLegOriginVillageId(originVillageId);
+    },
+    [applyPlannerDraftMutation],
+  );
+
+  const handlePlannerLegUnitAmountChange = useCallback(
+    (originVillageIdRaw: number, unitId: CommandUnitId, value: string) => {
+      const originVillageId = Math.floor(Number(originVillageIdRaw));
+      if (!Number.isFinite(originVillageId) || originVillageId <= 0) {
+        return;
+      }
+      const originVillage = plannerVillageById.get(originVillageId);
+      if (!originVillage) {
+        return;
+      }
+      const unitSummary =
+        originVillage.units.find((unit) => String(unit.unitId) === String(unitId)) ?? null;
+      const maxAllowed = Math.max(0, Math.floor(Number(unitSummary?.availableForPlanning ?? 0)));
+      const requestedAmount = Math.max(0, Math.floor(Number(value)));
+      const nextAmount = Math.min(maxAllowed, requestedAmount);
+      applyPlannerDraftMutation((previous) => ({
+        ...previous,
+        legs: previous.legs.map((leg) => {
+          if (Number(leg.originVillageId) !== originVillageId) {
+            return leg;
+          }
+          const nextUnits: Partial<Record<CommandUnitId, number>> = { ...(leg.units ?? {}) };
+          if (nextAmount <= 0) {
+            delete nextUnits[unitId];
+          } else {
+            nextUnits[unitId] = nextAmount;
+          }
+          return {
+            ...leg,
+            units: nextUnits,
+          };
+        }),
+        updatedAt: new Date().toISOString(),
+      }));
+      setFocusedPlannerLegOriginVillageId(originVillageId);
+    },
+    [applyPlannerDraftMutation, plannerVillageById],
+  );
+
+  const handlePlannerLegDrop = useCallback(
+    (targetOriginVillageIdRaw: number) => {
+      const draggedOriginVillageId = Number(draggedPlannerLegOriginVillageId);
+      const targetOriginVillageId = Number(targetOriginVillageIdRaw);
+      if (
+        !Number.isFinite(draggedOriginVillageId) ||
+        draggedOriginVillageId <= 0 ||
+        !Number.isFinite(targetOriginVillageId) ||
+        targetOriginVillageId <= 0 ||
+        draggedOriginVillageId === targetOriginVillageId
+      ) {
+        return;
+      }
+      applyPlannerDraftMutation((previous) => {
+        const sourceIndex = previous.legs.findIndex(
+          (leg) => Number(leg.originVillageId) === Math.floor(draggedOriginVillageId),
+        );
+        const targetIndex = previous.legs.findIndex(
+          (leg) => Number(leg.originVillageId) === Math.floor(targetOriginVillageId),
+        );
+        if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+          return previous;
+        }
+        const nextLegs = [...previous.legs];
+        const [movedLeg] = nextLegs.splice(sourceIndex, 1);
+        nextLegs.splice(targetIndex, 0, movedLeg);
+        return {
+          ...previous,
+          legs: nextLegs,
+          updatedAt: new Date().toISOString(),
+        };
+      });
+      setFocusedPlannerLegOriginVillageId(Math.floor(draggedOriginVillageId));
+      setDraggedPlannerLegOriginVillageId(null);
+    },
+    [applyPlannerDraftMutation, draggedPlannerLegOriginVillageId],
+  );
+
   return (
     <div className="panel-stack">
       <section className="army-panel-tabs">
@@ -3942,13 +6624,534 @@ const ArmyPanel = ({
         </button>
         <button
           type="button"
+          className={`secondary-action ${armyViewMode === 'armadaPlanner' ? 'is-active' : ''}`}
+          onClick={() => setArmyViewMode('armadaPlanner')}
+        >
+          Armada + plánovač
+        </button>
+        <button
+          type="button"
           className={`secondary-action ${armyViewMode === 'multiVillage' ? 'is-active' : ''}`}
           onClick={() => setArmyViewMode('multiVillage')}
         >
           Správa všech lén
         </button>
       </section>
-      {armyViewMode === 'multiVillage' ? (
+      {armyViewMode === 'armadaPlanner' ? (
+        <section className="army-panel-view is-enter armada-planner-view">
+          <header className="armada-planner-header">
+            <div>
+              <h3>Armada</h3>
+              <p>Read-only souhrn vlastních lén v aktuálním světě. Klik na kartu přidá léno do plánovače.</p>
+            </div>
+            <button type="button" className="secondary-action" onClick={handleRefreshArmadaAndPlanner}>
+              Obnovit data
+            </button>
+          </header>
+          <p className="row-help">Utocne a obranne prikazy a presuny jednotek</p>
+          {armyOverviewError ? <p className="panel-feedback">{armyOverviewError}</p> : null}
+          {plannerOpenError ? <p className="panel-feedback">{plannerOpenError}</p> : null}
+          {plannerNoticeMessage ? <p className="panel-feedback">{plannerNoticeMessage}</p> : null}
+          {armyOverviewLoading ? <p>Načítám armádní přehled…</p> : null}
+          {!armyOverviewLoading && armyOverviewVillages.length <= 0 ? (
+            <p>V tomto světě zatím nemáš žádná dostupná léna.</p>
+          ) : null}
+          {armyOverviewVillages.length > 0 ? (
+            <ul className="armada-overview-grid">
+              {armyOverviewVillages.map((village) => (
+                <li key={`armada-overview-${village.villageId}`}>
+                  <button
+                    type="button"
+                    className={`armada-village-card ${
+                      village.plannerSelected ? 'is-selected' : ''
+                    }`}
+                    onClick={() => handleArmadaVillageCardClick(village)}
+                  >
+                    <div className="commands-item-line">
+                      <strong>{village.villageName}</strong>
+                      <span>
+                        {village.coordX}|{village.coordY}
+                      </span>
+                    </div>
+                    <small>
+                      Království: {village.kingdom} · Jednotky {village.totalOwnUnits.toLocaleString('cs-CZ')} (
+                      {village.totalSupportUnits.toLocaleString('cs-CZ')})
+                    </small>
+                    <div className="armada-unit-pill-row">
+                      {village.units.map((unit) => (
+                        <span
+                          key={`armada-pill-${village.villageId}-${unit.unitId}`}
+                          className={`armada-unit-pill ${
+                            Number(unit.availableForPlanning ?? 0) <= 0 ? 'is-passive' : ''
+                          }`}
+                        >
+                          <span>{getUnitMetaById(unit.unitId).fallbackName}</span>
+                          <strong>{unit.visibleLabel}</strong>
+                        </span>
+                      ))}
+                    </div>
+                    <span className="armada-card-action">Přidat do plánovače</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          <section className="planner-v1-shell">
+            <header className="planner-v1-header">
+              <h3>Planovač v1</h3>
+              <small>
+                max legů {Number(plannerConstraints.maxLegs)} · min mezera{' '}
+                {Number(plannerConstraints.minImpactGapMinutes)} min · lead time{' '}
+                {Math.ceil(Number(plannerConstraints.leadTimeSec) / 60)} min
+              </small>
+            </header>
+            <p className="planner-v1-banner">{plannerBannerText}</p>
+            {plannerOpenLoading ? <p>Načítám planner…</p> : null}
+            {plannerLastCompletedPlan ? (
+              <article className="planner-active-plan planner-completed-stub">
+                <h4>Poslední dokončený plán</h4>
+                <p>
+                  Cíl: {plannerLastCompletedPlan.targetPlayerUsernameSnapshot} ·{' '}
+                  {plannerLastCompletedPlan.targetVillageNameSnapshot}
+                </p>
+                <p className="row-help">
+                  Legy: {plannerLastCompletedPlan.legsCount} · první odeslání{' '}
+                  {formatDateTimePragueLabel(plannerLastCompletedPlan.firstSendAtUtc)} · poslední odeslání{' '}
+                  {formatDateTimePragueLabel(plannerLastCompletedPlan.lastSendAtUtc)}
+                </p>
+                <p className="row-help">Dokončeno: {formatDateTimePragueLabel(plannerLastCompletedPlan.completedAt)}</p>
+              </article>
+            ) : null}
+            {!plannerIsDraftMode && plannerActivePlan ? (
+              <article className="planner-active-plan">
+                <h4>Aktivní serverový plán</h4>
+                <p>
+                  Cíl: {plannerActivePlan.plan.targetPlayerUsernameSnapshot} ·{' '}
+                  {plannerActivePlan.plan.targetVillageNameSnapshot}
+                </p>
+                <p className={`planner-plan-status is-${plannerActivePlanStatusMeta?.tone ?? 'neutral'}`}>
+                  Stav: {plannerActivePlanStatusMeta?.label ?? plannerActivePlan.plan.status} · revize{' '}
+                  {plannerActivePlan.plan.revision}
+                </p>
+                <p className="row-help">
+                  Progress: {plannerActivePlanProgress?.sentLegs ?? 0}/{plannerActivePlanProgress?.totalLegs ?? 0}
+                  {' '}({plannerActivePlanProgress?.percent ?? 0}%)
+                  {plannerActivePlanProgress?.countdownSec != null
+                    ? ` · start za ${formatDurationLabel(plannerActivePlanProgress.countdownSec)}`
+                    : ''}
+                </p>
+                <ul className="planner-active-leg-list">
+                  {plannerActivePlan.legs.map((leg) => {
+                    const legStatusMeta = resolvePlannerLegStatusMeta(leg.status);
+                    return (
+                      <li
+                        key={`planner-active-leg-${leg.id}`}
+                        className={`planner-active-leg is-${legStatusMeta.tone}`}
+                      >
+                        <p>
+                          #{leg.order} · {leg.originVillageNameSnapshot} · dopad{' '}
+                          {formatDateTimePragueLabel(leg.impactAtUtc)} · odeslání{' '}
+                          {formatDateTimePragueLabel(leg.sendAtUtc)}
+                        </p>
+                        <p className="planner-active-leg-status">
+                          Stav legu: {legStatusMeta.label}
+                        </p>
+                        {leg.failMessage ? (
+                          <p className="planner-active-leg-fail">
+                            Fail detail: {leg.failMessage}
+                            {leg.failCode ? ` (${leg.failCode})` : ''}
+                          </p>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+                <p className="row-help">
+                  Aktivní serverový plán má prioritu nad lokálním draftem.
+                </p>
+                {plannerCanReturnToDraftFromActivePlan ? (
+                  <div className="activity-item-actions">
+                    <button
+                      type="button"
+                      className="secondary-action"
+                      onClick={handlePlannerReturnToDraft}
+                      disabled={plannerMutationPending}
+                    >
+                      Zpet do konceptu
+                    </button>
+                  </div>
+                ) : null}
+                {String(plannerActivePlan.plan.status ?? '') === 'needs_reconfirmation' ? (
+                  <div className="activity-item-actions">
+                    <button
+                      type="button"
+                      className="secondary-action"
+                      onClick={() => void handlePlannerReconfirmActivePlan()}
+                      disabled={plannerMutationPending}
+                    >
+                      {plannerMutationPending ? 'Potvrzuji...' : 'Potvrdit i s následky'}
+                    </button>
+                  </div>
+                ) : null}
+                {(String(plannerActivePlan.plan.status ?? '') === 'scheduled' ||
+                  String(plannerActivePlan.plan.status ?? '') === 'needs_reconfirmation') ? (
+                  <div className="activity-item-actions">
+                    <button
+                      type="button"
+                      className="secondary-action"
+                      onClick={() => void handlePlannerCancelActivePlan()}
+                      disabled={plannerMutationPending}
+                    >
+                      {plannerMutationPending ? 'Ruším...' : 'Zrušit plán'}
+                    </button>
+                  </div>
+                ) : null}
+              </article>
+            ) : (
+              <>
+                {plannerActivePlan && plannerForceDraftMode ? (
+                  <div className="planner-restore-callout">
+                    <p>
+                      Pracuješ v lokálním konceptu. Aktivní serverový plán zůstává autoritativní, dokud ho výslovně
+                      nezměníš.
+                    </p>
+                    <div className="activity-item-actions">
+                      <button type="button" className="secondary-action" onClick={handlePlannerBackToActivePlan}>
+                        Zobrazit aktivní plán
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                {storedPlannerDraftAvailable &&
+                plannerDraft.legs.length <= 0 &&
+                plannerDraft.targetVillageId == null &&
+                !plannerDraft.targetPlayerUsername ? (
+                  <div className="planner-restore-callout">
+                    <p>Byl nalezen poslední lokální koncept.</p>
+                    <small className="row-help">
+                      Naposledy uložen: {formatDateTimePragueLabel(storedPlannerDraftAvailable.updatedAt)}
+                    </small>
+                    <button type="button" className="secondary-action" onClick={handleRestorePlannerDraft}>
+                      Obnovit poslední koncept
+                    </button>
+                  </div>
+                ) : null}
+
+                {plannerDraftStage === 'confirmation' ? (
+                  <section className="planner-summary-step">
+                    <h4>Potvrzení plánu</h4>
+                    <p className={`planner-summary-status is-${plannerValidation.status}`}>
+                      Stav konceptu: {plannerValidation.status === 'ok' ? 'validní' : plannerValidation.status}
+                    </p>
+                    <p>
+                      Cíl:{' '}
+                      {plannerDraft.targetVillageId != null
+                        ? `${plannerDraft.targetPlayerUsername} (${plannerTargetByVillageId.get(plannerDraft.targetVillageId)?.coordX ?? 0}|${
+                            plannerTargetByVillageId.get(plannerDraft.targetVillageId)?.coordY ?? 0
+                          })`
+                        : 'nevybrán'}
+                    </p>
+                    <ul>
+                      {plannerLegRows.map((leg) => (
+                        <li key={`planner-confirm-summary-${leg.key}`}>
+                          #{leg.order} · {leg.originVillage?.villageName ?? `Léno #${leg.key}`} · dopad{' '}
+                          {formatDateTimePragueLabel(leg.impactAtUtc)} · odeslání{' '}
+                          {formatDateTimePragueLabel(leg.sendAtUtc)} · jednotky{' '}
+                          {leg.unitsTotal.toLocaleString('cs-CZ')}
+                        </li>
+                      ))}
+                    </ul>
+                    {plannerValidation.issues.length > 0 ? (
+                      <ul className="planner-validation-list">
+                        {plannerValidation.issues.map((issue) => (
+                          <li key={`planner-confirm-issue-${issue.code}`} className={`is-${issue.severity}`}>
+                            {issue.message}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="row-help">Kliknutím na Uložit plán vznikne serverový stav Potvrzeno/naplánováno.</p>
+                    )}
+                    <div className="activity-item-actions">
+                      <button
+                        type="button"
+                        className="secondary-action"
+                        onClick={() => void handlePlannerSaveConfirmed()}
+                        disabled={plannerMutationPending || !plannerCanOpenConfirmation}
+                      >
+                        {plannerMutationPending ? 'Ukládám...' : 'Uložit plán'}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-action"
+                        onClick={handlePlannerBackToDraftFromConfirmation}
+                        disabled={plannerMutationPending}
+                      >
+                        Zpět do konceptu
+                      </button>
+                    </div>
+                  </section>
+                ) : (
+                  <>
+                    <div className="activity-item-actions">
+                      <button
+                        type="button"
+                        className="secondary-action"
+                        onClick={handlePlannerAutoAlignForward}
+                        disabled={plannerMutationPending || plannerLegRows.length <= 0}
+                        title="Synchronizuje útoky všech lén po sobě jdoucích v dopadu po každé jedné minutě."
+                      >
+                        Srovnat časy dopředu
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-action"
+                        onClick={handlePlannerAutoAlignBackward}
+                        disabled={plannerMutationPending || plannerLegRows.length <= 0}
+                      >
+                        Srovnat od posledního
+                      </button>
+                    </div>
+
+                    <label className="planner-target-picker">
+                      <span>Cíl (hráč s právě jedním lénem)</span>
+                      <select
+                        value={
+                          plannerDraft.targetVillageId != null && Number.isFinite(plannerDraft.targetVillageId)
+                            ? String(plannerDraft.targetVillageId)
+                            : ''
+                        }
+                        onChange={(event) => {
+                          const nextVillageId = Number(event.target.value);
+                          handlePlannerTargetChange(
+                            Number.isFinite(nextVillageId) && nextVillageId > 0 ? nextVillageId : null,
+                          );
+                        }}
+                        disabled={plannerMutationPending}
+                      >
+                        <option value="">Vyber cílového hráče</option>
+                        {plannerTargetCandidates.map((candidate) => (
+                          <option key={`planner-target-${candidate.villageId}`} value={candidate.villageId}>
+                            {candidate.username} · {candidate.villageName} ({candidate.coordX}|{candidate.coordY})
+                          </option>
+                        ))}
+                      </select>
+                      {plannerTargetCandidates.length <= 0 ? (
+                        <small className="row-help">
+                          V tomto světě zatím není dostupný hráč s právě jedním lénem.
+                        </small>
+                      ) : null}
+                    </label>
+
+                    <div className="planner-leg-list-wrap">
+                      <h4>Legy útoku</h4>
+                      {plannerLegRows.length <= 0 ? (
+                        <p>
+                          Prázdný koncept. Klikni na kartu léna v Armadě a přidej první leg.
+                        </p>
+                      ) : (
+                        <ul className="planner-leg-list">
+                          {plannerLegRows.map((legRow) => {
+                            const legIssues = plannerValidationIssuesByLegOriginVillageId.get(legRow.key) ?? [];
+                            const legIssueTone = legIssues.some((issue) => issue.severity === 'blocked')
+                              ? 'has-blocked'
+                              : legIssues.some((issue) => issue.severity === 'warning')
+                                ? 'has-warning'
+                                : '';
+                            return (
+                              <li
+                                key={`planner-leg-${legRow.key}`}
+                                draggable={!plannerMutationPending}
+                                onDragStart={() => setDraggedPlannerLegOriginVillageId(legRow.key)}
+                                onDragOver={(event) => event.preventDefault()}
+                                onDrop={(event) => {
+                                  event.preventDefault();
+                                  handlePlannerLegDrop(legRow.key);
+                                }}
+                                className={`planner-leg-card ${focusedPlannerLegOriginVillageId === legRow.key ? 'is-focused' : ''} ${legIssueTone}`}
+                              >
+                                <header>
+                                  <div>
+                                    <strong>
+                                      #{legRow.order} · {legRow.originVillage?.villageName ?? `Léno #${legRow.key}`}
+                                    </strong>
+                                    <small>
+                                      {legRow.originVillage?.coordX ?? 0}|{legRow.originVillage?.coordY ?? 0} ·
+                                      tahem přetáhni pro změnu pořadí
+                                    </small>
+                                  </div>
+                                  <div className="activity-item-actions">
+                                    <button
+                                      type="button"
+                                      className="secondary-action compact"
+                                      onClick={() => handlePlannerFillLegAll(legRow.key)}
+                                      disabled={plannerMutationPending}
+                                      title="Složení nejlepší kombinace k útoku se špionáží: Jezdec, Zvěd a Beranidlo."
+                                    >
+                                      Vyplnit útočnými jednotkami
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-action compact"
+                                      onClick={() => handlePlannerLegRemove(legRow.key)}
+                                      title="Odebrat léno z plánovače"
+                                      aria-label="Odebrat léno z plánovače"
+                                      disabled={plannerMutationPending}
+                                    >
+                                      Odebrat léno
+                                    </button>
+                                  </div>
+                                </header>
+                                <div className="planner-impact-controls">
+                                  <span>Dopad (Praha): {formatDateTimePragueLabel(legRow.impactAtUtc)}</span>
+                                  <div>
+                                    <button
+                                      type="button"
+                                      className="secondary-action compact"
+                                      onClick={() => handlePlannerLegImpactShift(legRow.key, -5)}
+                                      disabled={plannerMutationPending}
+                                    >
+                                      -5m
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-action compact"
+                                      onClick={() => handlePlannerLegImpactShift(legRow.key, -1)}
+                                      disabled={plannerMutationPending}
+                                    >
+                                      -1m
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-action compact"
+                                      onClick={() => handlePlannerLegImpactShift(legRow.key, 1)}
+                                      disabled={plannerMutationPending}
+                                    >
+                                      +1m
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-action compact"
+                                      onClick={() => handlePlannerLegImpactShift(legRow.key, 5)}
+                                      disabled={plannerMutationPending}
+                                    >
+                                      +5m
+                                    </button>
+                                  </div>
+                                </div>
+                                <small>
+                                  Odeslání (Praha): {formatDateTimePragueLabel(legRow.sendAtUtc)} · cesta{' '}
+                                  {formatDurationLabel(legRow.travelDurationSec)}
+                                </small>
+                                {legIssues.length > 0 ? (
+                                  <ul className="planner-leg-issues">
+                                    {legIssues.map((issue) => (
+                                      <li key={`planner-leg-issue-${issue.code}`} className={`is-${issue.severity}`}>
+                                        {issue.message}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : null}
+                                <div className="planner-leg-unit-grid">
+                                  {COMMAND_UNIT_ORDER.map((unitId) => {
+                                    const unitSummary =
+                                      legRow.originVillage?.units.find((unit) => String(unit.unitId) === unitId) ?? null;
+                                    const availableForPlanning = Math.max(
+                                      0,
+                                      Math.floor(Number(unitSummary?.availableForPlanning ?? 0)),
+                                    );
+                                    if (availableForPlanning <= 0) {
+                                      return null;
+                                    }
+                                    return (
+                                      <label key={`planner-leg-unit-${legRow.key}-${unitId}`}>
+                                        <span>
+                                          {getUnitMetaById(unitId).fallbackName} · max{' '}
+                                          {availableForPlanning.toLocaleString('cs-CZ')}
+                                        </span>
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          max={availableForPlanning}
+                                          step={1}
+                                          value={String(Math.max(0, Math.floor(Number(legRow.units[unitId] ?? 0))))}
+                                          onChange={(event) =>
+                                            handlePlannerLegUnitAmountChange(legRow.key, unitId, event.target.value)
+                                          }
+                                          disabled={plannerMutationPending}
+                                        />
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
+
+                    <section className="planner-summary-step">
+                      <h4>Souhrn konceptu</h4>
+                      <p className={`planner-summary-status is-${plannerValidation.status}`}>
+                        Stav konceptu: {plannerValidation.status === 'ok' ? 'validní' : plannerValidation.status}
+                      </p>
+                      <p>
+                        Cíl:{' '}
+                        {plannerDraft.targetVillageId != null
+                          ? `${plannerDraft.targetPlayerUsername} (${plannerTargetByVillageId.get(plannerDraft.targetVillageId)?.coordX ?? 0}|${
+                              plannerTargetByVillageId.get(plannerDraft.targetVillageId)?.coordY ?? 0
+                            })`
+                          : 'nevybrán'}
+                      </p>
+                      <ul>
+                        {plannerLegRows.map((leg) => (
+                          <li key={`planner-summary-${leg.key}`}>
+                            #{leg.order} · {leg.originVillage?.villageName ?? `Léno #${leg.key}`} · dopad{' '}
+                            {formatDateTimePragueLabel(leg.impactAtUtc)} · odeslání{' '}
+                            {formatDateTimePragueLabel(leg.sendAtUtc)} · jednotky{' '}
+                            {leg.unitsTotal.toLocaleString('cs-CZ')}
+                          </li>
+                        ))}
+                      </ul>
+                      {plannerValidation.issues.length > 0 ? (
+                        <ul className="planner-validation-list">
+                          {plannerValidation.issues.map((issue) => (
+                            <li key={`planner-issue-${issue.code}`} className={`is-${issue.severity}`}>
+                              {issue.message}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="row-help">Koncept je validní pro v1 guardrails.</p>
+                      )}
+                      <div className="activity-item-actions">
+                        <button
+                          type="button"
+                          className="secondary-action"
+                          onClick={handlePlannerOpenConfirmation}
+                          disabled={!plannerCanOpenConfirmation || plannerMutationPending}
+                        >
+                          Potvrzení plánu
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-action"
+                          onClick={handleClearPlannerDraft}
+                          disabled={plannerMutationPending}
+                        >
+                          Vyčistit koncept
+                        </button>
+                      </div>
+                    </section>
+                  </>
+                )}
+              </>
+            )}
+          </section>
+        </section>
+      ) : armyViewMode === 'multiVillage' ? (
         <section className="army-panel-view is-enter">
           <h3>Správa všech lén</h3>
           <p>
@@ -4075,51 +7278,6 @@ const ArmyPanel = ({
         </section>
       ) : (
       <>
-      <section>
-        <h3>Správa staveb vybraného léna</h3>
-        <p>Budovy jsou rozdělené do 4 řádků podle městských okruhů a připravené pro rychlé vylepšení.</p>
-        <div className="selected-village-building-groups">
-          {selectedVillageBuildingGroups.map((group) => (
-            <section key={`army-building-group-${group.id}`} className="selected-village-building-group">
-              <header>
-                <h4>{group.label}</h4>
-                <p>{group.subtitle}</p>
-              </header>
-              <div className="selected-village-building-strip">
-                {group.buildings.map((building) => (
-                  <article key={`army-building-${group.id}-${building.id}`} className="selected-village-building-card">
-                    <header>
-                      <span className="unit-icon-shell" aria-hidden="true">
-                        <img src={building.icon} alt="" className="unit-icon-image" loading="lazy" />
-                      </span>
-                      <strong>{building.name}</strong>
-                    </header>
-                    <p>
-                      Úroveň <strong>{building.level}</strong>
-                    </p>
-                    <small>
-                      {building.isInProgress
-                        ? `Probíhá (${building.nextTime})`
-                        : building.canUpgrade
-                          ? `Připraveno (${building.nextTime})`
-                          : building.blockedReason ?? 'Max úroveň'}
-                    </small>
-                    <button
-                      type="button"
-                      className="secondary-action"
-                      onClick={() => onUpgradeBuilding(building)}
-                      disabled={!building.canUpgrade || upgradePendingBuildingId === building.id}
-                    >
-                      {upgradePendingBuildingId === building.id ? 'Vylepšuji...' : 'Vylepšit'}
-                    </button>
-                  </article>
-                ))}
-              </div>
-            </section>
-          ))}
-          {selectedVillageBuildingGroups.length === 0 ? <p>Žádné stavby nejsou dostupné.</p> : null}
-        </div>
-      </section>
       <section>
         <h3>Nábor jednotek</h3>
         <p>Nábor běží ve frontě pro aktuální léno. Limitem je dostupná populace a suroviny.</p>
@@ -4318,11 +7476,56 @@ const ArmyPanel = ({
           </tbody>
         </table>
       </section>
+      <section>
+        <h3>Správa staveb vybraného léna</h3>
+        <p>Budovy jsou rozdělené do 4 řádků podle městských okruhů a připravené pro rychlé vylepšení.</p>
+        <div className="selected-village-building-groups">
+          {selectedVillageBuildingGroups.map((group) => (
+            <section key={`army-building-group-${group.id}`} className="selected-village-building-group">
+              <header>
+                <h4>{group.label}</h4>
+                <p>{group.subtitle}</p>
+              </header>
+              <div className="selected-village-building-strip">
+                {group.buildings.map((building) => (
+                  <article key={`army-building-${group.id}-${building.id}`} className="selected-village-building-card">
+                    <header>
+                      <span className="unit-icon-shell" aria-hidden="true">
+                        <img src={building.icon} alt="" className="unit-icon-image" loading="lazy" />
+                      </span>
+                      <strong>{building.name}</strong>
+                    </header>
+                    <p>
+                      Úroveň <strong>{building.level}</strong>
+                    </p>
+                    <small>
+                      {building.isInProgress
+                        ? `Probíhá (${building.nextTime})`
+                        : building.canUpgrade
+                          ? `Připraveno (${building.nextTime})`
+                          : building.blockedReason ?? 'Max úroveň'}
+                    </small>
+                    <button
+                      type="button"
+                      className="secondary-action"
+                      onClick={() => onUpgradeBuilding(building)}
+                      disabled={!building.canUpgrade || upgradePendingBuildingId === building.id}
+                    >
+                      {upgradePendingBuildingId === building.id ? 'Vylepšuji...' : 'Vylepšit'}
+                    </button>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ))}
+          {selectedVillageBuildingGroups.length === 0 ? <p>Žádné stavby nejsou dostupné.</p> : null}
+        </div>
+      </section>
       </>
       )}
     </div>
   );
-};
+});
 
 const MilitaryPanel = ({
   units,
@@ -4330,12 +7533,24 @@ const MilitaryPanel = ({
   incomingMovements,
   stationedSupports,
   currentVillageName,
+  mercenaries,
+  resources,
+  notice,
+  mercenaryActionPending,
+  onHireMercenaries,
 }: {
   units: Unit[];
   activeMovements: ArmyMovementState[];
   incomingMovements: ArmyMovementState[];
   stationedSupports: ArmyMovementState[];
   currentVillageName: string;
+  mercenaries: GameStateResponse['mercenaries'] | undefined;
+  resources:
+    | Pick<GameStateResponse['resources'], 'coins' | 'productionPerHour' | 'protection'>
+    | undefined;
+  notice: string | null;
+  mercenaryActionPending: boolean;
+  onHireMercenaries: (villageId: number) => void;
 }) => {
   const orderedUnits = useMemo(
     () =>
@@ -4363,8 +7578,7 @@ const MilitaryPanel = ({
   const totalAttackPower = useMemo(
     () =>
       orderedUnits.reduce((sum, unit) => {
-        const unitId = unit.id as CommandUnitId;
-        const unitPower = COMMAND_UNIT_ORDER.includes(unitId) ? UNIT_ATTACK_POWER[unitId] : 0;
+        const unitPower = resolveAttackPowerByUnitId(String(unit.id));
         return sum + Number(unit.amount ?? 0) * unitPower;
       }, 0),
     [orderedUnits],
@@ -4372,8 +7586,7 @@ const MilitaryPanel = ({
   const totalDefensePower = useMemo(
     () =>
       orderedUnits.reduce((sum, unit) => {
-        const unitId = unit.id as CommandUnitId;
-        const unitPower = COMMAND_UNIT_ORDER.includes(unitId) ? UNIT_DEFENSE_POWER[unitId] : 0;
+        const unitPower = resolveDefensePowerByUnitId(String(unit.id));
         return sum + Number(unit.amount ?? 0) * unitPower;
       }, 0),
     [orderedUnits],
@@ -4381,8 +7594,7 @@ const MilitaryPanel = ({
   const totalLootCapacity = useMemo(
     () =>
       orderedUnits.reduce((sum, unit) => {
-        const unitId = unit.id as CommandUnitId;
-        const unitCapacity = COMMAND_UNIT_ORDER.includes(unitId) ? UNIT_LOOT_CAPACITY[unitId] : 0;
+        const unitCapacity = resolveLootCapacityByUnitId(String(unit.id));
         return sum + Number(unit.amount ?? 0) * unitCapacity;
       }, 0),
     [orderedUnits],
@@ -4411,6 +7623,198 @@ const MilitaryPanel = ({
   );
   const [hoveredMovementId, setHoveredMovementId] = useState<number | null>(null);
   const [tooltipCursorPosition, setTooltipCursorPosition] = useState<TooltipCursorPosition | null>(null);
+  const [selectedMercenaryVillageId, setSelectedMercenaryVillageId] = useState<number | null>(null);
+
+  const mercenaryCooldownRemainingSec = Math.max(0, Math.floor(Number(mercenaries?.cooldownRemainingSec ?? 0)));
+  const mercenaryCooldownSec = Math.max(0, Math.floor(Number(mercenaries?.cooldownSec ?? 0)));
+  const mercenaryDeliveryDelaySec = Math.max(0, Math.floor(Number(mercenaries?.deliveryDelaySec ?? 0)));
+  const mercenaryDurationSec = Math.max(0, Math.floor(Number(mercenaries?.durationSec ?? 0)));
+  const mercenaryContractCoinCost = Math.max(
+    0,
+    Math.floor(Number(mercenaries?.contractCoinCost ?? MERCENARY_CONTRACT_COIN_COST)),
+  );
+  const mercenaryContractUnitAmount = Math.max(
+    0,
+    Math.floor(Number(mercenaries?.contractUnitAmount ?? 0)),
+  );
+  const mercenaryUnlocked = Boolean(mercenaries?.unlocked);
+  const mercenaryContracts = useMemo(() => {
+    const statusPriority: Record<string, number> = {
+      active: 0,
+      en_route: 1,
+      ordered: 2,
+      in_transit: 3,
+      completed: 4,
+      expired: 5,
+      canceled: 6,
+    };
+    return [...(mercenaries?.contracts ?? [])].sort((left, right) => {
+      const leftPriority = statusPriority[String(left.status).toLocaleLowerCase('cs-CZ')] ?? 99;
+      const rightPriority = statusPriority[String(right.status).toLocaleLowerCase('cs-CZ')] ?? 99;
+      if (leftPriority !== rightPriority) {
+        return leftPriority - rightPriority;
+      }
+      const rightOrderedAtMs = Date.parse(String(right.orderedAt));
+      const leftOrderedAtMs = Date.parse(String(left.orderedAt));
+      const safeRight = Number.isFinite(rightOrderedAtMs) ? rightOrderedAtMs : 0;
+      const safeLeft = Number.isFinite(leftOrderedAtMs) ? leftOrderedAtMs : 0;
+      return safeRight - safeLeft;
+    });
+  }, [mercenaries?.contracts]);
+  const activeMercenaryContract = useMemo(
+    () =>
+      mercenaryContracts.find((contract) => {
+        const status = String(contract.status ?? '').toLocaleLowerCase('cs-CZ');
+        return status === 'active' || status === 'en_route';
+      }) ?? null,
+    [mercenaryContracts],
+  );
+  type MercenaryDeploymentState = {
+    status: 'en_route' | 'active';
+    remainingSec: number;
+    overlayPercent: number;
+    summaryLabel: string;
+    hoverLabel: string;
+  };
+  const mercenaryDeployment = useMemo<MercenaryDeploymentState | null>(() => {
+    if (!activeMercenaryContract) {
+      return null;
+    }
+
+    const nowMs = Date.now();
+    const status = String(activeMercenaryContract.status ?? '').toLocaleLowerCase('cs-CZ');
+    if (status === 'en_route') {
+      const orderedAtMs = Date.parse(String(activeMercenaryContract.orderedAt));
+      const arriveAtMs = Date.parse(String(activeMercenaryContract.arriveAt));
+      if (!Number.isFinite(arriveAtMs)) {
+        return null;
+      }
+      const fallbackDeliverySec =
+        Number.isFinite(orderedAtMs) && Number.isFinite(arriveAtMs)
+          ? Math.max(1, Math.floor((arriveAtMs - orderedAtMs) / 1000))
+          : 1;
+      const totalDeliverySec = mercenaryDeliveryDelaySec > 0 ? mercenaryDeliveryDelaySec : fallbackDeliverySec;
+      const remainingDeliverySec = Math.max(0, Math.ceil((arriveAtMs - nowMs) / 1000));
+      const overlayPercent = Math.max(
+        0,
+        Math.min(100, Math.round((remainingDeliverySec / Math.max(1, totalDeliverySec)) * 100)),
+      );
+      return {
+        status: 'en_route',
+        remainingSec: remainingDeliverySec,
+        overlayPercent,
+        summaryLabel: `Spawn za ${formatDurationLabel(remainingDeliverySec)} · ${formatDateTimeLabel(
+          activeMercenaryContract.arriveAt,
+        )}`,
+        hoverLabel: `Žoldáci dorazí ${formatDateTimeLabel(activeMercenaryContract.arriveAt)} (za ${formatDurationLabel(
+          remainingDeliverySec,
+        )}).`,
+      };
+    }
+
+    if (status === 'active') {
+      const arriveAtMs = Date.parse(String(activeMercenaryContract.arriveAt));
+      const expiresAtMs = Date.parse(String(activeMercenaryContract.expiresAt));
+      if (!Number.isFinite(expiresAtMs)) {
+        return null;
+      }
+      const fallbackDurationSec =
+        Number.isFinite(arriveAtMs) && Number.isFinite(expiresAtMs)
+          ? Math.max(1, Math.floor((expiresAtMs - arriveAtMs) / 1000))
+          : 1;
+      const totalDurationSec = mercenaryDurationSec > 0 ? mercenaryDurationSec : fallbackDurationSec;
+      const remainingDurationSec = Math.max(0, Math.ceil((expiresAtMs - nowMs) / 1000));
+      const overlayPercent = Math.max(
+        0,
+        Math.min(100, Math.round((remainingDurationSec / Math.max(1, totalDurationSec)) * 100)),
+      );
+      return {
+        status: 'active',
+        remainingSec: remainingDurationSec,
+        overlayPercent,
+        summaryLabel: `Nasazení končí za ${formatDurationLabel(remainingDurationSec)} · ${formatDateTimeLabel(
+          activeMercenaryContract.expiresAt,
+        )}`,
+        hoverLabel: `Žoldáci v lénu do ${formatDateTimeLabel(activeMercenaryContract.expiresAt)} (zbývá ${formatDurationLabel(
+          remainingDurationSec,
+        )}).`,
+      };
+    }
+
+    return null;
+  }, [activeMercenaryContract, mercenaryDeliveryDelaySec, mercenaryDurationSec]);
+  const mercenaryHiringOptions = useMemo(
+    () =>
+      [...(mercenaries?.hiringOptions ?? [])].sort((left, right) => {
+        if (left.hasEnoughCoins !== right.hasEnoughCoins) {
+          return left.hasEnoughCoins ? -1 : 1;
+        }
+        if (left.isCurrentVillage !== right.isCurrentVillage) {
+          return left.isCurrentVillage ? -1 : 1;
+        }
+        return compareVillageLabelNatural(
+          {
+            name: left.villageName,
+            coordX: left.coordX,
+            coordY: left.coordY,
+          },
+          {
+            name: right.villageName,
+            coordX: right.coordX,
+            coordY: right.coordY,
+          },
+        );
+      }),
+    [mercenaries?.hiringOptions],
+  );
+  const coinEligibleHiringOptions = useMemo(
+    () => mercenaryHiringOptions.filter((option) => option.hasEnoughCoins),
+    [mercenaryHiringOptions],
+  );
+  const displayedHiringOptions = coinEligibleHiringOptions.length > 0 ? coinEligibleHiringOptions : mercenaryHiringOptions;
+  const hasCoinEligibleHiringOptions = coinEligibleHiringOptions.length > 0;
+  useEffect(() => {
+    if (displayedHiringOptions.length <= 0) {
+      setSelectedMercenaryVillageId(null);
+      return;
+    }
+    setSelectedMercenaryVillageId((previous) => {
+      if (previous != null && displayedHiringOptions.some((option) => option.villageId === previous)) {
+        return previous;
+      }
+      const currentVillageOption =
+        displayedHiringOptions.find((option) => option.isCurrentVillage) ?? displayedHiringOptions[0];
+      return currentVillageOption?.villageId ?? null;
+    });
+  }, [displayedHiringOptions]);
+  const selectedMercenaryVillage = useMemo(
+    () =>
+      displayedHiringOptions.find((option) => option.villageId === selectedMercenaryVillageId) ??
+      mercenaryHiringOptions.find((option) => option.villageId === selectedMercenaryVillageId) ??
+      null,
+    [displayedHiringOptions, mercenaryHiringOptions, selectedMercenaryVillageId],
+  );
+  const canHireMercenaries = Boolean(selectedMercenaryVillage?.canHire) && !mercenaryActionPending;
+  const resolveMercenaryContractStatusLabel = (statusRaw: string): string => {
+    switch (String(statusRaw ?? '').toLocaleLowerCase('cs-CZ')) {
+      case 'ordered':
+        return 'Objednáno';
+      case 'en_route':
+        return 'Na cestě';
+      case 'in_transit':
+        return 'Na cestě';
+      case 'active':
+        return 'Aktivní';
+      case 'completed':
+        return 'Dokončeno';
+      case 'expired':
+        return 'Vypršelo';
+      case 'canceled':
+        return 'Zrušeno';
+      default:
+        return statusRaw;
+    }
+  };
 
   return (
     <div className="panel-stack military-panel">
@@ -4440,15 +7844,26 @@ const MilitaryPanel = ({
         <h3>Armáda ve vybraném lénu</h3>
         <div className="military-unit-grid">
           {orderedUnits.map((unit) => {
-            const unitId = unit.id as CommandUnitId;
-            const attackPower = COMMAND_UNIT_ORDER.includes(unitId) ? UNIT_ATTACK_POWER[unitId] : 0;
-            const defensePower = COMMAND_UNIT_ORDER.includes(unitId) ? UNIT_DEFENSE_POWER[unitId] : 0;
-            const lootCapacity = COMMAND_UNIT_ORDER.includes(unitId) ? UNIT_LOOT_CAPACITY[unitId] : 0;
+            const unitId = String(unit.id);
+            const attackPower = resolveAttackPowerByUnitId(unitId);
+            const defensePower = resolveDefensePowerByUnitId(unitId);
+            const lootCapacity = resolveLootCapacityByUnitId(unitId);
             const attackContribution = Number(unit.amount ?? 0) * attackPower;
             const defenseContribution = Number(unit.amount ?? 0) * defensePower;
+            const isMercenaryUnitCard = unitId === MERCENARY_UNIT_ID;
+            const mercenaryProgressPercent = isMercenaryUnitCard ? (mercenaryDeployment?.overlayPercent ?? 0) : 0;
 
             return (
-              <article key={`military-unit-${unit.id}`} className="military-unit-card">
+              <article
+                key={`military-unit-${unit.id}`}
+                className={`military-unit-card${isMercenaryUnitCard ? ' is-mercenary-card' : ''}`}
+                title={isMercenaryUnitCard && mercenaryDeployment ? mercenaryDeployment.hoverLabel : undefined}
+              >
+                {isMercenaryUnitCard ? (
+                  <span className="military-unit-mercenary-progress" aria-hidden="true">
+                    <span style={{ width: `${mercenaryProgressPercent}%` }} />
+                  </span>
+                ) : null}
                 <header>
                   <span className="unit-icon-shell" aria-hidden="true">
                     <img src={getUnitMetaById(unit.id).icon} alt="" className="unit-icon-image" loading="lazy" />
@@ -4463,6 +7878,9 @@ const MilitaryPanel = ({
                   <small>Obrana: {defenseContribution.toLocaleString('cs-CZ')}</small>
                   <small>Kořist: {(Number(unit.amount ?? 0) * lootCapacity).toLocaleString('cs-CZ')}</small>
                 </div>
+                {isMercenaryUnitCard && mercenaryDeployment ? (
+                  <small className="row-help military-unit-mercenary-timing">{mercenaryDeployment.summaryLabel}</small>
+                ) : null}
                 {unit.queuedCount > 0 ? (
                   <small className="row-help">Ve frontě náboru: +{unit.queuedCount.toLocaleString('cs-CZ')}</small>
                 ) : null}
@@ -4593,39 +8011,166 @@ const MilitaryPanel = ({
           </article>
         </div>
       </section>
+
+      <section className="military-mercenary-section">
+        <h3>Mincovna a žoldáci</h3>
+        <div className="commands-kpi-strip">
+          <article>
+            <span>Mince ve vybraném lénu</span>
+            <strong>{Math.max(0, Math.floor(Number(resources?.coins ?? 0))).toLocaleString('cs-CZ')}</strong>
+          </article>
+          <article>
+            <span>Chráněné mince</span>
+            <strong>{Math.max(0, Math.floor(Number(resources?.protection.coins ?? 0))).toLocaleString('cs-CZ')}</strong>
+          </article>
+          <article>
+            <span>Ražba / h</span>
+            <strong>{Math.max(0, Number(resources?.productionPerHour.mintCoins ?? 0)).toLocaleString('cs-CZ')}</strong>
+          </article>
+          <article>
+            <span>Cooldown žoldáků</span>
+            <strong>
+              {mercenaryCooldownRemainingSec > 0 ? formatDurationLabel(mercenaryCooldownRemainingSec) : 'Připraveno'}
+            </strong>
+          </article>
+          <article className={mercenaryUnlocked ? '' : 'is-danger'}>
+            <span>Výzkum banky</span>
+            <strong>{mercenaryUnlocked ? 'Odemčeno' : 'Zamčeno'}</strong>
+          </article>
+        </div>
+
+        <div className="research-panel-inline-actions military-mercenary-actions">
+          <label>
+            Léno pro nábor
+            <select
+              value={selectedMercenaryVillageId ?? ''}
+              onChange={(event) => setSelectedMercenaryVillageId(Number(event.target.value) || null)}
+              disabled={mercenaryActionPending || displayedHiringOptions.length <= 0}
+            >
+              {displayedHiringOptions.map((option) => (
+                <option key={`mercenary-hire-option-${option.villageId}`} value={option.villageId}>
+                  {option.villageName} ({option.coordX}|{option.coordY}) · {option.coins.toLocaleString('cs-CZ')} mincí
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="secondary-action"
+            onClick={() => {
+              if (selectedMercenaryVillageId == null) {
+                return;
+              }
+              onHireMercenaries(selectedMercenaryVillageId);
+            }}
+            disabled={!canHireMercenaries}
+          >
+            {mercenaryActionPending
+              ? 'Najímám žoldáky...'
+              : `Najmout žoldáky (${mercenaryContractCoinCost.toLocaleString('cs-CZ')} mincí)`}
+          </button>
+        </div>
+        {!hasCoinEligibleHiringOptions && mercenaryHiringOptions.length > 0 ? (
+          <small className="row-help">Žádné léno aktuálně nemá dost mincí pro nábor.</small>
+        ) : null}
+        {selectedMercenaryVillage ? (
+          <small className="row-help">
+            Vybrané léno {selectedMercenaryVillage.villageName} ({selectedMercenaryVillage.coordX}|
+            {selectedMercenaryVillage.coordY}) · mince {selectedMercenaryVillage.coins.toLocaleString('cs-CZ')} ·{' '}
+            {selectedMercenaryVillage.blockedReason ?? 'Nábor je připraven.'}
+          </small>
+        ) : (
+          <small className="row-help">Vyber léno pro nábor žoldáků.</small>
+        )}
+
+        <ul className="commands-list military-mercenary-timeline">
+          <li className="commands-item">
+            <div className="commands-item-line">
+              <strong>Doba spawnu</strong>
+              <span>{formatDurationLabel(Math.max(1, mercenaryDeliveryDelaySec))}</span>
+            </div>
+            <small>
+              {mercenaryDeployment?.status === 'en_route'
+                ? `Aktuální kontrakt dorazí ${formatDateTimeLabel(activeMercenaryContract?.arriveAt)} (za ${formatDurationLabel(mercenaryDeployment.remainingSec)}).`
+                : `Po náboru dorazí žoldáci za ${formatDurationLabel(Math.max(1, mercenaryDeliveryDelaySec))}.`}
+            </small>
+          </li>
+          <li className="commands-item">
+            <div className="commands-item-line">
+              <strong>Doba nasazení</strong>
+              <span>{formatDurationLabel(Math.max(1, mercenaryDurationSec))}</span>
+            </div>
+            <small>
+              {mercenaryDeployment?.status === 'active'
+                ? `Aktivní jednotka (+${Math.max(0, Math.floor(Number(activeMercenaryContract?.unitAmount ?? mercenaryContractUnitAmount))).toLocaleString('cs-CZ')}) vyprší ${formatDateTimeLabel(activeMercenaryContract?.expiresAt)}.`
+                : 'Žoldáci brání pouze domovské léno a po vypršení kontraktu automaticky zmizí.'}
+            </small>
+          </li>
+          <li className="commands-item">
+            <div className="commands-item-line">
+              <strong>Blokace náboru</strong>
+              <span>{formatDurationLabel(Math.max(1, mercenaryCooldownSec))}</span>
+            </div>
+            <small>
+              {mercenaryCooldownRemainingSec > 0
+                ? `Další nábor možný za ${formatDurationLabel(mercenaryCooldownRemainingSec)} (${formatDateTimeLabel(mercenaries?.cooldownEndsAt)}).`
+                : 'Cooldown je volný, nábor můžeš spustit ihned.'}
+            </small>
+          </li>
+        </ul>
+
+        {mercenaryContracts.length > 0 ? (
+          <ul className="commands-list">
+            {mercenaryContracts.map((contract) => (
+              <li key={`mercenary-contract-${contract.id}`} className="commands-item">
+                <div className="commands-item-line">
+                  <strong>
+                    Kontrakt #{contract.id}
+                    {contract.villageName ? ` · ${contract.villageName}` : ''}
+                  </strong>
+                  <span>
+                    {resolveMercenaryContractStatusLabel(contract.status)} · +
+                    {Math.max(0, Math.floor(Number(contract.unitAmount ?? 0))).toLocaleString('cs-CZ')} žoldáků
+                  </span>
+                </div>
+                <small>
+                  Objednáno {formatDateTimeLabel(contract.orderedAt)} · Dorazí {formatDateTimeLabel(contract.arriveAt)} ·
+                  Expirace {formatDateTimeLabel(contract.expiresAt)}
+                </small>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>Zatím nemáš žádný žoldácký kontrakt.</p>
+        )}
+        {notice ? <p className="panel-feedback">{notice}</p> : null}
+      </section>
     </div>
   );
 };
 
 const ResearchPanel = ({
   research,
-  mercenaries,
   rules,
   resources,
   notice,
   researchActionPending,
-  mercenaryActionPending,
   onHireAcademics,
   onAdjustResearchAcademics,
   onStartResearchProject,
-  onHireMercenaries,
 }: {
   research: GameStateResponse['research'] | undefined;
-  mercenaries: GameStateResponse['mercenaries'] | undefined;
   rules: GameStateResponse['rules'] | undefined;
   resources:
     | Pick<GameStateResponse['resources'], 'coins' | 'gold' | 'productionPerHour' | 'protection'>
     | undefined;
   notice: string | null;
   researchActionPending: boolean;
-  mercenaryActionPending: boolean;
   onHireAcademics: (amount: number) => Promise<boolean>;
   onAdjustResearchAcademics: (researchId: string, delta: number) => Promise<boolean>;
   onStartResearchProject: (researchId: string, academics: number) => void;
-  onHireMercenaries: () => void;
 }) => {
   const projects = useMemo(() => research?.projects ?? [], [research?.projects]);
-  const mercenaryCooldownRemainingSec = Math.max(0, Math.floor(Number(mercenaries?.cooldownRemainingSec ?? 0)));
   const [isHireImpactActive, setIsHireImpactActive] = useState(false);
   const [hoveredResearchProjectId, setHoveredResearchProjectId] = useState<string | null>(null);
   const [researchTooltipCursorPosition, setResearchTooltipCursorPosition] = useState<TooltipCursorPosition | null>(null);
@@ -4648,36 +8193,6 @@ const ResearchPanel = ({
     () => projects.filter((project) => project.status === 'available'),
     [projects],
   );
-  const mercenaryResearch = useMemo(
-    () => projects.find((project) => project.id === 'verven-bank') ?? null,
-    [projects],
-  );
-  const mercenaryUnlocked = mercenaryResearch?.status === 'completed';
-  const sortedContracts = useMemo(
-    () => {
-      const statusPriority: Record<string, number> = {
-        active: 0,
-        ordered: 1,
-        in_transit: 2,
-        completed: 3,
-        expired: 4,
-        canceled: 5,
-      };
-      return [...(mercenaries?.contracts ?? [])].sort((left, right) => {
-        const leftPriority = statusPriority[String(left.status).toLocaleLowerCase('cs-CZ')] ?? 99;
-        const rightPriority = statusPriority[String(right.status).toLocaleLowerCase('cs-CZ')] ?? 99;
-        if (leftPriority !== rightPriority) {
-          return leftPriority - rightPriority;
-        }
-        const rightOrderedAtMs = Date.parse(String(right.orderedAt));
-        const leftOrderedAtMs = Date.parse(String(left.orderedAt));
-        const safeRight = Number.isFinite(rightOrderedAtMs) ? rightOrderedAtMs : 0;
-        const safeLeft = Number.isFinite(leftOrderedAtMs) ? leftOrderedAtMs : 0;
-        return safeRight - safeLeft;
-      });
-    },
-    [mercenaries?.contracts],
-  );
   const parseDraftAmount = (value: string): number => {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -4686,11 +8201,6 @@ const ResearchPanel = ({
     return Math.max(0, Math.floor(parsed));
   };
 
-  const canHireMercenaries =
-    mercenaryUnlocked &&
-    mercenaryCooldownRemainingSec <= 0 &&
-    Number(resources?.coins ?? 0) >= MERCENARY_CONTRACT_COIN_COST &&
-    !mercenaryActionPending;
   const totalAcademics = Math.max(0, Math.floor(Number(research?.totalAcademics ?? 0)));
   const idleAcademics = Math.max(0, Math.floor(Number(research?.idleAcademics ?? 0)));
   const regionAcademicCapacity = Math.max(
@@ -4740,32 +8250,6 @@ const ResearchPanel = ({
       return 'Probíhá';
     }
     return 'Dokončeno';
-  };
-
-  const resolveRouteStatusLabel = (statusRaw: string): string => {
-    const status = String(statusRaw ?? '').toLocaleLowerCase('cs-CZ');
-    if (status === 'ordered') {
-      return 'Objednáno';
-    }
-    if (status === 'active') {
-      return 'Aktivní';
-    }
-    if (status === 'expired') {
-      return 'Vypršelo';
-    }
-    if (status === 'in_progress') {
-      return 'Na cestě';
-    }
-    if (status === 'in_transit') {
-      return 'Na cestě';
-    }
-    if (status === 'completed') {
-      return 'Doručeno';
-    }
-    if (status === 'canceled') {
-      return 'Zrušeno';
-    }
-    return statusRaw;
   };
 
   const handleHireSingleAcademic = useCallback(async () => {
@@ -5030,61 +8514,6 @@ const ResearchPanel = ({
             <p className="row-help">Všechny dostupné projekty jsou hotové nebo uzamčené.</p>
           ) : null}
         </div>
-      </section>
-
-      <section>
-        <h3>Mincovna a žoldáci</h3>
-        <div className="commands-kpi-strip">
-          <article>
-            <span>Chráněné mince</span>
-            <strong>{Math.max(0, Math.floor(Number(resources?.protection.coins ?? 0))).toLocaleString('cs-CZ')}</strong>
-          </article>
-          <article>
-            <span>Ražba / h</span>
-            <strong>{Math.max(0, Number(resources?.productionPerHour.mintCoins ?? 0)).toLocaleString('cs-CZ')}</strong>
-          </article>
-          <article>
-            <span>Cooldown žoldáků</span>
-            <strong>{mercenaryCooldownRemainingSec > 0 ? formatDurationLabel(mercenaryCooldownRemainingSec) : 'Připraveno'}</strong>
-          </article>
-          <article className={mercenaryUnlocked ? '' : 'is-danger'}>
-            <span>Výzkum banky</span>
-            <strong>{mercenaryUnlocked ? 'Odemčeno' : 'Zamčeno'}</strong>
-          </article>
-        </div>
-        <div className="research-panel-inline-actions">
-          <button
-            type="button"
-            className="secondary-action"
-            onClick={onHireMercenaries}
-            disabled={!canHireMercenaries}
-          >
-            {mercenaryActionPending
-              ? 'Najímám žoldáky...'
-              : `Najmout žoldáky (${MERCENARY_CONTRACT_COIN_COST.toLocaleString('cs-CZ')} mincí)`}
-          </button>
-          <small className="row-help">Žoldáci brání pouze domovské léno a po 72 hodinách vyprší.</small>
-        </div>
-        {sortedContracts.length > 0 ? (
-          <ul className="commands-list">
-            {sortedContracts.map((contract) => (
-              <li key={`mercenary-contract-${contract.id}`} className="commands-item">
-                <div className="commands-item-line">
-                  <strong>Kontrakt #{contract.id}</strong>
-                  <span>
-                    {resolveRouteStatusLabel(contract.status)} · +{Math.max(0, Math.floor(Number(contract.unitAmount))).toLocaleString('cs-CZ')} žoldáků
-                  </span>
-                </div>
-                <small>
-                  Objednáno {formatDateTimeLabel(contract.orderedAt)} · Dorazí {formatDateTimeLabel(contract.arriveAt)} ·
-                  Expirace {formatDateTimeLabel(contract.expiresAt)}
-                </small>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p>Zatím nemáš žádný žoldácký kontrakt.</p>
-        )}
       </section>
 
       <section>
@@ -5378,13 +8807,23 @@ const BattleArmyBreakdownCard = ({
   );
 };
 
-const BattleReportPanel = ({ report }: { report: BattleReportItem | null }) => {
+const BattleReportPanel = ({
+  report,
+  loading = false,
+}: {
+  report: BattleReportItem | null;
+  loading?: boolean;
+}) => {
   if (!report) {
     return (
       <div className="panel-stack battle-report-view">
         <section>
-          <h3>Bitevní hlášení není dostupné</h3>
-          <p>Report se nenačetl. Otevři panel Zprávy a obnov seznam.</p>
+          <h3>{loading ? 'Načítám bitevní hlášení' : 'Bitevní hlášení není dostupné'}</h3>
+          <p>
+            {loading
+              ? 'Report se právě načítá.'
+              : 'Report se nenačetl. Otevři panel Zprávy a obnov seznam.'}
+          </p>
         </section>
       </div>
     );
@@ -6945,9 +10384,16 @@ const CommandsPanel = ({
                     key={`history-${historyItem.commandType}-${historyItem.targetVillageId}`}
                     type="button"
                     className={`secondary-action army-command-history-item ${historyItem.commandType} ${historyItem.isSelectable ? '' : 'is-disabled'}`}
-                    onClick={() => handleApplyHistoryTarget(historyItem)}
+                    onMouseDown={(event) => {
+                      event.stopPropagation();
+                    }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleApplyHistoryTarget(historyItem);
+                    }}
                     onContextMenu={(event) => {
                       event.preventDefault();
+                      event.stopPropagation();
                       if (!historyItem.settlement) {
                         return;
                       }
@@ -9363,12 +12809,17 @@ const SettingsPanel = ({
   shortcutBindings,
   customShortcutBindings,
   autoHidePinColumns,
+  mapPreviewTravelModifier,
   shortcutNotice,
   isTouchDevice,
   onCaptureShortcut,
   onResetShortcutBinding,
   onResetAllShortcuts,
   onAutoHidePinColumnsChange,
+  onMapPreviewTravelModifierChange,
+  settlementColorPalette,
+  onSettlementColorChange,
+  onResetSettlementColors,
 }: {
   username: string;
   avatarUrl: string | null;
@@ -9384,12 +12835,17 @@ const SettingsPanel = ({
   shortcutBindings: Record<ShortcutActionId, ShortcutBinding>;
   customShortcutBindings: Partial<Record<ShortcutActionId, ShortcutBinding>>;
   autoHidePinColumns: boolean;
+  mapPreviewTravelModifier: MapPreviewTravelModifierKey;
   shortcutNotice: string | null;
   isTouchDevice: boolean;
   onCaptureShortcut: (actionId: ShortcutActionId, binding: ShortcutBinding) => void;
   onResetShortcutBinding: (actionId: ShortcutActionId) => void;
   onResetAllShortcuts: () => void;
   onAutoHidePinColumnsChange: (enabled: boolean) => void;
+  onMapPreviewTravelModifierChange: (modifier: MapPreviewTravelModifierKey) => void;
+  settlementColorPalette: SettlementColorPalette;
+  onSettlementColorChange: (colorKey: SettlementColorKey, color: string) => void;
+  onResetSettlementColors: () => void;
 }) => {
   const [settingsTab, setSettingsTab] = useState<'account' | 'interface' | 'shortcuts' | 'world'>('account');
   const [avatarSource, setAvatarSource] = useState<AvatarCropSource | null>(null);
@@ -9399,6 +12855,8 @@ const SettingsPanel = ({
   const [avatarNotice, setAvatarNotice] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const holdPinColumnsShortcutLabel = formatShortcutBindingLabel(shortcutBindings.peekPinColumnsWhileHeld);
+  const mapPreviewTravelModifierLabel =
+    MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS.find((item) => item.value === mapPreviewTravelModifier)?.label ?? 'Ctrl';
 
   const avatarMetrics = useMemo(
     () => computeAvatarCropMetrics(avatarSource, avatarZoom),
@@ -9700,6 +13158,34 @@ const SettingsPanel = ({
           >
             Uložit velikost fontu
           </button>
+          <div className="settings-settlement-colors-section">
+            <h4>Barvy rozlišení lén (RPG paleta)</h4>
+            <p>
+              Přizpůsob si barevné rozlišení lén na mapě. Změna se aplikuje okamžitě a ukládá se pro tvůj účet.
+            </p>
+            <div className="settings-settlement-colors-grid">
+              {SETTLEMENT_COLOR_KEYS.map((colorKey) => (
+                <label
+                  key={`settlement-color-${colorKey}`}
+                  className={`settings-settlement-color-card relation-${colorKey}`}
+                >
+                  <span>{SETTLEMENT_COLOR_LABELS[colorKey]}</span>
+                  <div className="settings-settlement-color-control">
+                    <input
+                      type="color"
+                      value={settlementColorPalette[colorKey]}
+                      onChange={(event) => onSettlementColorChange(colorKey, event.target.value)}
+                      aria-label={`Nastavit barvu: ${SETTLEMENT_COLOR_LABELS[colorKey]}`}
+                    />
+                    <code>{settlementColorPalette[colorKey].toUpperCase()}</code>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <button type="button" className="secondary-action" onClick={onResetSettlementColors}>
+              Obnovit výchozí RPG barvy
+            </button>
+          </div>
         </section>
       ) : null}
 
@@ -9726,6 +13212,23 @@ const SettingsPanel = ({
           <small className="row-help">
             Nezávisle na režimu: stisknutím <strong>{holdPinColumnsShortcutLabel}</strong> přepneš overlay pin
             sloupců (zapnuto/vypnuto).
+          </small>
+          <label className="settings-toggle-row">
+            <span>Náhled časů přesunu na mapě (podržet klávesu)</span>
+            <select
+              value={mapPreviewTravelModifier}
+              onChange={(event) => onMapPreviewTravelModifierChange(normalizeMapPreviewTravelModifier(event.target.value))}
+            >
+              {MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS.map((option) => (
+                <option key={`map-preview-modifier-${option.value}`} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <small className="row-help">
+            Na mapě se detail „Časy přesunu jednotek“ zobrazí při najetí na léno a podržení{' '}
+            <strong>{mapPreviewTravelModifierLabel}</strong>.
           </small>
           {isTouchDevice ? (
             <small className="row-help">
@@ -9820,6 +13323,9 @@ const MapPanel = memo(({
   regionOriginX,
   regionOriginY,
   focusedSettlementId,
+  isInteractionEnabled,
+  centerRequest,
+  onCenterRequestHandled,
   activeVillageId,
   currentUsername,
   zoomPercent,
@@ -9828,8 +13334,6 @@ const MapPanel = memo(({
   onOpenSettlement,
   onPinSettlement,
   onQuickArmyCommand,
-  onOpenPlayerProfile,
-  onOpenKingdomProfile,
 }: {
   settlements: RegionSettlement[];
   regionId: number;
@@ -9837,6 +13341,9 @@ const MapPanel = memo(({
   regionOriginX: number;
   regionOriginY: number;
   focusedSettlementId: string | null;
+  isInteractionEnabled: boolean;
+  centerRequest: { settlementId: string; nonce: number } | null;
+  onCenterRequestHandled: (nonce: number) => void;
   activeVillageId: number | null;
   currentUsername: string;
   zoomPercent: number;
@@ -9845,11 +13352,10 @@ const MapPanel = memo(({
   onOpenSettlement: (settlement: RegionSettlement) => void;
   onPinSettlement: (settlement: RegionSettlement, side: PinSide) => void;
   onQuickArmyCommand: (commandType: ArmyCommandSelectableType, settlement: RegionSettlement) => void;
-  onOpenPlayerProfile: (username: string) => void;
-  onOpenKingdomProfile: (kingdomName: string) => void;
 }) => {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [pinnedSettlementId, setPinnedSettlementId] = useState<string | null>(null);
+  const [isCtrlPressed, setIsCtrlPressed] = useState(false);
   const [isMapFullscreen, setIsMapFullscreen] = useState(false);
   const mapPanelRef = useRef<HTMLDivElement | null>(null);
   const gridWrapRef = useRef<HTMLDivElement | null>(null);
@@ -9870,24 +13376,32 @@ const MapPanel = memo(({
     startLeft: number;
     startTop: number;
     didDrag: boolean;
+    captureNode: HTMLDivElement | null;
   } | null>(null);
-  const panRafRef = useRef<number | null>(null);
-  const panPendingRef = useRef<{ left: number; top: number } | null>(null);
+  const panTargetScrollRef = useRef<{ left: number; top: number } | null>(null);
+  const panAnimationRafRef = useRef<number | null>(null);
+  const panAnimationLastTimestampRef = useRef<number | null>(null);
+  const miniMapDragPointerIdRef = useRef<number | null>(null);
   const [localZoomPercent, setLocalZoomPercent] = useState(() => normalizeMapZoom(zoomPercent));
   const wheelZoomRafRef = useRef<number | null>(null);
-  const wheelZoomDeltaRef = useRef(0);
+  const wheelZoomTargetRef = useRef<number | null>(null);
   const wheelAnchorRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const zoomPercentRef = useRef(localZoomPercent);
   const zoomCommitTimerRef = useRef<number | null>(null);
   const pendingZoomCommitRef = useRef(localZoomPercent);
   const hasInitialAutoCenterRef = useRef(false);
+  const hasRestoredViewportRef = useRef(false);
+  const viewportPersistTimerRef = useRef<number | null>(null);
   const dragSuppressClickUntilRef = useRef(0);
+  const processedCenterRequestNonceRef = useRef<number | null>(null);
   const hoverClearTimeoutRef = useRef<number | null>(null);
   const [gridViewportState, setGridViewportState] = useState({
     scrollLeft: 0,
     scrollTop: 0,
     clientWidth: 0,
     clientHeight: 0,
+    wrapLeft: 0,
+    wrapTop: 0,
   });
 
   const clearHoverTimeout = useCallback(() => {
@@ -9916,10 +13430,25 @@ const MapPanel = memo(({
   );
 
   useEffect(() => {
-    const normalizedIncoming = normalizeMapZoom(zoomPercent);
+    if (isInteractionEnabled) {
+      return;
+    }
+    clearHoverTimeout();
+    setHoveredId(null);
+    setPinnedSettlementId(null);
+  }, [clearHoverTimeout, isInteractionEnabled]);
+
+  useEffect(() => {
+    const normalizedIncoming = clamp(Number(zoomPercent), MAP_ZOOM_MIN, MAP_ZOOM_MAX);
     if (normalizedIncoming === zoomPercentRef.current) {
       return;
     }
+    if (wheelZoomRafRef.current != null) {
+      window.cancelAnimationFrame(wheelZoomRafRef.current);
+      wheelZoomRafRef.current = null;
+    }
+    wheelZoomTargetRef.current = null;
+    wheelAnchorRef.current = null;
     zoomPercentRef.current = normalizedIncoming;
     pendingZoomCommitRef.current = normalizedIncoming;
     // Local map zoom stays UI-first; this controlled sync is intentional.
@@ -9929,7 +13458,7 @@ const MapPanel = memo(({
 
   const scheduleZoomCommit = useCallback(
     (nextZoomPercent: number) => {
-      const normalizedNext = normalizeMapZoom(nextZoomPercent);
+      const normalizedNext = clamp(Number(nextZoomPercent), MAP_ZOOM_MIN, MAP_ZOOM_MAX);
       pendingZoomCommitRef.current = normalizedNext;
       if (zoomCommitTimerRef.current != null) {
         window.clearTimeout(zoomCommitTimerRef.current);
@@ -10121,7 +13650,7 @@ const MapPanel = memo(({
     }
     return byId;
   }, [mapDisplaySettlements]);
-  const previewSettlement = pinnedSettlement ?? hoveredSettlement;
+  const previewSettlement = isInteractionEnabled ? pinnedSettlement ?? hoveredSettlement : null;
   const isPreviewPinned = pinnedSettlement != null;
   const previewSettlementCell = useMemo(() => {
     if (!previewSettlement) {
@@ -10140,17 +13669,10 @@ const MapPanel = memo(({
     ? getSettlementMapKind(previewSettlement, activeVillageId)
     : null;
   const previewTargetUnderProtection =
-    previewSettlement != null && Math.max(0, Number(previewSettlement.protectionRemainingSec ?? 0)) > 0;
-  const previewTargetPrestigeBlocked =
-    previewSettlement != null && previewSettlement.prestigeAttackBlockedForViewer === true;
-  const previewRetaliationUnlocked =
-    previewSettlement != null && previewSettlement.retaliationUnlockedForViewer === true;
-  const previewRetaliationUnlockedAtLabel =
-    previewRetaliationUnlocked && previewSettlement?.retaliationUnlockedAt
-      ? formatDateTimeLabel(previewSettlement.retaliationUnlockedAt)
-      : null;
+    previewSettlement != null && getSettlementProtectionRemainingSec(previewSettlement) > 0;
   const isPreviewAbandoned = previewSettlementKind === 'abandoned';
   const isPreviewPlayerSettlement =
+    previewSettlementKind === 'allied' ||
     previewSettlementKind === 'opponent' ||
     previewSettlementKind === 'enemy' ||
     previewSettlementKind === 'nap';
@@ -10181,8 +13703,24 @@ const MapPanel = memo(({
     };
   }, [activeVillageId, currentUsername, previewSettlement]);
   const zoomScale = 1 + localZoomPercent / 100;
-  const cellSize = Math.max(8, Math.round(REGION_CELL_SIZE * zoomScale));
+  const zoomLabelValue = Math.round((100 + localZoomPercent) * 10) / 10;
+  const zoomSliderValue = normalizeMapZoom(localZoomPercent);
   const mapCellGapPx = MAP_CELL_GAP_PX;
+  const fitCellSize = useMemo(() => {
+    const viewportWidth = Math.max(0, Number(gridViewportState.clientWidth ?? 0));
+    const viewportHeight = Math.max(0, Number(gridViewportState.clientHeight ?? 0));
+    if (viewportWidth <= 1 || viewportHeight <= 1) {
+      return REGION_CELL_SIZE;
+    }
+
+    const dominantViewportSide = Math.max(viewportWidth, viewportHeight);
+    const totalGap = Math.max(0, regionSize - 1) * mapCellGapPx;
+    const availablePixels = Math.max(96, dominantViewportSide + 8);
+    const nextCellSize = Math.ceil((availablePixels - totalGap) / Math.max(1, regionSize));
+    return Math.max(8, nextCellSize);
+  }, [gridViewportState.clientHeight, gridViewportState.clientWidth, mapCellGapPx, regionSize]);
+  const baseCellSize = fitCellSize;
+  const cellSize = Math.max(8, Math.round(baseCellSize * zoomScale));
   const mapGridSizePx = regionSize * cellSize + Math.max(0, regionSize - 1) * mapCellGapPx;
   const renderedCellRange = useMemo(() => {
     const cellSpan = Math.max(1, cellSize + mapCellGapPx);
@@ -10289,9 +13827,6 @@ const MapPanel = memo(({
   const previewPrestigeTier = previewSettlement
     ? resolveSettlementPrestigeTier(Number(previewSettlement.prestige ?? 0))
     : null;
-  const previewPrestigeMeta = previewSettlement
-    ? resolveSettlementPrestigeMeta(Number(previewSettlement.prestige ?? 0))
-    : null;
   const previewPlayerTotalPrestige = useMemo(() => {
     if (!previewSettlement) {
       return null;
@@ -10312,6 +13847,9 @@ const MapPanel = memo(({
       Math.floor(Number(kingdomPrestigeByName.get(key) ?? previewSettlement.prestige ?? 0)),
     );
   }, [kingdomPrestigeByName, normalizeKey, previewSettlement]);
+  const previewSettlementTypeLabel =
+    previewSettlementKind != null ? MAP_SETTLEMENT_KIND_LABELS[previewSettlementKind] : '-';
+  const showPreviewTravelDurations = isInteractionEnabled && isCtrlPressed && previewDistanceTiles != null;
   const previewTravelRows = useMemo(() => {
     if (previewDistanceTiles == null) {
       return [];
@@ -10329,6 +13867,7 @@ const MapPanel = memo(({
       };
     });
   }, [previewDistanceTiles]);
+  const showSettlementBannerCards = isInteractionEnabled && isCtrlPressed;
 
   const previewCardStyle = useMemo<CSSProperties | null>(() => {
     if (!previewSettlementCell) {
@@ -10400,18 +13939,23 @@ const MapPanel = memo(({
     const scrollHeight = Math.max(1, wrap.scrollHeight);
     const clientWidth = Math.max(1, wrap.clientWidth);
     const clientHeight = Math.max(1, wrap.clientHeight);
+    const wrapRect = wrap.getBoundingClientRect();
     const nextGridViewportState = {
       scrollLeft: wrap.scrollLeft,
       scrollTop: wrap.scrollTop,
       clientWidth,
       clientHeight,
+      wrapLeft: wrapRect.left,
+      wrapTop: wrapRect.top,
     };
     setGridViewportState((previous) => {
       if (
         Math.abs(previous.scrollLeft - nextGridViewportState.scrollLeft) < 0.5 &&
         Math.abs(previous.scrollTop - nextGridViewportState.scrollTop) < 0.5 &&
         Math.abs(previous.clientWidth - nextGridViewportState.clientWidth) < 0.5 &&
-        Math.abs(previous.clientHeight - nextGridViewportState.clientHeight) < 0.5
+        Math.abs(previous.clientHeight - nextGridViewportState.clientHeight) < 0.5 &&
+        Math.abs(previous.wrapLeft - nextGridViewportState.wrapLeft) < 0.5 &&
+        Math.abs(previous.wrapTop - nextGridViewportState.wrapTop) < 0.5
       ) {
         return previous;
       }
@@ -10474,19 +14018,57 @@ const MapPanel = memo(({
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, [updateMiniViewport]);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Control') {
+        setIsCtrlPressed(true);
+      }
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Control') {
+        setIsCtrlPressed(false);
+      }
+    };
+
+    const handleWindowBlur = () => {
+      setIsCtrlPressed(false);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleWindowBlur);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+  }, []);
+
   useEffect(
     () => () => {
       if (wheelZoomRafRef.current != null) {
         window.cancelAnimationFrame(wheelZoomRafRef.current);
         wheelZoomRafRef.current = null;
       }
-      wheelZoomDeltaRef.current = 0;
+      wheelZoomTargetRef.current = null;
       wheelAnchorRef.current = null;
       if (zoomCommitTimerRef.current != null) {
         window.clearTimeout(zoomCommitTimerRef.current);
         zoomCommitTimerRef.current = null;
         onZoomChange(pendingZoomCommitRef.current);
       }
+      if (panAnimationRafRef.current != null) {
+        window.cancelAnimationFrame(panAnimationRafRef.current);
+        panAnimationRafRef.current = null;
+      }
+      if (viewportPersistTimerRef.current != null) {
+        window.clearTimeout(viewportPersistTimerRef.current);
+        viewportPersistTimerRef.current = null;
+      }
+      panAnimationLastTimestampRef.current = null;
+      panTargetScrollRef.current = null;
+      miniMapDragPointerIdRef.current = null;
     },
     [onZoomChange],
   );
@@ -10494,8 +14076,8 @@ const MapPanel = memo(({
   const applyZoom = useCallback(
     (nextZoomPercent: number, anchor?: { clientX: number; clientY: number }) => {
       const currentZoom = zoomPercentRef.current;
-      const normalizedNext = normalizeMapZoom(nextZoomPercent);
-      if (normalizedNext === currentZoom) {
+      const normalizedNext = clamp(Number(nextZoomPercent), MAP_ZOOM_MIN, MAP_ZOOM_MAX);
+      if (Math.abs(normalizedNext - currentZoom) <= 0.0001) {
         return;
       }
 
@@ -10539,38 +14121,135 @@ const MapPanel = memo(({
     [scheduleZoomCommit, updateMiniViewport],
   );
 
-  const centerOnSettlement = useCallback(
-    (settlementId: string | null, behavior: ScrollBehavior = 'auto') => {
-      if (!settlementId) {
+  const clampPanTarget = useCallback((wrap: HTMLDivElement, left: number, top: number) => {
+    const maxLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+    const maxTop = Math.max(0, wrap.scrollHeight - wrap.clientHeight);
+    return {
+      left: clamp(left, 0, maxLeft),
+      top: clamp(top, 0, maxTop),
+    };
+  }, []);
+
+  const startSmoothPanAnimation = useCallback(() => {
+    if (panAnimationRafRef.current != null) {
+      return;
+    }
+
+    const step = (timestamp: number) => {
+      const wrap = gridWrapRef.current;
+      const target = panTargetScrollRef.current;
+      if (!wrap || !target) {
+        panAnimationRafRef.current = null;
+        panAnimationLastTimestampRef.current = null;
         return;
+      }
+
+      const deltaLeft = target.left - wrap.scrollLeft;
+      const deltaTop = target.top - wrap.scrollTop;
+      if (Math.abs(deltaLeft) <= MAP_PAN_TARGET_EPSILON_PX && Math.abs(deltaTop) <= MAP_PAN_TARGET_EPSILON_PX) {
+        wrap.scrollLeft = target.left;
+        wrap.scrollTop = target.top;
+        updateMiniViewport();
+        panAnimationRafRef.current = null;
+        panAnimationLastTimestampRef.current = null;
+        return;
+      }
+
+      const previousTimestamp = panAnimationLastTimestampRef.current ?? timestamp;
+      const deltaSeconds = Math.min(0.064, Math.max(0.001, (timestamp - previousTimestamp) / 1000));
+      panAnimationLastTimestampRef.current = timestamp;
+      const interpolation = 1 - Math.exp(-MAP_PAN_TARGET_SMOOTHNESS * deltaSeconds);
+      wrap.scrollLeft = wrap.scrollLeft + deltaLeft * interpolation;
+      wrap.scrollTop = wrap.scrollTop + deltaTop * interpolation;
+      updateMiniViewport();
+      panAnimationRafRef.current = window.requestAnimationFrame(step);
+    };
+
+    panAnimationLastTimestampRef.current = null;
+    panAnimationRafRef.current = window.requestAnimationFrame(step);
+  }, [updateMiniViewport]);
+
+  const applyPanTarget = useCallback(
+    (left: number, top: number, options?: { immediate?: boolean }) => {
+      const wrap = gridWrapRef.current;
+      if (!wrap) {
+        return;
+      }
+      const clampedTarget = clampPanTarget(wrap, left, top);
+      panTargetScrollRef.current = clampedTarget;
+      if (options?.immediate) {
+        wrap.scrollLeft = clampedTarget.left;
+        wrap.scrollTop = clampedTarget.top;
+        updateMiniViewport();
+        return;
+      }
+      startSmoothPanAnimation();
+    },
+    [clampPanTarget, startSmoothPanAnimation, updateMiniViewport],
+  );
+
+  const readWrapContentInset = useCallback((wrap: HTMLDivElement) => {
+    const style = window.getComputedStyle(wrap);
+    const left = Number.parseFloat(style.paddingLeft);
+    const top = Number.parseFloat(style.paddingTop);
+    return {
+      left: Number.isFinite(left) ? left : 0,
+      top: Number.isFinite(top) ? top : 0,
+    };
+  }, []);
+
+  const centerOnSettlement = useCallback(
+    (settlementId: string | null, behavior: ScrollBehavior = 'auto'): boolean => {
+      if (!settlementId) {
+        return false;
       }
 
       const wrap = gridWrapRef.current;
       if (!wrap) {
-        return;
+        return false;
       }
 
       const visibleEntry = mapDisplaySettlementById.get(settlementId) ?? null;
       const targetSettlement = visibleEntry?.settlement ?? settlementsById.get(settlementId) ?? null;
       if (!targetSettlement) {
-        return;
+        return false;
       }
       const localPosition = visibleEntry
         ? { x: visibleEntry.localX, y: visibleEntry.localY }
         : resolveSettlementGridCoords(targetSettlement);
       const pixelPosition = toGridPixelPosition(localPosition, cellSize, mapCellGapPx);
-      const targetLeft = pixelPosition.left + cellSize / 2 - wrap.clientWidth / 2;
-      const targetTop = pixelPosition.top + cellSize / 2 - wrap.clientHeight / 2;
+      const contentInset = readWrapContentInset(wrap);
+      const targetLeft = contentInset.left + pixelPosition.left + cellSize / 2 - wrap.clientWidth / 2;
+      const targetTop = contentInset.top + pixelPosition.top + cellSize / 2 - wrap.clientHeight / 2;
 
-      wrap.scrollTo({
-        left: targetLeft,
-        top: targetTop,
-        behavior,
-      });
-      updateMiniViewport();
+      applyPanTarget(targetLeft, targetTop, { immediate: behavior !== 'smooth' });
+      return true;
     },
-    [cellSize, mapCellGapPx, mapDisplaySettlementById, resolveSettlementGridCoords, settlementsById, updateMiniViewport],
+    [
+      applyPanTarget,
+      cellSize,
+      mapCellGapPx,
+      mapDisplaySettlementById,
+      readWrapContentInset,
+      resolveSettlementGridCoords,
+      settlementsById,
+    ],
   );
+
+  useEffect(() => {
+    if (!centerRequest?.settlementId) {
+      return;
+    }
+    if (processedCenterRequestNonceRef.current === centerRequest.nonce) {
+      return;
+    }
+    const didCenter = centerOnSettlement(centerRequest.settlementId, 'smooth');
+    if (!didCenter) {
+      return;
+    }
+    processedCenterRequestNonceRef.current = centerRequest.nonce;
+    onCenterRequestHandled(centerRequest.nonce);
+  }, [centerOnSettlement, centerRequest?.nonce, centerRequest?.settlementId, onCenterRequestHandled]);
 
   useEffect(() => {
     const wrap = gridWrapRef.current;
@@ -10595,7 +14274,74 @@ const MapPanel = memo(({
 
   useEffect(() => {
     hasInitialAutoCenterRef.current = false;
-  }, [regionId]);
+    hasRestoredViewportRef.current = false;
+    processedCenterRequestNonceRef.current = null;
+  }, [currentUsername, regionId]);
+
+  useEffect(() => {
+    if (hasRestoredViewportRef.current) {
+      return;
+    }
+
+    const storedViewport = readStoredMapViewport(currentUsername, regionId);
+    hasRestoredViewportRef.current = true;
+    if (!storedViewport) {
+      return;
+    }
+
+    const rafId = window.requestAnimationFrame(() => {
+      const wrap = gridWrapRef.current;
+      if (!wrap) {
+        return;
+      }
+      const maxLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+      const maxTop = Math.max(0, wrap.scrollHeight - wrap.clientHeight);
+      applyPanTarget(maxLeft * storedViewport.leftRatio, maxTop * storedViewport.topRatio, { immediate: true });
+      hasInitialAutoCenterRef.current = true;
+    });
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [applyPanTarget, currentUsername, mapGridSizePx, regionId]);
+
+  useEffect(() => {
+    if (gridViewportState.clientWidth <= 1 || gridViewportState.clientHeight <= 1) {
+      return;
+    }
+
+    if (viewportPersistTimerRef.current != null) {
+      window.clearTimeout(viewportPersistTimerRef.current);
+    }
+
+    viewportPersistTimerRef.current = window.setTimeout(() => {
+      viewportPersistTimerRef.current = null;
+      const wrap = gridWrapRef.current;
+      if (!wrap) {
+        return;
+      }
+      const maxLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+      const maxTop = Math.max(0, wrap.scrollHeight - wrap.clientHeight);
+      saveStoredMapViewport(currentUsername, regionId, {
+        leftRatio: maxLeft <= 0 ? 0 : clamp(wrap.scrollLeft / maxLeft, 0, 1),
+        topRatio: maxTop <= 0 ? 0 : clamp(wrap.scrollTop / maxTop, 0, 1),
+      });
+    }, 180);
+
+    return () => {
+      if (viewportPersistTimerRef.current != null) {
+        window.clearTimeout(viewportPersistTimerRef.current);
+        viewportPersistTimerRef.current = null;
+      }
+    };
+  }, [
+    currentUsername,
+    gridViewportState.clientHeight,
+    gridViewportState.clientWidth,
+    gridViewportState.scrollLeft,
+    gridViewportState.scrollTop,
+    regionId,
+  ]);
 
   useEffect(() => {
     if (hasInitialAutoCenterRef.current || !focusedSettlementId) {
@@ -10625,23 +14371,7 @@ const MapPanel = memo(({
       if (!panState.didDrag) {
         return;
       }
-      panPendingRef.current = {
-        left: panState.startLeft - deltaX,
-        top: panState.startTop - deltaY,
-      };
-      if (panRafRef.current == null) {
-        panRafRef.current = window.requestAnimationFrame(() => {
-          panRafRef.current = null;
-          const pending = panPendingRef.current;
-          const currentWrap = gridWrapRef.current;
-          if (!pending || !currentWrap) {
-            return;
-          }
-          currentWrap.scrollLeft = pending.left;
-          currentWrap.scrollTop = pending.top;
-          panPendingRef.current = null;
-        });
-      }
+      applyPanTarget(panState.startLeft - deltaX, panState.startTop - deltaY, { immediate: true });
     };
 
     const finishPan = (event: PointerEvent) => {
@@ -10658,11 +14388,9 @@ const MapPanel = memo(({
       if (panState.didDrag) {
         dragSuppressClickUntilRef.current = Date.now() + 140;
       }
-      if (panRafRef.current != null) {
-        window.cancelAnimationFrame(panRafRef.current);
-        panRafRef.current = null;
+      if (panState.captureNode && panState.captureNode.hasPointerCapture(event.pointerId)) {
+        panState.captureNode.releasePointerCapture(event.pointerId);
       }
-      panPendingRef.current = null;
       panStateRef.current = null;
     };
 
@@ -10674,13 +14402,8 @@ const MapPanel = memo(({
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', finishPan);
       window.removeEventListener('pointercancel', finishPan);
-      if (panRafRef.current != null) {
-        window.cancelAnimationFrame(panRafRef.current);
-        panRafRef.current = null;
-      }
-      panPendingRef.current = null;
     };
-  }, []);
+  }, [applyPanTarget]);
 
   const handleGridPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) {
@@ -10689,6 +14412,10 @@ const MapPanel = memo(({
     clearHoverTimeout();
 
     const target = event.target as HTMLElement;
+    if (target.closest('.region-cell.settlement')) {
+      // Settlement click should open village panel, not start map panning capture.
+      return;
+    }
     if (target.closest('.map-settlement-info-card')) {
       return;
     }
@@ -10710,44 +14437,64 @@ const MapPanel = memo(({
       startLeft: wrap.scrollLeft,
       startTop: wrap.scrollTop,
       didDrag: false,
+      captureNode: event.currentTarget,
     };
+    panTargetScrollRef.current = {
+      left: wrap.scrollLeft,
+      top: wrap.scrollTop,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
   };
 
-  const handleRegionWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+  const handleRegionWheel = (event: ReactWheelEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
     if (event.deltaY === 0) {
       return;
     }
-
-    event.preventDefault();
     const wheelDelta = clamp(
       Math.abs(event.deltaY) * MAP_ZOOM_WHEEL_SENSITIVITY,
       MAP_ZOOM_WHEEL_MIN_DELTA,
       MAP_ZOOM_WHEEL_MAX_DELTA,
     );
     const delta = event.deltaY < 0 ? wheelDelta : -wheelDelta;
-    wheelZoomDeltaRef.current += delta;
+    const baseTarget = wheelZoomTargetRef.current ?? zoomPercentRef.current;
+    wheelZoomTargetRef.current = clamp(baseTarget + delta, MAP_ZOOM_MIN, MAP_ZOOM_MAX);
     wheelAnchorRef.current = { clientX: event.clientX, clientY: event.clientY };
 
     if (wheelZoomRafRef.current != null) {
       return;
     }
 
-    wheelZoomRafRef.current = window.requestAnimationFrame(() => {
-      wheelZoomRafRef.current = null;
-      const deltaBatch = wheelZoomDeltaRef.current;
-      wheelZoomDeltaRef.current = 0;
-      if (Math.abs(deltaBatch) <= 0.001) {
+    const animateWheelZoom = () => {
+      const targetZoom = wheelZoomTargetRef.current;
+      if (targetZoom == null) {
+        wheelZoomRafRef.current = null;
         return;
       }
-      const targetZoom = clamp(zoomPercentRef.current + deltaBatch, MAP_ZOOM_MIN, MAP_ZOOM_MAX);
+
+      const currentZoom = zoomPercentRef.current;
+      const remaining = targetZoom - currentZoom;
+      const nextZoom = Math.abs(remaining) <= 0.2 ? targetZoom : currentZoom + remaining * 0.24;
       const anchor = wheelAnchorRef.current ?? undefined;
-      applyZoom(targetZoom, anchor);
-    });
+      applyZoom(nextZoom, anchor);
+
+      if (Math.abs(targetZoom - zoomPercentRef.current) <= 0.2) {
+        applyZoom(targetZoom, anchor);
+        wheelZoomTargetRef.current = null;
+        wheelZoomRafRef.current = null;
+        return;
+      }
+
+      wheelZoomRafRef.current = window.requestAnimationFrame(animateWheelZoom);
+    };
+
+    wheelZoomRafRef.current = window.requestAnimationFrame(animateWheelZoom);
   };
 
   const jumpToMinimapPoint = useCallback(
-    (clientX: number, clientY: number) => {
+    (clientX: number, clientY: number, options?: { immediate?: boolean }) => {
       const miniMap = miniMapRef.current;
       const wrap = gridWrapRef.current;
       if (!miniMap || !wrap) {
@@ -10755,19 +14502,56 @@ const MapPanel = memo(({
       }
 
       const rect = miniMap.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
       const ratioX = clamp((clientX - rect.left) / rect.width, 0, 1);
       const ratioY = clamp((clientY - rect.top) / rect.height, 0, 1);
+      const contentInset = readWrapContentInset(wrap);
+      const mapSpanPx = Math.max(cellSize, mapGridSizePx);
+      const targetLeft = contentInset.left + ratioX * mapSpanPx - wrap.clientWidth / 2;
+      const targetTop = contentInset.top + ratioY * mapSpanPx - wrap.clientHeight / 2;
 
-      wrap.scrollLeft = ratioX * wrap.scrollWidth - wrap.clientWidth / 2;
-      wrap.scrollTop = ratioY * wrap.scrollHeight - wrap.clientHeight / 2;
+      applyPanTarget(targetLeft, targetTop, options);
     },
-    [],
+    [applyPanTarget, cellSize, mapGridSizePx, readWrapContentInset],
   );
 
   const handleMinimapPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    jumpToMinimapPoint(event.clientX, event.clientY);
+    miniMapDragPointerIdRef.current = event.pointerId;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    jumpToMinimapPoint(event.clientX, event.clientY, { immediate: true });
+  };
+
+  const handleMinimapPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (miniMapDragPointerIdRef.current !== event.pointerId) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    jumpToMinimapPoint(event.clientX, event.clientY, { immediate: true });
+  };
+
+  const handleMinimapPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (miniMapDragPointerIdRef.current !== event.pointerId) {
+      return;
+    }
+    miniMapDragPointerIdRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const handleMinimapPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (miniMapDragPointerIdRef.current !== event.pointerId) {
+      return;
+    }
+    miniMapDragPointerIdRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   };
 
   const settlementMarkers = useMemo(
@@ -10810,6 +14594,13 @@ const MapPanel = memo(({
             onBlur={() => {
               scheduleHoveredSettlementClear(settlement.id);
             }}
+            onPointerDown={(event) => {
+              if (event.button !== 0) {
+                return;
+              }
+              // Prevent region wrapper from taking pointer capture and swallowing click.
+              event.stopPropagation();
+            }}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -10817,11 +14608,38 @@ const MapPanel = memo(({
                 return;
               }
               clearHoverTimeout();
-              setPinnedSettlementId(settlement.id);
+              onOpenSettlement(settlement);
+              setHoveredId(settlement.id);
+            }}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (Date.now() < dragSuppressClickUntilRef.current) {
+                return;
+              }
+              clearHoverTimeout();
+              setPinnedSettlementId((previous) => (previous === settlement.id ? null : settlement.id));
               setHoveredId(settlement.id);
             }}
             title={`${settlement.name} (${settlement.globalX}|${settlement.globalY}) • ${settlementPrestigeMeta.label} (${settlementPrestigeMeta.letter})`}
           >
+            {showSettlementBannerCards && shouldShowCtrlSettlementBanner(settlement) ? (
+              <span
+                className={`map-settlement-banner ${settlementMapKind} prestige-tier-${settlementPrestigeTier.toLocaleLowerCase('cs-CZ')} ${safeHoveredId === settlement.id || safePinnedSettlementId === settlement.id || focusedSettlementId === settlement.id ? 'is-highlighted' : ''}`}
+                aria-hidden="true"
+              >
+                <span className="map-settlement-banner-kicker">
+                  <span>{MAP_SETTLEMENT_KIND_LABELS[settlementMapKind]}</span>
+                  <span className="map-settlement-banner-divider">✦</span>
+                  <span>{settlementPrestigeMeta.letter}</span>
+                </span>
+                <strong className="map-settlement-banner-title">{settlement.name}</strong>
+                <span className="map-settlement-banner-meta">
+                  <span>{settlement.owner}</span>
+                  <span>{Math.max(0, Math.floor(Number(settlement.prestige ?? 0))).toLocaleString('cs-CZ')}</span>
+                </span>
+              </span>
+            ) : null}
             <span className="settlement-art" aria-hidden="true">
               <img
                 src={settlementPrestigeMeta.imagePath}
@@ -10881,9 +14699,12 @@ const MapPanel = memo(({
       clearHoverTimeout,
       focusedSettlementId,
       mapRenderSettlements,
+      onOpenSettlement,
       orderMarkersByVillageId,
       safeHoveredId,
+      safePinnedSettlementId,
       scheduleHoveredSettlementClear,
+      showSettlementBannerCards,
     ],
   );
 
@@ -10905,47 +14726,186 @@ const MapPanel = memo(({
       }),
     [activeVillageId, focusedSettlementId, mapDisplaySettlements, regionSize],
   );
+  const previewCardPortalStyle = useMemo<CSSProperties | null>(() => {
+    if (!previewCardStyle || !previewSettlement || typeof window === 'undefined') {
+      return null;
+    }
+    if (gridViewportState.clientWidth <= 0 || gridViewportState.clientHeight <= 0) {
+      return null;
+    }
+    const rawLeft = Number.parseFloat(String(previewCardStyle.left ?? '0'));
+    const rawTop = Number.parseFloat(String(previewCardStyle.top ?? '0'));
+    const rawWidth = Number.parseFloat(String(previewCardStyle.width ?? MAP_PREVIEW_CARD_WIDTH_PX));
+    if (!Number.isFinite(rawLeft) || !Number.isFinite(rawTop) || !Number.isFinite(rawWidth)) {
+      return null;
+    }
+    const cardHeight = isPreviewPinned ? MAP_PREVIEW_CARD_PINNED_HEIGHT_PX : MAP_PREVIEW_CARD_HOVER_HEIGHT_PX;
+    const viewportLeft = gridViewportState.wrapLeft + rawLeft - gridViewportState.scrollLeft;
+    const viewportTop = gridViewportState.wrapTop + rawTop - gridViewportState.scrollTop;
+    const maxLeft = Math.max(TOOLTIP_VIEWPORT_PADDING, window.innerWidth - rawWidth - TOOLTIP_VIEWPORT_PADDING);
+    const maxTop = Math.max(TOOLTIP_VIEWPORT_PADDING, window.innerHeight - cardHeight - TOOLTIP_VIEWPORT_PADDING);
+    const safeLeft = clamp(viewportLeft, TOOLTIP_VIEWPORT_PADDING, maxLeft);
+    const safeTop = clamp(viewportTop, TOOLTIP_VIEWPORT_PADDING, maxTop);
+
+    return {
+      width: `${Math.round(rawWidth)}px`,
+      left: `${Math.round(safeLeft)}px`,
+      top: `${Math.round(safeTop)}px`,
+    };
+  }, [
+    gridViewportState.clientHeight,
+    gridViewportState.clientWidth,
+    gridViewportState.wrapLeft,
+    gridViewportState.wrapTop,
+    gridViewportState.scrollLeft,
+    gridViewportState.scrollTop,
+    isPreviewPinned,
+    previewCardStyle,
+    previewSettlement,
+  ]);
+
+  const renderPreviewSettlementCard = (cardStyle: CSSProperties, usePortal: boolean) => {
+    const ownerLabel = isPreviewAbandoned ? 'opuštěná osada' : (previewSettlement?.owner ?? 'neznámý hráč');
+    const settlementPrestige = Math.max(0, Math.floor(Number(previewSettlement?.prestige ?? 0)));
+    const shouldShowPlayerTotalPrestige =
+      previewPlayerTotalPrestige != null &&
+      previewSettlementKind !== 'abandoned' &&
+      previewSettlementKind !== 'bot';
+    const shouldShowKingdomTotalPrestige =
+      previewKingdomTotalPrestige != null &&
+      previewSettlementKind !== 'abandoned' &&
+      previewSettlementKind !== 'bot' &&
+      previewSettlementKind !== 'own' &&
+      previewSettlementKind !== 'active';
+
+    return (
+      <article
+        className={`map-settlement-info-card ${usePortal ? 'is-portal' : ''} ${isPreviewPinned ? 'is-pinned' : 'is-hover'} ${isPreviewPlayerSettlement ? 'is-player' : ''} ${previewPrestigeTier ? `prestige-tier-${previewPrestigeTier.toLocaleLowerCase('cs-CZ')}` : ''}`}
+        style={cardStyle}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+        onWheel={handleRegionWheel}
+      >
+        <header>
+          <h4>
+            {previewSettlement?.name} ({ownerLabel})
+          </h4>
+        </header>
+        <div className="map-settlement-info-body">
+          <div className="map-settlement-overview">
+            <p className="map-settlement-prestige">
+              Prestiž léna <strong>{settlementPrestige.toLocaleString('cs-CZ')}</strong>
+              {shouldShowPlayerTotalPrestige ? (
+                <em> (hráč celkem {previewPlayerTotalPrestige.toLocaleString('cs-CZ')})</em>
+              ) : null}
+            </p>
+            <p className="map-settlement-kingdom">
+              Království <strong>{previewSettlement?.kingdom || '-'}</strong>{' '}
+              <em>
+                ({previewSettlementTypeLabel}
+                {shouldShowKingdomTotalPrestige ? ` · ${previewKingdomTotalPrestige.toLocaleString('cs-CZ')}` : ''})
+              </em>
+            </p>
+            <p className="map-settlement-distance">
+              Vzdálenost od <em>{distanceOriginSettlement?.name ?? 'aktivního léna'}</em>{' '}
+              <strong>{previewDistanceTiles == null ? '-' : `${previewDistanceTiles} polí`}</strong>
+            </p>
+            {showPreviewTravelDurations ? (
+              <div className="map-settlement-travel-times">
+                <p>
+                  Časy přesunu (<strong>Ctrl</strong>)
+                </p>
+                <ul>
+                  {previewTravelRows.map((row) => (
+                    <li key={`preview-travel-${row.unitId}`}>
+                      <span>{getUnitMetaById(row.unitId).fallbackName}</span>
+                      <span>
+                        Útok: {formatDurationLabel(row.attackDurationSec)}
+                        {row.supportDurationSec != null ? ` · Podpora: ${formatDurationLabel(row.supportDurationSec)}` : ''}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {previewTargetUnderProtection ? (
+              <p className="map-settlement-protection">
+                Nováčkovská ochrana: {formatDurationLabel(Number(previewSettlement?.protectionRemainingSec ?? 0))}
+              </p>
+            ) : null}
+          </div>
+        </div>
+        {isPreviewPinned ? (
+          <>
+            <div className="map-settlement-action-grid">
+              {MAP_ORDER_COMMAND_TYPES.map((commandType) => {
+                if (commandType === 'attack' && previewTargetUnderProtection) {
+                  return null;
+                }
+
+                return (
+                  <button
+                    key={`${previewSettlement?.id}-${commandType}-quick`}
+                    type="button"
+                    className={`secondary-action map-settlement-action ${commandType}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (!previewCommandAvailability[commandType] || !previewSettlement) {
+                        return;
+                      }
+                      onQuickArmyCommand(commandType, previewSettlement);
+                    }}
+                    disabled={!previewCommandAvailability[commandType]}
+                    title={
+                      previewCommandAvailability[commandType]
+                        ? `${ARMY_COMMAND_LABELS[commandType]} z aktivního léna`
+                        : 'Tato akce není pro zvolenou osadu dostupná'
+                    }
+                  >
+                    <span className="symbol">{getArmyCommandSymbol(commandType)}</span>{' '}
+                    {commandType === 'attack' ? 'Zaútočit' : commandType === 'support' ? 'Podpořit' : 'Přesunout jednotky'}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="map-settlement-pin-controls">
+              <button
+                type="button"
+                className="map-settlement-pin-arrow"
+                title="Zapinovat osadu vlevo"
+                aria-label="Zapinovat osadu vlevo"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (previewSettlement) {
+                    onPinSettlement(previewSettlement, 'left');
+                  }
+                }}
+              >
+                ←
+              </button>
+              <button
+                type="button"
+                className="map-settlement-pin-arrow"
+                title="Zapinovat osadu vpravo"
+                aria-label="Zapinovat osadu vpravo"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (previewSettlement) {
+                    onPinSettlement(previewSettlement, 'right');
+                  }
+                }}
+              >
+                →
+              </button>
+              <span>Zapinovat osadu</span>
+            </div>
+          </>
+        ) : null}
+      </article>
+    );
+  };
   return (
     <div className={`map-panel ${isMapFullscreen ? 'is-fullscreen' : ''}`} ref={mapPanelRef}>
-      <section className="map-header">
-        <div>
-          <h3>
-            Region {regionId} - mřížka {regionSize}x{regionSize}
-          </h3>
-        </div>
-        <div className="map-header-actions">
-          <button onClick={() => centerOnSettlement(distanceOriginSettlement?.id ?? ownSettlement?.id ?? null, 'smooth')}>
-            Centrovat
-          </button>
-          <button
-            type="button"
-            className="map-fullscreen-toggle"
-            onClick={() => {
-              void toggleMapFullscreen();
-            }}
-            title={isMapFullscreen ? 'Ukončit režim celé obrazovky' : 'Rozšířit mapu na celou obrazovku'}
-            aria-label={isMapFullscreen ? 'Ukončit režim celé obrazovky' : 'Rozšířit mapu na celou obrazovku'}
-          >
-            <span className="symbol" aria-hidden="true">
-              ⛶
-            </span>
-            <span>{isMapFullscreen ? 'Zmenšit mapu' : 'Celá obrazovka'}</span>
-          </button>
-        </div>
-      </section>
-
-      <section className="map-legend">
-        <span className="legend active">Aktuální osada</span>
-        <span className="legend own">Moje osada</span>
-        <span className="legend bot">Bot</span>
-        <span className="legend royal">Královská</span>
-        <span className="legend allied">Spojenecká</span>
-        <span className="legend nap">Dohoda o neútočení</span>
-        <span className="legend opponent">Protivník</span>
-        <span className="legend enemy">Nepřítel</span>
-        <span className="legend abandoned">Opuštěná</span>
-      </section>
-
       <div className="map-workspace">
         <div
           className="region-grid-wrap"
@@ -10965,734 +14925,494 @@ const MapPanel = memo(({
             }
           >
             {settlementMarkers}
-            {previewSettlement && previewCardStyle ? (
-              <article
-                className={`map-settlement-info-card ${isPreviewPinned ? 'is-pinned' : 'is-hover'} ${isPreviewPlayerSettlement ? 'is-player' : ''} ${previewPrestigeTier ? `prestige-tier-${previewPrestigeTier.toLocaleLowerCase('cs-CZ')}` : ''}`}
-                style={previewCardStyle}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={(event) => event.stopPropagation()}
-              >
-                <header>
-                  <h4>
-                    {previewSettlement.name} ({previewSettlement.globalX}|{previewSettlement.globalY})
-                  </h4>
-                  <small>
-                    Region {previewSettlement.region} · Grid {previewSettlementCell?.localX ?? '-'}|
-                    {previewSettlementCell?.localY ?? '-'}
-                  </small>
-                </header>
-                <div className="map-settlement-info-body">
-                  <div className="map-settlement-detail-grid">
-                    <div className="map-settlement-overview">
-                      {isPreviewPinned ? (
-                        isPreviewAbandoned ? (
-                          <button
-                            type="button"
-                            className="map-settlement-link abandoned"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onOpenSettlement(previewSettlement);
-                            }}
-                          >
-                            Opuštěná osada - otevřít profil
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className={`map-settlement-link owner ${isPreviewPlayerSettlement ? 'player-owner' : ''}`}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onOpenPlayerProfile(previewSettlement.owner);
-                            }}
-                          >
-                            <span className="map-settlement-owner-label">Hráč:</span> {previewSettlement.owner}
-                          </button>
-                        )
-                      ) : (
-                        <p className={`map-settlement-owner ${isPreviewPlayerSettlement ? 'player-owner' : ''}`}>
-                          <span className="map-settlement-owner-label">Hráč:</span> {previewSettlement.owner}
-                        </p>
-                      )}
-                      <p className="map-settlement-prestige">
-                        Prestiž osady <strong>{previewSettlement.prestige.toLocaleString('cs-CZ')}</strong>{' '}
-                        {previewPrestigeMeta ? (
-                          <em className="map-prestige-tier-badge">
-                            {previewPrestigeMeta.label} <small>{previewPrestigeMeta.letter}</small>
-                          </em>
-                        ) : null}
-                      </p>
-                      <p className="map-settlement-prestige-total">
-                        Prestiž hráče celkem{' '}
-                        <strong>
-                          {previewPlayerTotalPrestige == null ? '-' : previewPlayerTotalPrestige.toLocaleString('cs-CZ')}
-                        </strong>
-                      </p>
-                      <p className="map-settlement-prestige-total">
-                        Prestiž království celkem{' '}
-                        <strong>
-                          {previewKingdomTotalPrestige == null
-                            ? '-'
-                            : previewKingdomTotalPrestige.toLocaleString('cs-CZ')}
-                        </strong>
-                      </p>
-                      {isPreviewPinned ? (
-                        <button
-                          type="button"
-                          className="map-settlement-link kingdom"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onOpenKingdomProfile(previewSettlement.kingdom);
-                          }}
-                        >
-                          {previewSettlement.kingdom}
-                        </button>
-                      ) : (
-                        <p className="map-settlement-kingdom">{previewSettlement.kingdom}</p>
-                      )}
-                      <p className="map-settlement-distance">
-                        Vzdálenost od <em>{distanceOriginSettlement?.name ?? 'aktivního léna'}</em>{' '}
-                        <strong>{previewDistanceTiles == null ? '-' : `${previewDistanceTiles} polí`}</strong>
-                      </p>
-                      {previewTargetUnderProtection ? (
-                        <p className="map-settlement-protection">
-                          Nováčkovská ochrana: {formatDurationLabel(Number(previewSettlement?.protectionRemainingSec ?? 0))}
-                        </p>
-                      ) : null}
-                      {previewTargetPrestigeBlocked ? (
-                        <p className="map-settlement-balance-warning is-blocked">
-                          Ochrana prestiže: na toto léno teď útočit nemůžeš. Hráč má{' '}
-                          <strong>{Math.max(0, Math.floor(Number(previewSettlement?.ownerTotalPrestige ?? 0))).toLocaleString('cs-CZ')}</strong>{' '}
-                          prestiže a pro útok potřebuje alespoň{' '}
-                          <strong>
-                            {Math.max(
-                              1,
-                              Math.floor(Number(previewSettlement?.prestigeAttackMinimumForViewer ?? 1)),
-                            ).toLocaleString('cs-CZ')}
-                          </strong>
-                          . Pokud tě napadne jako první, ochrana se zruší a můžeš útok vrátit.
-                        </p>
-                      ) : null}
-                      {previewRetaliationUnlocked ? (
-                        <p className="map-settlement-balance-warning is-unlocked">
-                          Retaliace aktivní: tento hráč už na tebe útočil, můžeš útok vrátit bez prestižní blokace.
-                          {previewRetaliationUnlockedAtLabel ? (
-                            <>
-                              {' '}
-                              Poslední agrese: <strong>{previewRetaliationUnlockedAtLabel}</strong>.
-                            </>
-                          ) : null}
-                        </p>
-                      ) : null}
-                    </div>
-                    {previewDistanceTiles != null ? (
-                      <div className="map-settlement-travel">
-                        <p className="map-settlement-travel-title">
-                          Časy přesunu jednotek ({previewDistanceTiles.toLocaleString('cs-CZ')} polí)
-                        </p>
-                        <div className="map-settlement-travel-head">
-                          <span>Jednotka</span>
-                          <span>⌖ Útok</span>
-                          <span>🛡 Podpora</span>
-                        </div>
-                        <div className="map-settlement-travel-list">
-                          {previewTravelRows.map((row) => {
-                            const unitMeta = getUnitMetaById(row.unitId);
-                            const attackLabel = row.attackDurationSec == null ? '—' : formatDurationLabel(row.attackDurationSec);
-                            const supportLabel =
-                              row.supportDurationSec == null ? '—' : formatDurationLabel(row.supportDurationSec);
-
-                            return (
-                              <div key={`${previewSettlement.id}-travel-${row.unitId}`} className="map-settlement-travel-row">
-                                <span className="map-settlement-travel-unit">
-                                  <span className="unit-icon-shell tiny" aria-hidden="true">
-                                    <img src={unitMeta.icon} alt="" className="unit-icon-image" loading="lazy" />
-                                  </span>
-                                  <small>{unitMeta.fallbackName}</small>
-                                </span>
-                                <strong>{attackLabel}</strong>
-                                <strong>{supportLabel}</strong>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-                {isPreviewPinned ? (
-                  <>
-                    <div className="map-settlement-action-grid">
-                      {MAP_ORDER_COMMAND_TYPES.map((commandType) => {
-                        if (commandType === 'attack' && previewTargetUnderProtection) {
-                          return null;
-                        }
-
-                        return (
-                          <button
-                            key={`${previewSettlement.id}-${commandType}-quick`}
-                            type="button"
-                            className={`secondary-action map-settlement-action ${commandType}`}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              if (!previewCommandAvailability[commandType]) {
-                                return;
-                              }
-                              onQuickArmyCommand(commandType, previewSettlement);
-                            }}
-                            disabled={!previewCommandAvailability[commandType]}
-                            title={
-                              previewCommandAvailability[commandType]
-                                ? `${ARMY_COMMAND_LABELS[commandType]} z aktivního léna`
-                                : 'Tato akce není pro zvolenou osadu dostupná'
-                            }
-                          >
-                            <span className="symbol">{getArmyCommandSymbol(commandType)}</span>{' '}
-                            {commandType === 'attack'
-                              ? 'Zaútočit'
-                              : commandType === 'support'
-                                ? 'Podpořit'
-                                : 'Přesunout jednotky'}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="map-settlement-pin-controls">
-                      <button
-                        type="button"
-                        className="map-settlement-pin-arrow"
-                        title="Zapinovat osadu vlevo"
-                        aria-label="Zapinovat osadu vlevo"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onPinSettlement(previewSettlement, 'left');
-                        }}
-                      >
-                        ←
-                      </button>
-                      <button
-                        type="button"
-                        className="map-settlement-pin-arrow"
-                        title="Zapinovat osadu vpravo"
-                        aria-label="Zapinovat osadu vpravo"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onPinSettlement(previewSettlement, 'right');
-                        }}
-                      >
-                        →
-                      </button>
-                      <span>Zapinovat osadu</span>
-                    </div>
-                  </>
-                ) : null}
-              </article>
-            ) : null}
+            {previewSettlement && previewCardStyle && !previewCardPortalStyle
+              ? renderPreviewSettlementCard(previewCardStyle, false)
+              : null}
           </div>
         </div>
-
-        <section
-          className="map-navigation"
-          onWheel={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-          }}
-        >
-          <div className="mini-map-shell">
-            <h4>Minimapa</h4>
-            <div
-              className="mini-map"
-              ref={miniMapRef}
-              onPointerDown={handleMinimapPointerDown}
-              onWheel={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-              }}
-              role="button"
-              aria-label="Minimapa pro rychlou navigaci"
-              tabIndex={0}
-            >
-              {miniMapDots}
+        <div className="map-window-overlays">
+          <section className="map-legend map-legend-overlay" aria-label="Legenda barev lén">
+            <span className="legend active">Aktivní</span>
+            <span className="legend own">Moje</span>
+            <span className="legend bot">Bot</span>
+            <span className="legend royal">Královská</span>
+            <span className="legend allied">Spojenecká</span>
+            <span className="legend nap">NAP</span>
+            <span className="legend opponent">Protivník</span>
+            <span className="legend enemy">Nepřítel</span>
+            <span className="legend abandoned">Opuštěná</span>
+          </section>
+          <section
+            className="map-navigation map-navigation-overlay"
+            onWheel={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+          >
+            <div className="mini-map-shell">
               <div
-                className="mini-map-viewport"
-                ref={miniViewportRef}
-              />
-            </div>
-            <div className="map-zoom-controls">
-              <label htmlFor="map-zoom-range">
-                Měřítko: {localZoomPercent > 0 ? `+${localZoomPercent}` : localZoomPercent}%
-              </label>
-              <input
-                id="map-zoom-range"
-                type="range"
-                min={MAP_ZOOM_MIN}
-                max={MAP_ZOOM_MAX}
-                step={MAP_ZOOM_STEP}
-                value={localZoomPercent}
-                onChange={(event) => applyZoom(Number(event.target.value))}
-              />
-              <div className="map-zoom-buttons">
-                <button onClick={() => applyZoom(0)}>0</button>
-                <button onClick={() => applyZoom(60)}>+60%</button>
-                <button onClick={() => applyZoom(70)}>+70%</button>
-                <button onClick={() => applyZoom(100)}>+100%</button>
-                <button onClick={() => applyZoom(MAP_ZOOM_MIN)}>-50%</button>
+                className="mini-map"
+                ref={miniMapRef}
+                onPointerDown={handleMinimapPointerDown}
+                onPointerMove={handleMinimapPointerMove}
+                onPointerUp={handleMinimapPointerUp}
+                onPointerCancel={handleMinimapPointerCancel}
+                onLostPointerCapture={handleMinimapPointerCancel}
+                onWheel={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                role="button"
+                aria-label="Minimapa pro rychlou navigaci"
+                tabIndex={0}
+              >
+                {miniMapDots}
+                <div
+                  className="mini-map-viewport"
+                  ref={miniViewportRef}
+                />
+              </div>
+              <div className="map-zoom-controls">
+                <label htmlFor="map-zoom-range">
+                  Měřítko: {zoomLabelValue}%
+                </label>
+                <input
+                  id="map-zoom-range"
+                  type="range"
+                  min={MAP_ZOOM_MIN}
+                  max={MAP_ZOOM_MAX}
+                  step={MAP_ZOOM_STEP}
+                  value={zoomSliderValue}
+                  onChange={(event) => applyZoom(Number(event.target.value))}
+                />
+                <div className="map-zoom-buttons">
+                  <button
+                    type="button"
+                    className="icon-only"
+                    onClick={() => applyZoom(0)}
+                    title="Nastavit měřítko mapy na 100 %"
+                    aria-label="Nastavit měřítko mapy na 100 %"
+                  >
+                    <span className="symbol" aria-hidden="true">
+                      ⊟
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-only"
+                    onClick={() => applyZoom(200)}
+                    title="Nastavit měřítko mapy na 300 %"
+                    aria-label="Nastavit měřítko mapy na 300 %"
+                  >
+                    <span className="symbol" aria-hidden="true">
+                      ⊞
+                    </span>
+                  </button>
+                </div>
+                <div className="mini-map-actions">
+                  <button
+                    type="button"
+                    className="mini-map-action-button"
+                    onClick={() => centerOnSettlement(distanceOriginSettlement?.id ?? ownSettlement?.id ?? null, 'smooth')}
+                    title="Centrovat mapu na aktivní léno"
+                    aria-label="Centrovat mapu na aktivní léno"
+                  >
+                    <span className="symbol" aria-hidden="true">
+                      ⌖
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="mini-map-action-button map-fullscreen-toggle icon-only"
+                    onClick={() => {
+                      void toggleMapFullscreen();
+                    }}
+                    title={isMapFullscreen ? 'Ukončit režim celé obrazovky' : 'Celá obrazovka'}
+                    aria-label={isMapFullscreen ? 'Ukončit režim celé obrazovky' : 'Celá obrazovka'}
+                  >
+                    <span className="symbol" aria-hidden="true">
+                      ⛶
+                    </span>
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-          <div className="map-nav-hint">
-            <p>
-              Zoom mapy: kolečko myši po {MAP_ZOOM_STEP} %. Rozsah je od {MAP_ZOOM_MIN} % do +
-              {MAP_ZOOM_MAX} %.
-            </p>
-            <p>Značky rozkazů: <strong className="order-legend attack">⌖ útok</strong>, <strong className="order-legend support">🛡 podpora</strong>, <strong className="order-legend move">➜ přesun</strong>, <strong className="order-legend knight">♞ pohyb rytíře</strong>.</p>
-          </div>
-        </section>
+          </section>
+        </div>
       </div>
+      {previewSettlement && previewCardPortalStyle && typeof document !== 'undefined'
+        ? createPortal(renderPreviewSettlementCard(previewCardPortalStyle, true), document.body)
+        : null}
     </div>
   );
 });
 
 const VillagePanel = memo(({
   settlement,
-  activeVillageId,
-  currentVillageId,
-  currentVillageName,
-  currentUsername,
-  units,
-  activeMovements,
-  stationedSupports,
-  isArmyCommandPending,
-  commandNotice,
-  onOpenCity,
-  onIssueArmyCommand,
-  onReturnSupport,
+  villageIntelEntry,
+  canLoadVillageIntel,
+  onLoadVillageIntel,
 }: {
   settlement: RegionSettlement;
-  activeVillageId: number | null;
-  currentVillageId: number | null;
-  currentVillageName: string;
-  currentUsername: string;
-  units: Unit[];
-  activeMovements: ArmyMovementState[];
-  stationedSupports: ArmyMovementState[];
-  isArmyCommandPending: boolean;
-  commandNotice: string | null;
-  onOpenCity: () => void;
-  onIssueArmyCommand: (payload: {
-    commandType: Extract<ArmyCommandType, 'attack' | 'support' | 'move'>;
-    targetVillageId: number;
-    lootPriority?: LootPriority;
-    units: Record<string, number>;
-  }) => void;
-  onReturnSupport: (supportMovementId: number) => void;
+  villageIntelEntry: VillageIntelEntry | null;
+  canLoadVillageIntel: boolean;
+  onLoadVillageIntel: (options?: { force?: boolean }) => void;
 }) => {
-  const settlementKind = getSettlementMapKind(settlement, activeVillageId);
-  const [draftUnitAmounts, setDraftUnitAmounts] = useState<Record<string, string>>({});
-  const [attackLootPriority, setAttackLootPriority] = useState<LootPriority>('balanced');
-  const normalizedUsername = currentUsername.trim().toLowerCase();
   const targetVillageId =
     settlement.villageId != null && Number.isFinite(settlement.villageId)
       ? Number(settlement.villageId)
       : null;
-  const isSameAsCurrentVillage =
-    targetVillageId != null && currentVillageId != null && targetVillageId === currentVillageId;
-  const isOwnTarget =
-    settlement.kind === 'own' ||
-    settlement.relation === 'self' ||
-    settlement.owner.trim().toLowerCase() === normalizedUsername;
-  const isAlliedTarget = settlement.relation === 'ally';
-  const availableCommandTypes = useMemo<Extract<ArmyCommandType, 'attack' | 'support' | 'move'>[]>(
-    () => {
-      if (targetVillageId == null || isSameAsCurrentVillage) {
-        return [];
-      }
-
-      if (isOwnTarget) {
-        return ['move', 'support'];
-      }
-
-      if (isAlliedTarget) {
-        return ['support'];
-      }
-
-      return ['attack'];
-    },
-    [isAlliedTarget, isOwnTarget, isSameAsCurrentVillage, targetVillageId],
-  );
-  const selectedUnits = useMemo(() => {
-    return buildSelectedUnitsFromDraft(units, draftUnitAmounts);
-  }, [draftUnitAmounts, units]);
-  const selectedUnitCount = useMemo(
-    () => calculateTotalUnitsInSelection(selectedUnits),
-    [selectedUnits],
-  );
-  const selectedCaravanCount = Number(selectedUnits.caravan ?? 0);
-  const villageAttackPower = useMemo(() => calculateAttackPowerFromSelection(selectedUnits), [selectedUnits]);
-  const villageDefensePower = useMemo(() => calculateDefensePowerFromSelection(selectedUnits), [selectedUnits]);
-  const villageHasRamAttackBonus = Number(selectedUnits.ram ?? 0) > 0;
-  const villageAttackPowerWithBonus = villageHasRamAttackBonus
-    ? Math.round(villageAttackPower * RAM_ATTACK_BONUS_MULTIPLIER)
-    : villageAttackPower;
-  const villageLootCapacity = useMemo(() => calculateLootCapacityFromSelection(selectedUnits), [selectedUnits]);
-  const supportWithCaravansSelected = selectedCaravanCount > 0;
-  const supportMovementsAtSettlement = useMemo(
+  const [hoveredIntelTooltipKey, setHoveredIntelTooltipKey] = useState<string | null>(null);
+  const [intelTooltipCursorPosition, setIntelTooltipCursorPosition] = useState<TooltipCursorPosition | null>(null);
+  const villageIntelStatus: VillageIntelStatus = villageIntelEntry?.status ?? 'idle';
+  const villageIntelData = villageIntelEntry?.data ?? null;
+  const villageIntelError = villageIntelEntry?.error ?? null;
+  const isVillageIntelLoading = villageIntelStatus === 'loading';
+  const hasVillageIntel = villageIntelStatus === 'ready' && villageIntelData != null;
+  const isVillageIntelUnavailable = !canLoadVillageIntel || targetVillageId == null;
+  const buildingQueueTooltipRows = useMemo(
     () =>
-      targetVillageId == null
-        ? []
-        : stationedSupports.filter((movement) => Number(movement.targetVillageId) === targetVillageId),
-    [stationedSupports, targetVillageId],
+      (villageIntelData?.buildingQueue ?? []).map((queueItem, index) => ({
+        label: `#${index + 1} · ${queueItem.buildingName} (${queueItem.fromLevel}→${queueItem.toLevel})`,
+        value: `${formatDurationLabel(queueItem.remainingSec)} · ${formatDateTimeLabel(queueItem.finishAt)}`,
+      })),
+    [villageIntelData?.buildingQueue],
   );
-  const activeMovementsAtSettlement = useMemo(
+  const activeRecruitQueueItem = villageIntelData?.recruitQueue?.[0] ?? null;
+  const activeRecruitTooltipRows = useMemo(
     () =>
-      targetVillageId == null
-        ? []
-        : activeMovements.filter(
-            (movement) =>
-              Number(movement.targetVillageId) === targetVillageId ||
-              Number(movement.originVillageId) === targetVillageId,
-          ),
-    [activeMovements, targetVillageId],
+      activeRecruitQueueItem
+        ? [
+            {
+              label: `${activeRecruitQueueItem.unitName} +${activeRecruitQueueItem.amount.toLocaleString('cs-CZ')}`,
+              value: `Dokončení ${formatDateTimeLabel(activeRecruitQueueItem.finishAt)} · zbývá ${formatDurationLabel(
+                activeRecruitQueueItem.remainingSec,
+              )}`,
+            },
+          ]
+        : [
+            {
+              label: 'Aktuální rekrut',
+              value:
+                isVillageIntelLoading ? 'Načítám…' : hasVillageIntel ? 'Bez aktivního náboru' : 'Nedostupné',
+            },
+          ],
+    [activeRecruitQueueItem, hasVillageIntel, isVillageIntelLoading],
   );
-  const canViewSettlementActions = activeMovementsAtSettlement.length > 0 || supportMovementsAtSettlement.length > 0;
-  const [hoveredMovementKey, setHoveredMovementKey] = useState<string | null>(null);
-  const [tooltipCursorPosition, setTooltipCursorPosition] = useState<TooltipCursorPosition | null>(null);
-  const handleDraftAmountChange = (unitId: string, value: string) => {
-    setDraftUnitAmounts((previous) => ({
-      ...previous,
-      [unitId]: value,
-    }));
-  };
-  const handleIssueVillageCommand = (commandType: Extract<ArmyCommandType, 'attack' | 'support' | 'move'>) => {
-    if (targetVillageId == null || selectedUnitCount <= 0) {
-      return;
+  const queueTooltipRows =
+    buildingQueueTooltipRows.length > 0
+      ? buildingQueueTooltipRows
+      : [
+          {
+            label: 'Fronta výstavby',
+            value: isVillageIntelLoading ? 'Načítám…' : 'Bez položek ve frontě.',
+          },
+        ];
+  const garrisonTooltipRows = useMemo(() => {
+    if (isVillageIntelLoading) {
+      return [
+        {
+          label: 'Posádka',
+          value: 'Načítám detail složení…',
+        },
+      ];
     }
-    if (commandType === 'support' && supportWithCaravansSelected) {
-      return;
+    if (!hasVillageIntel || !villageIntelData) {
+      return [
+        {
+          label: 'Posádka',
+          value: 'Detail posádky není dostupný.',
+        },
+      ];
     }
-
-    onIssueArmyCommand({
-      commandType,
-      targetVillageId,
-      lootPriority: commandType === 'attack' ? attackLootPriority : undefined,
-      units: selectedUnits,
+    if (!villageIntelData.garrisonUnlocked) {
+      return [
+        {
+          label: 'Posádka je uzamčena',
+          value: 'Odemyká se od Radnice 5. Rezervace 300 populace je aktivní hned.',
+        },
+      ];
+    }
+    return villageIntelData.garrisonDetails.map((unit) => {
+      const amountLabel = `${unit.amount.toLocaleString('cs-CZ')}/${unit.cap.toLocaleString('cs-CZ')}`;
+      const lossLabel =
+        unit.missing > 0 ? `ztráty ${unit.missing.toLocaleString('cs-CZ')}` : 'bez ztrát';
+      const refillStepLabel =
+        unit.refillSecPerUnit > 0 ? `+1 za ${formatDurationLabel(unit.refillSecPerUnit)}` : 'doplnění n/a';
+      const nextTickLabel =
+        unit.nextRefillSec != null ? `⏱ další doplnění za ${formatDurationLabel(unit.nextRefillSec)}` : '⏱ bez čekajícího doplnění';
+      return {
+        label: `${unit.unitName}: ${amountLabel}`,
+        value: `${lossLabel} · ${refillStepLabel} · ${nextTickLabel}`,
+      };
     });
-    setDraftUnitAmounts({});
-    setAttackLootPriority('balanced');
-  };
-  const hasAvailableVillageUnits = useMemo(
-    () => units.some((unit) => Number(unit.amount ?? 0) > 0),
-    [units],
+  }, [hasVillageIntel, isVillageIntelLoading, villageIntelData]);
+  const compactResourceRows = useMemo(
+    () => [
+      { key: 'wood', label: 'Dřevo', value: formatCompactResourceAmount(villageIntelData?.resources.wood ?? 0) },
+      { key: 'stone', label: 'Kámen', value: formatCompactResourceAmount(villageIntelData?.resources.stone ?? 0) },
+      { key: 'iron', label: 'Železo', value: formatCompactResourceAmount(villageIntelData?.resources.iron ?? 0) },
+      { key: 'gold', label: 'Zlato', value: formatCompactResourceAmount(villageIntelData?.resources.gold ?? 0) },
+      { key: 'coins', label: 'Mince', value: formatCompactResourceAmount(villageIntelData?.resources.coins ?? 0) },
+    ],
+    [
+      villageIntelData?.resources.coins,
+      villageIntelData?.resources.gold,
+      villageIntelData?.resources.iron,
+        villageIntelData?.resources.stone,
+        villageIntelData?.resources.wood,
+    ],
   );
-  const isSupportOnlyTarget = useMemo(
-    () => availableCommandTypes.length === 1 && availableCommandTypes[0] === 'support',
-    [availableCommandTypes],
+  const villageUnitSummaryItems = useMemo(
+    () => villageIntelData?.unitSummaries ?? [],
+    [villageIntelData?.unitSummaries],
   );
-  const handleFillSingleVillageUnit = (unitId: string, availableAmountRaw: number) => {
-    if (isArmyCommandPending) {
+
+  useEffect(() => {
+    if (!canLoadVillageIntel || targetVillageId == null) {
       return;
     }
-    if (isSupportOnlyTarget && unitId === 'caravan') {
+    if (villageIntelStatus === 'loading' || villageIntelStatus === 'ready') {
       return;
     }
-    const availableAmount = Math.max(0, Math.floor(Number(availableAmountRaw ?? 0)));
-    setDraftUnitAmounts((previous) => ({
-      ...previous,
-      [unitId]: availableAmount > 0 ? String(availableAmount) : '',
-    }));
+    onLoadVillageIntel();
+  }, [canLoadVillageIntel, onLoadVillageIntel, targetVillageId, villageIntelStatus]);
+
+  const handleIntelTooltipEnter = (tooltipKey: string, cursor: TooltipCursorPosition) => {
+    setHoveredIntelTooltipKey(tooltipKey);
+    setIntelTooltipCursorPosition(cursor);
   };
-  const selectAllVillageUnitsTooltip = isSupportOnlyTarget
-    ? 'Vyplní dostupné jednotky bez karavan (podpora je nepovoluje).'
-    : 'Vyplní dostupné množství všech aktuálních jednotek.';
-  const handleSelectAllVillageUnits = () => {
-    setDraftUnitAmounts(
-      buildDraftUnitAmountsFromAvailable(units, {
-        excludeCaravan: isSupportOnlyTarget,
-      }),
-    );
+  const handleIntelTooltipLeave = (tooltipKey: string) => {
+    setHoveredIntelTooltipKey((previous) => (previous === tooltipKey ? null : previous));
+    setIntelTooltipCursorPosition(null);
   };
 
   return (
-    <div className="panel-stack village-panel">
-      <section>
-        <h3>
-          {settlement.name} ({settlement.globalX}|{settlement.globalY})
-        </h3>
-        <p>{settlement.note}</p>
-        <ul>
-          <li>Typ osady: {settlementKindLabel[settlementKind]}</li>
-          <li>Vlastník: {settlement.owner}</li>
-          <li>Království: {settlement.kingdom}</li>
-          <li>Region: {settlement.region}</li>
-          <li>Prestiž: {settlement.prestige.toLocaleString('cs-CZ')}</li>
-          <li>
-            {settlementKind === 'own' || settlementKind === 'active'
-              ? `Oddanost: ${settlement.loyalty}%`
-              : 'Oddanost: skryto'}
-          </li>
-        </ul>
-      </section>
+    <div className="panel-stack village-panel village-panel-compact">
+      <section className="village-float-overview">
+        <header className="village-float-overview-header">
+          <div className="village-float-title-block">
+            <h3>
+              {settlement.name} ({settlement.globalX}|{settlement.globalY})
+            </h3>
+            <p>
+              {settlement.owner} · {settlement.kingdom} · Region {settlement.region}
+            </p>
+          </div>
 
-      <section>
-        <h3>Průzkumné informace</h3>
-        {settlementKind === 'own' || settlementKind === 'active' ? (
-          <>
-            <p>Jde o tvoji osadu. Přepni se do plného městského managementu.</p>
-            <button className="upgrade-action" onClick={onOpenCity}>
-              Otevřít městský panel
-            </button>
-          </>
-        ) : (
-          <ul>
-            <li>Veřejná data: souřadnice, vlastník, království, prestiž.</li>
-            <li>Skrytá data: přesné počty jednotek a úrovně budov.</li>
-            <li>Doporučení: před útokem poslat průzkum nebo podporu spojence.</li>
-          </ul>
-        )}
-      </section>
-      <section>
-        <h3>Vojenské akce z aktivní osady</h3>
-        <p>
-          Zdroj jednotek: <strong>{currentVillageName}</strong>
-        </p>
-        {targetVillageId == null ? (
-          <p>Tato osada nemá validní cílový identifikátor. Rozkazy nelze odeslat.</p>
-        ) : isSameAsCurrentVillage ? (
-          <p>Jsi v této osadě. Pro přesun nebo útok otevři jiné léno na mapě.</p>
-        ) : (
-          <>
-            <div className="army-draft-actions">
+          <div className="village-float-header-resources" aria-label="Suroviny léna">
+            {compactResourceRows.map((resource) => {
+              const resourceIcon = resolveResourceGlyph(resource.label);
+              return (
+                <span key={`village-inline-resource-${resource.key}`} className="village-inline-resource-pill">
+                  <i aria-hidden="true" className="village-inline-resource-icon">
+                    {resourceIcon.startsWith('/') ? (
+                      <img src={resourceIcon} alt="" loading="lazy" decoding="async" draggable={false} />
+                    ) : (
+                      resourceIcon
+                    )}
+                  </i>
+                  <strong>{resource.value}</strong>
+                </span>
+              );
+            })}
+          </div>
+
+          <div className="village-float-overview-actions">
+            <div className="village-float-quick-icons" role="toolbar" aria-label="Rychlé informace léna">
               <button
                 type="button"
-                className="secondary-action"
-                onClick={handleSelectAllVillageUnits}
-                disabled={isArmyCommandPending || !hasAvailableVillageUnits}
-                title={selectAllVillageUnitsTooltip}
-              >
-                Přidat všechny
-              </button>
-            </div>
-            <div className="army-draft-grid village-action-draft">
-              {units.map((unit) => (
-                <label key={`village-draft-${settlement.id}-${unit.id}`}>
-                  <span>
-                    {unit.name}{' '}
-                    <small className="row-help inline">k dispozici: {unit.amount.toLocaleString('cs-CZ')}</small>
-                  </span>
-                  <div className="army-draft-input-row">
-                    <input
-                      type="number"
-                      min={0}
-                      max={unit.amount}
-                      step={1}
-                      value={draftUnitAmounts[unit.id] ?? ''}
-                      onChange={(event) => handleDraftAmountChange(unit.id, event.target.value)}
-                      onKeyDown={(event) => {
-                        handleActionOnEnter(event, () => {
-                          if (availableCommandTypes.length !== 1) {
-                            return;
-                          }
-                          handleIssueVillageCommand(availableCommandTypes[0]);
-                        });
-                      }}
-                      disabled={isArmyCommandPending || (isSupportOnlyTarget && unit.id === 'caravan')}
-                    />
-                    <button
-                      type="button"
-                      className="secondary-action compact army-draft-unit-fill-button"
-                      onClick={() => handleFillSingleVillageUnit(unit.id, unit.amount)}
-                      disabled={
-                        isArmyCommandPending ||
-                        unit.amount <= 0 ||
-                        (isSupportOnlyTarget && unit.id === 'caravan')
-                      }
-                      title="Vložit všechny dostupné jednotky tohoto typu"
-                    >
-                      Všechny k dispozici
-                    </button>
-                  </div>
-                </label>
-              ))}
-            </div>
-            <div className="army-command-preview">
-              <p>
-                Vybráno jednotek: <strong>{selectedUnitCount.toLocaleString('cs-CZ')}</strong>
-              </p>
-              <p>
-                Síla útoku: <strong>{villageAttackPowerWithBonus.toLocaleString('cs-CZ')}</strong>{' '}
-                {villageHasRamAttackBonus ? <span>(+10 % bez brány)</span> : null}
-              </p>
-              <p>
-                Síla obrany: <strong>{villageDefensePower.toLocaleString('cs-CZ')}</strong>
-              </p>
-              <p>
-                Kapacita kořisti (bez zvědů a beranidel):{' '}
-                <strong>{villageLootCapacity.toLocaleString('cs-CZ')}</strong>
-              </p>
-            </div>
-            <div className="village-action-buttons">
-              {availableCommandTypes.map((commandType) => (
-                <button
-                  key={`${settlement.id}-${commandType}`}
-                  className={`secondary-action village-action-btn ${commandType}`}
-                  onClick={() => handleIssueVillageCommand(commandType)}
-                  disabled={
-                    isArmyCommandPending ||
-                    selectedUnitCount <= 0 ||
-                    (commandType === 'support' && supportWithCaravansSelected)
+                className={`village-quick-icon has-army-tooltip${hoveredIntelTooltipKey === 'active-recruit' ? ' is-tooltip-open' : ''}`}
+                onMouseEnter={(event) => {
+                  handleIntelTooltipEnter('active-recruit', { x: event.clientX, y: event.clientY });
+                }}
+                onMouseMove={(event) => {
+                  if (hoveredIntelTooltipKey !== 'active-recruit') {
+                    return;
                   }
+                  setIntelTooltipCursorPosition({ x: event.clientX, y: event.clientY });
+                }}
+                onMouseLeave={() => {
+                  handleIntelTooltipLeave('active-recruit');
+                }}
+                aria-label="Aktuální rekrut"
+              >
+                ⚔
+              </button>
+              <button
+                type="button"
+                className={`village-quick-icon has-army-tooltip${hoveredIntelTooltipKey === 'building-queue' ? ' is-tooltip-open' : ''}`}
+                onMouseEnter={(event) => {
+                  handleIntelTooltipEnter('building-queue', { x: event.clientX, y: event.clientY });
+                }}
+                onMouseMove={(event) => {
+                  if (hoveredIntelTooltipKey !== 'building-queue') {
+                    return;
+                  }
+                  setIntelTooltipCursorPosition({ x: event.clientX, y: event.clientY });
+                }}
+                onMouseLeave={() => {
+                  handleIntelTooltipLeave('building-queue');
+                }}
+                aria-label="Stavební fronta"
+              >
+                🧱
+              </button>
+              {canLoadVillageIntel ? (
+                <button
+                  type="button"
+                  className="village-quick-icon"
+                  onClick={() => onLoadVillageIntel({ force: true })}
+                  disabled={isVillageIntelLoading}
+                  aria-label="Obnovit detail léna"
                 >
-                  {commandType === 'attack' ? '⌖ ' : commandType === 'support' ? '🛡 ' : '➜ '}
-                  {ARMY_COMMAND_LABELS[commandType]}
+                  ↻
                 </button>
-              ))}
+              ) : null}
             </div>
-            {supportWithCaravansSelected && availableCommandTypes.includes('support') ? (
-              <p className="panel-feedback">Karavany nelze poslat jako podporu. Odeber je z výběru.</p>
-            ) : null}
-            {availableCommandTypes.includes('attack') ? (
-              <label className="village-loot-priority">
-                Priorita drancování
-                <select
-                  value={attackLootPriority}
-                  onChange={(event) => setAttackLootPriority(event.target.value as LootPriority)}
-                  disabled={isArmyCommandPending}
-                >
-                  <option value="balanced">{LOOT_PRIORITY_LABELS.balanced}</option>
-                  <option value="wood">{LOOT_PRIORITY_LABELS.wood}</option>
-                  <option value="stone">{LOOT_PRIORITY_LABELS.stone}</option>
-                  <option value="iron">{LOOT_PRIORITY_LABELS.iron}</option>
-                </select>
-              </label>
-            ) : null}
-          </>
-        )}
-        {selectedUnitCount <= 0 && targetVillageId != null && !isSameAsCurrentVillage ? (
-          <p className="panel-feedback">Vyber alespoň jednu jednotku pro odeslání rozkazu.</p>
+          </div>
+        </header>
+
+        <div className="village-unit-summary-grid" aria-label="Jednotky v léně">
+          {villageUnitSummaryItems.length > 0 ? (
+            villageUnitSummaryItems.map((unit) => (
+              <article
+                key={`village-unit-summary-${unit.unitId}`}
+                className="village-unit-summary-card village-unit-type-card"
+                aria-label={`${unit.unitName}: vlastní ${unit.ownAmount.toLocaleString('cs-CZ')}, podpora ${unit.supportAmount.toLocaleString('cs-CZ')}`}
+                style={{ '--unit-card-image': `url("${unit.icon}")` } as CSSProperties}
+              >
+                <div className="village-unit-type-header">
+                  <span className="unit-icon-shell" aria-hidden="true">
+                    <img src={unit.icon} alt="" className="unit-icon-image" loading="lazy" />
+                  </span>
+                </div>
+                <h1>{unit.ownAmount.toLocaleString('cs-CZ')}</h1>
+                <p>({unit.supportAmount.toLocaleString('cs-CZ')})</p>
+              </article>
+            ))
+          ) : (
+            <p className="village-unit-summary-empty">
+              {hasVillageIntel ? 'Bez jednotek' : isVillageIntelLoading ? 'Načítám...' : 'Bez dat'}
+            </p>
+          )}
+        </div>
+
+        <div className="village-float-intel-grid">
+          <article className="village-float-intel-card village-fortification-card">
+            <h4>Obrana</h4>
+            <div className="village-fortification-levels">
+              <span>
+                <img src={BUILDING_ART.fortification.icon} alt="" loading="lazy" decoding="async" />
+                Opevnění <strong>{(villageIntelData?.fortificationLevel ?? 0).toLocaleString('cs-CZ')}</strong>
+              </span>
+              <span>
+                <img src={BUILDING_ART.gate.icon} alt="" loading="lazy" decoding="async" />
+                Brána <strong>{(villageIntelData?.gateLevel ?? 0).toLocaleString('cs-CZ')}</strong>
+              </span>
+            </div>
+          </article>
+
+          <article
+            className={`village-float-intel-card village-garrison-card has-army-tooltip${hoveredIntelTooltipKey === 'garrison-detail' ? ' is-tooltip-open' : ''}`}
+            onMouseEnter={(event) => {
+              handleIntelTooltipEnter('garrison-detail', { x: event.clientX, y: event.clientY });
+            }}
+            onMouseMove={(event) => {
+              if (hoveredIntelTooltipKey !== 'garrison-detail') {
+                return;
+              }
+              setIntelTooltipCursorPosition({ x: event.clientX, y: event.clientY });
+            }}
+            onMouseLeave={() => {
+              handleIntelTooltipLeave('garrison-detail');
+            }}
+            aria-label="Detail posádky"
+          >
+            <h4>Posádka</h4>
+            <strong>
+              {hasVillageIntel
+                ? `${(villageIntelData?.garrisonUnits ?? 0).toLocaleString('cs-CZ')} jednotek`
+                : '300 jednotek'}
+            </strong>
+            <span>
+              {hasVillageIntel && villageIntelData && !villageIntelData.garrisonUnlocked
+                ? 'Posádka se odemyká od Radnice 5. Rezervace 300 populace je aktivní hned.'
+                : 'Statická obrana léna (ozbrojenci + lučištníci) s průběžnou obnovou.'}
+            </span>
+          </article>
+        </div>
+
+        {isVillageIntelLoading ? <p className="row-help">Načítám detail front a obrany tohoto léna...</p> : null}
+        {isVillageIntelUnavailable ? (
+          <p className="row-help">Detail front je dostupný jen pro tvoje vlastní léna.</p>
         ) : null}
-        {commandNotice ? <p className="panel-feedback">{commandNotice}</p> : null}
+        {!isVillageIntelLoading && villageIntelError ? <p className="panel-feedback">{villageIntelError}</p> : null}
       </section>
-      <section>
-        <h3>Viditelné akce u osady</h3>
-        {canViewSettlementActions ? (
-          <ul className="commands-list">
-            {activeMovementsAtSettlement.map((movement) => {
-              const rowKey = `movement-${movement.id}`;
-              const unitsTotal = getMovementUnitsTotal(movement);
-              return (
-                <li
-                  key={rowKey}
-                  className={`commands-item village-action-line has-army-tooltip${hoveredMovementKey === rowKey ? ' is-tooltip-open' : ''}`}
-                  onMouseEnter={(event) => {
-                    setHoveredMovementKey(rowKey);
-                    setTooltipCursorPosition({ x: event.clientX, y: event.clientY });
-                  }}
-                  onMouseMove={(event) => {
-                    setTooltipCursorPosition({ x: event.clientX, y: event.clientY });
-                  }}
-                  onMouseLeave={() => {
-                    setHoveredMovementKey((previous) => (previous === rowKey ? null : previous));
-                    setTooltipCursorPosition(null);
-                  }}
-                >
-                  <div className="commands-item-line">
-                    <span className={`command-badge ${movement.commandType} compact`}>
-                      <span className="symbol">{getArmyCommandSymbol(movement.commandType)}</span>
-                    </span>
-                    <strong>{ARMY_COMMAND_LABELS[movement.commandType]}</strong>
-                    <span>
-                      {movement.originName} → {movement.targetName}
-                    </span>
-                  </div>
-                  <small>
-                    Jednotky: {unitsTotal.toLocaleString('cs-CZ')} · ETA {formatDurationLabel(movement.remainingSec)}
-                  </small>
-                  {hoveredMovementKey === rowKey ? (
-                    <MovementArmyTooltip movement={movement} cursorPosition={tooltipCursorPosition} />
-                  ) : null}
-                </li>
-              );
-            })}
-            {supportMovementsAtSettlement.map((movement) => {
-              const rowKey = `visible-support-${movement.id}`;
-              const unitsTotal = getMovementUnitsTotal(movement);
-              return (
-                <li
-                  key={rowKey}
-                  className={`commands-item village-action-line has-army-tooltip${hoveredMovementKey === rowKey ? ' is-tooltip-open' : ''}`}
-                  onMouseEnter={(event) => {
-                    setHoveredMovementKey(rowKey);
-                    setTooltipCursorPosition({ x: event.clientX, y: event.clientY });
-                  }}
-                  onMouseMove={(event) => {
-                    setTooltipCursorPosition({ x: event.clientX, y: event.clientY });
-                  }}
-                  onMouseLeave={() => {
-                    setHoveredMovementKey((previous) => (previous === rowKey ? null : previous));
-                    setTooltipCursorPosition(null);
-                  }}
-                >
-                  <div className="commands-item-line">
-                    <span className="command-badge support compact">
-                      <span className="symbol">{getArmyCommandSymbol('support')}</span>
-                    </span>
-                    <strong>Stacionovaná podpora</strong>
-                    <span>{movement.originName} → {movement.targetName}</span>
-                  </div>
-                  <small>Jednotky: {unitsTotal.toLocaleString('cs-CZ')}</small>
-                  {hoveredMovementKey === rowKey ? (
-                    <MovementArmyTooltip movement={movement} cursorPosition={tooltipCursorPosition} />
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-        ) : (
-          <p>Pro tuto osadu aktuálně nevidíš žádné aktivní akce.</p>
-        )}
-      </section>
-      {supportMovementsAtSettlement.length > 0 ? (
-        <section>
-          <h3>Podpora v osadě</h3>
-          <ul className="commands-list">
-            {supportMovementsAtSettlement.map((movement) => {
-              const rowKey = `panel-support-${movement.id}`;
-              const unitsTotal = getMovementUnitsTotal(movement);
-              return (
-                <li
-                  key={rowKey}
-                  className={`commands-item village-support-row has-army-tooltip${hoveredMovementKey === rowKey ? ' is-tooltip-open' : ''}`}
-                  onMouseEnter={(event) => {
-                    setHoveredMovementKey(rowKey);
-                    setTooltipCursorPosition({ x: event.clientX, y: event.clientY });
-                  }}
-                  onMouseMove={(event) => {
-                    setTooltipCursorPosition({ x: event.clientX, y: event.clientY });
-                  }}
-                  onMouseLeave={() => {
-                    setHoveredMovementKey((previous) => (previous === rowKey ? null : previous));
-                    setTooltipCursorPosition(null);
-                  }}
-                >
-                  <div>
-                    <strong>Podpora z {movement.originName}</strong>
-                    <small>Jednotky: {unitsTotal.toLocaleString('cs-CZ')}</small>
-                  </div>
-                  <button
-                    className="secondary-action recruit-action"
-                    onClick={() => onReturnSupport(movement.id)}
-                    disabled={isArmyCommandPending}
-                  >
-                    Návrat
-                  </button>
-                  {hoveredMovementKey === rowKey ? (
-                    <MovementArmyTooltip movement={movement} cursorPosition={tooltipCursorPosition} />
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
+
+      {hoveredIntelTooltipKey === 'active-recruit' ? (
+        <VillageIntelTooltip
+          title="Aktuální rekrut"
+          rows={activeRecruitTooltipRows}
+          cursorPosition={intelTooltipCursorPosition}
+        />
       ) : null}
+      {hoveredIntelTooltipKey === 'building-queue' ? (
+        <VillageIntelTooltip
+          title="Fronta výstavby"
+          rows={queueTooltipRows}
+          cursorPosition={intelTooltipCursorPosition}
+        />
+      ) : null}
+      {hoveredIntelTooltipKey === 'garrison-detail' ? (
+        <VillageIntelTooltip
+          title="Posádka"
+          rows={garrisonTooltipRows}
+          cursorPosition={intelTooltipCursorPosition}
+        />
+      ) : null}
+    </div>
+  );
+});
+
+const TownhallDeveloperBoostCallout = memo(({ boost }: { boost: TownhallDeveloperBoostNotice | null }) => {
+  const nowMs = useSecondClock(boost != null);
+  if (!boost) {
+    return null;
+  }
+
+  const remainingSec = getRemainingSecondsToIso(boost.endsAt, nowMs);
+  const isActive = boost.isActive && remainingSec > 0;
+
+  return (
+    <div className={`townhall-dev-boost ${isActive ? 'is-active' : 'is-inactive'}`}>
+      <p className="townhall-dev-boost-title">
+        {isActive ? `Boost od vývojáře: ${boost.label}` : 'Boost od vývojáře je ukončen'}
+      </p>
+      <p className="townhall-dev-boost-meta">
+        {isActive
+          ? `Trvání: ${formatDurationLabel(remainingSec)} (konec ${boost.endsAtLabel})`
+          : `Boost skončil ${boost.endsAtLabel}.`}
+      </p>
+      <p className="townhall-dev-boost-reason">{boost.reason}</p>
+    </div>
+  );
+});
+
+const ActiveVillageProtectionTimer = memo(({ notice }: { notice: ActiveVillageProtectionNotice | null }) => {
+  const nowMs = useSecondClock(notice != null);
+  if (!notice) {
+    return null;
+  }
+
+  const remainingSec = getRemainingSecondsToIso(notice.protectionUntil, nowMs);
+  if (remainingSec <= 0) {
+    return null;
+  }
+
+  return (
+    <div className="village-protection-timer">
+      {`Nováčkovská ochrana: ${formatDurationLabel(remainingSec)} (do ${notice.formattedUntil})`}
     </div>
   );
 });
@@ -11724,8 +15444,8 @@ const BuildingPanel = memo(({
       <p>{building.effect}</p>
       {building.id === 'residential-quarter' ? (
         <p className="row-help">
-          Poznámka: část populace je systémově rezervovaná na provoz budov, aby se po rekrutu nebo ztrátách
-          nerozpadla ekonomická obsluha.
+          Poznámka: 300 populace je systémově rezervováno pro posádku (ozbrojenci + lučištníci), aby se obrana
+          obnovovala stabilně a nebylo možné tuto rezervaci obejít rekrutem. Aktivní posádka se odemyká od Radnice 5.
         </p>
       ) : null}
       <div className="building-hero-art">
@@ -11782,21 +15502,7 @@ const BuildingPanel = memo(({
             >
               {isRecallKnightPending ? 'Odvolávám rytíře...' : 'Odvolat rytíře (+1000 dřevo/kámen/železo)'}
             </button>
-            {developerBoost ? (
-              <div className={`townhall-dev-boost ${developerBoost.isActive ? 'is-active' : 'is-inactive'}`}>
-                <p className="townhall-dev-boost-title">
-                  {developerBoost.isActive
-                    ? `Boost od vývojáře: ${developerBoost.label}`
-                    : 'Boost od vývojáře je ukončen'}
-                </p>
-                <p className="townhall-dev-boost-meta">
-                  {developerBoost.isActive
-                    ? `Trvání: ${formatDurationLabel(developerBoost.remainingSec)} (konec ${developerBoost.endsAtLabel})`
-                    : `Boost skončil ${developerBoost.endsAtLabel}.`}
-                </p>
-                <p className="townhall-dev-boost-reason">{developerBoost.reason}</p>
-              </div>
-            ) : null}
+            <TownhallDeveloperBoostCallout boost={developerBoost} />
           </>
         ) : null}
         {notice ? <p className="panel-feedback">{notice}</p> : null}
@@ -11819,15 +15525,22 @@ export const GamePage = () => {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const villageMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const villageMenuOverlayRef = useRef<HTMLDivElement | null>(null);
+  const villageRenameWrapRef = useRef<HTMLDivElement | null>(null);
+  const villageRenameInputRef = useRef<HTMLInputElement | null>(null);
   const worldMenuRef = useRef<HTMLDivElement | null>(null);
   const stateRequestPromiseRef = useRef<Promise<void> | null>(null);
   const worldMapRequestPromiseRef = useRef<Promise<void> | null>(null);
   const reportsRequestPromiseRef = useRef<Promise<void> | null>(null);
+  const battleReportDetailRequestByIdRef = useRef<Record<number, Promise<BattleReportItem | null> | null>>({});
+  const battleReportScopeKeyRef = useRef('');
   const reportsSummaryRequestPromiseRef = useRef<Promise<void> | null>(null);
   const activityRequestPromiseRef = useRef<Promise<void> | null>(null);
   const activitySummaryRequestPromiseRef = useRef<Promise<void> | null>(null);
   const mutationPendingRef = useRef(false);
+  const villageIntelRequestByVillageIdRef = useRef<Record<number, Promise<void> | null>>({});
   const hasStoredPanelLayoutRef = useRef(false);
+  const skipPanelLayoutSaveScopeRef = useRef<string | null>(null);
+  const skipPanelPlacementSaveScopeRef = useRef<string | null>(null);
   const initialAutoStretchAppliedRef = useRef(false);
   const armyQuickSelectionRequestIdRef = useRef(0);
   const logisticsSendLockRef = useRef(false);
@@ -11839,14 +15552,25 @@ export const GamePage = () => {
     : null;
   const selectedWorldFlavor = resolveWorldFlavorById(selectedWorldId);
   const getCanvasViewportSize = useCallback(() => {
-    const bounds = canvasRef.current?.getBoundingClientRect();
+    const canvasNode = canvasRef.current;
+    const layoutContainer = canvasNode?.closest('.game-layout-container') as HTMLElement | null;
+    const bounds = canvasNode?.getBoundingClientRect();
+    const layoutBounds = layoutContainer?.getBoundingClientRect();
+    const fallbackWidth =
+      typeof window !== 'undefined'
+        ? window.innerWidth - 16
+        : PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH + PANEL_VIEWPORT_MARGIN_X;
+    const fallbackHeight =
+      typeof window !== 'undefined'
+        ? window.innerHeight - 120
+        : PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT + PANEL_VIEWPORT_MARGIN_Y;
     const viewportWidth = Math.max(
       PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH + PANEL_VIEWPORT_MARGIN_X,
-      Math.floor(bounds?.width ?? window.innerWidth - 16),
+      Math.floor(bounds?.width ?? layoutBounds?.width ?? fallbackWidth),
     );
     const viewportHeight = Math.max(
       PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT + PANEL_VIEWPORT_MARGIN_Y,
-      Math.floor(bounds?.height ?? window.innerHeight - 120),
+      Math.floor(bounds?.height ?? layoutBounds?.height ?? fallbackHeight),
     );
 
     return { viewportWidth, viewportHeight };
@@ -11858,9 +15582,12 @@ export const GamePage = () => {
     readStoredActiveVillageId(username),
   );
   const [mapZoomPercent, setMapZoomPercent] = useState<number>(() => readStoredMapZoom(username));
+  const [storedPanelPlacement, setStoredPanelPlacement] = useState<StoredPanelPlacementByType>(() =>
+    readStoredPanelPlacement(username, selectedWorldId),
+  );
 
   const [panels, setPanels] = useState<PanelWindow[]>(() => {
-    const restored = readStoredPanelLayout(username);
+    const restored = readStoredPanelLayout(username, selectedWorldId);
     if (restored && restored.length > 0) {
       hasStoredPanelLayoutRef.current = true;
       const highestZ = restored.reduce((maxZ, panel) => Math.max(maxZ, panel.z), 40);
@@ -11879,11 +15606,15 @@ export const GamePage = () => {
 
     hasStoredPanelLayoutRef.current = false;
 
-    return [createPanelWindow('city', 40, 0)];
+    return [createPanelWindow('map', 40, 0, { layoutMode: 'floating' })];
   });
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
+  const [activeFullDockPanelId, setActiveFullDockPanelId] = useState<string | null>(null);
+  const [activeLeftDockPanelId, setActiveLeftDockPanelId] = useState<string | null>(null);
+  const [activeRightDockPanelId, setActiveRightDockPanelId] = useState<string | null>(null);
   const [gameState, setGameState] = useState<GameStateResponse | null>(null);
   const [worldMapState, setWorldMapState] = useState<GameStateResponse['world'] | null>(null);
+  const [villageIntelByVillageId, setVillageIntelByVillageId] = useState<Record<number, VillageIntelEntry>>({});
   const [, setLoadingState] = useState(true);
   const [, setStateError] = useState<string | null>(null);
   const [armyNotice, setArmyNotice] = useState<string | null>(null);
@@ -11900,6 +15631,8 @@ export const GamePage = () => {
   const [armyCommandPending, setArmyCommandPending] = useState(false);
   const [upgradePendingBuildingId, setUpgradePendingBuildingId] = useState<string | null>(null);
   const [cancelUpgradePendingOrderId, setCancelUpgradePendingOrderId] = useState<number | null>(null);
+  const [reorderUpgradePendingOrderId, setReorderUpgradePendingOrderId] = useState<number | null>(null);
+  const [cancelUpgradeQueuePending, setCancelUpgradeQueuePending] = useState(false);
   const [recallKnightPending, setRecallKnightPending] = useState(false);
   const [renameVillagePending, setRenameVillagePending] = useState(false);
   const [buildingNotices, setBuildingNotices] = useState<Record<string, string>>({});
@@ -11910,6 +15643,7 @@ export const GamePage = () => {
   const [battleReportsPage, setBattleReportsPage] = useState(1);
   const [selectedBattleReportId, setSelectedBattleReportId] = useState<number | null>(null);
   const [battleReportCacheById, setBattleReportCacheById] = useState<Record<number, BattleReportItem>>({});
+  const [battleReportPendingById, setBattleReportPendingById] = useState<Record<number, boolean>>({});
   const [activityEntries, setActivityEntries] = useState<GameActivityListResponse | null>(null);
   const [activitySummary, setActivitySummary] = useState<GameActivitySummaryResponse | null>(null);
   const [activityLoading, setActivityLoading] = useState(false);
@@ -11928,10 +15662,47 @@ export const GamePage = () => {
   const [activitySharePending, setActivitySharePending] = useState(false);
   const [activityShareError, setActivityShareError] = useState<string | null>(null);
   const [communicationBadgeCount, setCommunicationBadgeCount] = useState(0);
-  const [isCommunicationHubOpen, setIsCommunicationHubOpen] = useState(false);
+  const [, setIsCommunicationHubOpen] = useState(false);
   const [availableWorlds, setAvailableWorlds] = useState<WorldPortalItem[]>([]);
   const [isWorldMenuOpen, setIsWorldMenuOpen] = useState(false);
   const [worldMenuError, setWorldMenuError] = useState<string | null>(null);
+  useEffect(() => {
+    battleReportScopeKeyRef.current = `${username}::${selectedWorldId ?? ''}`;
+  }, [selectedWorldId, username]);
+
+  useEffect(() => {
+    const storageScope = normalizePanelStorageScope(selectedWorldId);
+    skipPanelLayoutSaveScopeRef.current = storageScope;
+    skipPanelPlacementSaveScopeRef.current = storageScope;
+    setActivePanelId(null);
+    setActiveFullDockPanelId(null);
+    setActiveLeftDockPanelId(null);
+    setActiveRightDockPanelId(null);
+    setStoredPanelPlacement(readStoredPanelPlacement(username, selectedWorldId));
+    const restored = readStoredPanelLayout(username, selectedWorldId);
+    if (restored && restored.length > 0) {
+      hasStoredPanelLayoutRef.current = true;
+      const highestZ = restored.reduce((maxZ, panel) => Math.max(maxZ, panel.z), 40);
+      topZ.current = Math.max(40, highestZ);
+      const mapPanel = restored.find((panel) => panel.type === 'map');
+      if (mapPanel) {
+        mapWindowSizeRef.current = {
+          width: mapPanel.width,
+          height: mapPanel.height,
+        };
+      }
+      setPanels(restored);
+      return;
+    }
+
+    hasStoredPanelLayoutRef.current = false;
+    topZ.current = 40;
+    setPanels([createPanelWindow('map', 40, 0, { layoutMode: 'floating' })]);
+  }, [selectedWorldId, username]);
+  useEffect(() => {
+    setVillageIntelByVillageId({});
+    villageIntelRequestByVillageIdRef.current = {};
+  }, [selectedWorldId, username]);
   const worldSwitchOptions = useMemo<WorldSwitchOption[]>(() => {
     if (availableWorlds.length > 0) {
       return availableWorlds.map((world) => ({
@@ -11970,6 +15741,12 @@ export const GamePage = () => {
   const [autoHidePinColumns, setAutoHidePinColumns] = useState<boolean>(
     () => readStoredShortcutSettings(username).autoHidePinColumns,
   );
+  const [mapPreviewTravelModifier, setMapPreviewTravelModifier] = useState<MapPreviewTravelModifierKey>(
+    () => readStoredShortcutSettings(username).mapPreviewTravelModifier,
+  );
+  const [settlementColorPalette, setSettlementColorPalette] = useState<SettlementColorPalette>(
+    () => readStoredShortcutSettings(username).settlementColors,
+  );
   const [shortcutNotice, setShortcutNotice] = useState<string | null>(null);
   const [isPinColumnsTemporarilyHidden, setIsPinColumnsTemporarilyHidden] = useState(false);
   const [isPinColumnsOverlayVisible, setIsPinColumnsOverlayVisible] = useState(false);
@@ -11978,13 +15755,16 @@ export const GamePage = () => {
   const [shortcutSettingsLoadedForUser, setShortcutSettingsLoadedForUser] = useState(username);
   const [isVillageMenuOpen, setVillageMenuOpen] = useState(false);
   const [villageMenuPosition, setVillageMenuPosition] = useState<VillageMenuPosition | null>(null);
+  const [isVillageRenameOpen, setIsVillageRenameOpen] = useState(false);
+  const [villageRenameDraft, setVillageRenameDraft] = useState('');
+  const [villageRenameNotice, setVillageRenameNotice] = useState<string | null>(null);
   const [isVillageHotkeyMode, setIsVillageHotkeyMode] = useState(false);
   const [villageHotkeyIndex, setVillageHotkeyIndex] = useState(0);
   const [armyTargetHistoryByVillageId, setArmyTargetHistoryByVillageId] = useState<ArmyTargetHistoryByVillageId>(
     () => readStoredArmyTargetHistory(username),
   );
   const [armyQuickSelection, setArmyQuickSelection] = useState<ArmyQuickSelection | null>(null);
-  const [protectionClockMs, setProtectionClockMs] = useState(() => Date.now());
+  const [mapCenterRequest, setMapCenterRequest] = useState<{ settlementId: string; nonce: number } | null>(null);
 
   useEffect(() => {
     mutationPendingRef.current = Boolean(
@@ -11992,6 +15772,8 @@ export const GamePage = () => {
         cancelRecruitmentPendingId != null ||
         upgradePendingBuildingId ||
         cancelUpgradePendingOrderId != null ||
+        reorderUpgradePendingOrderId != null ||
+        cancelUpgradeQueuePending ||
         armyCommandPending ||
         researchActionPending ||
         mercenaryActionPending ||
@@ -12010,6 +15792,8 @@ export const GamePage = () => {
     cancelLogisticsPendingId,
     cancelRecruitmentPendingId,
     cancelUpgradePendingOrderId,
+    reorderUpgradePendingOrderId,
+    cancelUpgradeQueuePending,
     logisticsActionPending,
     guildActionPending,
     kingdomActionPending,
@@ -12030,6 +15814,8 @@ export const GamePage = () => {
     setGameFontScaleDraft(storedFontScale);
     setShortcutCustomBindings(storedShortcutSettings.customBindings);
     setAutoHidePinColumns(storedShortcutSettings.autoHidePinColumns);
+    setMapPreviewTravelModifier(storedShortcutSettings.mapPreviewTravelModifier);
+    setSettlementColorPalette(storedShortcutSettings.settlementColors);
     setShortcutNotice(null);
     setIsPinColumnsTemporarilyHidden(false);
     setIsPinColumnsOverlayVisible(false);
@@ -12038,12 +15824,28 @@ export const GamePage = () => {
     setMyAvatarUrl(null);
     setPlayerAvatarByUsername({});
     setWorldMapState(null);
+    latestAppliedWorldMapKeyRef.current = null;
+    battleReportDetailRequestByIdRef.current = {};
+    setBattleReports(null);
+    setBattleReportsError(null);
+    setBattleReportsPage(1);
+    setSelectedBattleReportId(null);
+    setBattleReportCacheById({});
+    setBattleReportPendingById({});
     setBattleReportsSummary(null);
     setActivitySummary(null);
   }, [username]);
 
   useEffect(() => {
     setWorldMapState(null);
+    latestAppliedWorldMapKeyRef.current = null;
+    battleReportDetailRequestByIdRef.current = {};
+    setBattleReports(null);
+    setBattleReportsError(null);
+    setBattleReportsPage(1);
+    setSelectedBattleReportId(null);
+    setBattleReportCacheById({});
+    setBattleReportPendingById({});
     setBattleReportsSummary(null);
     setActivitySummary(null);
   }, [selectedWorldId]);
@@ -12066,8 +15868,17 @@ export const GamePage = () => {
     saveStoredShortcutSettings(username, {
       autoHidePinColumns,
       customBindings: shortcutCustomBindings,
+      mapPreviewTravelModifier,
+      settlementColors: settlementColorPalette,
     });
-  }, [autoHidePinColumns, shortcutCustomBindings, shortcutSettingsLoadedForUser, username]);
+  }, [
+    autoHidePinColumns,
+    mapPreviewTravelModifier,
+    settlementColorPalette,
+    shortcutCustomBindings,
+    shortcutSettingsLoadedForUser,
+    username,
+  ]);
 
   const activeGameFontScalePercent = GAME_FONT_SCALE_PERCENT_BY_OPTION[gameFontScaleOption];
   useEffect(() => {
@@ -12091,15 +15902,21 @@ export const GamePage = () => {
     };
   }, [activeGameFontScalePercent, gameFontScaleOption]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setProtectionClockMs(Date.now());
-    }, 1000);
-
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, []);
+  const settlementColorCssVariables = useMemo(
+    () =>
+      ({
+        '--settlement-color-active': settlementColorPalette.active,
+        '--settlement-color-own': settlementColorPalette.own,
+        '--settlement-color-bot': settlementColorPalette.bot,
+        '--settlement-color-royal': settlementColorPalette.royal,
+        '--settlement-color-allied': settlementColorPalette.allied,
+        '--settlement-color-nap': settlementColorPalette.nap,
+        '--settlement-color-opponent': settlementColorPalette.opponent,
+        '--settlement-color-enemy': settlementColorPalette.enemy,
+        '--settlement-color-abandoned': settlementColorPalette.abandoned,
+      }) as CSSProperties,
+    [settlementColorPalette],
+  );
 
   useEffect(() => {
     const handleCommunicationSummary = (event: Event) => {
@@ -12115,6 +15932,65 @@ export const GamePage = () => {
     window.addEventListener(COMMUNICATION_SUMMARY_EVENT, handleCommunicationSummary as EventListener);
     return () => {
       window.removeEventListener(COMMUNICATION_SUMMARY_EVENT, handleCommunicationSummary as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
+    const root = document.querySelector('.game-page');
+    if (!(root instanceof HTMLElement)) {
+      return;
+    }
+
+    const stripNativeTitle = (element: HTMLElement) => {
+      const title = element.getAttribute('title');
+      if (!title) {
+        return;
+      }
+      if (!element.hasAttribute('data-native-title')) {
+        element.setAttribute('data-native-title', title);
+      }
+      element.removeAttribute('title');
+    };
+
+    root.querySelectorAll<HTMLElement>('[title]').forEach((element) => stripNativeTitle(element));
+
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'attributes' && mutation.attributeName === 'title') {
+          const target = mutation.target;
+          if (target instanceof HTMLElement) {
+            stripNativeTitle(target);
+          }
+          continue;
+        }
+
+        if (mutation.type !== 'childList' || mutation.addedNodes.length <= 0) {
+          continue;
+        }
+
+        mutation.addedNodes.forEach((node) => {
+          if (!(node instanceof HTMLElement)) {
+            return;
+          }
+          stripNativeTitle(node);
+          node.querySelectorAll<HTMLElement>('[title]').forEach((element) => stripNativeTitle(element));
+        });
+      }
+    });
+
+    observer.observe(root, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['title'],
+    });
+
+    return () => {
+      observer.disconnect();
     };
   }, []);
 
@@ -12146,8 +16022,8 @@ export const GamePage = () => {
   }, [username]);
 
   const latestAppliedStateServerTimeMsRef = useRef(0);
-  const latestAppliedStateSignatureRef = useRef<string | null>(null);
-  const latestAppliedWorldMapSignatureRef = useRef<string | null>(null);
+  const latestAppliedStateVersionRef = useRef<string | null>(null);
+  const latestAppliedWorldMapKeyRef = useRef<string | null>(null);
   const applyIncomingGameState = useCallback((nextState: GameStateResponse): boolean => {
     const normalizedState = normalizeGameStateForUi(nextState);
     const parsedServerTimeMs = Date.parse(normalizedState.serverTime);
@@ -12156,23 +16032,24 @@ export const GamePage = () => {
       return false;
     }
 
-    const signature = buildStableGameStateSignature(normalizedState);
-    const stateChanged = latestAppliedStateSignatureRef.current !== signature;
+    const nextStateVersion = String(normalizedState.stateVersion ?? '').trim() || null;
+    const didStateChange =
+      nextStateVersion == null || latestAppliedStateVersionRef.current !== nextStateVersion;
     latestAppliedStateServerTimeMsRef.current = nextServerTimeMs;
-    latestAppliedStateSignatureRef.current = signature;
-    if (stateChanged) {
+    latestAppliedStateVersionRef.current = nextStateVersion;
+    if (didStateChange) {
       setGameState(normalizedState);
     }
     if ((normalizedState.world?.settlements?.length ?? 0) > 0) {
-      const worldMapSignature = JSON.stringify(normalizedState.world);
-      if (latestAppliedWorldMapSignatureRef.current !== worldMapSignature) {
-        latestAppliedWorldMapSignatureRef.current = worldMapSignature;
+      const worldSnapshotKey = getWorldSnapshotVersion(normalizedState.world);
+      if (worldSnapshotKey == null || latestAppliedWorldMapKeyRef.current !== worldSnapshotKey) {
+        latestAppliedWorldMapKeyRef.current = worldSnapshotKey;
         setWorldMapState(normalizedState.world);
       }
     }
     setActiveVillageId((previous) => (previous === normalizedState.village.id ? previous : normalizedState.village.id));
     setStateError(null);
-    return stateChanged;
+    return didStateChange;
   }, []);
 
   const buildings = useMemo<Building[]>(() => {
@@ -12269,6 +16146,7 @@ export const GamePage = () => {
         buildingId: upgrade.buildingId,
         fromLevel: upgrade.fromLevel,
         toLevel: upgrade.toLevel,
+        startedAt: upgrade.startedAt,
         remainingSec: upgrade.remainingSec,
         finishAt: upgrade.finishAt,
       };
@@ -12307,36 +16185,6 @@ export const GamePage = () => {
     () => gameState?.army?.incomingMovements ?? [],
     [gameState],
   );
-  const cityPanelArmyOrders = useMemo<ArmyMovementState[]>(() => {
-    const merged = new Map<string, ArmyMovementState>();
-    const attachMovement = (movement: ArmyMovementState) => {
-      if (!movement.isRelatedToCurrentVillage) {
-        return;
-      }
-      const uniqueKey = [
-        movement.commandType,
-        movement.id,
-        movement.originVillageId,
-        movement.targetVillageId,
-        movement.arriveAt,
-      ].join(':');
-      if (!merged.has(uniqueKey)) {
-        merged.set(uniqueKey, movement);
-      }
-    };
-
-    for (const movement of armyIncomingMovements) {
-      attachMovement(movement);
-    }
-    for (const movement of armyActiveMovements) {
-      attachMovement(movement);
-    }
-    for (const movement of armyStationedSupports) {
-      attachMovement(movement);
-    }
-
-    return [...merged.values()].sort((left, right) => left.remainingSec - right.remainingSec || left.id - right.id);
-  }, [armyActiveMovements, armyIncomingMovements, armyStationedSupports]);
   const battleReportsById = useMemo(() => {
     const byId = new Map<number, BattleReportItem>();
     for (const [id, report] of Object.entries(battleReportCacheById)) {
@@ -12403,189 +16251,92 @@ export const GamePage = () => {
     if (!Number.isFinite(endsAtMs)) {
       return null;
     }
-    const remainingSec = Math.max(0, Math.ceil((endsAtMs - protectionClockMs) / 1000));
-    const isActive = Boolean(developerBoost.isActive) && remainingSec > 0;
 
     return {
-      isActive,
+      isActive: Boolean(developerBoost.isActive),
       label: String(developerBoost.label),
       reason: String(developerBoost.reason),
-      remainingSec,
+      endsAt: new Date(endsAtMs).toISOString(),
       endsAtLabel: formatDateTimeLabel(endsAtMs),
     };
-  }, [gameState?.resources?.developerBoost, protectionClockMs]);
+  }, [gameState?.resources?.developerBoost]);
 
-  const resourceStocks = useMemo<ResourceStock[]>(() => {
-    const resolveUpgradeMeta = (buildingId: string): { upgradeQueueCount: number } => {
-      const queue = buildingUpgradeQueueByBuilding.get(buildingId) ?? [];
-      if (queue.length === 0) {
-        return {
-          upgradeQueueCount: 0,
-        };
-      }
-      return {
-        upgradeQueueCount: queue.length,
-      };
-    };
-
-    const resolveBuildingMeta = (buildingId: string): { buildingName: string; buildingLevel: number } => {
-      if (!gameState) {
-        return {
-          buildingName: BUILDING_ART[buildingId]?.fallbackName ?? buildingId,
-          buildingLevel: 0,
-        };
-      }
-      const building = gameState.buildings.find((entry) => entry.id === buildingId);
-      return {
-        buildingName: BUILDING_ART[buildingId]?.fallbackName ?? building?.name ?? buildingId,
-        buildingLevel: Math.max(0, Number(building?.level ?? 0)),
-      };
-    };
-
-    if (!gameState) {
-      return [
-        {
-          name: 'Dřevo',
-          amount: 0,
-          delta: '+0 / h',
-          boostLabel: null,
-          cap: 0,
-          buildingId: 'woodcutter',
-          ...resolveBuildingMeta('woodcutter'),
-          ...resolveUpgradeMeta('woodcutter'),
-        },
-        {
-          name: 'Kámen',
-          amount: 0,
-          delta: '+0 / h',
-          boostLabel: null,
-          cap: 0,
-          buildingId: 'quarry',
-          ...resolveBuildingMeta('quarry'),
-          ...resolveUpgradeMeta('quarry'),
-        },
-        {
-          name: 'Železo',
-          amount: 0,
-          delta: '+0 / h',
-          boostLabel: null,
-          cap: 0,
-          buildingId: 'iron-mine',
-          ...resolveBuildingMeta('iron-mine'),
-          ...resolveUpgradeMeta('iron-mine'),
-        },
-        {
-          name: 'Zlato',
-          amount: 0,
-          delta: '+0 / h',
-          boostLabel: null,
-          cap: 0,
-          buildingId: 'gold-mine',
-          ...resolveBuildingMeta('gold-mine'),
-          ...resolveUpgradeMeta('gold-mine'),
-        },
-        {
-          name: 'Mince',
-          amount: 0,
-          delta: '+0 / h',
-          boostLabel: null,
-          cap: 0,
-          buildingId: 'mint',
-          ...resolveBuildingMeta('mint'),
-          ...resolveUpgradeMeta('mint'),
-        },
-        {
-          name: 'Populace',
-          amount: 0,
-          delta: 'kapacita 0',
-          boostLabel: null,
-          cap: 0,
-          buildingId: 'residential-quarter',
-          ...resolveBuildingMeta('residential-quarter'),
-          ...resolveUpgradeMeta('residential-quarter'),
-        },
-      ];
-    }
-
-    const resourceBoostLabel =
-      gameState.resources.developerBoost?.isActive && gameState.resources.developerBoost.label
-        ? String(gameState.resources.developerBoost.label)
-        : null;
-
-    return [
-      {
-        name: 'Dřevo',
-        amount: gameState.resources.wood,
-        delta: `+${gameState.resources.productionPerHour.wood.toLocaleString('cs-CZ')} / h`,
-        boostLabel: resourceBoostLabel,
-        cap: gameState.resources.cap,
-        buildingId: 'woodcutter',
-        ...resolveBuildingMeta('woodcutter'),
-        ...resolveUpgradeMeta('woodcutter'),
-      },
-      {
-        name: 'Kámen',
-        amount: gameState.resources.stone,
-        delta: `+${gameState.resources.productionPerHour.stone.toLocaleString('cs-CZ')} / h`,
-        boostLabel: resourceBoostLabel,
-        cap: gameState.resources.cap,
-        buildingId: 'quarry',
-        ...resolveBuildingMeta('quarry'),
-        ...resolveUpgradeMeta('quarry'),
-      },
-      {
-        name: 'Železo',
-        amount: gameState.resources.iron,
-        delta: `+${gameState.resources.productionPerHour.iron.toLocaleString('cs-CZ')} / h`,
-        boostLabel: resourceBoostLabel,
-        cap: gameState.resources.cap,
-        buildingId: 'iron-mine',
-        ...resolveBuildingMeta('iron-mine'),
-        ...resolveUpgradeMeta('iron-mine'),
-      },
-      {
-        name: 'Zlato',
-        amount: gameState.resources.gold,
-        delta: `+${gameState.resources.productionPerHour.gold.toLocaleString('cs-CZ')} / h`,
-        boostLabel: null,
-        cap: gameState.resources.goldCap,
-        buildingId: 'gold-mine',
-        ...resolveBuildingMeta('gold-mine'),
-        ...resolveUpgradeMeta('gold-mine'),
-      },
-      {
-        name: 'Mince',
-        amount: gameState.resources.coins,
-        delta: `+${gameState.resources.productionPerHour.mintCoins.toLocaleString('cs-CZ')} / h`,
-        boostLabel: null,
-        cap: gameState.resources.coinsCap,
-        buildingId: 'mint',
-        ...resolveBuildingMeta('mint'),
-        ...resolveUpgradeMeta('mint'),
-      },
-      {
-        name: 'Populace',
-        amount: gameState.population.used,
-        delta: `kapacita ${gameState.population.cap.toLocaleString('cs-CZ')}`,
-        boostLabel: null,
-        cap: gameState.population.cap,
-        buildingId: 'residential-quarter',
-        ...resolveBuildingMeta('residential-quarter'),
-        ...resolveUpgradeMeta('residential-quarter'),
-      },
-    ];
-  }, [buildingUpgradeQueueByBuilding, gameState]);
-  const currentResearchTask = useMemo(
-    () =>
-      gameState?.research?.projects?.find((project) => project.status === 'researching') ??
-      gameState?.research?.projects?.find((project) => project.status === 'available') ??
-      null,
+  const researchProjects = useMemo(
+    () => (Array.isArray(gameState?.research?.projects) ? gameState.research.projects : []),
     [gameState?.research?.projects],
   );
+  const hasResolvedResearchProjects = Array.isArray(gameState?.research?.projects);
+  const currentResearchTask = useMemo(() => {
+    const researchingProjects = researchProjects.filter((project) => project.status === 'researching');
+    const availableProjects = researchProjects.filter((project) => project.status === 'available');
+    const candidates = researchingProjects.length > 0 ? researchingProjects : availableProjects;
+    if (candidates.length <= 0) {
+      return null;
+    }
+
+    const sortedCandidates = [...candidates].sort((left, right) => {
+      const leftProgress = Math.max(0, Math.min(100, Number(left.progressPercent ?? 0)));
+      const rightProgress = Math.max(0, Math.min(100, Number(right.progressPercent ?? 0)));
+      const progressDiff = rightProgress - leftProgress;
+      if (Math.abs(progressDiff) > RESEARCH_SPOTLIGHT_SIMILAR_PROGRESS_DELTA_PERCENT) {
+        return progressDiff;
+      }
+
+      const leftCoinCost = Math.max(0, Math.floor(Number(left.coinCost ?? 0)));
+      const rightCoinCost = Math.max(0, Math.floor(Number(right.coinCost ?? 0)));
+      if (leftCoinCost !== rightCoinCost) {
+        return leftCoinCost - rightCoinCost;
+      }
+
+      const leftRemainingSec = Math.max(0, Number(left.remainingSec ?? Number.POSITIVE_INFINITY));
+      const rightRemainingSec = Math.max(0, Number(right.remainingSec ?? Number.POSITIVE_INFINITY));
+      if (leftRemainingSec !== rightRemainingSec) {
+        return leftRemainingSec - rightRemainingSec;
+      }
+
+      return String(left.id).localeCompare(String(right.id), 'cs');
+    });
+
+    return sortedCandidates[0] ?? null;
+  }, [researchProjects]);
+  const isResearchSpotlightEmpty =
+    hasResolvedResearchProjects && researchProjects.length > 0 && currentResearchTask === null;
+  const isResearchSpotlightComplete =
+    isResearchSpotlightEmpty && researchProjects.every((project) => project.status === 'completed');
+  const currentResearchProgressPercent = currentResearchTask
+    ? Math.max(0, Math.min(100, Number(currentResearchTask.progressPercent ?? 0)))
+    : 0;
+  const currentResearchAssignedAcademics = currentResearchTask
+    ? Math.max(0, Math.floor(Number(currentResearchTask.assignedAcademics ?? 0)))
+    : 0;
+  const currentResearchCompletionTimeLabel = currentResearchTask
+    ? currentResearchTask.estimatedCompletionAt
+      ? formatDateTimeLabel(currentResearchTask.estimatedCompletionAt)
+      : currentResearchTask.completedAt
+        ? formatDateTimeLabel(currentResearchTask.completedAt)
+        : 'Neurčeno'
+    : 'Neurčeno';
+  const currentResearchTooltipLabel = currentResearchTask
+    ? currentResearchTask.status === 'researching'
+      ? `Dokončení: ${Math.round(currentResearchProgressPercent)} %\nČas dokončení: ${currentResearchCompletionTimeLabel}\nAkademici: ${currentResearchAssignedAcademics.toLocaleString('cs-CZ')}`
+      : `Připravený projekt: ${currentResearchTask.name}\nCena: ${Math.max(0, Math.floor(Number(currentResearchTask.coinCost ?? 0))).toLocaleString('cs-CZ')} mincí\nKlikni pro otevření panelu Výzkum`
+    : !hasResolvedResearchProjects
+      ? 'Načítám přehled výzkumu.'
+      : isResearchSpotlightComplete
+        ? 'Výzkum je kompletní. Klikni pro otevření panelu Výzkum.'
+        : 'Momentálně není k dispozici žádný další projekt. Klikni pro otevření panelu Výzkum.';
+  const currentResearchHeadline = currentResearchTask
+    ? currentResearchTask.name
+    : !hasResolvedResearchProjects
+      ? 'Načítám výzkum...'
+      : isResearchSpotlightComplete
+        ? 'Výzkum dokončen'
+        : 'Žádný projekt k výzkumu';
 
   const villageLabel = gameState
     ? `${gameState.village.name} (${gameState.village.coordX}|${gameState.village.coordY})`
     : 'Načítám město...';
+  const activeVillageBaseName = gameState?.village.name ?? extractVillageBaseName(villageLabel);
   const activeVillageResolvedId = gameState?.village.id ?? activeVillageId ?? null;
   const currentVillageHistoryKey =
     activeVillageResolvedId != null && Number.isFinite(activeVillageResolvedId)
@@ -12605,6 +16356,43 @@ export const GamePage = () => {
       ),
     [gameState?.villages],
   );
+  const ownedVillageIdSet = useMemo(() => {
+    const ids = new Set<number>();
+    for (const village of gameState?.villages ?? []) {
+      const villageId = Number(village.id);
+      if (!Number.isFinite(villageId) || villageId <= 0) {
+        continue;
+      }
+      ids.add(Math.floor(villageId));
+    }
+    return ids;
+  }, [gameState?.villages]);
+  useEffect(() => {
+    if (!gameState) {
+      return;
+    }
+    const villageId = Number(gameState.village.id);
+    if (!Number.isFinite(villageId) || villageId <= 0) {
+      return;
+    }
+    const nextIntelData = toVillageIntelData(gameState);
+    setVillageIntelByVillageId((previous) => {
+      const existing = previous[villageId];
+      const nowMs = Date.now();
+      if (existing?.status === 'ready' && existing.fetchedAt != null && nowMs - existing.fetchedAt < 3500) {
+        return previous;
+      }
+      return {
+        ...previous,
+        [villageId]: {
+          status: 'ready',
+          data: nextIntelData,
+          error: null,
+          fetchedAt: nowMs,
+        },
+      };
+    });
+  }, [gameState]);
   const isGameFontScaleDirty = gameFontScaleDraft !== gameFontScaleOption;
   const shortcutBindings = useMemo<Record<ShortcutActionId, ShortcutBinding>>(() => {
     const merged = { ...DEFAULT_SHORTCUT_BINDINGS };
@@ -12631,7 +16419,64 @@ export const GamePage = () => {
   const gameCanvasClassName = `game-canvas${autoHidePinColumns ? ' is-pin-columns-auto-mode' : ''}${
     arePinColumnsVisible ? '' : ' is-pin-columns-hidden'
   }${isPinColumnsOverlayVisibleInCanvas ? ' is-pin-columns-overlay-visible' : ''}`;
-  const activeVillageProtection = useMemo(() => {
+  const [canvasViewportRevision, setCanvasViewportRevision] = useState(0);
+  useEffect(() => {
+    const canvasNode = canvasRef.current;
+    let rafId: number | null = null;
+
+    const requestViewportReflow = () => {
+      if (rafId != null) {
+        window.cancelAnimationFrame(rafId);
+      }
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        setCanvasViewportRevision((previous) => previous + 1);
+      });
+    };
+
+    requestViewportReflow();
+    window.addEventListener('resize', requestViewportReflow);
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (canvasNode && typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        requestViewportReflow();
+      });
+      resizeObserver.observe(canvasNode);
+    }
+
+    return () => {
+      window.removeEventListener('resize', requestViewportReflow);
+      if (rafId != null) {
+        window.cancelAnimationFrame(rafId);
+      }
+      resizeObserver?.disconnect();
+    };
+  }, [gameCanvasClassName]);
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const applyContainerInsets = () => {
+      const layoutContainer = (canvasRef.current?.closest('.game-layout-container') as HTMLElement | null) ?? null;
+      const rect = layoutContainer?.getBoundingClientRect();
+      const leftGap = Math.max(0, Math.floor(rect?.left ?? 0));
+      const rightGap = Math.max(0, Math.floor(window.innerWidth - (rect?.right ?? window.innerWidth)));
+      document.documentElement.style.setProperty('--game-layout-left-gap', `${leftGap}px`);
+      document.documentElement.style.setProperty('--game-layout-right-gap', `${rightGap}px`);
+    };
+
+    applyContainerInsets();
+    window.addEventListener('resize', applyContainerInsets);
+
+    return () => {
+      window.removeEventListener('resize', applyContainerInsets);
+      document.documentElement.style.setProperty('--game-layout-left-gap', '0px');
+      document.documentElement.style.setProperty('--game-layout-right-gap', '0px');
+    };
+  }, [canvasViewportRevision]);
+  const activeVillageProtection = useMemo<ActiveVillageProtectionNotice | null>(() => {
     const protectionRuleDays = Math.max(0, Number(gameState?.village.protectionRuleDays ?? 0));
     const protectionUntil = gameState?.village.protectionUntil;
     if (protectionRuleDays <= 0 || !protectionUntil) {
@@ -12640,11 +16485,6 @@ export const GamePage = () => {
 
     const protectionUntilMs = Date.parse(protectionUntil);
     if (!Number.isFinite(protectionUntilMs)) {
-      return null;
-    }
-
-    const remainingSec = Math.max(0, Math.ceil((protectionUntilMs - protectionClockMs) / 1000));
-    if (remainingSec <= 0) {
       return null;
     }
     const formattedUntil = new Intl.DateTimeFormat('cs-CZ', {
@@ -12657,25 +16497,110 @@ export const GamePage = () => {
     }).format(new Date(protectionUntilMs));
 
     return {
-      isActive: true,
-      remainingSec,
+      protectionUntil: new Date(protectionUntilMs).toISOString(),
       formattedUntil,
     };
-  }, [gameState?.village.protectionRuleDays, gameState?.village.protectionUntil, protectionClockMs]);
+  }, [gameState?.village.protectionRuleDays, gameState?.village.protectionUntil]);
   const currentVillageName = gameState?.village.name ?? 'Neznámé léno';
+  useEffect(() => {
+    if (isVillageRenameOpen) {
+      return;
+    }
+    setVillageRenameDraft(activeVillageBaseName);
+  }, [activeVillageBaseName, isVillageRenameOpen]);
+
+  useEffect(() => {
+    if (!isVillageRenameOpen) {
+      return;
+    }
+    const nextFrame = window.requestAnimationFrame(() => {
+      const input = villageRenameInputRef.current;
+      if (!input) {
+        return;
+      }
+      input.focus();
+      input.select();
+    });
+    return () => window.cancelAnimationFrame(nextFrame);
+  }, [isVillageRenameOpen]);
+
+  useEffect(() => {
+    if (!isVillageRenameOpen) {
+      return;
+    }
+
+    const cancelRename = () => {
+      setIsVillageRenameOpen(false);
+      setVillageRenameDraft(activeVillageBaseName);
+    };
+
+    const onDocumentPointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (target && villageRenameWrapRef.current?.contains(target)) {
+        return;
+      }
+      cancelRename();
+    };
+
+    const onDocumentKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      event.preventDefault();
+      cancelRename();
+    };
+
+    document.addEventListener('mousedown', onDocumentPointerDown);
+    document.addEventListener('touchstart', onDocumentPointerDown, { passive: true });
+    document.addEventListener('keydown', onDocumentKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', onDocumentPointerDown);
+      document.removeEventListener('touchstart', onDocumentPointerDown);
+      document.removeEventListener('keydown', onDocumentKeyDown);
+    };
+  }, [activeVillageBaseName, isVillageRenameOpen]);
+
   const villageRegionLabel = gameState
     ? `Region ${gameState.village.region}, království ${gameState.village.kingdom}`
     : 'Čekám na data backendu';
-  const activeOrders = gameState?.activeOrders.length ? gameState.activeOrders : FALLBACK_ACTIVE_ORDERS;
   const leaderboardRows = useMemo(() => {
     const rows = gameState?.leaderboard?.length ? gameState.leaderboard : RANKING_FALLBACK;
     return rows.filter((entry) => !entry.username.startsWith('__abandoned_ai__'));
   }, [gameState]);
   const kingdomHub = gameState?.kingdomHub ?? null;
+  const playerRankingSummary = useMemo<PlayerRankingSummary | null>(() => {
+    const ranking = gameState?.playerRanking;
+    if (!ranking) {
+      return null;
+    }
+    return {
+      rank: normalizeRankValue(ranking.rank),
+      attackerRank: normalizeRankValue(ranking.attackerRank),
+      defenderRank: normalizeRankValue(ranking.defenderRank),
+      supporterRank: normalizeRankValue(ranking.supporterRank),
+    };
+  }, [gameState?.playerRanking]);
   const playerLeaderboardEntry = useMemo(
     () => leaderboardRows.find((entry) => entry.username === username) ?? null,
     [leaderboardRows, username],
   );
+  const resolvedPlayerRank = normalizeRankValue(playerLeaderboardEntry?.rank ?? playerRankingSummary?.rank);
+  const resolvedPlayerAttackerRank = normalizeRankValue(
+    playerLeaderboardEntry?.attackerRank ?? playerRankingSummary?.attackerRank,
+  );
+  const resolvedPlayerDefenderRank = normalizeRankValue(
+    playerLeaderboardEntry?.defenderRank ?? playerRankingSummary?.defenderRank,
+  );
+  const resolvedPlayerSupporterRank = normalizeRankValue(
+    playerLeaderboardEntry?.supporterRank ?? playerRankingSummary?.supporterRank,
+  );
+  const leaderboardMenuBadgeLabel = useMemo(() => {
+    if (resolvedPlayerRank == null) {
+      return null;
+    }
+    return `#${resolvedPlayerRank.toLocaleString('cs-CZ')}`;
+  }, [resolvedPlayerRank]);
   const incomingAttackAttentionCount = useMemo(
     () => armyIncomingMovements.filter((movement) => movement.commandType === 'attack').length,
     [armyIncomingMovements],
@@ -12703,23 +16628,6 @@ export const GamePage = () => {
       return Number.isFinite(createdAtMs) && createdAtMs > openedAtMs;
     }).length;
   }, [activityLastOpenedAt, activityUnreadCount, activityUnreadFeed]);
-  const menuInfoByType = useMemo<Partial<Record<StaticPanelType, string>>>(
-    () => ({
-      commands: `Útoky: ${incomingAttackAttentionCount.toLocaleString('cs-CZ')}`,
-      army: 'Stavba/Rekrut',
-      activity: `Záznamy: ${activityUnreadCount.toLocaleString('cs-CZ')}`,
-      messages: `Zprávy: ${communicationBadgeCount.toLocaleString('cs-CZ')}`,
-      rankings: `#${playerLeaderboardEntry?.rank?.toLocaleString('cs-CZ') ?? '?'}`,
-      profile: username,
-    }),
-    [
-      activityUnreadCount,
-      communicationBadgeCount,
-      incomingAttackAttentionCount,
-      playerLeaderboardEntry?.rank,
-      username,
-    ],
-  );
   const mapRegionSize = worldMapState?.size ?? gameState?.world.size ?? REGION_SIZE;
   const mapRegionOriginX = worldMapState?.originX ?? gameState?.world.originX ?? REGION_ORIGIN_X;
   const mapRegionOriginY = worldMapState?.originY ?? gameState?.world.originY ?? REGION_ORIGIN_Y;
@@ -12728,8 +16636,8 @@ export const GamePage = () => {
     () => worldMapState?.settlements ?? gameState?.world.settlements ?? REGION_SETTLEMENTS,
     [gameState?.world.settlements, worldMapState?.settlements],
   );
-  const isMapPanelExpanded = useMemo(
-    () => panels.some((panel) => panel.type === 'map' && panel.expanded),
+  const hasExpandedWorldMapConsumerPanel = useMemo(
+    () => panels.some((panel) => panel.expanded && WORLD_MAP_DEPENDENT_PANEL_TYPES.has(panel.type)),
     [panels],
   );
   const isReportsPanelExpanded = useMemo(
@@ -12738,6 +16646,26 @@ export const GamePage = () => {
   );
   const isActivityPanelExpanded = useMemo(
     () => panels.some((panel) => panel.type === 'activity' && panel.expanded),
+    [panels],
+  );
+  const hasExpandedLeaderboardConsumerPanel = useMemo(
+    () => panels.some((panel) => panel.expanded && LEADERBOARD_DEPENDENT_PANEL_TYPES.has(panel.type)),
+    [panels],
+  );
+  const hasExpandedKingdomHubConsumerPanel = useMemo(
+    () => panels.some((panel) => panel.expanded && KINGDOM_HUB_DEPENDENT_PANEL_TYPES.has(panel.type)),
+    [panels],
+  );
+  const hasExpandedResearchConsumerPanel = useMemo(
+    () => panels.some((panel) => panel.expanded && RESEARCH_DEPENDENT_PANEL_TYPES.has(panel.type)),
+    [panels],
+  );
+  const hasExpandedMercenaryConsumerPanel = useMemo(
+    () => panels.some((panel) => panel.expanded && MERCENARY_DEPENDENT_PANEL_TYPES.has(panel.type)),
+    [panels],
+  );
+  const hasExpandedMarketConsumerPanel = useMemo(
+    () => panels.some((panel) => panel.expanded && MARKET_DEPENDENT_PANEL_TYPES.has(panel.type)),
     [panels],
   );
   const isOwnSettlementForPlayer = useCallback(
@@ -12761,6 +16689,64 @@ export const GamePage = () => {
   );
 
   const buildingsById = useMemo(() => new Map(buildings.map((building) => [building.id, building])), [buildings]);
+  const cityPanelResourceSnapshot = useMemo<CityPanelResourceSnapshot>(
+    () => ({
+      wood: gameState?.resources.wood ?? 0,
+      stone: gameState?.resources.stone ?? 0,
+      iron: gameState?.resources.iron ?? 0,
+      gold: gameState?.resources.gold ?? 0,
+      coins: gameState?.resources.coins ?? 0,
+      cap: gameState?.resources.cap ?? 0,
+      goldCap: gameState?.resources.goldCap ?? 0,
+      coinsCap: gameState?.resources.coinsCap ?? 0,
+      populationUsed: gameState?.population.used ?? 0,
+      populationCap: gameState?.population.cap ?? 0,
+      productionPerHour: {
+        wood: gameState?.resources.productionPerHour.wood ?? 0,
+        stone: gameState?.resources.productionPerHour.stone ?? 0,
+        iron: gameState?.resources.productionPerHour.iron ?? 0,
+        gold: gameState?.resources.productionPerHour.gold ?? 0,
+        mintCoins: gameState?.resources.productionPerHour.mintCoins ?? 0,
+      },
+      protection: {
+        wood: gameState?.resources.protection.wood ?? 0,
+        stone: gameState?.resources.protection.stone ?? 0,
+        iron: gameState?.resources.protection.iron ?? 0,
+        gold: gameState?.resources.protection.gold ?? 0,
+        coins: gameState?.resources.protection.coins ?? 0,
+      },
+    }),
+    [
+      gameState?.population.cap,
+      gameState?.population.used,
+      gameState?.resources.cap,
+      gameState?.resources.coins,
+      gameState?.resources.coinsCap,
+      gameState?.resources.gold,
+      gameState?.resources.goldCap,
+      gameState?.resources.iron,
+      gameState?.resources.productionPerHour.gold,
+      gameState?.resources.productionPerHour.iron,
+      gameState?.resources.productionPerHour.mintCoins,
+      gameState?.resources.productionPerHour.stone,
+      gameState?.resources.productionPerHour.wood,
+      gameState?.resources.protection.coins,
+      gameState?.resources.protection.gold,
+      gameState?.resources.protection.iron,
+      gameState?.resources.protection.stone,
+      gameState?.resources.protection.wood,
+      gameState?.resources.stone,
+      gameState?.resources.wood,
+    ],
+  );
+  const cityPanelAvailableResources = useMemo<ResourceCost>(
+    () => ({
+      wood: gameState?.resources.wood ?? 0,
+      stone: gameState?.resources.stone ?? 0,
+      iron: gameState?.resources.iron ?? 0,
+    }),
+    [gameState?.resources.iron, gameState?.resources.stone, gameState?.resources.wood],
+  );
 
   const loadGameState = useCallback(
     async (silent = false, forceFresh = false) => {
@@ -12790,7 +16776,15 @@ export const GamePage = () => {
             activeVillageId,
             selectedWorldId,
             selectedSpawnDirection,
-            false,
+            {
+              includeWorldMap: false,
+              includeLeaderboard: hasExpandedLeaderboardConsumerPanel,
+              includeKingdomHub: hasExpandedKingdomHubConsumerPanel,
+              includeResearch: true,
+              includeMarket: hasExpandedMarketConsumerPanel,
+              includeMercenaries: hasExpandedMercenaryConsumerPanel,
+              includeRules: hasExpandedResearchConsumerPanel,
+            },
           );
           applyIncomingGameState(nextState);
         } catch (error) {
@@ -12816,7 +16810,20 @@ export const GamePage = () => {
         }
       }
     },
-    [activeVillageId, applyIncomingGameState, navigate, selectedSpawnDirection, selectedWorldId, session, username],
+    [
+      activeVillageId,
+      applyIncomingGameState,
+      navigate,
+      hasExpandedKingdomHubConsumerPanel,
+      hasExpandedLeaderboardConsumerPanel,
+      hasExpandedMarketConsumerPanel,
+      hasExpandedMercenaryConsumerPanel,
+      hasExpandedResearchConsumerPanel,
+      selectedSpawnDirection,
+      selectedWorldId,
+      session,
+      username,
+    ],
   );
 
   const loadWorldMapSnapshot = useCallback(
@@ -12838,9 +16845,9 @@ export const GamePage = () => {
             selectedSpawnDirection,
           );
           if (snapshot?.world) {
-            const worldMapSignature = JSON.stringify(snapshot.world);
-            if (latestAppliedWorldMapSignatureRef.current !== worldMapSignature) {
-              latestAppliedWorldMapSignatureRef.current = worldMapSignature;
+            const worldSnapshotKey = getWorldSnapshotVersion(snapshot.world);
+            if (worldSnapshotKey == null || latestAppliedWorldMapKeyRef.current !== worldSnapshotKey) {
+              latestAppliedWorldMapKeyRef.current = worldSnapshotKey;
               setWorldMapState(snapshot.world);
             }
           }
@@ -12864,6 +16871,70 @@ export const GamePage = () => {
     },
     [activeVillageId, selectedSpawnDirection, selectedWorldId, session, username],
   );
+
+  const loadBattleReportsSummary = useCallback(async () => {
+    if (!session || !selectedWorldId) {
+      return;
+    }
+    if (reportsSummaryRequestPromiseRef.current) {
+      return reportsSummaryRequestPromiseRef.current;
+    }
+
+    const requestPromise = (async () => {
+      try {
+        const summary = await fetchBattleReportsSummary(username, selectedWorldId);
+        setBattleReportsSummary({
+          total: Math.max(0, Number(summary.total ?? 0)),
+          updatedAt: String(summary.updatedAt ?? new Date().toISOString()),
+        });
+      } catch {
+        // Keep previous summary value when lightweight refresh fails.
+      }
+    })();
+
+    reportsSummaryRequestPromiseRef.current = requestPromise;
+
+    try {
+      await requestPromise;
+    } finally {
+      if (reportsSummaryRequestPromiseRef.current === requestPromise) {
+        reportsSummaryRequestPromiseRef.current = null;
+      }
+    }
+  }, [selectedWorldId, session, username]);
+
+  const loadActivitySummary = useCallback(async () => {
+    if (!session || !selectedWorldId) {
+      return;
+    }
+    if (activitySummaryRequestPromiseRef.current) {
+      return activitySummaryRequestPromiseRef.current;
+    }
+
+    const requestPromise = (async () => {
+      try {
+        const summary = await fetchGameActivitySummary(username, selectedWorldId);
+        setActivitySummary({
+          unreadTotal: Math.max(0, Number(summary.unreadTotal ?? 0)),
+          attentionTotal: Math.max(0, Number(summary.attentionTotal ?? 0)),
+          unreadFeed: Array.isArray(summary.unreadFeed) ? summary.unreadFeed : [],
+          updatedAt: String(summary.updatedAt ?? new Date().toISOString()),
+        });
+      } catch {
+        // Keep previous summary value when lightweight refresh fails.
+      }
+    })();
+
+    activitySummaryRequestPromiseRef.current = requestPromise;
+
+    try {
+      await requestPromise;
+    } finally {
+      if (activitySummaryRequestPromiseRef.current === requestPromise) {
+        activitySummaryRequestPromiseRef.current = null;
+      }
+    }
+  }, [selectedWorldId, session, username]);
 
   const loadBattleReports = useCallback(
     async (silent = false) => {
@@ -12924,41 +16995,6 @@ export const GamePage = () => {
     [battleReportsPage, selectedWorldId, session, username],
   );
 
-  const loadBattleReportsSummary = useCallback(
-    async (silent = true) => {
-      if (!session) {
-        return;
-      }
-      if (reportsSummaryRequestPromiseRef.current) {
-        return reportsSummaryRequestPromiseRef.current;
-      }
-
-      const requestPromise = (async () => {
-        try {
-          const summary = await fetchBattleReportsSummary(username, selectedWorldId);
-          setBattleReportsSummary(summary);
-          if (!silent) {
-            setBattleReportsError(null);
-          }
-        } catch (error) {
-          if (!silent) {
-            setBattleReportsError(getErrorMessage(error));
-          }
-        }
-      })();
-
-      reportsSummaryRequestPromiseRef.current = requestPromise;
-      try {
-        await requestPromise;
-      } finally {
-        if (reportsSummaryRequestPromiseRef.current === requestPromise) {
-          reportsSummaryRequestPromiseRef.current = null;
-        }
-      }
-    },
-    [selectedWorldId, session, username],
-  );
-
   const loadActivity = useCallback(
     async (silent = false) => {
       if (!session || !selectedWorldId) {
@@ -13012,41 +17048,6 @@ export const GamePage = () => {
     [activityIncludeArchived, activityPage, selectedWorldId, session, username],
   );
 
-  const loadActivitySummary = useCallback(
-    async (silent = true) => {
-      if (!session || !selectedWorldId) {
-        return;
-      }
-      if (activitySummaryRequestPromiseRef.current) {
-        return activitySummaryRequestPromiseRef.current;
-      }
-
-      const requestPromise = (async () => {
-        try {
-          const summary = await fetchGameActivitySummary(username, selectedWorldId);
-          setActivitySummary(summary);
-          if (!silent) {
-            setActivityError(null);
-          }
-        } catch (error) {
-          if (!silent) {
-            setActivityError(getErrorMessage(error));
-          }
-        }
-      })();
-
-      activitySummaryRequestPromiseRef.current = requestPromise;
-      try {
-        await requestPromise;
-      } finally {
-        if (activitySummaryRequestPromiseRef.current === requestPromise) {
-          activitySummaryRequestPromiseRef.current = null;
-        }
-      }
-    },
-    [selectedWorldId, session, username],
-  );
-
   useEffect(() => {
     if (!session) {
       navigate('/login', { replace: true });
@@ -13081,7 +17082,7 @@ export const GamePage = () => {
   }, [loadGameState, navigate, selectedWorldId, session]);
 
   useEffect(() => {
-    if (!session || !selectedWorldId) {
+    if (!session || !selectedWorldId || !hasExpandedWorldMapConsumerPanel) {
       return;
     }
 
@@ -13097,20 +17098,18 @@ export const GamePage = () => {
         void loadWorldMapSnapshot(true);
       }
     };
-
-    const intervalMs = isMapPanelExpanded ? MAP_OPEN_POLL_INTERVAL_MS : MAP_IDLE_POLL_INTERVAL_MS;
     void loadWorldMapSnapshot(true);
-    const worldMapTimer = window.setInterval(pollWorldMap, intervalMs);
+    const worldMapTimer = window.setInterval(pollWorldMap, MAP_OPEN_POLL_INTERVAL_MS);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.clearInterval(worldMapTimer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [isMapPanelExpanded, loadWorldMapSnapshot, selectedWorldId, session]);
+  }, [hasExpandedWorldMapConsumerPanel, loadWorldMapSnapshot, selectedWorldId, session]);
 
   useEffect(() => {
-    if (!session || !selectedWorldId) {
+    if (!session || !selectedWorldId || !isReportsPanelExpanded) {
       return;
     }
 
@@ -13118,40 +17117,27 @@ export const GamePage = () => {
       if (document.hidden || mutationPendingRef.current) {
         return;
       }
-      if (isReportsPanelExpanded) {
-        void loadBattleReports(true);
-      } else {
-        void loadBattleReportsSummary(true);
-      }
+      void loadBattleReports(true);
     };
 
     const handleVisibilityChange = () => {
       if (!document.hidden) {
-        if (isReportsPanelExpanded) {
-          void loadBattleReports(true);
-        } else {
-          void loadBattleReportsSummary(true);
-        }
+        void loadBattleReports(true);
       }
     };
 
-    if (isReportsPanelExpanded) {
-      void loadBattleReports(false);
-    } else {
-      void loadBattleReportsSummary(true);
-    }
-    const intervalMs = isReportsPanelExpanded ? REPORTS_POLL_INTERVAL_MS : REPORTS_IDLE_POLL_INTERVAL_MS;
-    const reportsTimer = window.setInterval(pollBattleReports, intervalMs);
+    void loadBattleReports(false);
+    const reportsTimer = window.setInterval(pollBattleReports, REPORTS_POLL_INTERVAL_MS);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.clearInterval(reportsTimer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [isReportsPanelExpanded, loadBattleReports, loadBattleReportsSummary, selectedWorldId, session]);
+  }, [isReportsPanelExpanded, loadBattleReports, selectedWorldId, session]);
 
   useEffect(() => {
-    if (!session || !selectedWorldId) {
+    if (!session || !selectedWorldId || !isActivityPanelExpanded) {
       return;
     }
 
@@ -13159,33 +17145,23 @@ export const GamePage = () => {
       if (document.hidden || mutationPendingRef.current) {
         return;
       }
-      if (isActivityPanelExpanded) {
-        if (activityActionPending) {
-          return;
-        }
-        void loadActivity(true);
-      } else {
-        void loadActivitySummary(true);
+      if (activityActionPending) {
+        return;
       }
+      void loadActivity(true);
     };
 
     const handleVisibilityChange = () => {
       if (!document.hidden) {
-        if (isActivityPanelExpanded) {
-          void loadActivity(true);
-        } else {
-          void loadActivitySummary(true);
+        if (activityActionPending) {
+          return;
         }
+        void loadActivity(true);
       }
     };
 
-    if (isActivityPanelExpanded) {
-      void loadActivity(false);
-    } else {
-      void loadActivitySummary(true);
-    }
-    const intervalMs = isActivityPanelExpanded ? REPORTS_POLL_INTERVAL_MS : ACTIVITY_IDLE_POLL_INTERVAL_MS;
-    const activityTimer = window.setInterval(pollActivity, intervalMs);
+    void loadActivity(false);
+    const activityTimer = window.setInterval(pollActivity, REPORTS_POLL_INTERVAL_MS);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
@@ -13196,6 +17172,73 @@ export const GamePage = () => {
     activityActionPending,
     isActivityPanelExpanded,
     loadActivity,
+    selectedWorldId,
+    session,
+  ]);
+
+  useEffect(() => {
+    if (!session || !selectedWorldId || isReportsPanelExpanded) {
+      return;
+    }
+
+    const pollBattleReportsSummary = () => {
+      if (document.hidden || mutationPendingRef.current) {
+        return;
+      }
+      void loadBattleReportsSummary();
+    };
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        void loadBattleReportsSummary();
+      }
+    };
+
+    void loadBattleReportsSummary();
+    const reportsSummaryTimer = window.setInterval(pollBattleReportsSummary, REPORTS_POLL_INTERVAL_MS);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(reportsSummaryTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isReportsPanelExpanded, loadBattleReportsSummary, selectedWorldId, session]);
+
+  useEffect(() => {
+    if (!session || !selectedWorldId || isActivityPanelExpanded) {
+      return;
+    }
+
+    const pollActivitySummary = () => {
+      if (document.hidden || mutationPendingRef.current) {
+        return;
+      }
+      if (activityActionPending) {
+        return;
+      }
+      void loadActivitySummary();
+    };
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        if (activityActionPending) {
+          return;
+        }
+        void loadActivitySummary();
+      }
+    };
+
+    void loadActivitySummary();
+    const activitySummaryTimer = window.setInterval(pollActivitySummary, REPORTS_POLL_INTERVAL_MS);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(activitySummaryTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [
+    activityActionPending,
+    isActivityPanelExpanded,
     loadActivitySummary,
     selectedWorldId,
     session,
@@ -13350,15 +17393,63 @@ export const GamePage = () => {
     if (!session) {
       return;
     }
+    const storageScope = normalizePanelStorageScope(selectedWorldId);
+    if (skipPanelLayoutSaveScopeRef.current === storageScope) {
+      skipPanelLayoutSaveScopeRef.current = null;
+      return;
+    }
 
     const timer = window.setTimeout(() => {
-      savePanelLayout(username, panels);
+      savePanelLayout(username, selectedWorldId, panels);
     }, 120);
 
     return () => {
       window.clearTimeout(timer);
     };
-  }, [panels, session, username]);
+  }, [panels, selectedWorldId, session, username]);
+
+  useEffect(() => {
+    setStoredPanelPlacement((previous) => {
+      let changed = false;
+      const next: StoredPanelPlacementByType = { ...previous };
+      for (const panel of panels) {
+        if (!isStaticPanelType(panel.type)) {
+          continue;
+        }
+        const resolvedLayoutMode: PanelLayoutMode =
+          panel.layoutMode === 'floating' && canPanelUseDockLayout(panel.type)
+            ? panel.side === 'right'
+              ? 'split-right'
+              : 'split-left'
+            : panel.layoutMode;
+        const current = next[panel.type];
+        if (
+          !current ||
+          current.side !== panel.side ||
+          current.layoutMode !== resolvedLayoutMode
+        ) {
+          next[panel.type] = {
+            side: panel.side,
+            layoutMode: resolvedLayoutMode,
+          };
+          changed = true;
+        }
+      }
+      return changed ? next : previous;
+    });
+  }, [panels]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    const storageScope = normalizePanelStorageScope(selectedWorldId);
+    if (skipPanelPlacementSaveScopeRef.current === storageScope) {
+      skipPanelPlacementSaveScopeRef.current = null;
+      return;
+    }
+    saveStoredPanelPlacement(username, selectedWorldId, storedPanelPlacement);
+  }, [selectedWorldId, session, storedPanelPlacement, username]);
 
   useEffect(() => {
     if (!session) {
@@ -13615,6 +17706,29 @@ export const GamePage = () => {
     },
     [activeVillageResolvedId],
   );
+  const syncOwnSettlementSelection = useCallback(
+    (settlement: RegionSettlement | null | undefined) => {
+      if (!settlement || !isOwnSettlementForPlayer(settlement)) {
+        return;
+      }
+      setSelectedOwnSettlementId(settlement.id);
+      saveLastOwnSettlementId(username, settlement.id);
+      if (settlement.villageId != null && Number.isFinite(Number(settlement.villageId))) {
+        applyActiveVillageSelection(Math.floor(Number(settlement.villageId)));
+      }
+    },
+    [applyActiveVillageSelection, isOwnSettlementForPlayer, username],
+  );
+  const syncVillagePanelSelectionById = useCallback(
+    (panelId: string) => {
+      const panel = panels.find((candidate) => candidate.id === panelId && candidate.type === 'village');
+      if (!panel?.settlementId) {
+        return;
+      }
+      syncOwnSettlementSelection(settlementsById.get(panel.settlementId));
+    },
+    [panels, settlementsById, syncOwnSettlementSelection],
+  );
 
   const closeVillageMenu = useCallback(() => {
     setVillageMenuOpen(false);
@@ -13628,9 +17742,13 @@ export const GamePage = () => {
     }
 
     const rect = trigger.getBoundingClientRect();
-    const width = Math.max(280, Math.floor(rect.width));
-    const safeLeft = clamp(Math.floor(rect.left), 8, Math.max(8, window.innerWidth - width - 8));
-    const safeTop = Math.floor(rect.bottom + 8);
+    const layoutContainer = (canvasRef.current?.closest('.game-layout-container') as HTMLElement | null) ?? null;
+    const layoutRect = layoutContainer?.getBoundingClientRect();
+    const viewportWidth = Math.max(320, Math.floor(layoutRect?.width ?? window.innerWidth));
+    const baseLeft = Math.floor(rect.left - (layoutRect?.left ?? 0));
+    const width = clamp(Math.max(280, Math.floor(rect.width)), 280, Math.max(280, viewportWidth - 16));
+    const safeLeft = clamp(baseLeft, 8, Math.max(8, viewportWidth - width - 8));
+    const safeTop = Math.floor(rect.bottom - (layoutRect?.top ?? 0) + 8);
 
     setVillageMenuPosition({
       left: safeLeft,
@@ -13725,21 +17843,24 @@ export const GamePage = () => {
     const leftPinNode = canvasNode?.querySelector('.pin-column.left') as HTMLElement | null;
     const rightPinNode = canvasNode?.querySelector('.pin-column.right') as HTMLElement | null;
     const pinClearance = 12;
+    const stageMarginX = 0;
+    const stageMarginTop = 0;
+    const stageMarginBottom = 0;
 
     const leftPinEnd = shouldReservePinColumnsSpace && leftPinNode
       ? Math.floor(leftPinNode.offsetLeft + leftPinNode.offsetWidth + pinClearance)
-      : 8;
+      : stageMarginX;
     const rightPinStart = shouldReservePinColumnsSpace && rightPinNode
       ? Math.floor(rightPinNode.offsetLeft - pinClearance)
-      : viewportWidth - PANEL_VIEWPORT_MARGIN_X;
+      : viewportWidth - stageMarginX;
     const availableLeft = clamp(
       leftPinEnd,
-      8,
-      Math.max(8, viewportWidth - PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH),
+      stageMarginX,
+      Math.max(stageMarginX, viewportWidth - PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH),
     );
     const maxRight = Math.max(
       availableLeft + PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
-      viewportWidth - PANEL_VIEWPORT_MARGIN_X,
+      viewportWidth - stageMarginX,
     );
     const availableRight = clamp(
       rightPinStart,
@@ -13749,19 +17870,19 @@ export const GamePage = () => {
 
     return {
       x: Math.round(availableLeft),
-      y: 12,
+      y: stageMarginTop,
       width: Math.round(
         clamp(
           availableRight - availableLeft,
           PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
-          viewportWidth - PANEL_VIEWPORT_MARGIN_X,
+          viewportWidth - stageMarginX,
         ),
       ),
       height: Math.round(
         clamp(
-          viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
+          viewportHeight - stageMarginTop - stageMarginBottom,
           PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT,
-          viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
+          viewportHeight - stageMarginTop - stageMarginBottom,
         ),
       ),
     };
@@ -13770,40 +17891,80 @@ export const GamePage = () => {
   const openPanel = useCallback((type: StaticPanelType) => {
     setActivePanelId(type);
     const { viewportWidth, viewportHeight } = getCanvasViewportSize();
+    const shouldSwitchMainMenuPage = isMainMenuPanelType(type);
+    const fallbackMainMenuFrame = shouldSwitchMainMenuPage
+      ? getStretchedPanelFrame(viewportWidth, viewportHeight)
+      : null;
     const panelVillageName =
       type === 'city' || type === 'map' || type === 'army' || type === 'commands'
         ? currentVillageName
         : undefined;
-    const shouldDefaultStretch = DEFAULT_STRETCHED_PANEL_TYPES.has(type);
     let nextMapSize: WindowSize | null = null;
 
     setPanels((previous) => {
+      const mainMenuFrame = shouldSwitchMainMenuPage
+        ? (() => {
+            const mapPanelFrame = previous.find((panel) => panel.type === 'map');
+            if (!mapPanelFrame) {
+              return fallbackMainMenuFrame;
+            }
+            return {
+              x: mapPanelFrame.x,
+              y: mapPanelFrame.y,
+              width: mapPanelFrame.width,
+              height: mapPanelFrame.height,
+            };
+          })()
+        : null;
       const existing = previous.find((panel) => panel.type === type);
       const nextZ = ++topZ.current;
+      const rememberedPlacement = storedPanelPlacement[type];
+      const requestedSide: PinSide = rememberedPlacement?.side ?? PANEL_META[type].side;
 
       if (existing) {
-        return previous.map((panel) => {
-          if (panel.type !== type) {
-            return panel;
+        const nextPanels = previous.map((panel) => {
+          if (panel.type === type) {
+            const adjusted = fitPanelToViewport(
+              {
+                ...panel,
+                z: nextZ,
+                expanded: true,
+                alert: false,
+                label: PANEL_META[type].label,
+                villageName: panelVillageName ?? panel.villageName,
+                side: requestedSide,
+                layoutMode: 'floating',
+                ...(mainMenuFrame ?? {}),
+              },
+              viewportWidth,
+              viewportHeight,
+            );
+            if (adjusted.type === 'map') {
+              nextMapSize = { width: adjusted.width, height: adjusted.height };
+            }
+            return adjusted;
           }
 
-          const adjusted = fitPanelToViewport(
-            {
-              ...panel,
-              z: nextZ,
-              expanded: true,
-              alert: false,
-              label: PANEL_META[type].label,
-              villageName: panelVillageName ?? panel.villageName,
-            },
-            viewportWidth,
-            viewportHeight,
-          );
-          if (adjusted.type === 'map') {
-            nextMapSize = { width: adjusted.width, height: adjusted.height };
+          if (shouldSwitchMainMenuPage && isMainMenuPanelType(panel.type)) {
+            if (panel.type === 'map') {
+              if (panel.expanded) {
+                return panel;
+              }
+              return {
+                ...panel,
+                expanded: true,
+              };
+            }
+            if (panel.type !== type && panel.expanded) {
+              return {
+                ...panel,
+                expanded: false,
+              };
+            }
           }
-          return adjusted;
+          return panel;
         });
+        return nextPanels;
       }
 
       const mapSizeOverride =
@@ -13825,31 +17986,75 @@ export const GamePage = () => {
       const created = fitPanelToViewport(
         createPanelWindow(type, nextZ, previous.length, {
           ...(mapSizeOverride ?? {}),
+          ...(mainMenuFrame ?? {}),
           villageName: panelVillageName,
+          side: requestedSide,
+          layoutMode: 'floating',
         }),
         viewportWidth,
         viewportHeight,
       );
-      const nextCreated = shouldDefaultStretch
-        ? fitPanelToViewport(
-            {
-              ...created,
-              ...getStretchedPanelFrame(viewportWidth, viewportHeight),
-            },
-            viewportWidth,
-            viewportHeight,
-          )
-        : created;
+      const nextCreated = created;
       if (nextCreated.type === 'map') {
         nextMapSize = { width: nextCreated.width, height: nextCreated.height };
       }
-      return [...previous, nextCreated];
+      const collapsedPrevious = shouldSwitchMainMenuPage
+        ? previous.map((panel) => {
+            if (!isMainMenuPanelType(panel.type)) {
+              return panel;
+            }
+            if (panel.type === 'map') {
+              if (panel.expanded) {
+                return panel;
+              }
+              return {
+                ...panel,
+                expanded: true,
+              };
+            }
+            if (!panel.expanded) {
+              return panel;
+            }
+            return {
+              ...panel,
+              expanded: false,
+            };
+          })
+        : previous;
+      return [...collapsedPrevious, nextCreated];
     });
 
     if (nextMapSize) {
       mapWindowSizeRef.current = nextMapSize;
       saveMapWindowSize(nextMapSize);
     }
+  }, [currentVillageName, getCanvasViewportSize, getStretchedPanelFrame, storedPanelPlacement]);
+
+  useEffect(() => {
+    const { viewportWidth, viewportHeight } = getCanvasViewportSize();
+    const stretchedFrame = getStretchedPanelFrame(viewportWidth, viewportHeight);
+    setPanels((previous) => {
+      if (previous.some((panel) => panel.type === 'map')) {
+        return previous;
+      }
+
+      const nextZ = ++topZ.current;
+      const createdMap = fitPanelToViewport(
+        createPanelWindow('map', nextZ, previous.length, {
+          ...stretchedFrame,
+          side: 'left',
+          layoutMode: 'floating',
+          villageName: currentVillageName,
+        }),
+        viewportWidth,
+        viewportHeight,
+      );
+      mapWindowSizeRef.current = {
+        width: createdMap.width,
+        height: createdMap.height,
+      };
+      return [createdMap, ...previous];
+    });
   }, [currentVillageName, getCanvasViewportSize, getStretchedPanelFrame]);
 
   useEffect(() => {
@@ -13867,7 +18072,7 @@ export const GamePage = () => {
     setPanels((previous) => {
       let changed = false;
       const nextPanels = previous.map((panel) => {
-        if (!DEFAULT_STRETCHED_PANEL_TYPES.has(panel.type as StaticPanelType)) {
+        if (panel.layoutMode !== 'floating' || !shouldUseStretchedPanelFrame(panel.type)) {
           return panel;
         }
 
@@ -13898,7 +18103,7 @@ export const GamePage = () => {
     setPanels((previous) => {
       let changed = false;
       const nextPanels = previous.map((panel) => {
-        if (!panel.expanded || !DEFAULT_STRETCHED_PANEL_TYPES.has(panel.type as StaticPanelType)) {
+        if (!panel.expanded || panel.layoutMode !== 'floating' || !shouldUseStretchedPanelFrame(panel.type)) {
           return panel;
         }
         const stretched = fitPanelToViewport(
@@ -13924,15 +18129,130 @@ export const GamePage = () => {
       mapWindowSizeRef.current = nextMapSize;
       saveMapWindowSize(nextMapSize);
     }
-  }, [arePinColumnsVisible, getCanvasViewportSize, getStretchedPanelFrame, shouldReservePinColumnsSpace]);
+  }, [
+    arePinColumnsVisible,
+    canvasViewportRevision,
+    getCanvasViewportSize,
+    getStretchedPanelFrame,
+    shouldReservePinColumnsSpace,
+  ]);
+
+  const loadVillageIntel = useCallback(
+    async (villageIdRaw: number, options?: { force?: boolean }) => {
+      const villageId = Math.max(0, Math.floor(Number(villageIdRaw)));
+      if (!Number.isFinite(villageId) || villageId <= 0) {
+        return;
+      }
+
+      if (!ownedVillageIdSet.has(villageId)) {
+        setVillageIntelByVillageId((previous) => ({
+          ...previous,
+          [villageId]: {
+            status: 'error',
+            data: previous[villageId]?.data ?? null,
+            error: 'Detail front je dostupný jen pro tvoje vlastní léna.',
+            fetchedAt: previous[villageId]?.fetchedAt ?? null,
+          },
+        }));
+        return;
+      }
+
+      const cached = villageIntelByVillageId[villageId];
+      const nowMs = Date.now();
+      if (
+        !options?.force &&
+        cached?.status === 'ready' &&
+        cached.fetchedAt != null &&
+        nowMs - cached.fetchedAt < 12_000
+      ) {
+        return;
+      }
+
+      const inFlight = villageIntelRequestByVillageIdRef.current[villageId];
+      if (inFlight) {
+        await inFlight;
+        return;
+      }
+
+      setVillageIntelByVillageId((previous) => ({
+        ...previous,
+        [villageId]: {
+          status: 'loading',
+          data: previous[villageId]?.data ?? null,
+          error: null,
+          fetchedAt: previous[villageId]?.fetchedAt ?? null,
+        },
+      }));
+
+      const request = (async () => {
+        try {
+          const response = await fetchGameState(
+            username,
+            villageId,
+            selectedWorldId,
+            selectedSpawnDirection,
+            {
+              includeWorldMap: false,
+              includeLeaderboard: false,
+              includeKingdomHub: false,
+              includeResearch: false,
+              includeMarket: false,
+              includeMercenaries: false,
+              includeRules: false,
+            },
+          );
+          const intelData = toVillageIntelData(response);
+          setVillageIntelByVillageId((previous) => ({
+            ...previous,
+            [villageId]: {
+              status: 'ready',
+              data: intelData,
+              error: null,
+              fetchedAt: Date.now(),
+            },
+          }));
+        } catch (error) {
+          setVillageIntelByVillageId((previous) => ({
+            ...previous,
+            [villageId]: {
+              status: 'error',
+              data: previous[villageId]?.data ?? null,
+              error: getErrorMessage(error),
+              fetchedAt: previous[villageId]?.fetchedAt ?? null,
+            },
+          }));
+        } finally {
+          villageIntelRequestByVillageIdRef.current[villageId] = null;
+        }
+      })();
+
+      villageIntelRequestByVillageIdRef.current[villageId] = request;
+      await request;
+    },
+    [ownedVillageIdSet, selectedSpawnDirection, selectedWorldId, username, villageIntelByVillageId],
+  );
+
+  const requestMapCenterOnSettlement = useCallback((settlementId: string | null | undefined) => {
+    const normalizedSettlementId = String(settlementId ?? '').trim();
+    if (!normalizedSettlementId) {
+      return;
+    }
+    setMapCenterRequest((previous) => ({
+      settlementId: normalizedSettlementId,
+      nonce: (previous?.nonce ?? 0) + 1,
+    }));
+  }, []);
+  const handleMapCenterRequestHandled = useCallback((nonce: number) => {
+    setMapCenterRequest((previous) => {
+      if (!previous || previous.nonce !== nonce) {
+        return previous;
+      }
+      return null;
+    });
+  }, []);
 
   const openSettlementPanel = useCallback(
     (settlement: RegionSettlement, options?: { pinSide?: PinSide }) => {
-      if (isOwnSettlementForPlayer(settlement)) {
-        setSelectedOwnSettlementId(settlement.id);
-        saveLastOwnSettlementId(username, settlement.id);
-      }
-
       const pinSide = options?.pinSide ?? null;
       const shouldPin = pinSide != null;
       const { viewportWidth, viewportHeight } = getCanvasViewportSize();
@@ -13940,6 +18260,17 @@ export const GamePage = () => {
       const label = `${settlement.name} (${settlement.globalX}|${settlement.globalY})`;
       const defaultSide: PinSide = settlement.kind === 'own' ? 'left' : 'right';
       const nextSide = pinSide ?? defaultSide;
+      const settlementVillageId =
+        settlement.villageId != null && Number.isFinite(Number(settlement.villageId))
+          ? Math.floor(Number(settlement.villageId))
+          : null;
+
+      syncOwnSettlementSelection(settlement);
+      requestMapCenterOnSettlement(settlement.id);
+
+      if (settlementVillageId != null && ownedVillageIdSet.has(settlementVillageId)) {
+        void loadVillageIntel(settlementVillageId);
+      }
 
       if (!shouldPin) {
         setActivePanelId(id);
@@ -13950,23 +18281,33 @@ export const GamePage = () => {
         const nextZ = ++topZ.current;
 
         if (existing) {
-          return previous.map((panel) =>
-            panel.id === id
-              ? fitPanelToViewport(
-                  {
-                    ...panel,
-                    z: nextZ,
-                    settlementId: settlement.id,
-                    label,
-                    side: nextSide,
-                    expanded: !shouldPin,
-                    alert: false,
-                  },
-                  viewportWidth,
-                  viewportHeight,
-                )
-              : panel,
-          );
+          return previous.map((panel) => {
+            if (panel.id === id) {
+              return fitPanelToViewport(
+                {
+                  ...panel,
+                  z: nextZ,
+                  settlementId: settlement.id,
+                  label,
+                  side: nextSide,
+                  width: 920,
+                  height: 380,
+                  expanded: !shouldPin,
+                  alert: false,
+                  layoutMode: 'floating',
+                },
+                viewportWidth,
+                viewportHeight,
+              );
+            }
+            if (!shouldPin && panel.type === 'village' && panel.expanded) {
+              return {
+                ...panel,
+                expanded: false,
+              };
+            }
+            return panel;
+          });
         }
 
         const baseCreated = createPanelWindow('village', nextZ, previous.length, {
@@ -13974,8 +18315,8 @@ export const GamePage = () => {
           settlementId: settlement.id,
           label,
           side: nextSide,
-          width: 520,
-          height: 460,
+          width: 920,
+          height: 380,
         });
 
         const created = fitPanelToViewport(
@@ -13984,15 +18325,33 @@ export const GamePage = () => {
             side: nextSide,
             expanded: !shouldPin,
             alert: false,
+            layoutMode: 'floating',
           },
           viewportWidth,
           viewportHeight,
         );
 
-        return [...previous, created];
+        const collapsedVillagePanels = shouldPin
+          ? previous
+          : previous.map((panel) =>
+              panel.type === 'village' && panel.expanded
+                ? {
+                    ...panel,
+                    expanded: false,
+                  }
+                : panel,
+            );
+
+        return [...collapsedVillagePanels, created];
       });
     },
-    [getCanvasViewportSize, isOwnSettlementForPlayer, username],
+    [
+      getCanvasViewportSize,
+      loadVillageIntel,
+      ownedVillageIdSet,
+      requestMapCenterOnSettlement,
+      syncOwnSettlementSelection,
+    ],
   );
 
   const pinSettlementPanelToSide = useCallback(
@@ -14264,23 +18623,13 @@ export const GamePage = () => {
     });
   }, [ensurePlayerAvatarLoaded, getCanvasViewportSize]);
 
-  const handleResourceCardClick = useCallback(
-    (resource: ResourceStock) => {
-      const building = buildingsById.get(resource.buildingId);
-      if (!building) {
-        return;
-      }
-      openBuildingPanel(building);
-    },
-    [buildingsById, openBuildingPanel],
-  );
-
   const handleResearchSpotlightClick = useCallback(() => {
     openPanel('research');
   }, [openPanel]);
 
   const focusPanel = (id: string) => {
     setActivePanelId(id);
+    syncVillagePanelSelectionById(id);
     setPanels((previous) => {
       const target = previous.find((panel) => panel.id === id);
       if (!target) {
@@ -14300,6 +18649,7 @@ export const GamePage = () => {
   const togglePanelVisibility = (id: string) => {
     const { viewportWidth, viewportHeight } = getCanvasViewportSize();
     let nextMapSize: WindowSize | null = null;
+    syncVillagePanelSelectionById(id);
 
     setPanels((previous) => {
       const target = previous.find((panel) => panel.id === id);
@@ -14308,15 +18658,27 @@ export const GamePage = () => {
       }
 
       const nextZ = target.expanded ? target.z : ++topZ.current;
-
-      return previous.map((panel) => {
+      const nextExpandedState = !target.expanded;
+      const nextPanels = previous.map((panel) => {
+        if (
+          target.type === 'village' &&
+          nextExpandedState &&
+          panel.type === 'village' &&
+          panel.id !== id &&
+          panel.expanded
+        ) {
+          return {
+            ...panel,
+            expanded: false,
+          };
+        }
         if (panel.id !== id) {
           return panel;
         }
 
         const toggled: PanelWindow = {
           ...panel,
-          expanded: !panel.expanded,
+          expanded: nextExpandedState,
           z: nextZ,
           alert: false,
         };
@@ -14331,6 +18693,8 @@ export const GamePage = () => {
         }
         return adjusted;
       });
+
+      return nextPanels;
     });
 
     if (nextMapSize) {
@@ -14340,19 +18704,30 @@ export const GamePage = () => {
   };
 
   const closePanel = useCallback((id: string) => {
-    setActivePanelId((previous) => (previous === id ? null : previous));
-    setPanels((previous) => previous.filter((panel) => panel.id !== id));
+    setPanels((previous) => {
+      const target = previous.find((panel) => panel.id === id);
+      if (!target || target.type === 'map') {
+        return previous;
+      }
+
+      setActivePanelId((activeId) => (activeId === id ? null : activeId));
+      return previous.filter((panel) => panel.id !== id);
+    });
   }, []);
 
   const closePinnedPanelsOnSide = useCallback((side: PinSide) => {
     setPanels((previous) => {
-      const removedPanelIds = previous.filter((panel) => panel.side === side).map((panel) => panel.id);
+      const removedPanelIds = previous
+        .filter((panel) => canPanelUsePinColumns(panel.type) && panel.type !== 'map' && panel.side === side)
+        .map((panel) => panel.id);
       if (removedPanelIds.length <= 0) {
         return previous;
       }
       const removedSet = new Set(removedPanelIds);
       setActivePanelId((activeId) => (activeId != null && removedSet.has(activeId) ? null : activeId));
-      return previous.filter((panel) => panel.side !== side);
+      return previous.filter(
+        (panel) => !(canPanelUsePinColumns(panel.type) && panel.type !== 'map' && panel.side === side),
+      );
     });
   }, []);
 
@@ -14364,103 +18739,96 @@ export const GamePage = () => {
     setIsPinColumnsTemporarilyHidden((previous) => !previous);
   }, [autoHidePinColumns]);
 
-  const stretchPanelToViewport = useCallback(
-    (id: string) => {
-      const canvasNode = canvasRef.current;
-      const { viewportWidth, viewportHeight } = getCanvasViewportSize();
-      let nextMapSize: WindowSize | null = null;
-
-      const leftPinNode = canvasNode?.querySelector('.pin-column.left') as HTMLElement | null;
-      const rightPinNode = canvasNode?.querySelector('.pin-column.right') as HTMLElement | null;
-      const pinClearance = 12;
-
-      const leftPinEnd = shouldReservePinColumnsSpace && leftPinNode
-        ? Math.floor(leftPinNode.offsetLeft + leftPinNode.offsetWidth + pinClearance)
-        : 8;
-      const rightPinStart = shouldReservePinColumnsSpace && rightPinNode
-        ? Math.floor(rightPinNode.offsetLeft - pinClearance)
-        : viewportWidth - PANEL_VIEWPORT_MARGIN_X;
-
-      setPanels((previous) => {
-        let changed = false;
-        const nextPanels = previous.map((panel) => {
-          if (panel.id !== id || !isStretchablePanelType(panel.type)) {
-            return panel;
-          }
-
-          const availableLeft = clamp(
-            leftPinEnd,
-            8,
-            Math.max(8, viewportWidth - PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH),
-          );
-          const maxRight = Math.max(
-            availableLeft + PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
-            viewportWidth - PANEL_VIEWPORT_MARGIN_X,
-          );
-          const availableRight = clamp(
-            rightPinStart,
-            availableLeft + PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
-            maxRight,
-          );
-          const stretchedWidth = clamp(
-            availableRight - availableLeft,
-            PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
-            viewportWidth - PANEL_VIEWPORT_MARGIN_X,
-          );
-          const stretchedHeight = clamp(
-            viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
-            PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT,
-            viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
-          );
-
-          const adjusted: PanelWindow = {
-            ...panel,
-            x: availableLeft,
-            y: 12,
-            width: stretchedWidth,
-            height: stretchedHeight,
-          };
-
-          if (
-            adjusted.x === panel.x &&
-            adjusted.y === panel.y &&
-            adjusted.width === panel.width &&
-            adjusted.height === panel.height
-          ) {
-            return panel;
-          }
-
-          changed = true;
-          if (panel.type === 'map') {
-            nextMapSize = { width: adjusted.width, height: adjusted.height };
-          }
-          return adjusted;
-        });
-
-        return changed ? nextPanels : previous;
-      });
-
-      if (nextMapSize) {
-        mapWindowSizeRef.current = nextMapSize;
-        saveMapWindowSize(nextMapSize);
-      }
-    },
-    [getCanvasViewportSize, shouldReservePinColumnsSpace],
-  );
-
   const closePanelOnMiddleClick = (
     event: ReactMouseEvent<HTMLElement>,
     panelId: string,
   ): boolean => {
-    if (event.button !== 1) {
-      return false;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    closePanel(panelId);
-    return true;
+    void event;
+    void panelId;
+    return false;
   };
+
+  const setPanelDockLayoutMode = useCallback(
+    (id: string, nextMode: Extract<PanelLayoutMode, 'full' | 'split-left' | 'split-right'>) => {
+      if (nextMode === 'full') {
+        setActivePanelId(id);
+      }
+
+      setPanels((previous) => {
+        const target = previous.find((panel) => panel.id === id);
+        if (!target || !target.expanded || !canPanelUseDockLayout(target.type)) {
+          return previous;
+        }
+
+        if (nextMode === 'full') {
+          return moveDockPanelToCenterStage(previous, id);
+        }
+
+        const hasChanged = (left: PanelWindow, right: PanelWindow): boolean =>
+          left.layoutMode !== right.layoutMode ||
+          left.expanded !== right.expanded ||
+          left.alert !== right.alert ||
+          left.side !== right.side;
+
+        let changed = false;
+        const nextPanels = previous.map((panel) => {
+          if (panel.id === id) {
+            const updated = {
+              ...panel,
+              layoutMode: nextMode,
+              expanded: true,
+              alert: false,
+              side:
+                nextMode === 'split-left'
+                  ? ('left' as PinSide)
+                  : nextMode === 'split-right'
+                    ? ('right' as PinSide)
+                    : panel.side,
+            };
+            changed = changed || hasChanged(panel, updated);
+            return updated;
+          }
+
+          if (!panel.expanded || !canPanelUseDockLayout(panel.type)) {
+            return panel;
+          }
+
+          if (panel.layoutMode === 'full') {
+            const oppositeMode: Extract<PanelLayoutMode, 'split-left' | 'split-right'> =
+              nextMode === 'split-left' ? 'split-right' : 'split-left';
+            const updated = {
+              ...panel,
+              layoutMode: oppositeMode,
+              side: oppositeMode === 'split-left' ? ('left' as PinSide) : ('right' as PinSide),
+            };
+            changed = changed || hasChanged(panel, updated);
+            return updated;
+          }
+
+          return panel;
+        });
+
+        return changed ? nextPanels : previous;
+      });
+    },
+    [],
+  );
+
+  const activateDockTab = useCallback((id: string) => {
+    setActivePanelId(id);
+    setPanels((previous) => {
+      const target = previous.find((panel) => panel.id === id);
+      if (!target || !target.expanded || !canPanelUseDockLayout(target.type)) {
+        return previous;
+      }
+
+      if (!target.alert) {
+        return previous;
+      }
+
+      return previous.map((panel) => (panel.id === id ? { ...panel, alert: false } : panel));
+    });
+  }, []);
 
   const switchSide = useCallback((id: string) => {
     setPanels((previous) =>
@@ -14483,12 +18851,16 @@ export const GamePage = () => {
         if (panel.id !== id) {
           return panel;
         }
+        if (!canPanelUsePinColumns(panel.type)) {
+          return panel;
+        }
 
         return {
           ...panel,
           side,
           expanded: false,
           alert: false,
+          layoutMode: 'floating',
         };
       }),
     );
@@ -15112,34 +19484,38 @@ export const GamePage = () => {
     [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
   );
 
-  const handleHireMercenaries = useCallback(async () => {
-    setMercenaryActionPending(true);
-    setResearchNotice(null);
-    try {
-      const response = await hireMercenaryContractRequest(
-        username,
-        gameState?.village.id ?? activeVillageId,
-        selectedWorldId,
-      );
-      applyIncomingGameState(response.data);
-      setResearchNotice(
-        `Žoldáci najati. Dorazí za 30 minut do ${new Date(response.result.arriveAt).toLocaleString('cs-CZ')}.`,
-      );
-      void loadGameState(true, true);
-    } catch (error) {
-      setResearchNotice(getErrorMessage(error));
-    } finally {
-      setMercenaryActionPending(false);
-    }
-  }, [
-    activeVillageId,
-    applyIncomingGameState,
-    gameState?.village.id,
-    loadGameState,
-    selectedSpawnDirection,
-    selectedWorldId,
-    username,
-  ]);
+  const handleHireMercenaries = useCallback(
+    async (targetVillageIdRaw: number) => {
+      const targetVillageId = Math.max(0, Math.floor(Number(targetVillageIdRaw ?? 0)));
+      if (!targetVillageId) {
+        setResearchNotice('Vyber léno, kde chceš žoldáky najmout.');
+        return;
+      }
+      setMercenaryActionPending(true);
+      setResearchNotice(null);
+      try {
+        const response = await hireMercenaryContractRequest(
+          username,
+          targetVillageId,
+          selectedWorldId,
+        );
+        const activeVillageForView = Number(gameState?.village.id ?? activeVillageId);
+        if (targetVillageId === activeVillageForView) {
+          applyIncomingGameState(response.data);
+        }
+        const villageLabel = String(response.result.villageName ?? `Léno #${targetVillageId}`);
+        setResearchNotice(
+          `Žoldáci najati v lénu ${villageLabel}. Dorazí ${new Date(response.result.arriveAt).toLocaleString('cs-CZ')}.`,
+        );
+        void loadGameState(true, true);
+      } catch (error) {
+        setResearchNotice(getErrorMessage(error));
+      } finally {
+        setMercenaryActionPending(false);
+      }
+    },
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
+  );
 
   const handleSendMarketLogistics = useCallback(
     async (payload: { targetVillageId: number; wood: number; stone: number; iron: number }) => {
@@ -15311,6 +19687,31 @@ export const GamePage = () => {
     ],
   );
 
+  const openVillageRenameInline = useCallback(() => {
+    if (renameVillagePending || !gameState) {
+      return;
+    }
+    setVillageRenameDraft(activeVillageBaseName);
+    setVillageRenameNotice(null);
+    setIsVillageRenameOpen(true);
+  }, [activeVillageBaseName, gameState, renameVillagePending]);
+
+  const submitVillageRenameInline = useCallback(async () => {
+    if (renameVillagePending) {
+      return;
+    }
+    const notice = await handleRenameVillage(villageRenameDraft);
+    setVillageRenameNotice(notice);
+    const normalizedNotice = notice.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+    const isSuccessfulRename =
+      normalizedNotice.includes('premenovano') || normalizedNotice.includes('beze zmeny');
+    if (!isSuccessfulRename) {
+      return;
+    }
+    setIsVillageRenameOpen(false);
+    setVillageRenameDraft(activeVillageBaseName);
+  }, [activeVillageBaseName, handleRenameVillage, renameVillagePending, villageRenameDraft]);
+
   const handleUpgradeBuildingInVillage = useCallback(
     async (villageIdRaw: number, buildingIdRaw: string): Promise<string> => {
       const villageId = Math.max(0, Math.floor(Number(villageIdRaw)));
@@ -15364,45 +19765,307 @@ export const GamePage = () => {
   }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username]);
 
   const handleCancelBuildingUpgrade = useCallback(
-    async (upgradeOrderId: number, buildingId: string) => {
+    async (
+      upgradeOrderId: number,
+      buildingId: string,
+      requestedVillageIdRaw?: number | null,
+    ): Promise<string> => {
       if (!Number.isFinite(upgradeOrderId) || upgradeOrderId <= 0) {
-        return;
+        return 'Neplatná položka stavební fronty.';
       }
+      if (cancelUpgradeQueuePending || reorderUpgradePendingOrderId != null) {
+        return 'Fronta se právě upravuje. Zkus to znovu za okamžik.';
+      }
+      const currentVillageId = gameState?.village.id ?? activeVillageId;
+      const requestedVillageId =
+        requestedVillageIdRaw == null || String(requestedVillageIdRaw).trim() === ''
+          ? Number(currentVillageId ?? 0)
+          : Math.max(0, Math.floor(Number(requestedVillageIdRaw)));
+      if (!Number.isFinite(requestedVillageId) || requestedVillageId <= 0) {
+        return 'Neplatné léno pro rušení stavby.';
+      }
+      const isCurrentVillageTarget =
+        currentVillageId != null && Number.isFinite(Number(currentVillageId))
+          ? Number(currentVillageId) === requestedVillageId
+          : false;
 
       setCancelUpgradePendingOrderId(upgradeOrderId);
-      setBuildingNotices((previous) => ({
-        ...previous,
-        [buildingId]: '',
-      }));
+      if (isCurrentVillageTarget) {
+        setBuildingNotices((previous) => ({
+          ...previous,
+          [buildingId]: '',
+        }));
+      }
 
       try {
         const response = await cancelBuildingUpgradeRequest(
           username,
           upgradeOrderId,
-          gameState?.village.id ?? activeVillageId,
+          requestedVillageId,
           selectedWorldId,
         );
-        applyIncomingGameState(response.data);
         const canceledCount = Number(response.result.canceledCount ?? 1);
         const cancelSuffix =
           canceledCount > 1
             ? ` Z fronty bylo odstraněno ${canceledCount.toLocaleString('cs-CZ')} navazujících upgradu.`
             : '';
-        setBuildingNotices((previous) => ({
-          ...previous,
-          [buildingId]: `Upgrade zrušen, vráceno ${formatResourceBundleLabel(response.result.refunded)}.${cancelSuffix}`,
-        }));
-        void loadGameState(true, true);
+        const notice = `Upgrade zrušen, vráceno ${formatResourceBundleLabel(response.result.refunded)}.${cancelSuffix}`;
+        if (isCurrentVillageTarget) {
+          applyIncomingGameState(response.data);
+          setBuildingNotices((previous) => ({
+            ...previous,
+            [buildingId]: notice,
+          }));
+          void loadGameState(true, true);
+        } else {
+          const nextIntelData = toVillageIntelData(response.data);
+          setVillageIntelByVillageId((previous) => ({
+            ...previous,
+            [requestedVillageId]: {
+              status: 'ready',
+              data: nextIntelData,
+              error: null,
+              fetchedAt: Date.now(),
+            },
+          }));
+        }
+        return notice;
       } catch (error) {
-        setBuildingNotices((previous) => ({
-          ...previous,
-          [buildingId]: getErrorMessage(error),
-        }));
+        const errorMessage = getErrorMessage(error);
+        if (isCurrentVillageTarget) {
+          setBuildingNotices((previous) => ({
+            ...previous,
+            [buildingId]: errorMessage,
+          }));
+        }
+        return errorMessage;
       } finally {
         setCancelUpgradePendingOrderId(null);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
+    [
+      activeVillageId,
+      applyIncomingGameState,
+      cancelUpgradeQueuePending,
+      gameState?.village.id,
+      loadGameState,
+      reorderUpgradePendingOrderId,
+      selectedWorldId,
+      username,
+    ],
+  );
+
+  const handleCancelAllBuildingUpgrades = useCallback(
+    async (requestedVillageIdRaw?: number | null): Promise<string> => {
+      if (cancelUpgradePendingOrderId != null || reorderUpgradePendingOrderId != null || cancelUpgradeQueuePending) {
+        return 'Fronta se právě upravuje. Zkus to znovu za okamžik.';
+      }
+      const queuedUpgrades = gameState?.activeUpgrades ?? [];
+      if (queuedUpgrades.length <= 0) {
+        return 'Stavební fronta je již prázdná.';
+      }
+
+      if (typeof window !== 'undefined') {
+        const shouldCancelQueue = window.confirm(
+          'Opravdu chceš ukončit celou stavební frontu? Zruší se všechny aktivní i čekající upgrady.',
+        );
+        if (!shouldCancelQueue) {
+          return 'Ukončení fronty bylo zrušeno.';
+        }
+      }
+
+      const currentVillageId = gameState?.village.id ?? activeVillageId;
+      const requestedVillageId =
+        requestedVillageIdRaw == null || String(requestedVillageIdRaw).trim() === ''
+          ? Number(currentVillageId ?? 0)
+          : Math.max(0, Math.floor(Number(requestedVillageIdRaw)));
+      if (!Number.isFinite(requestedVillageId) || requestedVillageId <= 0) {
+        return 'Neplatné léno pro ukončení stavební fronty.';
+      }
+      const isCurrentVillageTarget =
+        currentVillageId != null && Number.isFinite(Number(currentVillageId))
+          ? Number(currentVillageId) === requestedVillageId
+          : false;
+      const queuedBuildingIds = [
+        ...new Set(queuedUpgrades.map((upgrade) => String(upgrade.buildingId))),
+      ].filter((buildingId) => buildingId.trim() !== '');
+
+      setCancelUpgradeQueuePending(true);
+      if (isCurrentVillageTarget) {
+        setBuildingNotices((previous) => {
+          const next = { ...previous };
+          for (const buildingId of queuedBuildingIds) {
+            next[buildingId] = '';
+          }
+          return next;
+        });
+      }
+
+      try {
+        const response = await cancelAllBuildingUpgradesRequest(username, requestedVillageId, selectedWorldId);
+        const canceledCount = Math.max(0, Math.floor(Number(response.result.canceledCount ?? 0)));
+        const notice =
+          canceledCount <= 0
+            ? 'Stavební fronta je již prázdná.'
+            : `Stavební fronta ukončena. Zrušeno ${canceledCount.toLocaleString('cs-CZ')} položek, vráceno ${formatResourceBundleLabel(response.result.refunded)}.`;
+
+        if (isCurrentVillageTarget) {
+          applyIncomingGameState(response.data);
+          setBuildingNotices((previous) => {
+            const next = { ...previous };
+            for (const buildingId of queuedBuildingIds) {
+              next[buildingId] = notice;
+            }
+            return next;
+          });
+          void loadGameState(true, true);
+        } else {
+          const nextIntelData = toVillageIntelData(response.data);
+          setVillageIntelByVillageId((previous) => ({
+            ...previous,
+            [requestedVillageId]: {
+              status: 'ready',
+              data: nextIntelData,
+              error: null,
+              fetchedAt: Date.now(),
+            },
+          }));
+        }
+        return notice;
+      } catch (error) {
+        const errorMessage = getErrorMessage(error);
+        if (isCurrentVillageTarget) {
+          setBuildingNotices((previous) => {
+            const next = { ...previous };
+            for (const buildingId of queuedBuildingIds) {
+              next[buildingId] = errorMessage;
+            }
+            return next;
+          });
+        }
+        return errorMessage;
+      } finally {
+        setCancelUpgradeQueuePending(false);
+      }
+    },
+    [
+      activeVillageId,
+      applyIncomingGameState,
+      cancelUpgradePendingOrderId,
+      cancelUpgradeQueuePending,
+      gameState?.activeUpgrades,
+      gameState?.village.id,
+      loadGameState,
+      reorderUpgradePendingOrderId,
+      selectedWorldId,
+      username,
+    ],
+  );
+
+  const handleReorderBuildingUpgrade = useCallback(
+    async (
+      upgradeOrderId: number,
+      targetIndexRaw: number,
+      requestedVillageIdRaw?: number | null,
+    ): Promise<string> => {
+      if (!Number.isFinite(upgradeOrderId) || upgradeOrderId <= 0) {
+        return 'Neplatná položka stavební fronty.';
+      }
+      if (!Number.isFinite(targetIndexRaw) || targetIndexRaw <= 0) {
+        return 'Neplatná cílová pozice fronty.';
+      }
+      if (cancelUpgradePendingOrderId != null || cancelUpgradeQueuePending || reorderUpgradePendingOrderId != null) {
+        return 'Fronta se právě upravuje. Zkus to znovu za okamžik.';
+      }
+
+      const currentVillageId = gameState?.village.id ?? activeVillageId;
+      const requestedVillageId =
+        requestedVillageIdRaw == null || String(requestedVillageIdRaw).trim() === ''
+          ? Number(currentVillageId ?? 0)
+          : Math.max(0, Math.floor(Number(requestedVillageIdRaw)));
+      if (!Number.isFinite(requestedVillageId) || requestedVillageId <= 0) {
+        return 'Neplatné léno pro přesun ve stavební frontě.';
+      }
+      const isCurrentVillageTarget =
+        currentVillageId != null && Number.isFinite(Number(currentVillageId))
+          ? Number(currentVillageId) === requestedVillageId
+          : false;
+      const targetIndex = Math.max(1, Math.floor(targetIndexRaw));
+      const movedUpgrade = (gameState?.activeUpgrades ?? []).find(
+        (upgrade) => Number(upgrade.id) === Math.floor(upgradeOrderId),
+      );
+      const movedBuildingId = movedUpgrade ? String(movedUpgrade.buildingId) : null;
+
+      setReorderUpgradePendingOrderId(Math.floor(upgradeOrderId));
+      if (isCurrentVillageTarget && movedBuildingId) {
+        setBuildingNotices((previous) => ({
+          ...previous,
+          [movedBuildingId]: '',
+        }));
+      }
+
+      try {
+        const response = await reorderBuildingUpgradeQueueRequest(
+          username,
+          Math.floor(upgradeOrderId),
+          targetIndex,
+          requestedVillageId,
+          selectedWorldId,
+        );
+        const fromDisplay = Number(response.result.fromIndex) + 1;
+        const toDisplay = Number(response.result.toIndex) + 1;
+        const notice =
+          response.result.moved === false
+            ? 'Pořadí stavební fronty zůstalo beze změny.'
+            : `Pořadí fronty upraveno: #${fromDisplay.toLocaleString('cs-CZ')} → #${toDisplay.toLocaleString('cs-CZ')}.`;
+
+        if (isCurrentVillageTarget) {
+          applyIncomingGameState(response.data);
+          if (movedBuildingId) {
+            setBuildingNotices((previous) => ({
+              ...previous,
+              [movedBuildingId]: notice,
+            }));
+          }
+          void loadGameState(true, true);
+        } else {
+          const nextIntelData = toVillageIntelData(response.data);
+          setVillageIntelByVillageId((previous) => ({
+            ...previous,
+            [requestedVillageId]: {
+              status: 'ready',
+              data: nextIntelData,
+              error: null,
+              fetchedAt: Date.now(),
+            },
+          }));
+        }
+        return notice;
+      } catch (error) {
+        const errorMessage = getErrorMessage(error);
+        if (isCurrentVillageTarget && movedBuildingId) {
+          setBuildingNotices((previous) => ({
+            ...previous,
+            [movedBuildingId]: errorMessage,
+          }));
+        }
+        return errorMessage;
+      } finally {
+        setReorderUpgradePendingOrderId(null);
+      }
+    },
+    [
+      activeVillageId,
+      applyIncomingGameState,
+      cancelUpgradePendingOrderId,
+      cancelUpgradeQueuePending,
+      gameState?.activeUpgrades,
+      gameState?.village.id,
+      loadGameState,
+      reorderUpgradePendingOrderId,
+      selectedWorldId,
+      username,
+    ],
   );
 
   const handleCreateKingdom = useCallback(
@@ -15649,7 +20312,8 @@ export const GamePage = () => {
 
   const handleShortcutResetAll = useCallback(() => {
     setShortcutCustomBindings({});
-    setShortcutNotice('Všechny vlastní zkratky byly vráceny na výchozí nastavení.');
+    setMapPreviewTravelModifier(DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER);
+    setShortcutNotice('Všechny vlastní zkratky včetně mapového modifikátoru byly vráceny na výchozí nastavení.');
   }, []);
 
   const handleAutoHidePinColumnsChange = useCallback((enabled: boolean) => {
@@ -15661,6 +20325,28 @@ export const GamePage = () => {
         ? 'Mizející režim aktivní. Pin sloupce jsou skryté a zobrazují se jako overlay.'
         : 'Mizející režim vypnut. Pin sloupce jsou opět statické.',
     );
+  }, []);
+
+  const handleMapPreviewTravelModifierChange = useCallback((modifier: MapPreviewTravelModifierKey) => {
+    const normalizedModifier = normalizeMapPreviewTravelModifier(modifier);
+    setMapPreviewTravelModifier(normalizedModifier);
+    const label =
+      MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS.find((item) => item.value === normalizedModifier)?.label ??
+      DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER.toUpperCase();
+    setShortcutNotice(`Mapa: časy přesunu zobrazíš podržením ${label}.`);
+  }, []);
+
+  const handleSettlementColorChange = useCallback((colorKey: SettlementColorKey, color: string) => {
+    setSettlementColorPalette((previous) => ({
+      ...previous,
+      [colorKey]: normalizeHexColor(color, previous[colorKey]),
+    }));
+    setSettingsNotice(null);
+  }, []);
+
+  const handleResetSettlementColors = useCallback(() => {
+    setSettlementColorPalette({ ...DEFAULT_SETTLEMENT_COLOR_PALETTE });
+    setSettingsNotice('Barevná paleta lén byla vrácena na výchozí RPG nastavení.');
   }, []);
 
   const handleSaveAvatar = useCallback(
@@ -15743,6 +20429,75 @@ export const GamePage = () => {
     [navigate],
   );
 
+  const loadBattleReportById = useCallback(
+    async (reportId: number): Promise<BattleReportItem | null> => {
+      if (!session || !selectedWorldId) {
+        return null;
+      }
+
+      const numericReportId = Math.floor(Number(reportId));
+      if (!Number.isFinite(numericReportId) || numericReportId <= 0) {
+        return null;
+      }
+
+      const cachedReport = battleReportsById.get(numericReportId) ?? null;
+      if (cachedReport) {
+        return cachedReport;
+      }
+
+      const pendingRequest = battleReportDetailRequestByIdRef.current[numericReportId];
+      if (pendingRequest) {
+        return pendingRequest;
+      }
+
+      const requestScopeKey = battleReportScopeKeyRef.current;
+      const requestState: { promise: Promise<BattleReportItem | null> | null } = { promise: null };
+      const requestPromise: Promise<BattleReportItem | null> = (async () => {
+        setBattleReportPendingById((previous) => ({
+          ...previous,
+          [numericReportId]: true,
+        }));
+
+        try {
+          const report = await fetchBattleReportById(username, numericReportId, selectedWorldId);
+          if (battleReportScopeKeyRef.current !== requestScopeKey) {
+            return report;
+          }
+          setBattleReportCacheById((previous) => ({
+            ...previous,
+            [report.id]: report,
+          }));
+          setBattleReportsError(null);
+          return report;
+        } catch (error) {
+          if (battleReportScopeKeyRef.current === requestScopeKey) {
+            setBattleReportsError(getErrorMessage(error));
+          }
+          return null;
+        } finally {
+          if (battleReportDetailRequestByIdRef.current[numericReportId] === requestState.promise) {
+            delete battleReportDetailRequestByIdRef.current[numericReportId];
+          }
+          if (battleReportScopeKeyRef.current === requestScopeKey) {
+            setBattleReportPendingById((previous) => {
+              if (previous[numericReportId] !== true) {
+                return previous;
+              }
+              const next = { ...previous };
+              delete next[numericReportId];
+              return next;
+            });
+          }
+        }
+      })();
+
+      requestState.promise = requestPromise;
+      battleReportDetailRequestByIdRef.current[numericReportId] = requestPromise;
+      return requestPromise;
+    },
+    [battleReportsById, selectedWorldId, session, username],
+  );
+
   const openBattleReportPanel = useCallback(
     (reportId: number) => {
       if (!Number.isFinite(reportId) || reportId <= 0) {
@@ -15798,8 +20553,12 @@ export const GamePage = () => {
 
         return [...previous, created];
       });
+
+      if (!report) {
+        void loadBattleReportById(numericReportId);
+      }
     },
-    [battleReportsById, getCanvasViewportSize],
+    [battleReportsById, getCanvasViewportSize, loadBattleReportById],
   );
 
   const handleBattleReportsPageChange = useCallback((page: number) => {
@@ -15954,21 +20713,30 @@ export const GamePage = () => {
           return;
         }
         const shareToken = String(detail?.shareToken ?? '').trim();
-        if (shareToken) {
+        if (reportId != null || shareToken) {
           void (async () => {
-            try {
-              const preview = await fetchCommunicationNotificationSharePreview(username, shareToken);
-              const sharedReport = preview.battleReport ?? null;
-              if (preview.available && !preview.deleted && sharedReport) {
-                setBattleReportCacheById((previous) => ({
-                  ...previous,
-                  [sharedReport.id]: sharedReport,
-                }));
-                openBattleReportPanel(sharedReport.id);
+            if (reportId != null) {
+              const report = await loadBattleReportById(reportId);
+              if (report) {
+                openBattleReportPanel(report.id);
                 return;
               }
-            } catch {
-              // fallback to activity panel below
+            }
+            if (shareToken) {
+              try {
+                const preview = await fetchCommunicationNotificationSharePreview(username, shareToken);
+                const sharedReport = preview.battleReport ?? null;
+                if (preview.available && !preview.deleted && sharedReport) {
+                  setBattleReportCacheById((previous) => ({
+                    ...previous,
+                    [sharedReport.id]: sharedReport,
+                  }));
+                  openBattleReportPanel(sharedReport.id);
+                  return;
+                }
+              } catch {
+                // fallback to activity panel below
+              }
             }
             setActivityLastOpenedAt(new Date().toISOString());
             openPanel('activity');
@@ -16024,6 +20792,7 @@ export const GamePage = () => {
   }, [
     mapSettlements,
     battleReportsById,
+    loadBattleReportById,
     openBattleReportPanel,
     openKingdomProfilePanel,
     openPanel,
@@ -16103,8 +20872,20 @@ export const GamePage = () => {
     return `${panel.label} · ${panel.villageName}`;
   }, []);
 
-  const leftPins = panels.filter((panel) => panel.side === 'left');
-  const rightPins = panels.filter((panel) => panel.side === 'right');
+  const leftPins = panels.filter(
+    (panel) => canPanelUsePinColumns(panel.type) && panel.type !== 'map' && panel.side === 'left',
+  );
+  const rightPins = panels.filter(
+    (panel) => canPanelUsePinColumns(panel.type) && panel.type !== 'map' && panel.side === 'right',
+  );
+  const activeMainStagePanel =
+    panels.find(
+      (panel) => panel.id === activePanelId && panel.expanded && isMainMenuPanelType(panel.type),
+    ) ??
+    panels.find((panel) => panel.expanded && isMainMenuPanelType(panel.type) && panel.type !== 'map') ??
+    panels.find((panel) => panel.type === 'map');
+  const activeMainStageLabel = activeMainStagePanel?.label ?? PANEL_META.map.label;
+  const isMapStageActive = activeMainStagePanel?.type === 'map';
 
   const renderPanelContent = (panel: PanelWindow) => {
     switch (panel.type) {
@@ -16113,30 +20894,24 @@ export const GamePage = () => {
           <CityPanel
             villageLabel={villageLabel}
             regionLabel={villageRegionLabel}
-            ownerName={gameState?.player.username ?? username}
             prestige={gameState?.village.prestige ?? 0}
-            loyalty={gameState?.village.loyalty ?? 0}
-            availableResources={{
-              wood: gameState?.resources.wood ?? 0,
-              stone: gameState?.resources.stone ?? 0,
-              iron: gameState?.resources.iron ?? 0,
-            }}
+            cityResourceSnapshot={cityPanelResourceSnapshot}
+            availableResources={cityPanelAvailableResources}
             buildings={buildings}
-            units={units}
-            orders={activeOrders}
-            armyMovementOrders={cityPanelArmyOrders}
-            recruitQueueOrders={recruitQueueOrders}
             onOpenBuilding={openBuildingPanel}
-            onOpenArmyRecruitment={() => openPanel('army')}
-            onRenameVillage={handleRenameVillage}
             onUpgradeBuilding={handleBuildingUpgrade}
             onCancelBuildingUpgrade={handleCancelBuildingUpgrade}
-            onCancelRecruitment={handleCancelRecruitment}
+            onCancelAllBuildingUpgrades={() => {
+              void handleCancelAllBuildingUpgrades();
+            }}
+            onReorderBuildingUpgrade={(upgradeOrderId, targetIndex) => {
+              void handleReorderBuildingUpgrade(upgradeOrderId, targetIndex);
+            }}
             buildingUpgradeQueueByBuilding={buildingUpgradeQueueByBuilding}
             upgradePendingBuildingId={upgradePendingBuildingId}
-            isRenameVillagePending={renameVillagePending}
             cancelUpgradePendingOrderId={cancelUpgradePendingOrderId}
-            cancelRecruitmentPendingId={cancelRecruitmentPendingId}
+            reorderUpgradePendingOrderId={reorderUpgradePendingOrderId}
+            cancelUpgradeQueuePending={cancelUpgradeQueuePending}
             buildingNotices={buildingNotices}
           />
         );
@@ -16149,6 +20924,9 @@ export const GamePage = () => {
             regionOriginX={mapRegionOriginX}
             regionOriginY={mapRegionOriginY}
             focusedSettlementId={focusedOwnSettlementId}
+            isInteractionEnabled={isMapStageActive}
+            centerRequest={mapCenterRequest}
+            onCenterRequestHandled={handleMapCenterRequestHandled}
             activeVillageId={gameState?.village.id ?? activeVillageId}
             currentUsername={username}
             zoomPercent={mapZoomPercent}
@@ -16157,8 +20935,6 @@ export const GamePage = () => {
             onOpenSettlement={openSettlementPanel}
             onPinSettlement={pinSettlementPanelToSide}
             onQuickArmyCommand={handleMapQuickArmyCommand}
-            onOpenPlayerProfile={openPlayerProfilePanel}
-            onOpenKingdomProfile={openKingdomProfilePanel}
           />
         );
       case 'army':
@@ -16169,6 +20945,8 @@ export const GamePage = () => {
             recruitQueueOrders={recruitQueueOrders}
             settlements={mapSettlements}
             currentUsername={username}
+            worldId={selectedWorldId}
+            isExpanded={panel.expanded}
             onRecruit={handleRecruit}
             onCancelRecruitment={handleCancelRecruitment}
             onUpgradeBuilding={handleBuildingUpgrade}
@@ -16190,6 +20968,11 @@ export const GamePage = () => {
             incomingMovements={armyIncomingMovements}
             stationedSupports={armyStationedSupports}
             currentVillageName={villageLabel}
+            mercenaries={gameState?.mercenaries}
+            resources={gameState?.resources}
+            notice={researchNotice}
+            mercenaryActionPending={mercenaryActionPending}
+            onHireMercenaries={handleHireMercenaries}
           />
         );
       case 'commands':
@@ -16225,16 +21008,13 @@ export const GamePage = () => {
         return (
           <ResearchPanel
             research={gameState?.research}
-            mercenaries={gameState?.mercenaries}
             rules={gameState?.rules}
             resources={gameState?.resources}
             notice={researchNotice}
             researchActionPending={researchActionPending}
-            mercenaryActionPending={mercenaryActionPending}
             onHireAcademics={handleHireAcademics}
             onAdjustResearchAcademics={handleAdjustResearchAcademics}
             onStartResearchProject={handleStartResearchProject}
-            onHireMercenaries={handleHireMercenaries}
           />
         );
       case 'messages':
@@ -16276,8 +21056,13 @@ export const GamePage = () => {
           />
         );
       case 'battleReport': {
-        const report = panel.battleReportId != null ? battleReportsById.get(panel.battleReportId) ?? null : null;
-        return <BattleReportPanel report={report} />;
+        const reportId =
+          panel.battleReportId != null && Number.isFinite(panel.battleReportId)
+            ? Math.floor(panel.battleReportId)
+            : null;
+        const report = reportId != null ? battleReportsById.get(reportId) ?? null : null;
+        const loading = reportId != null ? battleReportPendingById[reportId] === true : false;
+        return <BattleReportPanel report={report} loading={loading} />;
       }
       case 'kingdom':
         return (
@@ -16389,11 +21174,11 @@ export const GamePage = () => {
             username={username}
             kingdom={gameState?.village.kingdom ?? 'Neznámé království'}
             prestige={gameState?.village.prestige ?? 0}
-            villageCount={playerLeaderboardEntry?.villages ?? 1}
-            rank={playerLeaderboardEntry?.rank ?? null}
-            attackerRank={playerLeaderboardEntry?.attackerRank ?? null}
-            defenderRank={playerLeaderboardEntry?.defenderRank ?? null}
-            supporterRank={playerLeaderboardEntry?.supporterRank ?? null}
+            villageCount={playerLeaderboardEntry?.villages ?? gameState?.villages.length ?? 1}
+            rank={resolvedPlayerRank}
+            attackerRank={resolvedPlayerAttackerRank}
+            defenderRank={resolvedPlayerDefenderRank}
+            supporterRank={resolvedPlayerSupporterRank}
           />
         );
       case 'settings':
@@ -16413,12 +21198,17 @@ export const GamePage = () => {
             shortcutBindings={shortcutBindings}
             customShortcutBindings={shortcutCustomBindings}
             autoHidePinColumns={autoHidePinColumns}
+            mapPreviewTravelModifier={mapPreviewTravelModifier}
             shortcutNotice={shortcutNotice}
             isTouchDevice={isTouchDevice}
             onCaptureShortcut={handleShortcutCapture}
             onResetShortcutBinding={handleShortcutResetOne}
             onResetAllShortcuts={handleShortcutResetAll}
             onAutoHidePinColumnsChange={handleAutoHidePinColumnsChange}
+            onMapPreviewTravelModifierChange={handleMapPreviewTravelModifierChange}
+            settlementColorPalette={settlementColorPalette}
+            onSettlementColorChange={handleSettlementColorChange}
+            onResetSettlementColors={handleResetSettlementColors}
           />
         );
       case 'village': {
@@ -16435,21 +21225,26 @@ export const GamePage = () => {
           );
         }
 
+        const settlementVillageId =
+          settlement.villageId != null && Number.isFinite(Number(settlement.villageId))
+            ? Math.floor(Number(settlement.villageId))
+            : null;
+        const canLoadVillageIntel =
+          settlementVillageId != null && ownedVillageIdSet.has(settlementVillageId);
+        const villageIntelEntry =
+          settlementVillageId != null ? villageIntelByVillageId[settlementVillageId] ?? null : null;
+
         return (
           <VillagePanel
             settlement={settlement}
-            activeVillageId={gameState?.village.id ?? activeVillageId}
-            currentVillageId={gameState?.village.id ?? activeVillageId}
-            currentVillageName={villageLabel}
-            currentUsername={username}
-            units={units}
-            activeMovements={armyActiveMovements}
-            stationedSupports={armyStationedSupports}
-            isArmyCommandPending={armyCommandPending}
-            commandNotice={armyCommandNotice}
-            onOpenCity={() => openPanel('city')}
-            onIssueArmyCommand={handleIssueArmyCommand}
-            onReturnSupport={handleReturnSupport}
+            villageIntelEntry={villageIntelEntry}
+            canLoadVillageIntel={canLoadVillageIntel}
+            onLoadVillageIntel={(options) => {
+              if (settlementVillageId == null) {
+                return;
+              }
+              void loadVillageIntel(settlementVillageId, options);
+            }}
           />
         );
       }
@@ -16486,77 +21281,359 @@ export const GamePage = () => {
     }
   };
 
+  const expandedPanels = useMemo(
+    () => panels.filter((panel) => panel.expanded),
+    [panels],
+  );
+  const resolvedDockMode = useCallback(
+    (panel: PanelWindow): PanelLayoutMode => resolvePanelDockLayoutMode(panel),
+    [],
+  );
+  const dockPanels = useMemo(
+    () =>
+      expandedPanels.filter(
+        (panel) => canPanelUseDockLayout(panel.type) && isDockLayoutMode(resolvedDockMode(panel)),
+      ),
+    [expandedPanels, resolvedDockMode],
+  );
+  const floatingPanels = useMemo(
+    () =>
+      expandedPanels.filter(
+        (panel) => !canPanelUseDockLayout(panel.type),
+      ),
+    [expandedPanels],
+  );
+
+  const fullDockPanels = useMemo(
+    () => dockPanels.filter((panel) => resolvedDockMode(panel) === 'full'),
+    [dockPanels, resolvedDockMode],
+  );
+  const leftDockPanels = useMemo(
+    () => dockPanels.filter((panel) => resolvedDockMode(panel) === 'split-left'),
+    [dockPanels, resolvedDockMode],
+  );
+  const rightDockPanels = useMemo(
+    () => dockPanels.filter((panel) => resolvedDockMode(panel) === 'split-right'),
+    [dockPanels, resolvedDockMode],
+  );
+  useEffect(() => {
+    if (!activePanelId) {
+      return;
+    }
+    const activeDockPanel = panels.find(
+      (panel) => panel.id === activePanelId && panel.expanded && canPanelUseDockLayout(panel.type),
+    );
+    if (!activeDockPanel) {
+      return;
+    }
+    const mode = resolvePanelDockLayoutMode(activeDockPanel);
+    if (mode === 'full') {
+      setActiveFullDockPanelId(activeDockPanel.id);
+      return;
+    }
+    if (mode === 'split-left') {
+      setActiveLeftDockPanelId(activeDockPanel.id);
+      return;
+    }
+    if (mode === 'split-right') {
+      setActiveRightDockPanelId(activeDockPanel.id);
+    }
+  }, [activePanelId, panels]);
+
+  useEffect(() => {
+    setActiveFullDockPanelId((previous) =>
+      previous != null && fullDockPanels.some((panel) => panel.id === previous)
+        ? previous
+        : fullDockPanels[0]?.id ?? null,
+    );
+    setActiveLeftDockPanelId((previous) =>
+      previous != null && leftDockPanels.some((panel) => panel.id === previous)
+        ? previous
+        : leftDockPanels[0]?.id ?? null,
+    );
+    setActiveRightDockPanelId((previous) =>
+      previous != null && rightDockPanels.some((panel) => panel.id === previous)
+        ? previous
+        : rightDockPanels[0]?.id ?? null,
+    );
+  }, [fullDockPanels, leftDockPanels, rightDockPanels]);
+
+  const fullDockPanel =
+    fullDockPanels.find((panel) => panel.id === activeFullDockPanelId) ??
+    fullDockPanels.find((panel) => panel.id === activePanelId) ??
+    fullDockPanels[0] ??
+    null;
+  const leftDockPanel =
+    leftDockPanels.find((panel) => panel.id === activeLeftDockPanelId) ??
+    leftDockPanels.find((panel) => panel.id === activePanelId) ??
+    leftDockPanels[0] ??
+    null;
+  const rightDockPanel =
+    rightDockPanels.find((panel) => panel.id === activeRightDockPanelId) ??
+    rightDockPanels.find((panel) => panel.id === activePanelId) ??
+    rightDockPanels[0] ??
+    null;
+  const hasDockedPanels =
+    fullDockPanels.length > 0 || leftDockPanels.length > 0 || rightDockPanels.length > 0;
+  const currentCanvasViewport = getCanvasViewportSize();
+  const dockFrame = {
+    x: 8,
+    y: 12,
+    width: Math.round(
+      clamp(
+        currentCanvasViewport.viewportWidth - 16,
+        PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
+        currentCanvasViewport.viewportWidth - 16,
+      ),
+    ),
+    height: Math.round(
+      clamp(
+        currentCanvasViewport.viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
+        PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT,
+        currentCanvasViewport.viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
+      ),
+    ),
+  };
+
+  const renderPanelWindow = (panel: PanelWindow, options?: { docked?: boolean }) => {
+    const isDocked = options?.docked === true;
+    const canDock = canPanelUseDockLayout(panel.type);
+    const panelDockMode = resolvedDockMode(panel);
+    const isDockedLeft = panelDockMode === 'split-left';
+    const isDockedRight = panelDockMode === 'split-right';
+    const isDockedFull = panelDockMode === 'full';
+    const isMapPanel = panel.type === 'map';
+    const isVillagePanel = panel.type === 'village';
+    const isMainMenuPanel = isMainMenuPanelType(panel.type);
+    const shouldPreferLandscapeFrame = LANDSCAPE_PANEL_TYPES.has(panel.type);
+    const shouldAnchorVillageToBottom = !isDocked && isVillagePanel;
+    const shouldAutoSizeToContent = !isDocked && !isMapPanel && !isMainMenuPanel && !shouldPreferLandscapeFrame;
+    const autoSizeMaxWidthPx = Math.max(
+      PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
+      currentCanvasViewport.viewportWidth - PANEL_VIEWPORT_MARGIN_X * 2,
+    );
+    const autoSizeMaxHeightPx = Math.max(
+      PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT,
+      currentCanvasViewport.viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
+    );
+    const shouldAnimateMainMenuContent = isMainMenuPanel && !isMapPanel;
+    const shouldRenderHeader = !isMapPanel && !isMainMenuPanel;
+    const shouldRenderQuickWindowActions = !isMainMenuPanel;
+    const shouldRenderWindowVisibilityActions = !isMainMenuPanel;
+
+    return (
+      <article
+        key={panel.id}
+        className={`floating-window${isMapPanel ? ' map-window map-main-window' : ''}${!shouldRenderHeader ? ' no-window-header' : ''}${panel.type === 'battleReport' ? ' battle-report-window' : ''}${panel.type === 'village' ? ' village-panel-window' : ''}${shouldAutoSizeToContent ? ' auto-size-window' : ''}${isDocked ? ' docked-window' : ''}${shouldAnimateMainMenuContent ? ' main-menu-page-window' : ''}`}
+        ref={(node) => {
+          panelElementRefs.current[panel.id] = node;
+        }}
+        style={
+          isDocked
+            ? undefined
+            : {
+                left: shouldAnchorVillageToBottom ? '50%' : `${panel.x}px`,
+                top: shouldAnchorVillageToBottom ? undefined : `${panel.y}px`,
+                bottom: shouldAnchorVillageToBottom ? '4.35rem' : undefined,
+                transform: shouldAnchorVillageToBottom ? 'translateX(-50%)' : undefined,
+                zIndex: isMapPanel
+                  ? MAP_BACKGROUND_PANEL_Z_INDEX
+                  : FLOATING_PANEL_BASE_Z_INDEX + panel.z,
+                width: shouldAutoSizeToContent ? 'fit-content' : `${panel.width}px`,
+                height: shouldAutoSizeToContent ? 'fit-content' : `${panel.height}px`,
+                maxWidth: shouldAutoSizeToContent
+                  ? `${Math.round(autoSizeMaxWidthPx)}px`
+                  : undefined,
+                maxHeight: shouldAutoSizeToContent
+                  ? `${Math.round(autoSizeMaxHeightPx)}px`
+                  : undefined,
+              }
+        }
+        onMouseDown={(event) => {
+          if (closePanelOnMiddleClick(event, panel.id)) {
+            return;
+          }
+          focusPanel(panel.id);
+        }}
+      >
+        {shouldRenderHeader ? (
+          <header
+            className={`window-header${isVillagePanel ? ' village-window-header' : ''}`}
+            onPointerDown={(event) => {
+              if (isDocked || isMainMenuPanel || isVillagePanel) {
+                return;
+              }
+              startDrag(event, panel);
+            }}
+          >
+            <div className="window-title">
+              {!isVillagePanel ? <span>{panel.label}</span> : null}
+            </div>
+            <div className="window-actions" onPointerDown={(event) => event.stopPropagation()}>
+              {shouldRenderQuickWindowActions ? (
+                <>
+                  {canDock ? (
+                    <>
+                      <button
+                        className={`window-action-layout${isDockedLeft ? ' is-active' : ''}`}
+                        onClick={() => setPanelDockLayoutMode(panel.id, 'split-left')}
+                        title="Ukotvit vlevo"
+                        aria-label="Ukotvit vlevo"
+                      >
+                        ⇤
+                      </button>
+                      <button
+                        className={`window-action-layout${isDockedFull ? ' is-active' : ''}`}
+                        onClick={() => setPanelDockLayoutMode(panel.id, 'full')}
+                        title="Ukotvit na plnou šířku"
+                        aria-label="Ukotvit na plnou šířku"
+                      >
+                        ▣
+                      </button>
+                      <button
+                        className={`window-action-layout${isDockedRight ? ' is-active' : ''}`}
+                        onClick={() => setPanelDockLayoutMode(panel.id, 'split-right')}
+                        title="Ukotvit vpravo"
+                        aria-label="Ukotvit vpravo"
+                      >
+                        ⇥
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => movePinToSideAndMinimize(panel.id, 'left')}
+                        title="Přesunout pin na levou stranu"
+                        aria-label="Přesunout pin na levou stranu"
+                      >
+                        ←
+                      </button>
+                      <button
+                        onClick={() => switchSide(panel.id)}
+                        title="Přesunout pin na druhou stranu"
+                        aria-label="Přesunout pin na druhou stranu"
+                      >
+                        ↔
+                      </button>
+                      <button
+                        onClick={() => movePinToSideAndMinimize(panel.id, 'right')}
+                        title="Přesunout pin na pravou stranu"
+                        aria-label="Přesunout pin na pravou stranu"
+                      >
+                        →
+                      </button>
+                    </>
+                  )}
+                </>
+              ) : null}
+              {shouldRenderWindowVisibilityActions ? (
+                <>
+                  <button
+                    onClick={() => togglePanelVisibility(panel.id)}
+                    title="Sbalit okno"
+                    aria-label="Sbalit okno"
+                  >
+                    −
+                  </button>
+                  <button onClick={() => closePanel(panel.id)} title="Zavřít okno" aria-label="Zavřít okno">
+                    ✕
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </header>
+        ) : null}
+
+        <div className="window-body">{renderPanelContent(panel)}</div>
+        {!isDocked && !isMapPanel && !isMainMenuPanel ? (
+          <div
+            className="window-resize-handle"
+            onPointerDown={(event) => startResize(event, panel)}
+            role="separator"
+            aria-label={`Změnit velikost okna ${panel.label}`}
+          />
+        ) : null}
+      </article>
+    );
+  };
+
   if (!session || !selectedWorldId) {
     return null;
   }
 
+  const normalizedVillageRenameNotice = (villageRenameNotice ?? '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  const isVillageRenameNoticeSuccess =
+    normalizedVillageRenameNotice.includes('premenovano') ||
+    normalizedVillageRenameNotice.includes('beze zmeny');
+
   return (
-    <div className="game-page">
+    <div className="game-page" style={settlementColorCssVariables}>
       <div className="game-bg-layer" />
       <div className="game-grid-layer" />
 
       <div className="app-content-container game-layout-container">
+        <div className="game-canvas-hud">
         <header className="top-navigation">
-        <div className="world-indicator-wrap">
-          <div className={`world-indicator is-${selectedWorldFlavor}`}>
-            <span>Svět:</span> <strong>{selectedWorldName}</strong>
-            {selectedWorldFlavor === 'test' ? <em>TEST</em> : null}
-            {selectedWorldFlavor === 'prealpha' ? <em>PRE-ALPHA</em> : null}
-          </div>
-          <small className="world-version-note">Aktuální verze hry 0.1.09</small>
-        </div>
-        <nav>
-          {NAV_BUTTONS.map((button) => {
-            const isPanelOpen = panels.some((panel) => panel.type === button.type && panel.expanded);
-            const isOpen = button.type === 'messages' ? isPanelOpen || isCommunicationHubOpen : isPanelOpen;
-            const infoText = menuInfoByType[button.type];
-            return (
-              <div key={button.type} className="nav-action-stack">
-                <MenuButton
-                  className={`nav-action nav-action--${button.type}`}
-                  isOpen={isOpen}
-                  onClick={() => {
-                    if (button.type === 'messages') {
-                      setIsCommunicationHubOpen(true);
-                      openCommunicationHub();
-                      return;
-                    }
-                    if (button.type === 'activity') {
-                      setActivityLastOpenedAt(new Date().toISOString());
-                    }
-                    openPanel(button.type);
-                  }}
-                  title={`Otevřít panel: ${button.text}`}
-                  glyph={button.glyph}
-                  text={button.text}
-                />
-                <small className={`nav-action-meta${infoText ? '' : ' is-empty'}`}>{infoText ?? '\u00a0'}</small>
-              </div>
-            );
-          })}
-          <div className="nav-action-stack nav-action-stack-session nav-action-stack-world-switch" ref={worldMenuRef}>
-            <MenuButton
-              className="nav-action quick-session-action nav-action--world-switch"
+          <nav>
+            {TOP_NAV_BUTTONS.map((button) => {
+              const isOpen = activeMainStagePanel?.type === button.type;
+              const leaderboardBadge = button.type === 'rankings' ? leaderboardMenuBadgeLabel : null;
+              const buttonTitle =
+                button.type === 'activity'
+                  ? `Otevřít panel: ${button.text} (nepřečtené: ${activityUnreadCount.toLocaleString('cs-CZ')})`
+                  : button.type === 'rankings' && leaderboardBadge
+                    ? `Otevřít panel: ${button.text} (${leaderboardBadge})`
+                  : `Otevřít panel: ${button.text}`;
+              return (
+                <div key={button.type} className="nav-action-stack">
+                  <MenuButton
+                    className={`nav-action nav-action--${button.type}`}
+                    isOpen={isOpen}
+                    onClick={() => {
+                      if (button.type === 'activity') {
+                        setActivityLastOpenedAt(new Date().toISOString());
+                      }
+                      openPanel(button.type);
+                    }}
+                    title={buttonTitle}
+                    glyph={button.glyph}
+                    text={button.text}
+                    badgeText={leaderboardBadge}
+                  />
+                </div>
+              );
+            })}
+          </nav>
+          <div className="world-indicator-wrap" ref={worldMenuRef}>
+            <button
+              type="button"
+              className={`world-indicator world-indicator-trigger is-${selectedWorldFlavor}${isWorldMenuOpen ? ' is-open' : ''}`}
+              aria-haspopup="menu"
+              aria-expanded={isWorldMenuOpen}
+              title="Otevřít nabídku účtu a světa"
               onClick={() => setIsWorldMenuOpen((previous) => !previous)}
-              title="Otevřít nabídku změny světa"
-              text="Změnit svět"
-            />
-            <small className="nav-action-meta is-empty" aria-hidden="true">
-              {'\u00a0'}
-            </small>
+            >
+              <span>Svět:</span> <strong>{selectedWorldName}</strong>
+              {selectedWorldFlavor === 'test' ? <em>TEST</em> : null}
+              {selectedWorldFlavor === 'prealpha' ? <em>PRE-ALPHA</em> : null}
+            </button>
             {isWorldMenuOpen ? (
-              <div className="world-switch-menu" role="menu" aria-label="Nabídka herních světů">
+              <div className="world-switch-menu world-switch-menu-in-world" role="menu" aria-label="Nabídka účtu a světa">
                 <header>
-                  <h4>Změna světa</h4>
+                  <h4>Účet a svět</h4>
                   <button
                     type="button"
                     className="secondary-action"
                     onClick={() => setIsWorldMenuOpen(false)}
-                    aria-label="Zavřít nabídku změny světa"
+                    aria-label="Zavřít nabídku účtu a světa"
                   >
                     Zavřít
                   </button>
                 </header>
+                <p className="world-switch-section-title">Změnit svět</p>
                 <ul>
                   {worldSwitchOptions.map((world) => {
                     const worldStatus = String(world.status).toLowerCase();
@@ -16585,126 +21662,132 @@ export const GamePage = () => {
                   })}
                   {worldSwitchOptions.length === 0 ? <li className="world-switch-empty">Světy se načítají...</li> : null}
                 </ul>
+                <div className="logout-menu-actions">
+                  <button
+                    type="button"
+                    className="secondary-action"
+                    onClick={() => {
+                      setIsWorldMenuOpen(false);
+                      handleLeaveWorld();
+                    }}
+                  >
+                    Odejít ze světa
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-action danger-button"
+                    onClick={() => {
+                      setIsWorldMenuOpen(false);
+                      handleLogout();
+                    }}
+                  >
+                    Odhlásit ze hry
+                  </button>
+                </div>
                 {worldMenuError ? <p className="world-switch-error">{worldMenuError}</p> : null}
               </div>
             ) : null}
           </div>
-          <div className="nav-action-stack nav-action-stack-session">
-            <MenuButton
-              className="nav-action quick-session-action nav-action--leave-world"
-              onClick={handleLeaveWorld}
-              title="Odejít ze světa"
-              text="Odejít ze světa"
-            />
-            <small className="nav-action-meta is-empty" aria-hidden="true">
-              {'\u00a0'}
-            </small>
-          </div>
-          <div className="nav-action-stack nav-action-stack-session">
-            <MenuButton
-              className="nav-action quick-session-action quick-logout nav-action--logout"
-              onClick={handleLogout}
-              title="Odhlásit ze hry"
-              text="Odhlásit"
-            />
-            <small className="nav-action-meta is-empty" aria-hidden="true">
-              {'\u00a0'}
-            </small>
-          </div>
-        </nav>
-      </header>
+        </header>
 
-      <section className="resource-strip">
-        <div className="village-card-stack">
-          <article className="resource-card village-resource-card" aria-label="Aktivní léno a seznam lén">
-            <p>Aktivní léno</p>
-            <strong>{villageLabel}</strong>
-            <span>{playerVillages.length.toLocaleString('cs-CZ')} dostupných lén</span>
-            <button
-              ref={villageMenuTriggerRef}
-              type="button"
-              className="village-menu-trigger"
-              onClick={toggleVillageMenu}
-              disabled={playerVillages.length === 0}
-              aria-haspopup="menu"
-              aria-expanded={isVillageMenuOpen}
-            >
-              {playerVillages.length === 0 ? 'Načítám léna...' : 'Seznam lén'}
-            </button>
-          </article>
-          {activeVillageProtection ? (
-            <div className="village-protection-timer">
-              {`Nováčkovská ochrana: ${formatDurationLabel(activeVillageProtection.remainingSec)} (do ${activeVillageProtection.formattedUntil})`}
-            </div>
-          ) : null}
-        </div>
-        {resourceStocks.map((resource) => (
-          (() => {
-            const capacityPercent =
-              resource.cap > 0 ? clamp((resource.amount / resource.cap) * 100, 0, 100) : 0;
-            const resourceTone = resolveResourceTone(resource.name);
-            const resourceGlyph = resolveResourceGlyph(resource.name);
-
-            return (
-              <button
-                key={resource.name}
-                type="button"
-                className={`resource-card tone-${resourceTone}`}
-                onClick={() => handleResourceCardClick(resource)}
-                title={`${resource.buildingName} · Úroveň ${resource.buildingLevel}${resource.upgradeQueueCount > 0 ? ` · Fronta: ${resource.upgradeQueueCount.toLocaleString('cs-CZ')}` : ''}`}
-              >
-                <p className="resource-slot-heading">
-                  <span className="resource-slot-icon" aria-hidden="true">
-                    {resourceGlyph.startsWith('/') ? (
-                      <img src={resourceGlyph} alt="" loading="lazy" decoding="async" draggable={false} />
+        <section className="resource-strip resource-strip-slim">
+          <div className="village-card-stack">
+            <article className="resource-card village-resource-card" aria-label="Aktivní léno a seznam lén">
+              <div className="village-resource-card-layout">
+                <button
+                  ref={villageMenuTriggerRef}
+                  type="button"
+                  className="village-menu-trigger village-menu-trigger-compact"
+                  onClick={toggleVillageMenu}
+                  disabled={playerVillages.length === 0}
+                  aria-haspopup="menu"
+                  aria-expanded={isVillageMenuOpen}
+                >
+                  {playerVillages.length === 0 ? 'Načítám léna...' : 'Seznam lén'}
+                </button>
+                <div className="village-resource-card-info">
+                  <p>Aktivní léno</p>
+                  <div className="village-rename-inline" ref={villageRenameWrapRef}>
+                    {isVillageRenameOpen ? (
+                      <input
+                        ref={villageRenameInputRef}
+                        type="text"
+                        value={villageRenameDraft}
+                        maxLength={14}
+                        disabled={renameVillagePending}
+                        onChange={(event) => {
+                          setVillageRenameDraft(event.target.value);
+                          setVillageRenameNotice(null);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape') {
+                            event.preventDefault();
+                            setIsVillageRenameOpen(false);
+                            setVillageRenameDraft(activeVillageBaseName);
+                            return;
+                          }
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            void submitVillageRenameInline();
+                          }
+                        }}
+                        aria-label="Přejmenovat aktivní léno"
+                      />
                     ) : (
-                      resourceGlyph
+                      <strong title={villageLabel}>{villageLabel}</strong>
                     )}
-                  </span>
-                  {resource.name}
-                </p>
-                <strong>{resource.amount.toLocaleString('cs-CZ')}</strong>
-                <span>{resource.delta}</span>
-                {resource.boostLabel ? <small className="resource-boost-note">{resource.boostLabel}</small> : null}
-                <small className="resource-capacity-inline">{resource.cap.toLocaleString('cs-CZ')}</small>
-                <div className="resource-capacity-meter" aria-hidden="true">
-                  <span style={{ width: `${capacityPercent}%` }} />
-                </div>
-                {resource.upgradeQueueCount > 0 ? (
-                  <small className="resource-upgrade-queue">
-                    <span
-                      className="resource-upgrade-arrows"
-                      role="img"
-                      aria-label={`Ve frontě je ${resource.upgradeQueueCount.toLocaleString('cs-CZ')} rozšíření`}
+                    <button
+                      type="button"
+                      className="village-rename-trigger"
+                      aria-label={isVillageRenameOpen ? 'Potvrdit přejmenování léna' : 'Přejmenovat aktivní léno'}
+                      title={isVillageRenameOpen ? 'Potvrdit přejmenování (Enter)' : 'Přejmenovat aktivní léno'}
+                      disabled={renameVillagePending || !gameState}
+                      onClick={() => {
+                        if (isVillageRenameOpen) {
+                          void submitVillageRenameInline();
+                          return;
+                        }
+                        openVillageRenameInline();
+                      }}
                     >
-                      {'➤'.repeat(Math.max(0, Math.floor(resource.upgradeQueueCount)))}
-                    </span>
-                  </small>
-                ) : null}
-              </button>
-            );
-          })()
-        ))}
-        {currentResearchTask ? (
-          <button
-            type="button"
-            className="resource-card research-spotlight-card"
-            onClick={handleResearchSpotlightClick}
-            title="Otevřít Univerzitu"
-          >
-            <p>Aktuální výzkum</p>
-            <strong>{currentResearchTask.name}</strong>
-            <span>
-              {Math.round(currentResearchTask.progressPercent)} % ·{' '}
-              {currentResearchTask.status === 'researching'
-                ? `akademici ${Math.max(0, Math.floor(Number(currentResearchTask.assignedAcademics ?? 0))).toLocaleString('cs-CZ')}`
-                : currentResearchTask.status === 'available'
-                  ? 'připraveno ke spuštění'
-                  : 'dokončeno'}
-            </span>
-          </button>
-        ) : null}
-      </section>
+                      {renameVillagePending ? '…' : isVillageRenameOpen ? '✔' : '✎'}
+                    </button>
+                  </div>
+                  {villageRenameNotice ? (
+                    <small className={`village-rename-notice ${isVillageRenameNoticeSuccess ? 'success' : 'error'}`}>
+                      {villageRenameNotice}
+                    </small>
+                  ) : null}
+                </div>
+              </div>
+            </article>
+            <ActiveVillageProtectionTimer notice={activeVillageProtection} />
+          </div>
+          <div className="resource-strip-stage-title" aria-live="polite">
+            <h2>{activeMainStageLabel}</h2>
+            <span className="resource-strip-stage-title-glow" aria-hidden="true" />
+          </div>
+          <div className="resource-strip-column resource-right-column">
+            <button
+              type="button"
+              className={`resource-card research-spotlight-card ${currentResearchTask?.status === 'researching' ? 'is-researching' : ''} ${isResearchSpotlightEmpty ? 'is-empty' : ''}`}
+              onClick={handleResearchSpotlightClick}
+              title={currentResearchTooltipLabel}
+              aria-label={currentResearchTooltipLabel}
+              style={
+                currentResearchTask
+                  ? ({
+                      '--research-spotlight-progress': `${currentResearchProgressPercent}%`,
+                    } as CSSProperties)
+                  : undefined
+              }
+            >
+              <p>Aktuální výzkum</p>
+              <strong>{currentResearchHeadline}</strong>
+            </button>
+          </div>
+        </section>
+        </div>
       {isVillageMenuOpen && villageMenuPosition ? (
         <div
           ref={villageMenuOverlayRef}
@@ -16867,7 +21950,12 @@ export const GamePage = () => {
               onMouseDown={(event) => {
                 closePanelOnMiddleClick(event, panel.id);
               }}
-              onClick={() => togglePanelVisibility(panel.id)}
+              onClick={() => {
+                if (panel.type === 'village' && panel.settlementId) {
+                  requestMapCenterOnSettlement(panel.settlementId);
+                }
+                togglePanelVisibility(panel.id);
+              }}
             >
               <span>{getPinnedPanelLabel(panel)}</span>
               {panel.alert ? <i /> : null}
@@ -16913,7 +22001,12 @@ export const GamePage = () => {
               onMouseDown={(event) => {
                 closePanelOnMiddleClick(event, panel.id);
               }}
-              onClick={() => togglePanelVisibility(panel.id)}
+              onClick={() => {
+                if (panel.type === 'village' && panel.settlementId) {
+                  requestMapCenterOnSettlement(panel.settlementId);
+                }
+                togglePanelVisibility(panel.id);
+              }}
             >
               <span>{getPinnedPanelLabel(panel)}</span>
               {panel.alert ? <i /> : null}
@@ -16921,87 +22014,108 @@ export const GamePage = () => {
           ))}
         </aside>
 
-        {panels
-          .filter((panel) => panel.expanded)
-          .map((panel) => (
-            <article
-              key={panel.id}
-              className={`floating-window${panel.type === 'map' ? ' map-window' : ''}${panel.type === 'battleReport' ? ' battle-report-window' : ''}`}
-              ref={(node) => {
-                panelElementRefs.current[panel.id] = node;
-              }}
-              style={{
-                left: `${panel.x}px`,
-                top: `${panel.y}px`,
-                zIndex: panel.z,
-                width: `${panel.width}px`,
-                height: `${panel.height}px`,
-              }}
-              onMouseDown={(event) => {
-                if (closePanelOnMiddleClick(event, panel.id)) {
-                  return;
-                }
-                focusPanel(panel.id);
-              }}
-            >
-              <header className="window-header" onPointerDown={(event) => startDrag(event, panel)}>
-                <div>
-                  <span>{panel.label}</span>
-                </div>
-                <div className="window-actions" onPointerDown={(event) => event.stopPropagation()}>
-                  <button
-                    onClick={() => movePinToSideAndMinimize(panel.id, 'left')}
-                    title="Přesunout pin na levou stranu"
-                    aria-label="Přesunout pin na levou stranu"
-                  >
-                    ←
-                  </button>
-                  <button
-                    onClick={() => switchSide(panel.id)}
-                    title="Přesunout pin na druhou stranu"
-                    aria-label="Přesunout pin na druhou stranu"
-                  >
-                    ↔
-                  </button>
-                  <button
-                    onClick={() => movePinToSideAndMinimize(panel.id, 'right')}
-                    title="Přesunout pin na pravou stranu"
-                    aria-label="Přesunout pin na pravou stranu"
-                  >
-                    →
-                  </button>
-                  {isStretchablePanelType(panel.type) ? (
+        {hasDockedPanels ? (
+          <section
+            className={`central-panel-dock${fullDockPanel ? ' is-full' : ' is-split'}`}
+            style={{
+              left: `${dockFrame.x}px`,
+              top: `${dockFrame.y}px`,
+              width: `${dockFrame.width}px`,
+              height: `${dockFrame.height}px`,
+            }}
+          >
+            {leftDockPanels.length > 0 ? (
+              <div className="dock-tab-strip is-left" role="tablist" aria-label="Levá strana dock panelů">
+                {leftDockPanels.map((panel) => (
+                  <div key={`dock-tab-left-${panel.id}`} className="dock-tab-item">
                     <button
-                      className="window-action-fit"
-                      onClick={() => stretchPanelToViewport(panel.id)}
-                      title="Roztáhnout okno"
-                      aria-label="Roztáhnout okno"
+                      type="button"
+                      className={`dock-tab-button${leftDockPanel?.id === panel.id ? ' is-active' : ''}`}
+                      role="tab"
+                      aria-selected={leftDockPanel?.id === panel.id}
+                      onMouseDown={(event) => {
+                        closePanelOnMiddleClick(event, panel.id);
+                      }}
+                      onClick={() => activateDockTab(panel.id)}
+                      title={panel.label}
                     >
-                      Roztáhnout
+                      <span>{panel.label}</span>
+                      {panel.alert ? <i aria-hidden="true" /> : null}
                     </button>
-                  ) : null}
-                  <button
-                    onClick={() => togglePanelVisibility(panel.id)}
-                    title="Sbalit okno"
-                    aria-label="Sbalit okno"
-                  >
-                    −
-                  </button>
-                  <button onClick={() => closePanel(panel.id)} title="Zavřít okno" aria-label="Zavřít okno">
-                    ✕
-                  </button>
+                    <button
+                      type="button"
+                      className="dock-tab-move-button"
+                      onClick={() => setPanelDockLayoutMode(panel.id, 'split-right')}
+                      title="Přesunout panel do pravého docku"
+                      aria-label="Přesunout panel do pravého docku"
+                    >
+                      ⇥
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {rightDockPanels.length > 0 ? (
+              <div className="dock-tab-strip is-right" role="tablist" aria-label="Pravá strana dock panelů">
+                {rightDockPanels.map((panel) => (
+                  <div key={`dock-tab-right-${panel.id}`} className="dock-tab-item">
+                    <button
+                      type="button"
+                      className={`dock-tab-button${rightDockPanel?.id === panel.id ? ' is-active' : ''}`}
+                      role="tab"
+                      aria-selected={rightDockPanel?.id === panel.id}
+                      onMouseDown={(event) => {
+                        closePanelOnMiddleClick(event, panel.id);
+                      }}
+                      onClick={() => activateDockTab(panel.id)}
+                      title={panel.label}
+                    >
+                      <span>{panel.label}</span>
+                      {panel.alert ? <i aria-hidden="true" /> : null}
+                    </button>
+                    <button
+                      type="button"
+                      className="dock-tab-move-button"
+                      onClick={() => setPanelDockLayoutMode(panel.id, 'split-left')}
+                      title="Přesunout panel do levého docku"
+                      aria-label="Přesunout panel do levého docku"
+                    >
+                      ⇤
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {fullDockPanel ? (
+              <div className="dock-slot dock-slot-full">{renderPanelWindow(fullDockPanel, { docked: true })}</div>
+            ) : (
+              <>
+                <div className="dock-slot dock-slot-left">
+                  {leftDockPanel ? renderPanelWindow(leftDockPanel, { docked: true }) : <div className="dock-slot-empty">Prázdný slot</div>}
                 </div>
-              </header>
-
-              <div className="window-body">{renderPanelContent(panel)}</div>
-              <div
-                className="window-resize-handle"
-                onPointerDown={(event) => startResize(event, panel)}
-                role="separator"
-                aria-label={`Změnit velikost okna ${panel.label}`}
-              />
-            </article>
-          ))}
+                <div className="dock-slot dock-slot-right">
+                  {rightDockPanel ? renderPanelWindow(rightDockPanel, { docked: true }) : <div className="dock-slot-empty">Prázdný slot</div>}
+                </div>
+              </>
+            )}
+            <small className="dock-version-note">Verze hry {GAME_VERSION_LABEL}</small>
+          </section>
+        ) : null}
+        {floatingPanels.map((panel) => renderPanelWindow(panel))}
+        </div>
+        <div className="game-persistent-footer" role="complementary" aria-label="Stálé informace hry">
+          <div className="game-persistent-footer-left">
+            <FooterActionButton icon="⚙︎" label="Otevřít nastavení hry" onClick={() => openPanel('settings')} />
+            <FooterActionButton
+              icon="✉︎"
+              label="Otevřít komunikaci"
+              onClick={() => openPanel('messages')}
+              badgeText={communicationBadgeCount.toLocaleString('cs-CZ')}
+            />
+          </div>
+          <div className="game-persistent-footer-right">
+            <p className="game-version-footer">Verze hry {GAME_VERSION_LABEL}</p>
+          </div>
         </div>
       </div>
     </div>

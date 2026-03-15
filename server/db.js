@@ -2,11 +2,15 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  BUILDING_DEFS,
   BUILDING_ORDER,
   UNIT_ORDER,
   calculateMintCoinStorageCap,
   calculateMintGoldStorageCap,
   calculateResourceCap,
+  calculateUpgradeDurationSec,
+  convertLegacyBuildingLevelToCurrent,
+  convertLegacyResourceBuildingLevelToCurrent,
   getMaxBuildingLevel,
 } from './gameConfig.js';
 import {
@@ -18,6 +22,11 @@ import {
   formatBotCityStateVillageName,
   pickRandomUnusedBotCityStateName,
 } from './botCityStates.js';
+
+const RESOURCE_BUILDING_SCALE_MIGRATION_KEY = 'resource_building_scale_version';
+const RESOURCE_BUILDING_SCALE_MIGRATION_VERSION = 'resource-buildings-max-10';
+const BUILDING_REBALANCE_MIGRATION_KEY = 'building_rebalance_version';
+const BUILDING_REBALANCE_MIGRATION_VERSION = 'buildings-rebalance-max10-v1';
 
 const configuredDataDir = String(process.env.TLD_DATA_DIR ?? process.env.THG_DATA_DIR ?? '').trim();
 const configuredSeedDbPath = String(process.env.TLD_SEED_DB_PATH ?? process.env.THG_SEED_DB_PATH ?? '').trim();
@@ -99,6 +108,8 @@ const ACTIVE_BOT_USERNAME = 'Bot';
 const ACTIVE_BOT_VILLAGE_COUNT = 3;
 const ACTIVE_BOT_PROTECTION_DAYS = 5;
 const ABANDONED_BOT_VILLAGE_NAME_PREFIX = 'Opuštěná vesnice';
+const GARRISON_MILITIA_CAP = 180;
+const GARRISON_ARCHER_CAP = 120;
 const STARTING_RESOURCES = {
   wood: 1000,
   stone: 1000,
@@ -243,6 +254,16 @@ CREATE TABLE IF NOT EXISTS units (
   FOREIGN KEY (village_id) REFERENCES villages(id)
 );
 
+CREATE TABLE IF NOT EXISTS village_garrisons (
+  village_id INTEGER PRIMARY KEY,
+  militia_amount INTEGER NOT NULL DEFAULT 180,
+  archer_amount INTEGER NOT NULL DEFAULT 120,
+  militia_progress REAL NOT NULL DEFAULT 0,
+  archer_progress REAL NOT NULL DEFAULT 0,
+  last_sync_at TEXT,
+  FOREIGN KEY (village_id) REFERENCES villages(id)
+);
+
 CREATE TABLE IF NOT EXISTS building_upgrades (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   village_id INTEGER NOT NULL,
@@ -283,6 +304,8 @@ CREATE INDEX IF NOT EXISTS idx_unit_recruitments_status_finish
 CREATE TABLE IF NOT EXISTS army_movements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   player_id INTEGER NOT NULL,
+  plan_id TEXT,
+  plan_leg_id TEXT,
   command_type TEXT NOT NULL,
   origin_village_id INTEGER NOT NULL,
   target_village_id INTEGER NOT NULL,
@@ -729,6 +752,104 @@ CREATE TABLE IF NOT EXISTS mercenary_contracts (
 CREATE INDEX IF NOT EXISTS idx_mercenary_contracts_status_timing
   ON mercenary_contracts(status, region, arrive_at, expires_at);
 
+CREATE TABLE IF NOT EXISTS planner_plans (
+  id TEXT PRIMARY KEY,
+  player_id INTEGER NOT NULL,
+  world_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN (
+    'scheduled',
+    'needs_reconfirmation',
+    'dispatching',
+    'completed',
+    'failed',
+    'canceled'
+  )),
+  revision INTEGER NOT NULL DEFAULT 1,
+  target_player_id INTEGER NOT NULL,
+  target_village_id INTEGER NOT NULL,
+  target_player_username_snapshot TEXT NOT NULL,
+  target_village_name_snapshot TEXT NOT NULL,
+  target_kingdom_snapshot TEXT NOT NULL,
+  target_snapshot_hash TEXT NOT NULL,
+  confirmed_at TEXT,
+  first_send_at_utc TEXT,
+  last_send_at_utc TEXT,
+  dispatch_started_at_utc TEXT,
+  completed_at TEXT,
+  failed_at TEXT,
+  canceled_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (player_id) REFERENCES players(id),
+  FOREIGN KEY (target_player_id) REFERENCES players(id),
+  FOREIGN KEY (target_village_id) REFERENCES villages(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_planner_plans_player_world_status
+  ON planner_plans(player_id, world_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_planner_plans_world_status_first_send
+  ON planner_plans(world_id, status, first_send_at_utc);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_planner_active_plan_per_player_world
+  ON planner_plans(player_id, world_id)
+  WHERE status IN ('scheduled', 'needs_reconfirmation', 'dispatching');
+
+CREATE TABLE IF NOT EXISTS planner_plan_legs (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL,
+  leg_order INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('scheduled', 'sent', 'failed', 'canceled')),
+  origin_village_id INTEGER NOT NULL,
+  origin_village_name_snapshot TEXT NOT NULL,
+  impact_at_utc TEXT NOT NULL,
+  send_at_utc TEXT NOT NULL,
+  travel_duration_sec INTEGER NOT NULL,
+  sent_at_utc TEXT,
+  fail_code TEXT,
+  fail_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (plan_id) REFERENCES planner_plans(id) ON DELETE CASCADE,
+  FOREIGN KEY (origin_village_id) REFERENCES villages(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_planner_legs_order
+  ON planner_plan_legs(plan_id, leg_order);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_planner_legs_origin
+  ON planner_plan_legs(plan_id, origin_village_id);
+
+CREATE INDEX IF NOT EXISTS idx_planner_plan_legs_plan_send
+  ON planner_plan_legs(plan_id, send_at_utc);
+
+CREATE TABLE IF NOT EXISTS planner_plan_leg_units (
+  id TEXT PRIMARY KEY,
+  plan_leg_id TEXT NOT NULL,
+  unit_id TEXT NOT NULL CHECK (unit_id IN ('cavalry', 'ram', 'scout')),
+  planned_amount INTEGER NOT NULL CHECK (planned_amount > 0),
+  FOREIGN KEY (plan_leg_id) REFERENCES planner_plan_legs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_planner_plan_leg_units_leg
+  ON planner_plan_leg_units(plan_leg_id);
+
+CREATE TABLE IF NOT EXISTS planner_plan_events (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL,
+  plan_leg_id TEXT,
+  event_type TEXT NOT NULL,
+  severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error')),
+  message TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (plan_id) REFERENCES planner_plans(id) ON DELETE CASCADE,
+  FOREIGN KEY (plan_leg_id) REFERENCES planner_plan_legs(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_planner_plan_events_plan_created
+  ON planner_plan_events(plan_id, created_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS game_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   last_tick_at TEXT NOT NULL
@@ -749,6 +870,11 @@ CREATE TABLE IF NOT EXISTS player_world_state (
 
 CREATE INDEX IF NOT EXISTS idx_player_world_state_world
   ON player_world_state(world_id, has_spawned, spawn_count);
+
+CREATE TABLE IF NOT EXISTS app_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `);
 
   const villageColumns = db.prepare('PRAGMA table_info(villages)').all();
@@ -804,6 +930,55 @@ CREATE INDEX IF NOT EXISTS idx_player_world_state_world
      WHERE settlement_kind = '${BOT_CITY_STATE_SETTLEMENT_KIND}'`,
   ).run();
 
+  const garrisonColumns = db.prepare('PRAGMA table_info(village_garrisons)').all();
+  const hasMilitiaAmountColumn = garrisonColumns.some((column) => column.name === 'militia_amount');
+  if (!hasMilitiaAmountColumn) {
+    db.prepare(`ALTER TABLE village_garrisons ADD COLUMN militia_amount INTEGER NOT NULL DEFAULT ${GARRISON_MILITIA_CAP}`).run();
+  }
+  const hasArcherAmountColumn = garrisonColumns.some((column) => column.name === 'archer_amount');
+  if (!hasArcherAmountColumn) {
+    db.prepare(`ALTER TABLE village_garrisons ADD COLUMN archer_amount INTEGER NOT NULL DEFAULT ${GARRISON_ARCHER_CAP}`).run();
+  }
+  const hasMilitiaProgressColumn = garrisonColumns.some((column) => column.name === 'militia_progress');
+  if (!hasMilitiaProgressColumn) {
+    db.prepare('ALTER TABLE village_garrisons ADD COLUMN militia_progress REAL NOT NULL DEFAULT 0').run();
+  }
+  const hasArcherProgressColumn = garrisonColumns.some((column) => column.name === 'archer_progress');
+  if (!hasArcherProgressColumn) {
+    db.prepare('ALTER TABLE village_garrisons ADD COLUMN archer_progress REAL NOT NULL DEFAULT 0').run();
+  }
+  const hasGarrisonLastSyncAtColumn = garrisonColumns.some((column) => column.name === 'last_sync_at');
+  if (!hasGarrisonLastSyncAtColumn) {
+    db.prepare('ALTER TABLE village_garrisons ADD COLUMN last_sync_at TEXT').run();
+  }
+  db.prepare(
+    `INSERT INTO village_garrisons (village_id, militia_amount, archer_amount, militia_progress, archer_progress, last_sync_at)
+     SELECT
+       v.id,
+       ?,
+       ?,
+       0,
+       0,
+       COALESCE((SELECT last_tick_at FROM game_state WHERE id = 1), ?)
+     FROM villages v
+     LEFT JOIN village_garrisons g ON g.village_id = v.id
+     WHERE g.village_id IS NULL`,
+  ).run(GARRISON_MILITIA_CAP, GARRISON_ARCHER_CAP, nowIso());
+  db.exec(`
+CREATE TRIGGER IF NOT EXISTS trg_village_garrison_after_village_insert
+AFTER INSERT ON villages
+BEGIN
+  INSERT OR IGNORE INTO village_garrisons (
+    village_id,
+    militia_amount,
+    archer_amount,
+    militia_progress,
+    archer_progress,
+    last_sync_at
+  ) VALUES (NEW.id, ${GARRISON_MILITIA_CAP}, ${GARRISON_ARCHER_CAP}, 0, 0, NEW.created_at);
+END;
+`);
+
   const playerColumns = db.prepare('PRAGMA table_info(players)').all();
   const hasIsBotColumn = playerColumns.some((column) => column.name === 'is_bot');
   if (!hasIsBotColumn) {
@@ -833,6 +1008,14 @@ CREATE INDEX IF NOT EXISTS idx_player_world_state_world
   ).run(nowIso());
 
   const movementColumns = db.prepare('PRAGMA table_info(army_movements)').all();
+  const hasPlanIdColumn = movementColumns.some((column) => column.name === 'plan_id');
+  if (!hasPlanIdColumn) {
+    db.prepare('ALTER TABLE army_movements ADD COLUMN plan_id TEXT').run();
+  }
+  const hasPlanLegIdColumn = movementColumns.some((column) => column.name === 'plan_leg_id');
+  if (!hasPlanLegIdColumn) {
+    db.prepare('ALTER TABLE army_movements ADD COLUMN plan_leg_id TEXT').run();
+  }
   const hasLootPriorityColumn = movementColumns.some((column) => column.name === 'loot_priority');
   if (!hasLootPriorityColumn) {
     db.prepare('ALTER TABLE army_movements ADD COLUMN loot_priority TEXT').run();
@@ -849,6 +1032,10 @@ CREATE INDEX IF NOT EXISTS idx_player_world_state_world
   if (!hasCarryIronColumn) {
     db.prepare('ALTER TABLE army_movements ADD COLUMN carry_iron INTEGER NOT NULL DEFAULT 0').run();
   }
+  db.exec(`
+CREATE INDEX IF NOT EXISTS idx_army_movements_plan_refs
+  ON army_movements(plan_id, plan_leg_id, started_at DESC, id DESC);
+`);
 
   const marketGuildTargetColumns = db.prepare('PRAGMA table_info(market_guild_targets)').all();
   const hasPausedColumn = marketGuildTargetColumns.some((column) => column.name === 'is_paused');
@@ -986,6 +1173,7 @@ DELETE FROM villages;
 DELETE FROM player_world_state;
 DELETE FROM players;
 DELETE FROM game_state;
+DELETE FROM app_meta;
 `);
 });
 
@@ -1116,6 +1304,16 @@ const seedWorld = db.transaction(() => {
   }
 
   db.prepare('INSERT INTO game_state (id, last_tick_at) VALUES (1, ?)').run(nowIso());
+  db.prepare(
+    `INSERT INTO app_meta (key, value)
+     VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(RESOURCE_BUILDING_SCALE_MIGRATION_KEY, RESOURCE_BUILDING_SCALE_MIGRATION_VERSION);
+  db.prepare(
+    `INSERT INTO app_meta (key, value)
+     VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(BUILDING_REBALANCE_MIGRATION_KEY, BUILDING_REBALANCE_MIGRATION_VERSION);
 });
 
 const ensureAbandonedVillages = db.transaction(() => {
@@ -1889,6 +2087,298 @@ const ensureVillageBuildingLevelCaps = db.transaction(() => {
   }
 });
 
+const ensureResourceBuildingScaleMigration = db.transaction(() => {
+  const currentVersion = String(
+    db.prepare('SELECT value FROM app_meta WHERE key = ? LIMIT 1').get(RESOURCE_BUILDING_SCALE_MIGRATION_KEY)?.value ??
+      '',
+  );
+  if (currentVersion === RESOURCE_BUILDING_SCALE_MIGRATION_VERSION) {
+    return;
+  }
+
+  const resourceBuildingRows = db
+    .prepare(
+      `SELECT village_id AS villageId, building_id AS buildingId, level
+       FROM buildings
+       WHERE building_id IN ('woodcutter', 'quarry', 'iron-mine')`,
+    )
+    .all();
+  const updateBuildingLevelStmt = db.prepare(
+    `UPDATE buildings
+     SET level = ?
+     WHERE village_id = ? AND building_id = ?`,
+  );
+
+  for (const row of resourceBuildingRows) {
+    const buildingId = String(row.buildingId ?? '');
+    const nextLevel = convertLegacyResourceBuildingLevelToCurrent(buildingId, Number(row.level ?? 0));
+    updateBuildingLevelStmt.run(nextLevel, Number(row.villageId), buildingId);
+  }
+
+  db.prepare(
+    `INSERT INTO app_meta (key, value)
+     VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(RESOURCE_BUILDING_SCALE_MIGRATION_KEY, RESOURCE_BUILDING_SCALE_MIGRATION_VERSION);
+});
+
+const BUILDING_REBALANCE_MIGRATION_BUILDING_IDS = Object.freeze([
+  'warehouse',
+  'townhall',
+  'residential-quarter',
+  'barracks',
+  'stable',
+  'workshop',
+]);
+const BUILDING_REBALANCE_MIGRATION_BUILDING_ID_SET = new Set(BUILDING_REBALANCE_MIGRATION_BUILDING_IDS);
+const toBuildingLevelMap = (rows) => {
+  const levelMap = {};
+  for (const buildingId of BUILDING_ORDER) {
+    levelMap[buildingId] = 0;
+  }
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const buildingId = String(row?.buildingId ?? '');
+    if (!BUILDING_ORDER.includes(buildingId)) {
+      continue;
+    }
+    levelMap[buildingId] = Math.max(0, Math.floor(Number(row?.level ?? 0)));
+  }
+  return levelMap;
+};
+const hasBuildingRequirementsSatisfied = (buildingId, projectedBuildingLevels) => {
+  const requirements = BUILDING_DEFS[buildingId]?.requiredBuildings;
+  if (!requirements || typeof requirements !== 'object') {
+    return true;
+  }
+  for (const [requiredBuildingId, requiredLevelRaw] of Object.entries(requirements)) {
+    const requiredLevel = Math.max(1, Math.floor(Number(requiredLevelRaw ?? 0)));
+    const currentLevel = Math.max(0, Math.floor(Number(projectedBuildingLevels?.[requiredBuildingId] ?? 0)));
+    if (currentLevel < requiredLevel) {
+      return false;
+    }
+  }
+  return true;
+};
+const clampProgress = (valueRaw) => {
+  const value = Number(valueRaw ?? 0);
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  if (value >= 1) {
+    return 1;
+  }
+  return value;
+};
+
+const ensureBuildingRebalanceMigration = db.transaction(() => {
+  const currentVersion = String(
+    db.prepare('SELECT value FROM app_meta WHERE key = ? LIMIT 1').get(BUILDING_REBALANCE_MIGRATION_KEY)?.value ?? '',
+  );
+  if (currentVersion === BUILDING_REBALANCE_MIGRATION_VERSION) {
+    return;
+  }
+
+  const nowIso = new Date().toISOString();
+  const nowMsRaw = Date.parse(nowIso);
+  const nowMs = Number.isFinite(nowMsRaw) ? nowMsRaw : Date.now();
+
+  const buildingPlaceholders = BUILDING_REBALANCE_MIGRATION_BUILDING_IDS.map(() => '?').join(', ');
+  const affectedBuildingRows = db
+    .prepare(
+      `SELECT village_id AS villageId, building_id AS buildingId, level
+       FROM buildings
+       WHERE building_id IN (${buildingPlaceholders})`,
+    )
+    .all(...BUILDING_REBALANCE_MIGRATION_BUILDING_IDS);
+
+  const updateBuildingLevelStmt = db.prepare(
+    `UPDATE buildings
+     SET level = ?
+     WHERE village_id = ? AND building_id = ?`,
+  );
+
+  for (const row of affectedBuildingRows) {
+    const buildingId = String(row?.buildingId ?? '');
+    const currentLevel = Math.max(0, Math.floor(Number(row?.level ?? 0)));
+    if (!BUILDING_REBALANCE_MIGRATION_BUILDING_ID_SET.has(buildingId)) {
+      continue;
+    }
+    const mappedLevel = convertLegacyBuildingLevelToCurrent(buildingId, currentLevel);
+    if (mappedLevel !== currentLevel) {
+      updateBuildingLevelStmt.run(mappedLevel, Number(row.villageId), buildingId);
+    }
+  }
+
+  const hideoutWarehouseRows = db
+    .prepare(
+      `SELECT
+          h.village_id AS villageId,
+          h.level AS hideoutLevel,
+          COALESCE(w.level, 0) AS warehouseLevel
+       FROM buildings h
+       LEFT JOIN buildings w
+         ON w.village_id = h.village_id
+        AND w.building_id = 'warehouse'
+       WHERE h.building_id = 'hideout'
+         AND h.level > 0`,
+    )
+    .all();
+  for (const row of hideoutWarehouseRows) {
+    const warehouseLevel = Math.max(0, Math.floor(Number(row?.warehouseLevel ?? 0)));
+    if (warehouseLevel >= 5) {
+      continue;
+    }
+    updateBuildingLevelStmt.run(5, Number(row.villageId), 'warehouse');
+  }
+
+  const villageIdRows = db
+    .prepare(
+      `SELECT village_id AS villageId FROM buildings WHERE building_id IN (${buildingPlaceholders})
+       UNION
+       SELECT village_id AS villageId FROM building_upgrades WHERE status = 'in_progress'`,
+    )
+    .all(...BUILDING_REBALANCE_MIGRATION_BUILDING_IDS);
+  const villageIds = villageIdRows
+    .map((row) => Number(row?.villageId ?? 0))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const uniqueVillageIds = [...new Set(villageIds)];
+
+  const selectVillageBuildingsStmt = db.prepare(
+    `SELECT building_id AS buildingId, level
+     FROM buildings
+     WHERE village_id = ?`,
+  );
+  const selectActiveUpgradesByVillageStmt = db.prepare(
+    `SELECT
+        id,
+        building_id AS buildingId,
+        from_level AS fromLevel,
+        to_level AS toLevel,
+        wood_cost AS woodCost,
+        stone_cost AS stoneCost,
+        iron_cost AS ironCost,
+        started_at AS startedAt,
+        finish_at AS finishAt
+     FROM building_upgrades
+     WHERE village_id = ?
+       AND status = 'in_progress'
+     ORDER BY datetime(started_at) ASC, id ASC`,
+  );
+  const deleteUpgradeByIdStmt = db.prepare(
+    `DELETE FROM building_upgrades
+     WHERE id = ?
+       AND village_id = ?
+       AND status = 'in_progress'`,
+  );
+  const updateUpgradeByIdStmt = db.prepare(
+    `UPDATE building_upgrades
+     SET from_level = ?,
+         to_level = ?,
+         started_at = ?,
+         finish_at = ?
+     WHERE id = ?
+       AND village_id = ?
+       AND status = 'in_progress'`,
+  );
+  const refundVillageResourcesStmt = db.prepare(
+    `UPDATE resources
+     SET wood = COALESCE(wood, 0) + ?,
+         stone = COALESCE(stone, 0) + ?,
+         iron = COALESCE(iron, 0) + ?
+     WHERE village_id = ?`,
+  );
+
+  for (const villageId of uniqueVillageIds) {
+    const buildingLevels = toBuildingLevelMap(selectVillageBuildingsStmt.all(villageId));
+    if (Number(buildingLevels.hideout ?? 0) > 0 && Number(buildingLevels.warehouse ?? 0) < 5) {
+      buildingLevels.warehouse = 5;
+      updateBuildingLevelStmt.run(5, villageId, 'warehouse');
+    }
+
+    const activeUpgrades = selectActiveUpgradesByVillageStmt.all(villageId);
+    if (!Array.isArray(activeUpgrades) || activeUpgrades.length <= 0) {
+      continue;
+    }
+
+    const projectedLevels = { ...buildingLevels };
+    const refundPocket = { wood: 0, stone: 0, iron: 0 };
+    let hasTimelineAnchor = false;
+    let cursorMs = nowMs;
+
+    for (const upgrade of activeUpgrades) {
+      const buildingId = String(upgrade?.buildingId ?? '');
+      const maxLevel = Math.max(0, Number(getMaxBuildingLevel(buildingId) ?? 0));
+      const mappedToLevel = convertLegacyBuildingLevelToCurrent(buildingId, Number(upgrade?.toLevel ?? 0));
+      const currentProjectedLevel = Math.max(0, Math.floor(Number(projectedLevels[buildingId] ?? 0)));
+      const canProgressLevel = maxLevel > currentProjectedLevel;
+      const requirementsMet = hasBuildingRequirementsSatisfied(buildingId, projectedLevels);
+      const isNoOpAfterMapping = mappedToLevel <= currentProjectedLevel;
+
+      if (!BUILDING_ORDER.includes(buildingId) || !canProgressLevel || !requirementsMet || isNoOpAfterMapping) {
+        refundPocket.wood += Math.max(0, Math.floor(Number(upgrade?.woodCost ?? 0)));
+        refundPocket.stone += Math.max(0, Math.floor(Number(upgrade?.stoneCost ?? 0)));
+        refundPocket.iron += Math.max(0, Math.floor(Number(upgrade?.ironCost ?? 0)));
+        deleteUpgradeByIdStmt.run(Number(upgrade?.id), villageId);
+        continue;
+      }
+
+      const nextFromLevel = currentProjectedLevel;
+      const nextToLevel = Math.min(maxLevel, nextFromLevel + 1);
+      if (nextToLevel <= nextFromLevel) {
+        refundPocket.wood += Math.max(0, Math.floor(Number(upgrade?.woodCost ?? 0)));
+        refundPocket.stone += Math.max(0, Math.floor(Number(upgrade?.stoneCost ?? 0)));
+        refundPocket.iron += Math.max(0, Math.floor(Number(upgrade?.ironCost ?? 0)));
+        deleteUpgradeByIdStmt.run(Number(upgrade?.id), villageId);
+        continue;
+      }
+
+      const townhallLevelForDuration = Math.max(0, Math.floor(Number(projectedLevels.townhall ?? 0)));
+      const durationSec = Math.max(1, Math.floor(Number(calculateUpgradeDurationSec(buildingId, nextFromLevel, townhallLevelForDuration))));
+      const durationMs = durationSec * 1000;
+      let startedAtMs = cursorMs;
+      let finishAtMs = cursorMs + durationMs;
+
+      if (!hasTimelineAnchor) {
+        const oldStartMs = Date.parse(String(upgrade?.startedAt ?? ''));
+        const oldFinishMs = Date.parse(String(upgrade?.finishAt ?? ''));
+        if (Number.isFinite(oldStartMs) && Number.isFinite(oldFinishMs) && oldFinishMs > oldStartMs) {
+          const oldDurationMs = oldFinishMs - oldStartMs;
+          const progress = clampProgress((nowMs - oldStartMs) / oldDurationMs);
+          const progressedMs = Math.round(progress * durationMs);
+          const remainingMs = Math.max(0, durationMs - progressedMs);
+          startedAtMs = nowMs - progressedMs;
+          finishAtMs = nowMs + remainingMs;
+        } else {
+          startedAtMs = nowMs;
+          finishAtMs = nowMs + durationMs;
+        }
+        hasTimelineAnchor = true;
+      }
+
+      cursorMs = finishAtMs;
+      updateUpgradeByIdStmt.run(
+        nextFromLevel,
+        nextToLevel,
+        new Date(startedAtMs).toISOString(),
+        new Date(finishAtMs).toISOString(),
+        Number(upgrade?.id),
+        villageId,
+      );
+      projectedLevels[buildingId] = nextToLevel;
+    }
+
+    if (refundPocket.wood > 0 || refundPocket.stone > 0 || refundPocket.iron > 0) {
+      refundVillageResourcesStmt.run(refundPocket.wood, refundPocket.stone, refundPocket.iron, villageId);
+    }
+  }
+
+  db.prepare(
+    `INSERT INTO app_meta (key, value)
+     VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(BUILDING_REBALANCE_MIGRATION_KEY, BUILDING_REBALANCE_MIGRATION_VERSION);
+});
+
 const ensureReferentialIntegrity = db.transaction(() => {
   const cleanupStatements = [
     db.prepare(
@@ -2103,6 +2593,45 @@ const ensureReferentialIntegrity = db.transaction(() => {
          )`,
     ),
     db.prepare(
+      `DELETE FROM planner_plan_events
+       WHERE NOT EXISTS (
+           SELECT 1 FROM planner_plans p WHERE p.id = planner_plan_events.plan_id
+         )
+          OR (
+           planner_plan_events.plan_leg_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM planner_plan_legs l WHERE l.id = planner_plan_events.plan_leg_id
+           )
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM planner_plan_leg_units
+       WHERE NOT EXISTS (
+         SELECT 1 FROM planner_plan_legs l WHERE l.id = planner_plan_leg_units.plan_leg_id
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM planner_plan_legs
+       WHERE NOT EXISTS (
+           SELECT 1 FROM planner_plans p WHERE p.id = planner_plan_legs.plan_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = planner_plan_legs.origin_village_id
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM planner_plans
+       WHERE NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = planner_plans.player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM players p WHERE p.id = planner_plans.target_player_id
+         )
+          OR NOT EXISTS (
+           SELECT 1 FROM villages v WHERE v.id = planner_plans.target_village_id
+         )`,
+    ),
+    db.prepare(
       `DELETE FROM academics
        WHERE NOT EXISTS (
            SELECT 1 FROM players p WHERE p.id = academics.player_id
@@ -2168,13 +2697,19 @@ const ensureReferentialIntegrity = db.transaction(() => {
     db.prepare(
       `DELETE FROM units
        WHERE NOT EXISTS (
-         SELECT 1 FROM villages v WHERE v.id = units.village_id
+          SELECT 1 FROM villages v WHERE v.id = units.village_id
+        )`,
+    ),
+    db.prepare(
+      `DELETE FROM village_garrisons
+       WHERE NOT EXISTS (
+         SELECT 1 FROM villages v WHERE v.id = village_garrisons.village_id
        )`,
     ),
     db.prepare(
       `DELETE FROM villages
        WHERE NOT EXISTS (
-         SELECT 1 FROM players p WHERE p.id = villages.player_id
+          SELECT 1 FROM players p WHERE p.id = villages.player_id
        )`,
     ),
     db.prepare(
@@ -2281,6 +2816,8 @@ ensureSpecialPlayerAccounts();
 ensurePriorityPlayerPasswords();
 ensureVillageBuildingLevelFloors();
 ensureAbandonedVillageTemplateMinimums();
+ensureResourceBuildingScaleMigration();
+ensureBuildingRebalanceMigration();
 ensureVillageBuildingLevelCaps();
 ensureHayatoOwnsAbandonedVillage13();
 ensureHayatoLocalTestVillageState();

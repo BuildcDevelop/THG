@@ -1,6 +1,7 @@
 import {
   conquerVillage,
   createAbandonedVillages,
+  getBattleReport,
   getBattleReportSummary,
   getPlayerNotificationSummary,
   getVillageSnapshot,
@@ -1021,6 +1022,57 @@ const runScenarioSummaryPollingConsistency = () => {
   };
 };
 
+const runScenarioBattleReportDetailLookup = () => {
+  clearTransientState();
+  const attacker = getPlayer(ATTACKER_USERNAME);
+  const defender = getPlayer(DEFENDER_USERNAME);
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const defenderVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+
+  setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+  applyBalancedPrestigeForRegion(Number(attacker.id), Number(defender.id), REGION_PRIMARY);
+  setVillageUnits(attackerVillage.villageId, { militia: 30 });
+  setVillageUnits(defenderVillage.villageId, {});
+  setVillageResources(defenderVillage.villageId, { wood: 2500, stone: 2500, iron: 2500 });
+
+  const attackPayload = runAttackAndGetPayload({
+    username: ATTACKER_USERNAME,
+    originVillageId: attackerVillage.villageId,
+    targetVillageId: defenderVillage.villageId,
+    units: { militia: 10 },
+    lootPriority: 'balanced',
+  });
+
+  const reports = listBattleReports(
+    ATTACKER_USERNAME,
+    {
+      page: 1,
+      pageSize: 10,
+    },
+    WORLD_PRIMARY,
+  );
+  const listedReport = reports.items[0] ?? null;
+  const detail = listedReport ? getBattleReport(ATTACKER_USERNAME, listedReport.id, WORLD_PRIMARY) : null;
+  let foreignWorldMessage = null;
+  if (listedReport) {
+    try {
+      getBattleReport(ATTACKER_USERNAME, listedReport.id, WORLD_FIRE);
+    } catch (error) {
+      foreignWorldMessage = String(error?.message ?? error);
+    }
+  }
+
+  return {
+    listedTotal: Number(reports?.total ?? 0),
+    listedReportId: Number(listedReport?.id ?? 0),
+    detailReportId: Number(detail?.id ?? 0),
+    detailOriginVillageId: Number(detail?.originVillageId ?? 0),
+    detailOutcome: String(detail?.payload?.outcome ?? ''),
+    attackOutcome: String(attackPayload?.payload?.outcome ?? ''),
+    foreignWorldMessage,
+  };
+};
+
 const runScenarioReadModelsNoTickSideEffects = () => {
   clearTransientState();
   const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
@@ -1126,7 +1178,7 @@ const runScenarioMintCoinsAccumulateShortTicks = () => {
       gold: Number(beforePocket.gold ?? 0),
       coins: Number(beforePocket.coins ?? 0),
     },
-    after: {
+    storedAfterRead: {
       gold: Number(afterPocket.gold ?? 0),
       coins: Number(afterPocket.coins ?? 0),
     },
@@ -1135,6 +1187,112 @@ const runScenarioMintCoinsAccumulateShortTicks = () => {
       coins: Number(snapshot?.resources?.coins ?? 0),
       mintCoinsPerHour: Number(snapshot?.resources?.productionPerHour?.mintCoins ?? 0),
     },
+  };
+};
+
+const runScenarioGoldMineIntegerProductionTick = () => {
+  clearTransientState();
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const villageId = Number(attackerVillage.villageId);
+  const oneHourAgoIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+  setVillageBuildings(villageId, { 'gold-mine': 1, mint: 0 });
+  setVillageResources(villageId, {
+    wood: 0,
+    stone: 0,
+    iron: 0,
+    gold: 0,
+    coins: 0,
+  });
+
+  const beforePocket = selectResourcePocketByVillageStmt.get(villageId) ?? { gold: 0 };
+  updateResourceLastSyncAtByVillageStmt.run(oneHourAgoIso, villageId);
+  updateGameStateLastTickAtStmt.run(oneHourAgoIso);
+  const snapshot = getVillageSnapshot(ATTACKER_USERNAME, villageId, WORLD_PRIMARY, 'center', {
+    includeWorldMap: false,
+  });
+
+  return {
+    beforeGold: Number(beforePocket.gold ?? 0),
+    visibleGold: Number(snapshot?.resources?.gold ?? 0),
+    productionPerHour: Number(snapshot?.resources?.productionPerHour?.gold ?? 0),
+  };
+};
+
+const runScenarioResourceOverflowPreservedOnTick = () => {
+  clearTransientState();
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const villageId = Number(attackerVillage.villageId);
+  const oneHourAgoIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+  setVillageBuildings(villageId, { warehouse: 1, woodcutter: 10, mint: 0, 'gold-mine': 0 });
+  setVillageResources(villageId, {
+    wood: 4000,
+    stone: 0,
+    iron: 0,
+    gold: 0,
+    coins: 0,
+  });
+
+  const beforePocket = selectResourcePocketByVillageStmt.get(villageId) ?? { wood: 0 };
+  updateResourceLastSyncAtByVillageStmt.run(oneHourAgoIso, villageId);
+  updateGameStateLastTickAtStmt.run(oneHourAgoIso);
+  runGameTick();
+
+  const afterPocket = selectResourcePocketByVillageStmt.get(villageId) ?? { wood: 0 };
+  const snapshot = getVillageSnapshot(ATTACKER_USERNAME, villageId, WORLD_PRIMARY, 'center', {
+    includeWorldMap: false,
+  });
+
+  return {
+    beforeWood: Number(beforePocket.wood ?? 0),
+    storedWood: Number(afterPocket.wood ?? 0),
+    cap: Number(snapshot?.resources?.cap ?? 0),
+    overflowAny: Boolean(snapshot?.resources?.overflow?.any),
+    overflowWood: Boolean(snapshot?.resources?.overflow?.wood),
+    productionPerHourWood: Number(snapshot?.resources?.productionPerHour?.wood ?? 0),
+  };
+};
+
+const runScenarioPopulationOverflowNoUnitCleanup = () => {
+  clearTransientState();
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const villageId = Number(attackerVillage.villageId);
+  const oneHourAgoIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+  setVillageBuildings(villageId, { 'residential-quarter': 1 });
+  setVillageUnits(villageId, { militia: 900 });
+  setVillageResources(villageId, {
+    wood: 0,
+    stone: 0,
+    iron: 0,
+    gold: 0,
+    coins: 0,
+  });
+
+  const beforeMilitia = Math.max(
+    0,
+    Math.floor(Number(selectUnitAmountByVillageAndUnitStmt.get(villageId, 'militia')?.amount ?? 0)),
+  );
+  updateResourceLastSyncAtByVillageStmt.run(oneHourAgoIso, villageId);
+  updateGameStateLastTickAtStmt.run(oneHourAgoIso);
+  runGameTick();
+
+  const afterMilitia = Math.max(
+    0,
+    Math.floor(Number(selectUnitAmountByVillageAndUnitStmt.get(villageId, 'militia')?.amount ?? 0)),
+  );
+  const snapshot = getVillageSnapshot(ATTACKER_USERNAME, villageId, WORLD_PRIMARY, 'center', {
+    includeWorldMap: false,
+  });
+
+  return {
+    beforeMilitia,
+    afterMilitia,
+    populationUsed: Number(snapshot?.population?.used ?? 0),
+    populationCap: Number(snapshot?.population?.cap ?? 0),
+    populationOverflowAny: Boolean(snapshot?.population?.overflow?.any),
+    populationOverflowAmount: Number(snapshot?.population?.overflow?.amount ?? 0),
   };
 };
 
@@ -1213,8 +1371,12 @@ const scenarioHandlers = new Map([
   ['knight-single-slot-per-village', runScenarioKnightSingleSlotPerVillage],
   ['prestige-retaliation-unlock', runScenarioPrestigeRetaliationUnlock],
   ['summary-polling-consistency', runScenarioSummaryPollingConsistency],
+  ['battle-report-detail-lookup', runScenarioBattleReportDetailLookup],
   ['read-models-no-tick-side-effects', runScenarioReadModelsNoTickSideEffects],
   ['mint-coins-accumulate-short-ticks', runScenarioMintCoinsAccumulateShortTicks],
+  ['gold-mine-integer-production-tick', runScenarioGoldMineIntegerProductionTick],
+  ['resource-overflow-preserved-on-tick', runScenarioResourceOverflowPreservedOnTick],
+  ['population-overflow-no-unit-cleanup', runScenarioPopulationOverflowNoUnitCleanup],
   ['map-render-scope-stress', runScenarioMapRenderScopeStress],
 ]);
 

@@ -122,6 +122,251 @@ export type RecentAttackTargetState = {
   lastIssuedAt: string;
 };
 
+export type ArmyVillageUnitSummary = {
+  unitId: string;
+  unitName: string;
+  sortOrder: number;
+  ownAmount: number;
+  supportAmount: number;
+  availableForPlanning: number;
+  visibleLabel: string;
+};
+
+export type ArmyVillageSummary = {
+  villageId: number;
+  villageName: string;
+  coordX: number;
+  coordY: number;
+  kingdom: string;
+  sortLabel: string;
+  totalOwnUnits: number;
+  totalSupportUnits: number;
+  plannerSelectable: boolean;
+  plannerSelected: boolean;
+  units: ArmyVillageUnitSummary[];
+};
+
+export type ArmyOverviewResponse = {
+  worldId: string;
+  generatedAt: string;
+  villages: ArmyVillageSummary[];
+};
+
+export type PlannerPlanStatus =
+  | 'scheduled'
+  | 'needs_reconfirmation'
+  | 'dispatching'
+  | 'completed'
+  | 'failed'
+  | 'canceled';
+
+export type PlannerPlanLegStatus = 'scheduled' | 'sent' | 'failed' | 'canceled';
+
+export type PlannerPlanDetail = {
+  plan: {
+    id: string;
+    status: PlannerPlanStatus;
+    revision: number;
+    targetVillageId: number;
+    targetPlayerId: number;
+    targetPlayerUsernameSnapshot: string;
+    targetVillageNameSnapshot: string;
+    targetKingdomSnapshot: string;
+    confirmedAt: string | null;
+    createdAt: string;
+    updatedAt: string;
+    failedAt: string | null;
+    canceledAt: string | null;
+  };
+  legs: Array<{
+    id: string;
+    order: number;
+    status: PlannerPlanLegStatus;
+    originVillageId: number;
+    originVillageNameSnapshot: string;
+    impactAtUtc: string;
+    sendAtUtc: string;
+    travelDurationSec: number;
+    units: Array<{ unitId: string; plannedAmount: number }>;
+    failCode: string | null;
+    failMessage: string | null;
+  }>;
+};
+
+export type PlannerCompletedStub = {
+  planId: string;
+  targetPlayerUsernameSnapshot: string;
+  targetVillageNameSnapshot: string;
+  targetKingdomSnapshot: string;
+  legsCount: number;
+  firstSendAtUtc: string;
+  lastSendAtUtc: string;
+  completedAt: string;
+};
+
+export type PlannerRecentTarget = {
+  targetPlayerId: number;
+  targetPlayerUsername: string;
+  targetVillageId: number;
+  targetVillageName: string;
+  targetKingdom: string;
+  coordX: number;
+  coordY: number;
+  lastUsedAt: string;
+};
+
+export type PlannerOpenResponse = {
+  worldId: string;
+  timezone: 'Europe/Prague';
+  constraints: {
+    maxLegs: 10;
+    minImpactGapMinutes: 1;
+    leadTimeSec: number;
+    activePlansPerPlayerPerWorld: 1;
+  };
+  bannerText: string;
+  activePlan: PlannerPlanDetail | null;
+  lastCompletedPlan: PlannerCompletedStub | null;
+  recentTargets: PlannerRecentTarget[];
+};
+
+export type PlannerUnitId = 'militia' | 'archer' | 'cavalry' | 'scout' | 'knight' | 'ram' | 'caravan';
+
+export type PlannerUnitAmount = {
+  unitId: PlannerUnitId;
+  amount: number;
+};
+
+export type PlannerLegInput = {
+  order: number;
+  originVillageId: number;
+  impactAtPrague: string;
+  units: PlannerUnitAmount[];
+};
+
+export type PlannerValidationIssue = {
+  code: string;
+  severity: 'warning' | 'blocked';
+  message: string;
+  scope: 'plan' | 'target' | 'leg';
+  legOrder?: number;
+  legOriginVillageId?: number;
+};
+
+export type PlannerValidationResponse = {
+  resolvedTarget: {
+    targetPlayerId: number;
+    targetPlayerUsername: string;
+    targetVillageId: number;
+    targetVillageName: string;
+    targetKingdom: string;
+    coordX: number;
+    coordY: number;
+    snapshotHash: string;
+  } | null;
+  normalizedLegs: Array<{
+    order: number;
+    originVillageId: number;
+    impactAtPrague: string;
+    impactAtUtc: string;
+    sendAtUtc: string;
+    travelDurationSec: number;
+    units: PlannerUnitAmount[];
+  }>;
+  validation: {
+    status: 'ok' | 'warning' | 'blocked';
+    issues: PlannerValidationIssue[];
+  };
+};
+
+export type ValidatePlannerPlanRequest = {
+  username: string;
+  worldId: string;
+  targetPlayerUsername: string;
+  targetVillageId?: number | null;
+  legs: PlannerLegInput[];
+};
+
+export type PlannerPlanMutationSummary = {
+  id: string;
+  status: PlannerPlanStatus;
+  revision: number;
+  confirmedAt?: string | null;
+  updatedAt?: string | null;
+  canceledAt?: string | null;
+};
+
+export type CreatePlannerPlanRequest = {
+  username: string;
+  worldId: string;
+  targetPlayerUsername: string;
+  targetVillageId?: number | null;
+  legs: PlannerLegInput[];
+  confirmation: {
+    confirmedByPlayer: boolean;
+    clientValidatedAt?: string | null;
+  };
+};
+
+export type CreatePlannerPlanResponse = {
+  plan: PlannerPlanMutationSummary;
+  activePlan: PlannerPlanDetail | null;
+  lastCompletedPlan: PlannerCompletedStub | null;
+};
+
+export type UpdatePlannerPlanRequest = {
+  username: string;
+  worldId: string;
+  expectedRevision: number;
+  targetPlayerUsername: string;
+  targetVillageId?: number | null;
+  legs: PlannerLegInput[];
+};
+
+export type UpdatePlannerPlanResponse = {
+  plan: PlannerPlanMutationSummary;
+  activePlan: PlannerPlanDetail | null;
+};
+
+export type ReconfirmPlannerPlanRequest = {
+  username: string;
+  worldId: string;
+  expectedRevision: number;
+  confirmWithConsequences: boolean;
+};
+
+export type ReconfirmPlannerPlanResponse = {
+  plan: PlannerPlanMutationSummary;
+  activePlan: PlannerPlanDetail | null;
+};
+
+export type CancelPlannerPlanRequest = {
+  username: string;
+  worldId: string;
+  expectedRevision: number;
+};
+
+export type CancelPlannerPlanResponse = {
+  plan: PlannerPlanMutationSummary;
+  activePlan: PlannerPlanDetail | null;
+};
+
+export type PlannerPlanEventItem = {
+  id: string;
+  planId: string;
+  planLegId: string | null;
+  eventType: string;
+  severity: 'info' | 'warning' | 'error';
+  message: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type PlannerPlanEventsResponse = {
+  items: PlannerPlanEventItem[];
+  nextCursor: string | null;
+};
+
 export type LeaderboardRow = {
   rank: number;
   playerId: number;
@@ -135,6 +380,13 @@ export type LeaderboardRow = {
   attackerRank?: number | null;
   defenderRank?: number | null;
   supporterRank?: number | null;
+};
+
+export type PlayerRankingSummary = {
+  rank: number | null;
+  attackerRank: number | null;
+  defenderRank: number | null;
+  supporterRank: number | null;
 };
 
 export type KingdomHubMember = {
@@ -324,6 +576,8 @@ export type WorldMapSnapshotResponse = {
   world: {
     id?: string;
     name?: string;
+    snapshotKey?: string;
+    version?: string | null;
     region: number;
     originX: number;
     originY: number;
@@ -335,6 +589,8 @@ export type WorldMapSnapshotResponse = {
 
 export type MercenaryContractState = {
   id: number;
+  villageId?: number;
+  villageName?: string;
   status: string;
   orderedAt: string;
   arriveAt: string;
@@ -344,12 +600,30 @@ export type MercenaryContractState = {
   unitAmount: number;
 };
 
+export type MercenaryHiringOptionState = {
+  villageId: number;
+  villageName: string;
+  coordX: number;
+  coordY: number;
+  coins: number;
+  hasEnoughCoins: boolean;
+  canHire: boolean;
+  blockedReason: string | null;
+  isCurrentVillage: boolean;
+  activeContractStatus: string | null;
+  activeContractArriveAt: string | null;
+  activeContractExpiresAt: string | null;
+  activeContractUnitAmount: number;
+};
+
 export type GameStateResponse = {
   serverTime: string;
+  stateVersion?: string;
   player: {
     id: number;
     username: string;
   };
+  playerRanking: PlayerRankingSummary;
   kingdomHub?: KingdomHubState;
   villages: {
     id: number;
@@ -381,6 +655,8 @@ export type GameStateResponse = {
   world: {
     id?: string;
     name?: string;
+    snapshotKey?: string;
+    version?: string | null;
     region: number;
     originX: number;
     originY: number;
@@ -419,10 +695,46 @@ export type GameStateResponse = {
     cap: number;
     available: number;
     academicsUsed?: number;
+    breakdown?: {
+      buildings: number;
+      unitsHome: number;
+      unitsAway: number;
+      academics: number;
+      garrisonReserved: number;
+      recruitmentReserved: number;
+    };
+    overflow?: {
+      amount: number;
+      any: boolean;
+    };
+  };
+  garrison: {
+    isUnlocked?: boolean;
+    activeCap?: number;
+    reservedPopulation: number;
+    totalCap: number;
+    totalUnits: number;
+    lastSyncAt: string | null;
+    units: {
+      militia: {
+        amount: number;
+        cap: number;
+        missing: number;
+        refillSecPerUnit: number;
+        nextRefillSec: number | null;
+      };
+      archer: {
+        amount: number;
+        cap: number;
+        missing: number;
+        refillSecPerUnit: number;
+        nextRefillSec: number | null;
+      };
+    };
   };
   buildings: GameBuildingState[];
   units: GameUnitState[];
-  leaderboard: LeaderboardRow[];
+  leaderboard?: LeaderboardRow[];
   activeUpgrade: {
     id: number;
     buildingId: string;
@@ -487,6 +799,14 @@ export type GameStateResponse = {
   mercenaries?: {
     contracts: MercenaryContractState[];
     cooldownRemainingSec: number;
+    cooldownEndsAt?: string | null;
+    cooldownSec?: number;
+    deliveryDelaySec?: number;
+    durationSec?: number;
+    contractCoinCost?: number;
+    contractUnitAmount?: number;
+    unlocked?: boolean;
+    hiringOptions?: MercenaryHiringOptionState[];
   };
   rules?: {
     nightMode: {
@@ -507,6 +827,16 @@ export type GameStateResponse = {
     maxBuildingLevel: number;
     maxUnitCount: number | null;
   };
+};
+
+export type FetchGameStateOptions = {
+  includeWorldMap?: boolean;
+  includeLeaderboard?: boolean;
+  includeKingdomHub?: boolean;
+  includeResearch?: boolean;
+  includeMarket?: boolean;
+  includeMercenaries?: boolean;
+  includeRules?: boolean;
 };
 
 export type LoginResponse = {
@@ -869,6 +1199,19 @@ export type CancelBuildingUpgradeResult = {
   refunded: ResourceCost;
 };
 
+export type CancelAllBuildingUpgradesResult = {
+  canceledCount: number;
+  refunded: ResourceCost;
+};
+
+export type ReorderBuildingUpgradeQueueResult = {
+  movedUpgradeId: number;
+  fromIndex: number;
+  toIndex: number;
+  queueLength: number;
+  moved: boolean;
+};
+
 export type CancelRecruitmentResult = {
   canceledRecruitmentId: number;
   unitId: string;
@@ -910,6 +1253,7 @@ export type AdjustResearchProjectAcademicsResult = {
 export type HireMercenaryContractResult = {
   contractId: number;
   villageId: number;
+  villageName?: string;
   orderedAt: string;
   arriveAt: string;
   expiresAt: string;
@@ -1294,6 +1638,8 @@ type ApiOk<T> = {
 type ApiError = {
   ok: false;
   error: string;
+  errorCode?: string;
+  details?: Record<string, unknown>;
 };
 
 const rawBaseUrl = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/+$/, '') ?? '';
@@ -1431,13 +1777,15 @@ export const fetchAdminPlayers = async (): Promise<AdminPlayerRow[]> => {
 };
 
 export const fetchGameState = async (
-  username: string,
+  _username: string,
   villageId?: number | null,
   worldId?: string | null,
   spawnDirection?: SpawnDirection | string | null,
-  includeWorldMap?: boolean,
+  options?: FetchGameStateOptions | boolean,
 ): Promise<GameStateResponse> => {
-  const params = new URLSearchParams({ username });
+  const resolvedOptions: FetchGameStateOptions =
+    typeof options === 'boolean' ? { includeWorldMap: options } : options ?? {};
+  const params = new URLSearchParams();
   if (villageId != null && Number.isFinite(villageId)) {
     params.set('villageId', String(villageId));
   }
@@ -1447,20 +1795,38 @@ export const fetchGameState = async (
   if (spawnDirection != null && String(spawnDirection).trim() !== '') {
     params.set('spawnDirection', String(spawnDirection).trim());
   }
-  if (includeWorldMap === true) {
-    params.set('includeWorldMap', '1');
+  if (resolvedOptions.includeWorldMap != null) {
+    params.set('includeWorldMap', resolvedOptions.includeWorldMap ? '1' : '0');
+  }
+  if (resolvedOptions.includeLeaderboard != null) {
+    params.set('includeLeaderboard', resolvedOptions.includeLeaderboard ? '1' : '0');
+  }
+  if (resolvedOptions.includeKingdomHub != null) {
+    params.set('includeKingdomHub', resolvedOptions.includeKingdomHub ? '1' : '0');
+  }
+  if (resolvedOptions.includeResearch != null) {
+    params.set('includeResearch', resolvedOptions.includeResearch ? '1' : '0');
+  }
+  if (resolvedOptions.includeMarket != null) {
+    params.set('includeMarket', resolvedOptions.includeMarket ? '1' : '0');
+  }
+  if (resolvedOptions.includeMercenaries != null) {
+    params.set('includeMercenaries', resolvedOptions.includeMercenaries ? '1' : '0');
+  }
+  if (resolvedOptions.includeRules != null) {
+    params.set('includeRules', resolvedOptions.includeRules ? '1' : '0');
   }
   const payload = await request<ApiOk<GameStateResponse>>(`/api/v1/state?${params.toString()}`);
   return payload.data;
 };
 
 export const fetchWorldMapSnapshot = async (
-  username: string,
+  _username: string,
   villageId?: number | null,
   worldId?: string | null,
   spawnDirection?: SpawnDirection | string | null,
 ): Promise<WorldMapSnapshotResponse> => {
-  const params = new URLSearchParams({ username });
+  const params = new URLSearchParams();
   if (villageId != null && Number.isFinite(villageId)) {
     params.set('villageId', String(villageId));
   }
@@ -1472,6 +1838,111 @@ export const fetchWorldMapSnapshot = async (
   }
   const payload = await request<ApiOk<WorldMapSnapshotResponse>>(`/api/v1/world-map?${params.toString()}`);
   return payload.data;
+};
+
+export const fetchArmyOverview = async (
+  username: string,
+  worldId?: string | null,
+): Promise<ArmyOverviewResponse> => {
+  const params = new URLSearchParams({ username });
+  if (worldId != null && String(worldId).trim() !== '') {
+    params.set('worldId', String(worldId).trim());
+  }
+  const payload = await request<ApiOk<ArmyOverviewResponse>>(`/api/v1/army/overview?${params.toString()}`);
+  return payload.data;
+};
+
+export const fetchPlannerOpen = async (
+  username: string,
+  worldId?: string | null,
+): Promise<PlannerOpenResponse> => {
+  const params = new URLSearchParams({ username });
+  if (worldId != null && String(worldId).trim() !== '') {
+    params.set('worldId', String(worldId).trim());
+  }
+  const payload = await request<ApiOk<PlannerOpenResponse>>(`/api/v1/planner/open?${params.toString()}`);
+  return payload.data;
+};
+
+export const validatePlannerPlan = async (
+  payload: ValidatePlannerPlanRequest,
+): Promise<PlannerValidationResponse> => {
+  const response = await request<ApiOk<PlannerValidationResponse>>('/api/v1/planner/validate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return response.data;
+};
+
+export const createPlannerPlan = async (
+  payload: CreatePlannerPlanRequest,
+): Promise<CreatePlannerPlanResponse> => {
+  const response = await request<ApiOk<CreatePlannerPlanResponse>>('/api/v1/planner/plans', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return response.data;
+};
+
+export const updatePlannerPlan = async (
+  planId: string,
+  payload: UpdatePlannerPlanRequest,
+): Promise<UpdatePlannerPlanResponse> => {
+  const response = await request<ApiOk<UpdatePlannerPlanResponse>>(
+    `/api/v1/planner/plans/${encodeURIComponent(String(planId))}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  );
+  return response.data;
+};
+
+export const reconfirmPlannerPlan = async (
+  planId: string,
+  payload: ReconfirmPlannerPlanRequest,
+): Promise<ReconfirmPlannerPlanResponse> => {
+  const response = await request<ApiOk<ReconfirmPlannerPlanResponse>>(
+    `/api/v1/planner/plans/${encodeURIComponent(String(planId))}/reconfirm`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+  return response.data;
+};
+
+export const cancelPlannerPlan = async (
+  planId: string,
+  payload: CancelPlannerPlanRequest,
+): Promise<CancelPlannerPlanResponse> => {
+  const response = await request<ApiOk<CancelPlannerPlanResponse>>(
+    `/api/v1/planner/plans/${encodeURIComponent(String(planId))}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+  return response.data;
+};
+
+export const fetchPlannerPlanEvents = async (
+  username: string,
+  worldId: string,
+  planId: string,
+  options?: { limit?: number; cursor?: string | null },
+): Promise<PlannerPlanEventsResponse> => {
+  const params = new URLSearchParams({ username, worldId });
+  if (options?.limit != null && Number.isFinite(options.limit) && options.limit > 0) {
+    params.set('limit', String(Math.floor(options.limit)));
+  }
+  if (options?.cursor != null && String(options.cursor).trim() !== '') {
+    params.set('cursor', String(options.cursor).trim());
+  }
+  const response = await request<ApiOk<PlannerPlanEventsResponse>>(
+    `/api/v1/planner/plans/${encodeURIComponent(String(planId))}/events?${params.toString()}`,
+  );
+  return response.data;
 };
 
 export const upgradeBuilding = async (
@@ -1520,6 +1991,52 @@ export const cancelBuildingUpgrade = async (
     {
       method: 'POST',
       body: JSON.stringify({ username, villageId, worldId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const cancelAllBuildingUpgrades = async (
+  username: string,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: CancelAllBuildingUpgradesResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: CancelAllBuildingUpgradesResult }>(
+    '/api/v1/buildings/upgrades/cancel-all',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, villageId, worldId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const reorderBuildingUpgradeQueue = async (
+  username: string,
+  upgradeId: number,
+  targetIndex: number,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: ReorderBuildingUpgradeQueueResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: ReorderBuildingUpgradeQueueResult }>(
+    '/api/v1/buildings/upgrades/reorder',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        upgradeId,
+        targetIndex,
+        villageId,
+        worldId,
+      }),
     },
   );
 
@@ -1925,6 +2442,21 @@ export const fetchBattleReports = async (
   return payload.data;
 };
 
+export const fetchBattleReportById = async (
+  username: string,
+  reportId: number,
+  worldId?: string | null,
+): Promise<BattleReportItem> => {
+  const params = new URLSearchParams({ username });
+  if (worldId != null && String(worldId).trim() !== '') {
+    params.set('worldId', String(worldId).trim());
+  }
+  const payload = await request<ApiOk<BattleReportItem>>(
+    `/api/v1/reports/${encodeURIComponent(String(reportId))}?${params.toString()}`,
+  );
+  return payload.data;
+};
+
 export const fetchBattleReportsSummary = async (
   username: string,
   worldId?: string | null,
@@ -2025,7 +2557,7 @@ export const deleteGameActivity = async (
 ): Promise<GameActivityMutationResult> => mutateGameActivity(username, notificationId, 'delete', worldId);
 
 export const fetchCommunicationInbox = async (
-  username: string,
+  _username: string,
   options?: {
     threadId?: number | null;
     beforeMessageId?: number | null;
@@ -2034,7 +2566,7 @@ export const fetchCommunicationInbox = async (
     search?: string | null;
   },
 ): Promise<CommunicationInboxResponse> => {
-  const params = new URLSearchParams({ username });
+  const params = new URLSearchParams();
   if (options?.threadId != null && Number.isFinite(options.threadId) && Number(options.threadId) > 0) {
     params.set('threadId', String(Math.floor(Number(options.threadId))));
   }
