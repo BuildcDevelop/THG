@@ -778,3 +778,11 @@ Entry template:
 - Files: server/gameService.js, arch/chat-changelog.md
 - Verification: node isolated repro (default-name conquest rename OK: `Leno Torreya` -> `Leno Hayato`), npm run build (OK)
 - Notes: Tím se eliminuje UX záměna „jsme na cizím léně“ po převzetí osady, bez zásahu do ownership/security modelu.
+
+## 2026-03-15 13:02 | branch: main
+
+- Request: Dokoncit produkcni backend deploy fixu na `main` pres SSH (uzivatel doplnil SSH klic) a dostat zmenu live.
+- Summary: Pri prvnim API-only rolloutu po nahrani samotneho `server/gameService.js` backend spadl na runtime import mismatch (`calculateRecruitmentTimeReductionPct`), protoze `/home/patrik/THG` nebyl konzistentni git checkout. Okamzite jsem provedl rollback na predchozi stabilni image `9210e30e1495`, obnovil healthy stav, nasledne nasadil kompletni release snapshot `main@7ed012c` (archive + rsync bez `server/data`), rebuildnul image `thg-api` a bez zasahu do proxy sluzeb znovu nahradil jen API kontejner na siti `zane`.
+- Files: arch/chat-changelog.md
+- Verification: `docker ps`/`docker logs` on prod (thg-api healthy), `curl https://thg.89-167-89-109.sslip.io/api/health` (OK, `deployment.buildId=build-0.1.11`), runtime rollback probe (OK).
+- Notes: Pricina failu byl partial-file deploy; produkce je po finalnim rolloutu stabilni a bezi na kompletni verzi kodu s fixem premenovani defaultnich nazvu pri conquestu.
