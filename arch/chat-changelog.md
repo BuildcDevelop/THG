@@ -834,3 +834,11 @@ Entry template:
 - Files: arch/chat-changelog.md, .gitignore, README.md, package.json, server/db.js, server/index.js, server/runtimeProfile.js, scripts/run-local-client.mjs, scripts/run-local-server.mjs, tests/config/local-runtime-profile.test.mjs, vite.config.ts
 - Verification: `node --test tests/config/local-runtime-profile.test.mjs` (3/3 PASS), `npm run build` (OK), `Test-Path server/data/branches/develop/game.sqlite` (True)
 - Notes: Produkční/self-host deploy s explicitním `TLD_DATA_DIR` zůstává beze změny; branch oddělení se týká jen lokálního development runtime.
+
+## 2026-03-15 15:44 | branch: develop
+
+- Request: Pushnout připravené změny z `develop` na remote.
+- Summary: Zapsal jsem auditní záznam k branch-aware oddělení lokálního runtime a pushnul aktuální `develop` na `origin`, včetně commitů s oddělením lokálních branch dat a navazujícího changelogu.
+- Files: arch/chat-changelog.md
+- Verification: `git push origin develop` (OK)
+- Notes: Lokální `.env.develop.local`, `.env.main.local` a branch-specific SQLite data zůstávají ignorované a neodesílají se do repozitáře.
