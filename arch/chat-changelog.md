@@ -810,3 +810,11 @@ Entry template:
 - Files: src/api/gameApi.ts, src/App.css, arch/chat-changelog.md
 - Verification: `npm run build` (OK)
 - Notes: Nešlo o globální leak vlastnictví v backendu; šlo o hardening request kontextu + UX čitelnost mapy napříč účty/paletami.
+
+## 2026-03-15 15:18 | branch: develop
+
+- Request: Přenést aktuální stav projektu z `main` do `develop` (včetně backend změn); případně dorovnat prostředí/data pro localhost a test.
+- Summary: Provedl jsem synchronizaci `develop` pomocí fast-forward merge `main -> develop` (`f8d62ec -> 0581a99`) bez konfliktů a následně push na `origin/develop`. Ověřil jsem i backend env/data kontext: verzovaný je pouze `server/data/game.seed.sqlite.backup`; `\.env.local` a runtime SQLite (`server/data/game.sqlite*`) jsou lokální/ignorované soubory, takže se přes Git mezi větvemi nepřenášejí.
+- Files: arch/chat-changelog.md, server/botCityStates.js, server/data/game.seed.sqlite.backup, server/db.js, server/gameService.js, server/index.js, server/sqliteSnapshot.js, src/App.css, src/api/gameApi.ts, src/pages/GamePage.tsx, src/pages/WorldsPage.tsx, tests/regression/game-rules.scenario.mjs
+- Verification: `git rev-list --left-right --count origin/develop...origin/main` (0 29), `git merge --ff-only main` (OK), `git push origin develop` (OK)
+- Notes: `develop` teď obsahuje aktuální stav z `main`; env/data mimo verzované soubory je potřeba sdílet mimo Git (ručně/skriptem/secret managerem).
