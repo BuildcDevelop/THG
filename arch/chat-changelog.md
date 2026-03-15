@@ -648,3 +648,11 @@ Entry template:
 - Files: src/pages/GamePage.tsx, arch/chat-changelog.md
 - Verification: `npm run build` (OK)
 - Notes: UI-only změna prezentace; bez změny datového modelu, mapových interakcí nebo backendu.
+
+## 2026-03-15 10:18 | branch: develop
+
+- Request: Merge větve `feat/build-0.1.13` do `develop`, otestovat (kvůli verzím 0.11/0.12) a spustit localhost na `5173` pro ověření.
+- Summary: Přepnul jsem repozitář na `develop` a provedl fast-forward merge z `feat/build-0.1.13` bez konfliktů (`8855e6d -> e7ec035`). Následně jsem spustil regresní testy a produkční build; vše prošlo. Pro ruční ověření jsem spustil frontend (`vite`) na `http://localhost:5173` a backend na `http://localhost:3001`; frontend vrací HTTP 200.
+- Files: arch/chat-changelog.md, server/gameService.js, src/App.css, src/api/gameApi.ts, src/pages/GamePage.tsx
+- Verification: `git merge feat/build-0.1.13` (fast-forward); `npm run test:regression` (28/28 PASS); `npm run build` (OK); `netstat -ano | Select-String ":5173"` (LISTENING); `Invoke-WebRequest http://localhost:5173` (200)
+- Notes: Build hlásí pouze warning o velikosti JS chunku nad 500 kB (bez failu buildu).
