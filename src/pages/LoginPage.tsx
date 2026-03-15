@@ -19,38 +19,40 @@ type ProjectUpdate = {
 
 const PROJECT_UPDATES_FALLBACK: ProjectUpdate[] = [
   {
-    id: 'v0-1-06',
-    date: '2026-02-25',
-    title: 'Verze 0.1.06: Rework boje, kořisti a plánování útoku',
+    id: 'v0-1-13',
+    date: '2026-03-15',
+    title: 'Verze 0.1.13: UI shell, village panel a minimapa',
     summary:
-      'Prázdné osady už nezpůsobují útočníkovi bojové ztráty, beranidla ničí úrovně brány (1:1) a po průrazu se spotřebují. Zvěd jde posílat ve smíšených útocích, limit osad je 6 na každý svět zvlášť, kořist nesou všechny bojové jednotky kromě zvěda a beranidla, útoky jsou vyváženější a na mapě jsou hráčské osady výrazněji zvýrazněné. Nově je výchozí drancování Rovnoměrně a přibylo „Vybrat všechny aktuální jednotky“.',
+      'Lepší ukotvení hlavního UI na herní kontejner, výrazný redesign panelu léna (posádka + podpora) a přesnější centrování mapy/minimapy pro rychlou orientaci během hry.',
     status: 'live',
   },
   {
-    id: 'v0-1-0-05',
-    date: '2026-02-23',
-    title: 'Verze 0.1.0.05: Izolace herních dat podle světa',
+    id: 'v0-1-12',
+    date: '2026-03-14',
+    title: 'Verze 0.1.12: Planner flow, armáda a reporty',
     summary:
-      'Království, pozvánky, audity a reset postupu jsou striktně oddělené po světech. Účet hráče zůstává univerzální napříč platformou.',
+      'Stabilizace Planneru, lepší práce s žoldáky v Armádě, opravy detailu battle reportů a panel-scoped optimalizace datového načítání v klientu.',
     status: 'live',
   },
   {
-    id: 'spawn-random-1-3',
-    date: '2026-02-21',
-    title: 'Náhodný rozestup spawnu 1-3',
-    summary: 'Nové osady i opuštěné osady kolem spawnu se rozmisťují v náhodném rozestupu 1-3 políčka.',
+    id: 'v0-1-11',
+    date: '2026-03-13',
+    title: 'Verze 0.1.11: Planovač v1 a koordinace útoků',
+    summary:
+      'Do hry přibyl Planovač v1 (DB + API + UI), validace více vln útoků a příprava koordinovaných armádních akcí z více lén na jeden cíl.',
     status: 'live',
   },
   {
-    id: 'scout-intel',
-    date: '2026-02-21',
-    title: 'Nová jednotka Zvěd',
-    summary: 'Zvěd přináší špionážní hlášení o budovách a jednotkách, při ztrátách mohou být data přibližná.',
+    id: 'v0-1-09',
+    date: '2026-03-06',
+    title: 'Verze 0.1.09: Prestižní balanc boje a nová ekonomika',
+    summary:
+      'Prestige anti-snowball systém, nové ekonomické budovy (zlato/mince) a regionální výzkumný progres rozšířily strategické možnosti střední hry.',
     status: 'live',
   },
   {
     id: 'discord-channel',
-    date: '2026-02-17',
+    date: '2026-03-01',
     title: 'Komunitní komunikace přes Discord',
     summary: 'Všechny novinky, patch notes a koordinace jsou centralizované na Discordu.',
     status: 'live',
@@ -58,9 +60,17 @@ const PROJECT_UPDATES_FALLBACK: ProjectUpdate[] = [
     hrefLabel: 'Přejít na Discord',
   },
   {
-    id: 'ruleset-plan',
-    date: '2026-03-10',
-    title: 'Plný svět podle pravidel',
+    id: 'v0-1-14-track',
+    date: '2026-03-20',
+    title: 'Verze 0.1.14: Balanc, výkon a quality-of-life',
+    summary:
+      'Dolaďování ekonomiky a boje podle reálného hraní, redukce zbytečné zátěže UI a další UX zlepšení pro mapu, armádu a správu lén.',
+    status: 'in-progress',
+  },
+  {
+    id: 'ruleset-track',
+    date: '2026-04-01',
+    title: 'Směr: svět podle plných pravidel',
     summary: 'Další krok je dotažení ekonomiky, boje a mapové dominance podle kompletních pravidel.',
     status: 'planned',
   },
@@ -237,22 +247,40 @@ export const LoginPage = () => {
       <main className="login-shell app-content-container">
         <section className="intro-panel">
           <p className="intro-eyebrow">TLD Portál</p>
-          <h1>Dominion čeká na dalšího velitele.</h1>
+          <h1>Dominion roste. Každý týden je vidět posun.</h1>
           <p className="intro-text">
-            Globální herní účet, volba světa po přihlášení a strategické jádro inspirované
-            legendou Divokých Kmenů. Buduj, koordinuj aliance a postupně ovládni mapu.
+            Poslední týdny přinesly tři velké update bloky (0.1.11 až 0.1.13): Planovač v1,
+            posádky a žoldáky, ranking UX i výrazný polish mapy a panelů. Přidej se do světa,
+            který se aktivně vyvíjí.
           </p>
           <div className="intro-tags">
-            <span>Globální účet napříč světy</span>
-            <span>Case-insensitive herní nick</span>
-            <span>Inspirace: Divoké Kmeny</span>
+            <span>3 velké updaty za poslední dny</span>
+            <span>Planovač v1 je LIVE</span>
+            <span>Posádky, žoldáci, ranking a minimapa</span>
+            <span>Patch notes průběžně na Discordu</span>
           </div>
 
           <section className="intro-updates-card">
-            <h3>Herní updaty</h3>
+            <article className="release-highlight" aria-live="polite">
+              <p className="release-highlight-top">
+                <span className="release-highlight-badge">0.1.13 LIVE</span>
+                <time dateTime="2026-03-15">15. 3. 2026</time>
+              </p>
+              <h4>Viditelný progres za poslední týdny</h4>
+              <p>
+                Planner v1, armádní vrstva s posádkami a žoldáky, redesign shellu hry i
+                přehlednější village panel. Hra se posouvá v krátkých release iteracích.
+              </p>
+              <div className="release-highlight-pills" aria-label="Souhrn posledního releasu">
+                <span>Planner v1</span>
+                <span>Posádky + žoldáci</span>
+                <span>Mapa + minimapa UX</span>
+              </div>
+            </article>
+            <h3>Progress & patch notes</h3>
             <p>
-              Novinky k TLD, patch notes a komunitní koordinace najdeš na oficiálním Discord
-              kanálu.
+              Poslední dodané kroky vývoje a plán dalších iterací. Detailní changelogy a komunitní
+              koordinaci najdeš na oficiálním Discord kanálu.
             </p>
             <a
               className="intro-discord-link"
@@ -288,34 +316,34 @@ export const LoginPage = () => {
               onClick={() => setTimelineOpen((previous) => !previous)}
               aria-expanded={isTimelineOpen}
             >
-              Časová osa pro projekt TLD
+              Roadmapa TLD: co je hotovo a co následuje
             </button>
             {isTimelineOpen ? (
               <div className="timeline-card">
                 <p>
-                  Připravuji projekt pro první funkční prototyp s následným plánem udělat hrající
-                  svět dle skutečných pravidel.
+                  Vývoj jde po krátkých iteracích: nejdřív stabilní základ, potom strategické
+                  vrstvy a průběžný UX polish podle reálného hraní.
                 </p>
                 <ol>
                   <li>
                     <span className="timeline-dot done" aria-hidden="true" />
                     <div>
-                      <strong>Architektura a herní jádro</strong>
+                      <strong>Herní jádro + multi-world základ</strong>
                       <small>Dokončeno</small>
                     </div>
                   </li>
                   <li>
                     <span className="timeline-dot current" aria-hidden="true" />
                     <div>
-                      <strong>První funkční prototyp</strong>
-                      <small>Aktuální fáze</small>
+                      <strong>Strategická vrstva: Planner, posádka, žoldáci, UI polish</strong>
+                      <small>Aktuálně LIVE a průběžně laděno</small>
                     </div>
                   </li>
                   <li>
                     <span className="timeline-dot next" aria-hidden="true" />
                     <div>
-                      <strong>Svět podle plných pravidel</strong>
-                      <small>Směr dalšího vývoje</small>
+                      <strong>0.1.14+: balanc, výkon a svět podle plných pravidel</strong>
+                      <small>Následující milník</small>
                     </div>
                   </li>
                 </ol>
