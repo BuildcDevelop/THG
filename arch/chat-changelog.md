@@ -738,3 +738,11 @@ Entry template:
 - Files: src/pages/LoginPage.tsx, src/App.css, arch/chat-changelog.md
 - Verification: npm run build (OK)
 - Notes: UI-only vizuální enhancement bez změn datových toků, pollingu nebo backendu.
+
+## 2026-03-15 11:51 | branch: main
+
+- Request: Dotáhnout změnu z develop na produkci (main) a nasadit ji live.
+- Summary: Provedl jsem merge develop -> main s konfliktem jen v arch/chat-changelog.md (vyřešeno zachováním obou historií), ověřil produkční build, pushnul main na origin (6feff05) a nasadil frontend na Netlify do produkce.
+- Files: arch/chat-changelog.md, src/pages/LoginPage.tsx, src/App.css, public/data/project-updates.json
+- Verification: npm run build (OK), git push origin main (OK), npx netlify deploy --prod (OK), GET https://thelastdominion.netlify.app (200), GET https://thg.89-167-89-109.sslip.io/api/health (OK; backend build 0.1.09).
+- Notes: Tato release změna je frontend-only; backend deploy nebyl potřeba pro samotný obsah homepage.
