@@ -115,16 +115,7 @@ const resolvedCorsOrigin =
         .map((entry) => entry.trim())
         .filter(Boolean)
     : null;
-const localCorsOrigins = new Set([
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'http://localhost:5174',
-  'http://127.0.0.1:5174',
-  'http://localhost:4173',
-  'http://127.0.0.1:4173',
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-]);
+const LOCAL_CORS_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 if (isProductionRuntime && !resolvedCorsOrigin) {
   throw new Error("[backend] V produkci musi byt nastavene CORS_ORIGIN.");
 }
@@ -163,6 +154,14 @@ const normalizeComparableUsername = (value) =>
   String(value ?? '')
     .trim()
     .toLocaleLowerCase('cs-CZ');
+const isAllowedLocalCorsOrigin = (origin) => {
+  try {
+    const parsedOrigin = new URL(String(origin ?? ''));
+    return LOCAL_CORS_HOSTNAMES.has(parsedOrigin.hostname);
+  } catch {
+    return false;
+  }
+};
 const isAdminUsername = (username) => ADMIN_USERNAMES.has(normalizeComparableUsername(username));
 const requireAdminUserOrThrow = (username) => {
   if (!isAdminUsername(username)) {
@@ -285,7 +284,7 @@ app.use(
               callback(null, true);
               return;
             }
-            callback(null, localCorsOrigins.has(origin));
+            callback(null, isAllowedLocalCorsOrigin(origin));
           },
           credentials: true,
         },

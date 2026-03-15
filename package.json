@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n client,server \"npm run dev:client\" \"npm run dev:server\"",
-    "dev:client": "vite",
-    "dev:server": "node server/index.js",
+    "dev:client": "node scripts/run-local-client.mjs",
+    "dev:server": "node scripts/run-local-server.mjs",
     "dev:netlify": "npx netlify dev",
     "build": "tsc -b && vite build",
     "test:regression": "node --test tests/regression/game-rules.regression.test.mjs",
@@ -14,7 +14,7 @@
     "report:stage6": "node scripts/generate-stage6-metrics-report.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
-    "server": "node server/index.js"
+    "server": "node scripts/run-local-server.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",

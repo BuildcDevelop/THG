@@ -826,3 +826,11 @@ Entry template:
 - Files: arch/chat-changelog.md
 - Verification: not run
 - Notes: Pro úplné oddělení `main` a `develop` je potřeba samostatný data dir a samostatné env nastavení pro každé prostředí.
+
+## 2026-03-15 15:21 | branch: develop
+
+- Request: Oddělit `main` a `develop` tak, aby nesdílely localhost prostředí ani runtime game data.
+- Summary: Přidal jsem branch-aware lokální runtime profil. `npm run dev` a `npm run server` teď podle aktuální branche automaticky nastavují vlastní porty, `VITE_API_BASE` a branch-specific `TLD_DATA_DIR`; backend defaultně zapisuje do `server/data/branches/<branch>/game.sqlite` místo sdíleného `server/data/game.sqlite`. Současně jsem doplnil jednorázovou migraci staré sdílené lokální DB do nové branch složky při prvním startu, uvolnil lokální CORS pro localhost porty a aktualizoval README. Ve workspace jsem vytvořil i lokální `.env.develop.local` a `.env.main.local`, ale ty zůstávají ignorované mimo Git.
+- Files: arch/chat-changelog.md, .gitignore, README.md, package.json, server/db.js, server/index.js, server/runtimeProfile.js, scripts/run-local-client.mjs, scripts/run-local-server.mjs, tests/config/local-runtime-profile.test.mjs, vite.config.ts
+- Verification: `node --test tests/config/local-runtime-profile.test.mjs` (3/3 PASS), `npm run build` (OK), `Test-Path server/data/branches/develop/game.sqlite` (True)
+- Notes: Produkční/self-host deploy s explicitním `TLD_DATA_DIR` zůstává beze změny; branch oddělení se týká jen lokálního development runtime.
