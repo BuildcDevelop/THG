@@ -698,3 +698,13 @@ Entry template:
 - Files: arch/chat-changelog.md, server/gameService.js, src/App.css, src/api/gameApi.ts, src/pages/GamePage.tsx
 - Verification: `git merge feat/build-0.1.13` (fast-forward); `npm run test:regression` (28/28 PASS); `npm run build` (OK); `netstat -ano | Select-String ":5173"` (LISTENING); `Invoke-WebRequest http://localhost:5173` (200)
 - Notes: Build hlásí pouze warning o velikosti JS chunku nad 500 kB (bez failu buildu).
+
+## 2026-03-15 11:03 | branch: main
+
+- Request: Provest merge develop do main (produkce), nasadit frontend na Netlify a rozjet backend deploy.
+- Summary: Commitnul jsem lokalni staged zmenu changelogu na main, merge-nul develop -> main s manualnim vyresenim konfliktu (rch/chat-changelog.md, server/db.js, server/index.js, src/pages/GamePage.tsx), overil build a pushnul main na origin ( ddc87f). Frontend jsem nasadil na Netlify produkcne (https://thelastdominion.netlify.app, deploy 69b6838b5d704b3b61c55714). Backend deploy skrze Docker na tomto hostu selhal, protoze neni dostupny Docker daemon/engine; live backend endpoint je dostupny, ale stale hlasi uild-0.1.09.
+- Files: arch/chat-changelog.md, server/db.js, server/index.js, src/pages/GamePage.tsx
+- Verification: 
+pm run build (OK), git push origin main (OK), 
+px netlify deploy --prod (OK), docker compose up -d --build (FAIL: Docker engine unavailable), GET https://thg.89-167-89-109.sslip.io/api/health (OK, deployment.buildId=build-0.1.09).
+- Notes: Pro backend produkcni deploy je potreba host s bezicim Docker daemonem (nebo remote SSH deploy na produkcni server).
