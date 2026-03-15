@@ -818,3 +818,11 @@ Entry template:
 - Files: arch/chat-changelog.md, server/botCityStates.js, server/data/game.seed.sqlite.backup, server/db.js, server/gameService.js, server/index.js, server/sqliteSnapshot.js, src/App.css, src/api/gameApi.ts, src/pages/GamePage.tsx, src/pages/WorldsPage.tsx, tests/regression/game-rules.scenario.mjs
 - Verification: `git rev-list --left-right --count origin/develop...origin/main` (0 29), `git merge --ff-only main` (OK), `git push origin develop` (OK)
 - Notes: `develop` teď obsahuje aktuální stav z `main`; env/data mimo verzované soubory je potřeba sdílet mimo Git (ručně/skriptem/secret managerem).
+
+## 2026-03-15 15:21 | branch: develop
+
+- Request: Upřesnit, co znamenala synchronizace `main -> develop`, a potvrdit, že prostředí game dat nemá být sdílené.
+- Summary: Vysvětlil jsem rozdíl mezi Git synchronizací větví a lokálními ignorovanými daty. Synchronizace znamenala pouze přenos verzovaného kódu a trackovaných souborů z `main` do `develop`; neznamenala kopírování `\.env.local` ani runtime SQLite databází. Současně jsem upřesnil, že pokud se obě větve spouštějí ve stejném workspace, fyzicky používají stejné lokální ignorované soubory, dokud nejsou odseparované přes jiné worktree/adresáře/env konfiguraci.
+- Files: arch/chat-changelog.md
+- Verification: not run
+- Notes: Pro úplné oddělení `main` a `develop` je potřeba samostatný data dir a samostatné env nastavení pro každé prostředí.
