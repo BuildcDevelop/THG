@@ -656,3 +656,35 @@ Entry template:
 - Files: arch/chat-changelog.md, server/gameService.js, src/App.css, src/api/gameApi.ts, src/pages/GamePage.tsx
 - Verification: `git merge feat/build-0.1.13` (fast-forward); `npm run test:regression` (28/28 PASS); `npm run build` (OK); `netstat -ano | Select-String ":5173"` (LISTENING); `Invoke-WebRequest http://localhost:5173` (200)
 - Notes: Build hlásí pouze warning o velikosti JS chunku nad 500 kB (bez failu buildu).
+
+## 2026-03-15 11:13 | branch: develop
+
+- Request: Připravit shrnutý changelog pro tři develop update bloky (`0.1.11`, `0.1.12`, `0.1.13`) a sepsat rozdíl, co přinesl `develop` oproti tehdejší produkci.
+- Summary: Prošel jsem historii větví a rozložil změny podle release bloků od merge-base `9748f8f` (`0.1.10`) přes `7de7ded` (`0.1.11`), `e471ce9` (`0.1.12`) až po `e7ec035` (`0.1.13`). Současně jsem porovnal pre-release produkci `main` na commitu `5e96baa` proti `develop`, aby bylo jasné, které funkce přišly z develop větve a které naopak už předtím žily jen na produkční `main`.
+- Files: arch/chat-changelog.md
+- Verification: `git log --reverse --oneline 9748f8f..7de7ded`; `git log --reverse --oneline 7de7ded..e471ce9`; `git log --reverse --oneline e471ce9..e7ec035`; `git log --left-right --cherry-pick --oneline 5e96baa...bfb0563`; `git diff --stat 5e96baa...bfb0563`
+- Notes: Textové release shrnutí je odvozené z reálné historie větví a diffů; dnešní `main` už tyto develop změny obsahuje přes merge `0ddc87f` z `2026-03-15`.
+
+## 2026-03-15 11:23 | branch: develop
+
+- Request: Převést připravené release shrnutí do markdownu vhodného pro vložení do Discord chatu.
+- Summary: Připravil jsem Discord-friendly markdown verzi changelogu pro updaty `0.1.11`, `0.1.12`, `0.1.13` a navazující souhrn rozdílů, které `develop` přinesl oproti tehdejší produkci.
+- Files: arch/chat-changelog.md
+- Verification: not run
+- Notes: Šlo o textovou úpravu výstupu, bez změn herní logiky, UI kódu nebo backendu.
+
+## 2026-03-15 11:34 | branch: develop
+
+- Request: Updatnout hlavní stránku hry tak, aby lépe ukazovala progress vývoje a odvedenou práci.
+- Summary: Aktualizoval jsem landing obsah na `LoginPage`: nový hero text, progress tagy, aktuální roadmap wording a refresh karty patch notes. Současně jsem přepsal datový feed `public/data/project-updates.json` i fallback data v komponentě na novější updaty (`0.1.11` až `0.1.13`) včetně navazujícího in-progress/planned tracku.
+- Files: src/pages/LoginPage.tsx, public/data/project-updates.json, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: UI-only změna obsahu homepage; bez zásahu do backend data-flow, mapové logiky nebo pollingu.
+
+## 2026-03-15 11:36 | branch: develop
+
+- Request: Doplnit na homepage výrazný release highlight banner pro poslední LIVE update.
+- Summary: Přidal jsem do update karty na login stránce nový vizuální block `0.1.13 LIVE` se stručným souhrnem dodaných oblastí (Planner, posádky/žoldáci, mapa/minimapa UX) a odpovídajícími scoped styly v `App.css`.
+- Files: src/pages/LoginPage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: UI-only vizuální enhancement bez změn datových toků, pollingu nebo backendu.

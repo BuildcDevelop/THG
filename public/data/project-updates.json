@@ -1,36 +1,36 @@
 {
   "updates": [
     {
-      "id": "v0-1-06",
-      "date": "2026-02-25",
-      "title": "Verze 0.1.06: Rework boje, koristi a planovani utoku",
-      "summary": "Prazdne osady uz nezpusobuji utocnikovi bojove ztraty, beranidla nici urovne brany (1:1) a po prurazu se spotrebuji. Zved jde posilat ve smisenych utocich, limit osad je 6 na kazdy svet zvlast, korist nesou vsechny bojove jednotky krome zveda a beranidla, utoky jsou vyvazenejsi a na mape jsou hracske osady vyrazneji zvyraznene. Nove je vychozi drancovani Rovnomerne a pribylo Vybrat vsechny aktualni jednotky.",
+      "id": "v0-1-13",
+      "date": "2026-03-15",
+      "title": "Verze 0.1.13: UI shell, village panel a minimapa",
+      "summary": "Lepsi ukotveni hlavniho UI na herni kontejner, vyrazny redesign panelu lena (posadka + podpora) a presnejsi centrovani mapy/minimapy pro rychlou orientaci behem hry.",
       "status": "live"
     },
     {
-      "id": "v0-1-0-04",
-      "date": "2026-02-22",
-      "title": "Verze 0.1.0.04: 2D mapa a stabilita UI",
-      "summary": "Mapa pouziva 2D souradnicovy grid, ochranu proti kolizim bunek a bezpecne umisteni info karet mimo horni UI.",
+      "id": "v0-1-12",
+      "date": "2026-03-14",
+      "title": "Verze 0.1.12: Planner flow, armada a reporty",
+      "summary": "Stabilizace Planneru, lepsi prace s zoldaky v Armade, opravy detailu battle reportu a panel-scoped optimalizace datoveho nacitani v klientu.",
       "status": "live"
     },
     {
-      "id": "spawn-random-1-3",
-      "date": "2026-02-21",
-      "title": "Nahodny rozestup spawnu 1-3",
-      "summary": "Nove osady i opustene osady kolem spawnu se rozmistuji v nahodnem rozestupu 1-3 policka.",
+      "id": "v0-1-11",
+      "date": "2026-03-13",
+      "title": "Verze 0.1.11: Planovac v1 a koordinace utoku",
+      "summary": "Do hry pribyl Planovac v1 (DB + API + UI), validace vice vln utoku a priprava koordinovanych armadnich akci z vice len na jeden cil.",
       "status": "live"
     },
     {
-      "id": "scout-intel",
-      "date": "2026-02-21",
-      "title": "Nova jednotka Zved",
-      "summary": "Zved prinasi spionazni hlaseni o budovach a jednotkach, pri ztratach mohou byt data priblizna.",
+      "id": "v0-1-09",
+      "date": "2026-03-06",
+      "title": "Verze 0.1.09: Prestizni balanc boje a nova ekonomika",
+      "summary": "Prestige anti-snowball system, nove ekonomicke budovy (zlato/mince) a regionalni vyzkumny progres rozsiril strategicke moznosti stredni hry.",
       "status": "live"
     },
     {
       "id": "discord-channel",
-      "date": "2026-02-17",
+      "date": "2026-03-01",
       "title": "Komunitni komunikace pres Discord",
       "summary": "Vsechny novinky, patch notes a koordinace jsou centralizovane na Discordu.",
       "status": "live",
@@ -38,9 +38,16 @@
       "hrefLabel": "Prejit na Discord"
     },
     {
-      "id": "ruleset-plan",
-      "date": "2026-03-10",
-      "title": "Plny svet podle pravidel",
+      "id": "v0-1-14-track",
+      "date": "2026-03-20",
+      "title": "Verze 0.1.14: Balanc, vykon a quality-of-life",
+      "summary": "Doladovani ekonomiky a boje podle realneho hrani, redukce zbytecne zateze UI a dalsi UX zlepseni pro mapu, armadu a spravu len.",
+      "status": "in-progress"
+    },
+    {
+      "id": "ruleset-track",
+      "date": "2026-04-01",
+      "title": "Smer: svet podle plnych pravidel",
       "summary": "Dalsi krok je dotazeni ekonomiky, boje a mapove dominance podle kompletnich pravidel.",
       "status": "planned"
     }
