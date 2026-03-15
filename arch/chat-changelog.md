@@ -786,3 +786,27 @@ Entry template:
 - Files: arch/chat-changelog.md
 - Verification: `docker ps`/`docker logs` on prod (thg-api healthy), `curl https://thg.89-167-89-109.sslip.io/api/health` (OK, `deployment.buildId=build-0.1.11`), runtime rollback probe (OK).
 - Notes: Pricina failu byl partial-file deploy; produkce je po finalnim rolloutu stabilni a bezi na kompletni verzi kodu s fixem premenovani defaultnich nazvu pri conquestu.
+
+## 2026-03-15 13:30 | branch: main
+
+- Request: Ověřit report, že hráč `-SaThAn?!` vidí na mapě žlutě léno Hayato „jako vlastní“, a navrhnout řešení.
+- Summary: Provedl jsem produkční ověření přes SSH nad live DB i přes `getWorldMapSnapshot` v běžícím API kontejneru. Data potvrzují, že osady Hayato jsou pro `-SaThAn?!` vracené jako `kind=player` + `relation=enemy` (nikoliv `self/own`), takže nejde o ownership leak na backendu. Současně jsem našel a opravil hardening bug ve frontend API klientu: `fetchWorldMapSnapshot` neposílal `username` query parametr; nyní ho posílá explicitně.
+- Files: src/api/gameApi.ts, arch/chat-changelog.md
+- Verification: production DB query via `docker exec thg-api` (owner mapping Hayato vs -SaThAn?! OK), production `getWorldMapSnapshot('-SaThAn?!')` inspection (Hayato rows `relation=enemy`, own rows `relation=self`), `npm run build` (OK).
+- Notes: Pravděpodobná příčina hlášení je vizuální záměna barev/legendy na mapě (výchozí paleta má `own` a `opponent` blízko); backend ownership model se v tomto případě jeví konzistentně.
+
+## 2026-03-15 13:40 | branch: main
+
+- Request: Ověřit, jestli je mapový ownership bug (`Hayato` žlutě u `-SaThAn?!`) globální napříč více účty.
+- Summary: Spustil jsem produkční multi-account audit přes všechny ne-bot účty a všechny světy s přítomností hráče. Kontrolovaný invariant: žádná cizí osada nesmí mít `relation=self` ani `kind=own/active` a naopak vlastní osady musí být takto označené. Výsledek: bez anomálií (0/19499 settlement checků), takže globální ownership leak přes `villageId`/map snapshot se nepotvrdil.
+- Files: arch/chat-changelog.md
+- Verification: production audit přes `docker exec thg-api node --input-type=module` s kopii DB (123 hráčů, 129 world snapshotů, 19 499 settlement kontrol, `foreignFlaggedAsOwn=0`, `ownMissingSelfFlag=0`, `coordCollisionCount=0`).
+- Notes: Chování „vypadá jako moje/cizí“ je pravděpodobně vizuální záměna mapových kategorií (barvy/paleta), nikoliv datový ownership bug v backend read modelu.
+
+## 2026-03-15 13:45 | branch: main
+
+- Request: Potvrdit a řešit report, že ownership na mapě může působit chybně i u více účtů, a nasadit jasnější mapové rozlišení.
+- Summary: Po produkčním multi-account auditu (bez datových anomálií ownershipu) jsem nasadil frontend hardening + UX fix. API klient pro world map snapshot nově vždy posílá `username`, aby endpoint běžel explicitně v kontextu přihlášeného účtu. Současně jsem upravil mapové styly: `own/active` osady mají výrazný tvarový overlay a odlišný tvar bodu i v minimapě (nejen jinou barvu), čímž se snižuje riziko vizuální záměny.
+- Files: src/api/gameApi.ts, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: Nešlo o globální leak vlastnictví v backendu; šlo o hardening request kontextu + UX čitelnost mapy napříč účty/paletami.
