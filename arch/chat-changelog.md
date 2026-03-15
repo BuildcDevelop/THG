@@ -746,3 +746,27 @@ Entry template:
 - Files: arch/chat-changelog.md, src/pages/LoginPage.tsx, src/App.css, public/data/project-updates.json
 - Verification: npm run build (OK), git push origin main (OK), npx netlify deploy --prod (OK), GET https://thelastdominion.netlify.app (200), GET https://thg.89-167-89-109.sslip.io/api/health (OK; backend build 0.1.09).
 - Notes: Tato release změna je frontend-only; backend deploy nebyl potřeba pro samotný obsah homepage.
+
+## 2026-03-15 11:54 | branch: main
+
+- Request: Přepnout aktuální workspace na větev `main`.
+- Summary: Ověřil jsem, že `main` už byla checkoutnutá v jiném worktree (`D:/TheLastDominion-main`), a tento workspace jsem proto bezpečně přepnul pomocí `git switch --ignore-other-worktrees main`.
+- Files: arch/chat-changelog.md
+- Verification: `git worktree list`; `git branch --all --no-color`; `git switch --ignore-other-worktrees main`
+- Notes: Přepnutí bylo UI/branch-management only; bez změn kódu nebo deploye.
+
+## 2026-03-15 12:10 | branch: main
+
+- Request: Prozkoumat kritický bug, kdy po wipe/conquestu hráč vidí detail cizího léna, a navrhnout i připravit opravu.
+- Summary: Prošel jsem backend i frontend flow kolem village snapshotů, conquestu a world mapy. Potvrdil jsem, že při conquestu se na backendu mění owner na stejném `village.id`, zatímco klient držel `villageIntelByVillageId` cache jen podle `villageId` a panel ji renderoval i po ztrátě ownershipu. Opravil jsem GamePage tak, aby se intel cache po změně vlastněných lén prořezala, detail cizího léna se už z cache neren­deroval a při rozchodu mezi autoritativním seznamem vlastních lén a map snapshotem se vynutil refresh world mapy.
+- Files: src/pages/GamePage.tsx, arch/chat-changelog.md
+- Verification: npm run build (OK)
+- Notes: Root cause se spouští hlavně při conquest/wipe flow, kde `updateVillageOwnerForConquestStmt` zachová stejné `village.id`, ale změní `player_id`; šlo tedy o leak klientského cache/navázání na stabilní ID, ne o recyklaci DB ID po world wipe.
+
+## 2026-03-15 12:24 | branch: main
+
+- Request: Začít sanity-checkem / přesným repro flow pro bug, kdy po wipe/conquestu hráč vidí detail cizího léna.
+- Summary: Připravil jsem izolovaný repro přes skutečný backend stack v temp data diru a ověřil trigger: conquest změní ownera na stejném `village.id`, defender po ztrátě léna už ho nemá ve `villages`, ale starý world-map snapshot i cached intel pro stejné `villageId` stále existují. Repro potvrdil, že před opravou by `canLoadVillageIntel` bylo `false`, ale stale cache entry by zůstala nenulová (`preFixWouldLeak: true`); po opravě panel cached intel nevyrenderuje a cache pruning ztracené léno odmaže.
+- Files: src/pages/GamePage.tsx, arch/chat-changelog.md
+- Verification: isolated node repro over temp TLD_DATA_DIR (OK), npm run build (previous turn OK)
+- Notes: Repro výslovně potvrdil i secondary symptom se stale world-map ownership setem, takže refresh map snapshotu při mismatchu je opodstatněný guard, ne kosmetika.

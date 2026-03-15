@@ -4275,6 +4275,42 @@ const getWorldSnapshotVersion = (
   return version || null;
 };
 
+const areNumberSetsEqual = (left: Set<number>, right: Set<number>): boolean => {
+  if (left.size !== right.size) {
+    return false;
+  }
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const getOwnedVillageIdSetFromSettlements = (
+  settlements: RegionSettlement[] | null | undefined,
+  username: string,
+): Set<number> => {
+  const normalizedUsername = String(username ?? '').trim().toLocaleLowerCase('cs-CZ');
+  const villageIds = new Set<number>();
+  for (const settlement of settlements ?? []) {
+    const villageId = Number(settlement.villageId ?? 0);
+    if (!Number.isFinite(villageId) || villageId <= 0) {
+      continue;
+    }
+    const ownerUsername = String(settlement.owner ?? '').trim().toLocaleLowerCase('cs-CZ');
+    const isOwnSettlement =
+      settlement.kind === 'own' ||
+      settlement.relation === 'self' ||
+      (normalizedUsername.length > 0 && ownerUsername === normalizedUsername);
+    if (!isOwnSettlement) {
+      continue;
+    }
+    villageIds.add(Math.floor(villageId));
+  }
+  return villageIds;
+};
+
 const useSecondClock = (enabled = true): number => {
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -16367,6 +16403,35 @@ export const GamePage = () => {
     }
     return ids;
   }, [gameState?.villages]);
+  const worldMapOwnedVillageIdSet = useMemo(
+    () => getOwnedVillageIdSetFromSettlements(worldMapState?.settlements, username),
+    [username, worldMapState?.settlements],
+  );
+  useEffect(() => {
+    setVillageIntelByVillageId((previous) => {
+      const nextEntries = Object.entries(previous).filter(([villageIdRaw]) =>
+        ownedVillageIdSet.has(Math.floor(Number(villageIdRaw))),
+      );
+      if (nextEntries.length === Object.keys(previous).length) {
+        return previous;
+      }
+      return Object.fromEntries(nextEntries) as Record<number, VillageIntelEntry>;
+    });
+
+    const nextRequests: Record<number, Promise<void> | null> = {};
+    let didChange = false;
+    for (const [villageIdRaw, request] of Object.entries(villageIntelRequestByVillageIdRef.current)) {
+      const villageId = Math.floor(Number(villageIdRaw));
+      if (ownedVillageIdSet.has(villageId)) {
+        nextRequests[villageId] = request;
+      } else {
+        didChange = true;
+      }
+    }
+    if (didChange) {
+      villageIntelRequestByVillageIdRef.current = nextRequests;
+    }
+  }, [ownedVillageIdSet]);
   useEffect(() => {
     if (!gameState) {
       return;
@@ -16871,6 +16936,22 @@ export const GamePage = () => {
     },
     [activeVillageId, selectedSpawnDirection, selectedWorldId, session, username],
   );
+  useEffect(() => {
+    if (!session || !selectedWorldId || worldMapState == null) {
+      return;
+    }
+    if (areNumberSetsEqual(worldMapOwnedVillageIdSet, ownedVillageIdSet)) {
+      return;
+    }
+    void loadWorldMapSnapshot(true);
+  }, [
+    loadWorldMapSnapshot,
+    ownedVillageIdSet,
+    selectedWorldId,
+    session,
+    worldMapOwnedVillageIdSet,
+    worldMapState,
+  ]);
 
   const loadBattleReportsSummary = useCallback(async () => {
     if (!session || !selectedWorldId) {
@@ -21232,7 +21313,9 @@ export const GamePage = () => {
         const canLoadVillageIntel =
           settlementVillageId != null && ownedVillageIdSet.has(settlementVillageId);
         const villageIntelEntry =
-          settlementVillageId != null ? villageIntelByVillageId[settlementVillageId] ?? null : null;
+          canLoadVillageIntel && settlementVillageId != null
+            ? villageIntelByVillageId[settlementVillageId] ?? null
+            : null;
 
         return (
           <VillagePanel
