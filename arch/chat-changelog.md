@@ -770,3 +770,11 @@ Entry template:
 - Files: src/pages/GamePage.tsx, arch/chat-changelog.md
 - Verification: isolated node repro over temp TLD_DATA_DIR (OK), npm run build (previous turn OK)
 - Notes: Repro výslovně potvrdil i secondary symptom se stale world-map ownership setem, takže refresh map snapshotu při mismatchu je opodstatněný guard, ne kosmetika.
+
+## 2026-03-15 13:05 | branch: main
+
+- Request: Ověřit report „Hráčem Marrel jsme na léně Hayato“ a opravit chování po dobytí/wipu, aby aktivní léno nepůsobilo jako cizí.
+- Summary: Prověřil jsem flow a potvrdil, že nejde o cross-owner data leak, ale o stale název po conquestu: owner se změní, ale jméno léna zůstane původní (`Leno <stary_hrac>`). Do backendu jsem přidal guard, který při dobytí automaticky přejmenuje pouze defaultní názvy (`Leno <puvodni_owner>`) na `Leno <novy_owner>`, zatímco custom názvy ponechá beze změny. Úprava je nasazená v obou conquest cestách (tick battle conquest i manuální conquer endpoint).
+- Files: server/gameService.js, arch/chat-changelog.md
+- Verification: node isolated repro (default-name conquest rename OK: `Leno Torreya` -> `Leno Hayato`), npm run build (OK)
+- Notes: Tím se eliminuje UX záměna „jsme na cizím léně“ po převzetí osady, bez zásahu do ownership/security modelu.
