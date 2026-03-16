@@ -1203,6 +1203,11 @@ type TooltipCursorPosition = {
   y: number;
 };
 
+type TooltipSize = {
+  width: number;
+  height: number;
+};
+
 const TOOLTIP_CURSOR_OFFSET_X = 18;
 const TOOLTIP_CURSOR_OFFSET_Y = 18;
 const TOOLTIP_VIEWPORT_PADDING = 10;
@@ -1214,6 +1219,8 @@ const clampTooltipPosition = (
   viewportWidth: number,
   viewportHeight: number,
 ): TooltipCursorPosition => {
+  const minLeft = TOOLTIP_VIEWPORT_PADDING;
+  const minTop = TOOLTIP_VIEWPORT_PADDING;
   const maxLeft = Math.max(
     TOOLTIP_VIEWPORT_PADDING,
     Math.floor(viewportWidth - tooltipWidth - TOOLTIP_VIEWPORT_PADDING),
@@ -1222,11 +1229,148 @@ const clampTooltipPosition = (
     TOOLTIP_VIEWPORT_PADDING,
     Math.floor(viewportHeight - tooltipHeight - TOOLTIP_VIEWPORT_PADDING),
   );
-  const preferredLeft = Math.floor(cursorPosition.x + TOOLTIP_CURSOR_OFFSET_X);
-  const preferredTop = Math.floor(cursorPosition.y + TOOLTIP_CURSOR_OFFSET_Y);
+  const preferredRight = Math.floor(cursorPosition.x + TOOLTIP_CURSOR_OFFSET_X);
+  const preferredLeft = Math.floor(cursorPosition.x - tooltipWidth - TOOLTIP_CURSOR_OFFSET_X);
+  const preferredBottom = Math.floor(cursorPosition.y + TOOLTIP_CURSOR_OFFSET_Y);
+  const preferredTop = Math.floor(cursorPosition.y - tooltipHeight - TOOLTIP_CURSOR_OFFSET_Y);
+
+  const fitsRight = preferredRight + tooltipWidth <= viewportWidth - TOOLTIP_VIEWPORT_PADDING;
+  const fitsLeft = preferredLeft >= TOOLTIP_VIEWPORT_PADDING;
+  const fitsBottom = preferredBottom + tooltipHeight <= viewportHeight - TOOLTIP_VIEWPORT_PADDING;
+  const fitsTop = preferredTop >= TOOLTIP_VIEWPORT_PADDING;
+
+  const availableRight = viewportWidth - TOOLTIP_VIEWPORT_PADDING - cursorPosition.x;
+  const availableLeft = cursorPosition.x - TOOLTIP_VIEWPORT_PADDING;
+  const availableBottom = viewportHeight - TOOLTIP_VIEWPORT_PADDING - cursorPosition.y;
+  const availableTop = cursorPosition.y - TOOLTIP_VIEWPORT_PADDING;
+
+  const horizontalCandidate =
+    fitsRight || (!fitsLeft && availableRight >= availableLeft) ? preferredRight : preferredLeft;
+  const verticalCandidate =
+    fitsBottom || (!fitsTop && availableBottom >= availableTop) ? preferredBottom : preferredTop;
+
   return {
-    x: Math.min(Math.max(preferredLeft, TOOLTIP_VIEWPORT_PADDING), maxLeft),
-    y: Math.min(Math.max(preferredTop, TOOLTIP_VIEWPORT_PADDING), maxTop),
+    x: Math.min(Math.max(horizontalCandidate, minLeft), maxLeft),
+    y: Math.min(Math.max(verticalCandidate, minTop), maxTop),
+  };
+};
+
+const readTooltipSize = (node: HTMLDivElement | null, fallbackSize: TooltipSize): TooltipSize => {
+  if (!node) {
+    return fallbackSize;
+  }
+  const bounds = node.getBoundingClientRect();
+  const width = Math.max(1, Math.ceil(bounds.width));
+  const height = Math.max(1, Math.ceil(bounds.height));
+  if (!Number.isFinite(width) || !Number.isFinite(height)) {
+    return fallbackSize;
+  }
+  return { width, height };
+};
+
+const useFollowCursorTooltipPositioning = ({
+  cursorPosition,
+  fallbackCursorPosition,
+  estimatedSize,
+  isEnabled = true,
+}: {
+  cursorPosition?: TooltipCursorPosition | null;
+  fallbackCursorPosition?: TooltipCursorPosition | null;
+  estimatedSize: TooltipSize;
+  isEnabled?: boolean;
+}) => {
+  const tooltipNodeRef = useRef<HTMLDivElement | null>(null);
+  const [tooltipSize, setTooltipSize] = useState<TooltipSize | null>(null);
+
+  const preferredCursor = cursorPosition ?? fallbackCursorPosition ?? null;
+  const preferredCursorX = preferredCursor?.x ?? null;
+  const preferredCursorY = preferredCursor?.y ?? null;
+
+  const syncTooltipSize = useCallback(() => {
+    const nextSize = readTooltipSize(tooltipNodeRef.current, estimatedSize);
+    setTooltipSize((currentSize) =>
+      currentSize &&
+      currentSize.width === nextSize.width &&
+      currentSize.height === nextSize.height
+        ? currentSize
+        : nextSize,
+    );
+  }, [estimatedSize]);
+
+  const tooltipRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      tooltipNodeRef.current = node;
+      if (!node) {
+        return;
+      }
+      const nextSize = readTooltipSize(node, estimatedSize);
+      setTooltipSize((currentSize) =>
+        currentSize &&
+        currentSize.width === nextSize.width &&
+        currentSize.height === nextSize.height
+          ? currentSize
+          : nextSize,
+      );
+    },
+    [estimatedSize],
+  );
+
+  useEffect(() => {
+    if (!isEnabled || preferredCursorX == null || preferredCursorY == null || typeof window === 'undefined') {
+      return;
+    }
+    const node = tooltipNodeRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const resizeObserver = new ResizeObserver(() => {
+      syncTooltipSize();
+    });
+    resizeObserver.observe(node);
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [isEnabled, preferredCursorX, preferredCursorY, syncTooltipSize]);
+
+  useEffect(() => {
+    if (!isEnabled || preferredCursorX == null || preferredCursorY == null || typeof window === 'undefined') {
+      return;
+    }
+    const handleResize = () => {
+      syncTooltipSize();
+    };
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [isEnabled, preferredCursorX, preferredCursorY, syncTooltipSize]);
+
+  const resolvedCursorPosition = useMemo(() => {
+    if (!isEnabled || preferredCursorX == null || preferredCursorY == null || typeof window === 'undefined') {
+      return null;
+    }
+    const effectiveTooltipSize = tooltipSize ?? estimatedSize;
+    return clampTooltipPosition(
+      { x: preferredCursorX, y: preferredCursorY },
+      effectiveTooltipSize.width,
+      effectiveTooltipSize.height,
+      window.innerWidth,
+      window.innerHeight,
+    );
+  }, [estimatedSize, isEnabled, preferredCursorX, preferredCursorY, tooltipSize]);
+
+  const tooltipStyle: CSSProperties | undefined =
+    resolvedCursorPosition
+      ? {
+          left: `${resolvedCursorPosition.x}px`,
+          top: `${resolvedCursorPosition.y}px`,
+        }
+      : undefined;
+
+  return {
+    tooltipRef,
+    tooltipStyle,
+    resolvedCursorPosition,
   };
 };
 
@@ -1238,36 +1382,31 @@ const MovementArmyTooltip = ({
   cursorPosition?: TooltipCursorPosition | null;
 }) => {
   const orderedUnits = getOrderedMovementUnits(movement);
-
-  const resolvedCursorPosition = useMemo(() => {
-    if (!cursorPosition || typeof window === 'undefined') {
-      return null;
+  const estimatedTooltipSize = useMemo<TooltipSize>(() => {
+    if (typeof window === 'undefined') {
+      return {
+        width: 280,
+        height: 210,
+      };
     }
-    const estimatedTooltipWidth = Math.max(220, Math.min(360, Math.floor(window.innerWidth * 0.34)));
-    const estimatedTooltipHeight = 210;
-    return clampTooltipPosition(
-      cursorPosition,
-      estimatedTooltipWidth,
-      estimatedTooltipHeight,
-      window.innerWidth,
-      window.innerHeight,
-    );
-  }, [cursorPosition]);
+    return {
+      width: Math.max(220, Math.min(360, Math.floor(window.innerWidth * 0.34))),
+      height: 210,
+    };
+  }, []);
+  const { tooltipRef, tooltipStyle } = useFollowCursorTooltipPositioning({
+    cursorPosition,
+    estimatedSize: estimatedTooltipSize,
+    isEnabled: Boolean(cursorPosition) && orderedUnits.length > 0,
+  });
 
   if (orderedUnits.length <= 0) {
     return null;
   }
 
-  const tooltipStyle: CSSProperties | undefined =
-    resolvedCursorPosition
-      ? {
-          left: `${resolvedCursorPosition.x}px`,
-          top: `${resolvedCursorPosition.y}px`,
-        }
-      : undefined;
-
   const tooltipNode = (
     <div
+      ref={tooltipRef}
       className={`commands-army-tooltip${cursorPosition ? ' is-follow-cursor' : ''}`}
       style={tooltipStyle}
       role="tooltip"
@@ -1325,21 +1464,24 @@ const BuildingUpgradePreviewTooltip = ({
   const deltaLines = preview?.deltas ?? [];
   const unlockLines = preview?.unlocks ?? [];
   const hasPreviewContent = Boolean(preview) && (deltaLines.length > 0 || unlockLines.length > 0);
-
-  const resolvedCursorPosition = useMemo(() => {
-    if (!cursorPosition || typeof window === 'undefined') {
-      return null;
+  const estimatedTooltipSize = useMemo<TooltipSize>(() => {
+    if (typeof window === 'undefined') {
+      return {
+        width: 360,
+        height: 260,
+      };
     }
-    const estimatedTooltipWidth = Math.max(260, Math.min(430, Math.floor(window.innerWidth * 0.4)));
-    const estimatedTooltipHeight = 260;
-    return clampTooltipPosition(
-      cursorPosition,
-      estimatedTooltipWidth,
-      estimatedTooltipHeight,
-      window.innerWidth,
-      window.innerHeight,
-    );
-  }, [cursorPosition]);
+    return {
+      width: Math.max(260, Math.min(430, Math.floor(window.innerWidth * 0.4))),
+      height: 260,
+    };
+  }, []);
+
+  const { tooltipRef, tooltipStyle, resolvedCursorPosition } = useFollowCursorTooltipPositioning({
+    cursorPosition,
+    estimatedSize: estimatedTooltipSize,
+    isEnabled: Boolean(cursorPosition),
+  });
 
   if (!resolvedCursorPosition) {
     return null;
@@ -1347,11 +1489,9 @@ const BuildingUpgradePreviewTooltip = ({
 
   const tooltipNode = (
     <div
+      ref={tooltipRef}
       className={`commands-army-tooltip building-upgrade-tooltip${cursorPosition ? ' is-follow-cursor' : ''}`}
-      style={{
-        left: `${resolvedCursorPosition.x}px`,
-        top: `${resolvedCursorPosition.y}px`,
-      }}
+      style={tooltipStyle}
       role="tooltip"
     >
       <p>
@@ -1426,33 +1566,27 @@ const ResearchCollaborationTooltip = ({
 }) => {
   const collaborations = project.assignedVillageBreakdown ?? [];
   const showCollaborations = project.status === 'researching' && collaborations.length > 0;
-
-  const resolvedCursorPosition = useMemo(() => {
-    if (!cursorPosition || typeof window === 'undefined') {
-      return null;
+  const estimatedTooltipSize = useMemo<TooltipSize>(() => {
+    if (typeof window === 'undefined') {
+      return {
+        width: 340,
+        height: 250,
+      };
     }
-    const estimatedTooltipWidth = Math.max(260, Math.min(420, Math.floor(window.innerWidth * 0.36)));
-    const estimatedTooltipHeight = 250;
-    return clampTooltipPosition(
-      cursorPosition,
-      estimatedTooltipWidth,
-      estimatedTooltipHeight,
-      window.innerWidth,
-      window.innerHeight,
-    );
-  }, [cursorPosition]);
+    return {
+      width: Math.max(260, Math.min(420, Math.floor(window.innerWidth * 0.36))),
+      height: 250,
+    };
+  }, []);
+  const { tooltipRef, tooltipStyle } = useFollowCursorTooltipPositioning({
+    cursorPosition,
+    estimatedSize: estimatedTooltipSize,
+    isEnabled: showCollaborations && Boolean(cursorPosition),
+  });
 
   if (!showCollaborations) {
     return null;
   }
-
-  const tooltipStyle: CSSProperties | undefined =
-    resolvedCursorPosition
-      ? {
-          left: `${resolvedCursorPosition.x}px`,
-          top: `${resolvedCursorPosition.y}px`,
-        }
-      : undefined;
 
   const etaLabel =
     project.estimatedCompletionAt && project.remainingSec != null
@@ -1461,6 +1595,7 @@ const ResearchCollaborationTooltip = ({
 
   const tooltipNode = (
     <div
+      ref={tooltipRef}
       className={`commands-army-tooltip research-collaboration-tooltip${cursorPosition ? ' is-follow-cursor' : ''}`}
       style={tooltipStyle}
       role="tooltip"
@@ -1495,26 +1630,35 @@ const CityResourceSummaryTooltip = ({
   cursorPosition?: TooltipCursorPosition | null;
 }) => {
   const isTwoColumnLayout = rows.length > 4;
-  const resolvedCursorPosition = useMemo(() => {
+  const estimatedTooltipSize = useMemo<TooltipSize>(() => {
+    if (typeof window === 'undefined') {
+      return {
+        width: isTwoColumnLayout ? 520 : 380,
+        height: isTwoColumnLayout ? 300 : 380,
+      };
+    }
+    return {
+      width: isTwoColumnLayout
+        ? Math.max(420, Math.min(660, Math.floor(window.innerWidth * 0.62)))
+        : Math.max(320, Math.min(460, Math.floor(window.innerWidth * 0.44))),
+      height: isTwoColumnLayout ? 300 : 380,
+    };
+  }, [isTwoColumnLayout]);
+  const fallbackCursorPosition = useMemo<TooltipCursorPosition | null>(() => {
     if (typeof window === 'undefined') {
       return null;
     }
-    const estimatedTooltipWidth = isTwoColumnLayout
-      ? Math.max(420, Math.min(660, Math.floor(window.innerWidth * 0.62)))
-      : Math.max(320, Math.min(460, Math.floor(window.innerWidth * 0.44)));
-    const estimatedTooltipHeight = isTwoColumnLayout ? 300 : 380;
-    const preferredCursor = cursorPosition ?? {
+    return {
       x: Math.floor(window.innerWidth * 0.54),
       y: Math.floor(window.innerHeight * 0.24),
     };
-    return clampTooltipPosition(
-      preferredCursor,
-      estimatedTooltipWidth,
-      estimatedTooltipHeight,
-      window.innerWidth,
-      window.innerHeight,
-    );
-  }, [cursorPosition, isTwoColumnLayout]);
+  }, []);
+  const { tooltipRef, tooltipStyle, resolvedCursorPosition } = useFollowCursorTooltipPositioning({
+    cursorPosition,
+    fallbackCursorPosition,
+    estimatedSize: estimatedTooltipSize,
+    isEnabled: rows.length > 0,
+  });
 
   if (rows.length <= 0 || !resolvedCursorPosition) {
     return null;
@@ -1522,11 +1666,9 @@ const CityResourceSummaryTooltip = ({
 
   const tooltipNode = (
     <div
+      ref={tooltipRef}
       className={`commands-army-tooltip city-resource-stock-tooltip-overlay is-follow-cursor ${isTwoColumnLayout ? 'is-two-columns' : ''}`}
-      style={{
-        left: `${resolvedCursorPosition.x}px`,
-        top: `${resolvedCursorPosition.y}px`,
-      }}
+      style={tooltipStyle}
       role="tooltip"
     >
       <p>Detail surovin</p>
@@ -1574,20 +1716,23 @@ const QueueActionTooltip = ({
   description: string;
   cursorPosition: TooltipCursorPosition | null;
 }) => {
-  const resolvedCursorPosition = useMemo(() => {
-    if (typeof window === 'undefined' || !cursorPosition) {
-      return null;
+  const estimatedTooltipSize = useMemo<TooltipSize>(() => {
+    if (typeof window === 'undefined') {
+      return {
+        width: 300,
+        height: 132,
+      };
     }
-    const estimatedTooltipWidth = Math.max(240, Math.min(360, Math.floor(window.innerWidth * 0.32)));
-    const estimatedTooltipHeight = 132;
-    return clampTooltipPosition(
-      cursorPosition,
-      estimatedTooltipWidth,
-      estimatedTooltipHeight,
-      window.innerWidth,
-      window.innerHeight,
-    );
-  }, [cursorPosition]);
+    return {
+      width: Math.max(240, Math.min(360, Math.floor(window.innerWidth * 0.32))),
+      height: 132,
+    };
+  }, []);
+  const { tooltipRef, tooltipStyle, resolvedCursorPosition } = useFollowCursorTooltipPositioning({
+    cursorPosition,
+    estimatedSize: estimatedTooltipSize,
+    isEnabled: Boolean(cursorPosition),
+  });
 
   if (!resolvedCursorPosition || !title.trim() || !description.trim()) {
     return null;
@@ -1595,11 +1740,9 @@ const QueueActionTooltip = ({
 
   const tooltipNode = (
     <div
+      ref={tooltipRef}
       className="commands-army-tooltip city-queue-action-tooltip is-follow-cursor"
-      style={{
-        left: `${resolvedCursorPosition.x}px`,
-        top: `${resolvedCursorPosition.y}px`,
-      }}
+      style={tooltipStyle}
       role="tooltip"
     >
       <p>{title}</p>
@@ -1627,24 +1770,33 @@ const VillageIntelTooltip = ({
   rows: Array<{ label: string; value: string }>;
   cursorPosition?: TooltipCursorPosition | null;
 }) => {
-  const resolvedCursorPosition = useMemo(() => {
+  const estimatedTooltipSize = useMemo<TooltipSize>(() => {
+    if (typeof window === 'undefined') {
+      return {
+        width: 360,
+        height: Math.max(180, Math.min(420, 96 + rows.length * 44)),
+      };
+    }
+    return {
+      width: Math.max(300, Math.min(460, Math.floor(window.innerWidth * 0.42))),
+      height: Math.max(180, Math.min(420, 96 + rows.length * 44)),
+    };
+  }, [rows.length]);
+  const fallbackCursorPosition = useMemo<TooltipCursorPosition | null>(() => {
     if (typeof window === 'undefined') {
       return null;
     }
-    const estimatedTooltipWidth = Math.max(300, Math.min(460, Math.floor(window.innerWidth * 0.42)));
-    const estimatedTooltipHeight = Math.max(180, Math.min(420, 96 + rows.length * 44));
-    const preferredCursor = cursorPosition ?? {
+    return {
       x: Math.floor(window.innerWidth * 0.52),
       y: Math.floor(window.innerHeight * 0.26),
     };
-    return clampTooltipPosition(
-      preferredCursor,
-      estimatedTooltipWidth,
-      estimatedTooltipHeight,
-      window.innerWidth,
-      window.innerHeight,
-    );
-  }, [cursorPosition, rows.length]);
+  }, []);
+  const { tooltipRef, tooltipStyle, resolvedCursorPosition } = useFollowCursorTooltipPositioning({
+    cursorPosition,
+    fallbackCursorPosition,
+    estimatedSize: estimatedTooltipSize,
+    isEnabled: rows.length > 0,
+  });
 
   if (rows.length <= 0 || !resolvedCursorPosition) {
     return null;
@@ -1652,11 +1804,9 @@ const VillageIntelTooltip = ({
 
   const tooltipNode = (
     <div
+      ref={tooltipRef}
       className="commands-army-tooltip village-intel-tooltip is-follow-cursor"
-      style={{
-        left: `${resolvedCursorPosition.x}px`,
-        top: `${resolvedCursorPosition.y}px`,
-      }}
+      style={tooltipStyle}
       role="tooltip"
     >
       <p>{title}</p>
@@ -4673,7 +4823,6 @@ const extractVillageBaseName = (label: string): string => {
 
 const CityPanel = memo(({
   villageLabel,
-  regionLabel,
   prestige,
   cityResourceSnapshot,
   availableResources,
@@ -4691,7 +4840,6 @@ const CityPanel = memo(({
   buildingNotices,
 }: {
   villageLabel: string;
-  regionLabel: string;
   prestige: number;
   cityResourceSnapshot: CityPanelResourceSnapshot;
   availableResources: ResourceCost;
@@ -4785,6 +4933,7 @@ const CityPanel = memo(({
     () => new Map(buildings.map((building) => [building.id, building])),
     [buildings],
   );
+  const settlementPrestigeMeta = useMemo(() => resolveSettlementPrestigeMeta(prestige), [prestige]);
 
   const groupedBuildings = useMemo(() => {
     const seenBuildingIds = new Set<string>();
@@ -4924,14 +5073,12 @@ const CityPanel = memo(({
         <div className="city-layout">
           <section className="city-stats-grid city-overview-summary">
             <article>
-              <h4>Město</h4>
+              <h4>{settlementPrestigeMeta.label}</h4>
               <strong>{villageLabel}</strong>
-              <span>{regionLabel}</span>
             </article>
             <article>
               <h4>Prestiž</h4>
               <strong>{prestige.toLocaleString('cs-CZ')} bodů</strong>
-              <span>Tier: opevněné město</span>
             </article>
             <article
               className="city-resource-stock-card"
@@ -5053,6 +5200,9 @@ const CityPanel = memo(({
                             };
                           })
                         : [];
+                      const shouldShowInlineUpgradeCost =
+                        hoveredBuildingId === building.id && !isMaxed && costRows.length > 0;
+                      const shouldShowUpgradeCue = hoveredBuildingId === building.id && !isMaxed;
 
                       return (
                         <article
@@ -5127,6 +5277,34 @@ const CityPanel = memo(({
                               ) : null}
                             </div>
                           </div>
+                          {shouldShowInlineUpgradeCost ? (
+                            <div className="city-building-hover-cost" aria-hidden="true">
+                              {costRows.map((row) => {
+                                const resourceLabel = LOOT_PRIORITY_LABELS[row.resourceType];
+                                const resourceIcon = resolveResourceGlyph(resourceLabel);
+                                return (
+                                  <span
+                                    key={`${building.id}-inline-cost-${row.resourceType}`}
+                                    className={`city-building-hover-cost-chip ${row.canAffordResource ? 'ok' : 'missing'}`}
+                                  >
+                                    <span className="city-building-hover-cost-icon" aria-hidden="true">
+                                      {resourceIcon.startsWith('/') ? (
+                                        <img src={resourceIcon} alt="" loading="lazy" decoding="async" draggable={false} />
+                                      ) : (
+                                        resourceIcon
+                                      )}
+                                    </span>
+                                    <strong>{row.requiredAmount.toLocaleString('cs-CZ')}</strong>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                          {shouldShowUpgradeCue ? (
+                            <span className="city-building-upgrade-cue" aria-hidden="true">
+                              <span>⚒</span>
+                            </span>
+                          ) : null}
                           {hoveredBuildingId === building.id ? (
                             <BuildingUpgradePreviewTooltip
                               building={building}
@@ -5223,6 +5401,34 @@ const CityPanel = memo(({
                           <i />
                           <i />
                         </span>
+                        <div className="city-upgrade-queue-reorder">
+                          <button
+                            type="button"
+                            className="city-upgrade-queue-action city-upgrade-queue-action-move"
+                            {...bindQueueActionTooltip(
+                              'Posunout výše',
+                              'Posune tuto kartu o jednu pozici výš. Aktivní první pozici nelze přeskočit.',
+                            )}
+                            onClick={() => onReorderBuildingUpgrade(order.id, order.queueIndex - 1)}
+                            disabled={!canMoveUp || isReorderPending}
+                            aria-label="Posunout výše"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            className="city-upgrade-queue-action city-upgrade-queue-action-move"
+                            {...bindQueueActionTooltip(
+                              'Posunout níže',
+                              'Posune tuto kartu o jednu pozici níž ve frontě.',
+                            )}
+                            onClick={() => onReorderBuildingUpgrade(order.id, order.queueIndex + 1)}
+                            disabled={!canMoveDown || isReorderPending}
+                            aria-label="Posunout níže"
+                          >
+                            ↓
+                          </button>
+                        </div>
                         <div className="city-upgrade-queue-item-main">
                           <div className="city-upgrade-queue-item-head">
                             <span
@@ -5256,32 +5462,6 @@ const CityPanel = memo(({
                           {order.queueIndex + 1}
                         </div>
                         <div className="city-upgrade-queue-actions">
-                          <button
-                            type="button"
-                            className="city-upgrade-queue-action"
-                            {...bindQueueActionTooltip(
-                              'Posunout výše',
-                              'Posune tuto kartu o jednu pozici výš. Aktivní první pozici nelze přeskočit.',
-                            )}
-                            onClick={() => onReorderBuildingUpgrade(order.id, order.queueIndex - 1)}
-                            disabled={!canMoveUp || isReorderPending}
-                            aria-label="Posunout výše"
-                          >
-                            ↑
-                          </button>
-                          <button
-                            type="button"
-                            className="city-upgrade-queue-action"
-                            {...bindQueueActionTooltip(
-                              'Posunout níže',
-                              'Posune tuto kartu o jednu pozici níž ve frontě.',
-                            )}
-                            onClick={() => onReorderBuildingUpgrade(order.id, order.queueIndex + 1)}
-                            disabled={!canMoveDown || isReorderPending}
-                            aria-label="Posunout níže"
-                          >
-                            ↓
-                          </button>
                           <button
                             type="button"
                             className="city-upgrade-queue-action is-danger"
@@ -13617,12 +13797,6 @@ const MapPanel = memo(({
       if (focusedSettlementId && settlement.id === focusedSettlementId) {
         score += 10000;
       }
-      if (safePinnedSettlementId && settlement.id === safePinnedSettlementId) {
-        score += 8000;
-      }
-      if (safeHoveredId && settlement.id === safeHoveredId) {
-        score += 6000;
-      }
 
       const mapKind = getSettlementMapKind(settlement, activeVillageId);
       score += kindPriority[mapKind] * 1000;
@@ -13675,8 +13849,6 @@ const MapPanel = memo(({
     focusedSettlementId,
     regionSize,
     resolveSettlementGridCoords,
-    safeHoveredId,
-    safePinnedSettlementId,
     settlements,
   ]);
   const mapDisplaySettlementById = useMemo(() => {
@@ -13812,15 +13984,10 @@ const MapPanel = memo(({
     return settlements.find((settlement) => settlement.kind === 'own' || settlement.relation === 'self') ?? null;
   }, [activeVillageId, settlements]);
   const mapRenderSettlements = useMemo(() => {
+    // Keep marker DOM scoped to the viewport (+overscan). Hover/pin visuals are rendered separately.
     const alwaysVisibleIds = new Set<string>();
     if (focusedSettlementId) {
       alwaysVisibleIds.add(focusedSettlementId);
-    }
-    if (safePinnedSettlementId) {
-      alwaysVisibleIds.add(safePinnedSettlementId);
-    }
-    if (safeHoveredId) {
-      alwaysVisibleIds.add(safeHoveredId);
     }
     if (distanceOriginSettlement?.id) {
       alwaysVisibleIds.add(distanceOriginSettlement.id);
@@ -13845,9 +14012,43 @@ const MapPanel = memo(({
     renderedCellRange.maxY,
     renderedCellRange.minX,
     renderedCellRange.minY,
-    safeHoveredId,
-    safePinnedSettlementId,
   ]);
+  const resolveStateOverlayCell = useCallback(
+    (
+      settlementId: string | null,
+    ): { id: string; localX: number; localY: number; mapKind: MapSettlementKind } | null => {
+      if (!settlementId) {
+        return null;
+      }
+      const settlement = settlementsById.get(settlementId);
+      if (!settlement) {
+        return null;
+      }
+      const visibleEntry = mapDisplaySettlementById.get(settlement.id);
+      const fallbackGridPosition = visibleEntry ? null : resolveSettlementGridCoords(settlement);
+      const localX = visibleEntry?.localX ?? fallbackGridPosition?.x ?? 0;
+      const localY = visibleEntry?.localY ?? fallbackGridPosition?.y ?? 0;
+      if (localX < 1 || localX > regionSize || localY < 1 || localY > regionSize) {
+        return null;
+      }
+      return {
+        id: settlement.id,
+        localX,
+        localY,
+        mapKind: getSettlementMapKind(settlement, activeVillageId),
+      };
+    },
+    [activeVillageId, mapDisplaySettlementById, regionSize, resolveSettlementGridCoords, settlementsById],
+  );
+  const hoveredOverlayCell = useMemo(
+    () => resolveStateOverlayCell(safeHoveredId),
+    [resolveStateOverlayCell, safeHoveredId],
+  );
+  const pinnedOverlayCell = useMemo(
+    () => resolveStateOverlayCell(safePinnedSettlementId),
+    [resolveStateOverlayCell, safePinnedSettlementId],
+  );
+  const shouldShowHoveredOverlay = hoveredOverlayCell != null && hoveredOverlayCell.id !== pinnedOverlayCell?.id;
 
   const previewDistanceTiles = useMemo(() => {
     if (!previewSettlement || !distanceOriginSettlement) {
@@ -14596,9 +14797,6 @@ const MapPanel = memo(({
         const settlementMapKind = getSettlementMapKind(settlement, activeVillageId);
         const settlementPrestigeMeta = resolveSettlementPrestigeMeta(Number(settlement.prestige ?? 0));
         const settlementPrestigeTier = settlementPrestigeMeta.tier;
-        const isHoveredPlayerSettlement =
-          safeHoveredId === settlement.id &&
-          (settlementMapKind === 'opponent' || settlementMapKind === 'enemy' || settlementMapKind === 'nap');
         const markerState =
           settlement.villageId != null
             ? orderMarkersByVillageId.get(Number(settlement.villageId)) ?? null
@@ -14610,7 +14808,7 @@ const MapPanel = memo(({
         return (
           <button
             key={settlement.id}
-            className={`region-cell settlement ${settlementMapKind} prestige-tier-${settlementPrestigeTier.toLocaleLowerCase('cs-CZ')} ${focusedSettlementId === settlement.id ? 'focused' : ''} ${isHoveredPlayerSettlement ? 'hover-player' : ''} ${markerState ? 'has-order-marker' : ''}`}
+            className={`region-cell settlement ${settlementMapKind} prestige-tier-${settlementPrestigeTier.toLocaleLowerCase('cs-CZ')} ${focusedSettlementId === settlement.id ? 'focused' : ''} ${markerState ? 'has-order-marker' : ''}`}
             data-settlement-id={settlement.id}
             style={{
               gridColumnStart: localX,
@@ -14661,7 +14859,7 @@ const MapPanel = memo(({
           >
             {showSettlementBannerCards && shouldShowCtrlSettlementBanner(settlement) ? (
               <span
-                className={`map-settlement-banner ${settlementMapKind} prestige-tier-${settlementPrestigeTier.toLocaleLowerCase('cs-CZ')} ${safeHoveredId === settlement.id || safePinnedSettlementId === settlement.id || focusedSettlementId === settlement.id ? 'is-highlighted' : ''}`}
+                className={`map-settlement-banner ${settlementMapKind} prestige-tier-${settlementPrestigeTier.toLocaleLowerCase('cs-CZ')} ${focusedSettlementId === settlement.id ? 'is-highlighted' : ''}`}
                 aria-hidden="true"
               >
                 <span className="map-settlement-banner-kicker">
@@ -14730,6 +14928,7 @@ const MapPanel = memo(({
           </button>
         );
       }),
+    // TODO(map-canvas-layer): replace DOM marker primitives with a canvas draw pass once this split render path is stable.
     [
       activeVillageId,
       clearHoverTimeout,
@@ -14737,8 +14936,6 @@ const MapPanel = memo(({
       mapRenderSettlements,
       onOpenSettlement,
       orderMarkersByVillageId,
-      safeHoveredId,
-      safePinnedSettlementId,
       scheduleHoveredSettlementClear,
       showSettlementBannerCards,
     ],
@@ -14961,6 +15158,28 @@ const MapPanel = memo(({
             }
           >
             {settlementMarkers}
+            {shouldShowHoveredOverlay || pinnedOverlayCell ? (
+              <div className="map-settlement-state-overlay-layer" aria-hidden="true">
+                {shouldShowHoveredOverlay && hoveredOverlayCell ? (
+                  <span
+                    className={`map-settlement-state-overlay is-hover ${hoveredOverlayCell.mapKind === 'opponent' || hoveredOverlayCell.mapKind === 'enemy' || hoveredOverlayCell.mapKind === 'nap' ? 'is-player-target' : ''}`}
+                    style={{
+                      gridColumnStart: hoveredOverlayCell.localX,
+                      gridRowStart: hoveredOverlayCell.localY,
+                    }}
+                  />
+                ) : null}
+                {pinnedOverlayCell ? (
+                  <span
+                    className={`map-settlement-state-overlay is-pinned ${pinnedOverlayCell.mapKind === 'opponent' || pinnedOverlayCell.mapKind === 'enemy' || pinnedOverlayCell.mapKind === 'nap' ? 'is-player-target' : ''}`}
+                    style={{
+                      gridColumnStart: pinnedOverlayCell.localX,
+                      gridRowStart: pinnedOverlayCell.localY,
+                    }}
+                  />
+                ) : null}
+              </div>
+            ) : null}
             {previewSettlement && previewCardStyle && !previewCardPortalStyle
               ? renderPreviewSettlementCard(previewCardStyle, false)
               : null}
@@ -16626,9 +16845,6 @@ export const GamePage = () => {
     };
   }, [activeVillageBaseName, isVillageRenameOpen]);
 
-  const villageRegionLabel = gameState
-    ? `Region ${gameState.village.region}, království ${gameState.village.kingdom}`
-    : 'Čekám na data backendu';
   const leaderboardRows = useMemo(() => {
     const rows = gameState?.leaderboard?.length ? gameState.leaderboard : RANKING_FALLBACK;
     return rows.filter((entry) => !entry.username.startsWith('__abandoned_ai__'));
@@ -20974,7 +21190,6 @@ export const GamePage = () => {
         return (
           <CityPanel
             villageLabel={villageLabel}
-            regionLabel={villageRegionLabel}
             prestige={gameState?.village.prestige ?? 0}
             cityResourceSnapshot={cityPanelResourceSnapshot}
             availableResources={cityPanelAvailableResources}
@@ -21459,23 +21674,15 @@ export const GamePage = () => {
   const hasDockedPanels =
     fullDockPanels.length > 0 || leftDockPanels.length > 0 || rightDockPanels.length > 0;
   const currentCanvasViewport = getCanvasViewportSize();
+  const stretchedMainStageFrame = getStretchedPanelFrame(
+    currentCanvasViewport.viewportWidth,
+    currentCanvasViewport.viewportHeight,
+  );
   const dockFrame = {
-    x: 8,
-    y: 12,
-    width: Math.round(
-      clamp(
-        currentCanvasViewport.viewportWidth - 16,
-        PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
-        currentCanvasViewport.viewportWidth - 16,
-      ),
-    ),
-    height: Math.round(
-      clamp(
-        currentCanvasViewport.viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
-        PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT,
-        currentCanvasViewport.viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
-      ),
-    ),
+    x: stretchedMainStageFrame.x,
+    y: stretchedMainStageFrame.y,
+    width: stretchedMainStageFrame.width,
+    height: stretchedMainStageFrame.height,
   };
 
   const renderPanelWindow = (panel: PanelWindow, options?: { docked?: boolean }) => {
@@ -21514,6 +21721,16 @@ export const GamePage = () => {
         style={
           isDocked
             ? undefined
+            : isMainMenuPanel
+              ? {
+                  left: `${stretchedMainStageFrame.x}px`,
+                  top: `${stretchedMainStageFrame.y}px`,
+                  zIndex: isMapPanel
+                    ? MAP_BACKGROUND_PANEL_Z_INDEX
+                    : FLOATING_PANEL_BASE_Z_INDEX + panel.z,
+                  width: `${stretchedMainStageFrame.width}px`,
+                  height: `${stretchedMainStageFrame.height}px`,
+                }
             : {
                 left: shouldAnchorVillageToBottom ? '50%' : `${panel.x}px`,
                 top: shouldAnchorVillageToBottom ? undefined : `${panel.y}px`,
