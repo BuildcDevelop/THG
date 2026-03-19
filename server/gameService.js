@@ -354,7 +354,7 @@ const RESEARCH_DEFS = Object.freeze([
     id: 'linen-ropes',
     name: 'Lněné motouzy',
     description: 'Způsob výroby tětiv a kompozitních ramen luku.',
-    coinCost: 1000,
+    coinCost: 300,
     unlocks: 'Odemkne Lučištníky (Kasárna L3).',
     requiredResearchIds: [],
   },
@@ -362,7 +362,7 @@ const RESEARCH_DEFS = Object.freeze([
     id: 'stirrups-spurs',
     name: 'Třmeny a ostruhy',
     description: 'Moderní jezdecké vybavení pro lehkou jízdu.',
-    coinCost: 1500,
+    coinCost: 300,
     unlocks: 'Odemkne lehkou jízdu.',
     requiredResearchIds: [],
   },
@@ -370,7 +370,7 @@ const RESEARCH_DEFS = Object.freeze([
     id: 'tactics',
     name: 'Taktika',
     description: 'Koordinované průlomy opevněných bran.',
-    coinCost: 2000,
+    coinCost: 500,
     unlocks: 'Odemkne beranidla.',
     requiredResearchIds: [],
   },
@@ -378,7 +378,7 @@ const RESEARCH_DEFS = Object.freeze([
     id: 'city-defense',
     name: 'Městská obrana',
     description: 'Výcvik posádky hradeb a obranných rot.',
-    coinCost: 3000,
+    coinCost: 500,
     unlocks: 'Odemkne hradby a bránu.',
     requiredResearchIds: [],
   },
@@ -386,15 +386,23 @@ const RESEARCH_DEFS = Object.freeze([
     id: 'guild-influence',
     name: 'Vliv cechů',
     description: 'Jednání s cechy a standardizace obchodních smluv.',
-    coinCost: 4000,
+    coinCost: 1000,
     unlocks: 'Odemkne cech obchodníků.',
+    requiredResearchIds: [],
+  },
+  {
+    id: 'knighthood-estate',
+    name: 'Rytířský stav',
+    description: 'Legitimizace rytířských družin a jejich odvodových práv.',
+    coinCost: 100,
+    unlocks: 'Odemkne nábor jednotky Rytíř.',
     requiredResearchIds: [],
   },
   {
     id: 'verven-bank',
     name: 'Vervenská zlatá banka',
     description: 'Dluhové úpisy, které umožňují nájem žoldáků.',
-    coinCost: 5000,
+    coinCost: 500,
     unlocks: 'Odemkne žoldáky.',
     requiredResearchIds: [],
   },
@@ -403,6 +411,7 @@ const RESEARCH_DEF_BY_ID = new Map(RESEARCH_DEFS.map((definition) => [definition
 const UNIT_RESEARCH_REQUIREMENTS = Object.freeze({
   archer: 'linen-ropes',
   cavalry: 'stirrups-spurs',
+  knight: 'knighthood-estate',
   ram: 'tactics',
 });
 const BUILDING_RESEARCH_REQUIREMENTS = Object.freeze({
@@ -13412,10 +13421,6 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
 
   if (commandType === 'move' && Number(targetVillage.playerId) !== Number(player.id)) {
     throw new GameRuleError('Presun armady je mozny pouze mezi tvymi leny.');
-  }
-
-  if (commandType === 'support' && String(targetVillage.kingdom) !== String(village.kingdom)) {
-    throw new GameRuleError('Podpora je povolena pouze v ramci stejneho kralovstvi.');
   }
 
   if (commandType === 'attack' && Number(targetVillage.playerId) === Number(player.id)) {

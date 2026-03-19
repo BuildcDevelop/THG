@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
 import { GameRuleError } from './gameService.js';
 
@@ -35,8 +36,9 @@ const LEGACY_MANAGED_AVATAR_PATH_PREFIXES = Object.freeze([
   'public/avatars/',
   'avatars/',
 ]);
+const COMMUNICATION_SERVICE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const COMMUNICATION_AVATAR_STORAGE_DIR = path.resolve(
-  String(process.env.AVATAR_STORAGE_DIR ?? path.join(process.cwd(), 'server', 'storage', 'avatars')).trim(),
+  String(process.env.AVATAR_STORAGE_DIR ?? path.join(COMMUNICATION_SERVICE_DIR, 'storage', 'avatars')).trim(),
 );
 const WORLD_REGION_BY_WORLD_ID = Object.freeze({
   'dominion-1': 1,
@@ -328,7 +330,7 @@ const toPublicAvatarUrl = (avatarUrlRaw) => {
   }
   const absolutePath = resolveManagedAvatarAbsolutePath(normalized);
   if (!absolutePath || !fs.existsSync(absolutePath)) {
-    return null;
+    return normalized;
   }
   return normalized;
 };

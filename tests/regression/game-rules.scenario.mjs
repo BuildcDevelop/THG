@@ -114,6 +114,27 @@ const updateVillagePrestigeByPlayerRegionStmt = db.prepare(
    WHERE player_id = ?
      AND region = ?`,
 );
+const upsertResearchProgressCompletedStmt = db.prepare(
+  `INSERT INTO research_progress (
+      player_id,
+      region,
+      research_id,
+      status,
+      progress,
+      assigned_academics,
+      started_at,
+      completed_at,
+      updated_at
+    ) VALUES (?, ?, ?, 'completed', 100, 0, ?, ?, ?)
+    ON CONFLICT(player_id, region, research_id)
+    DO UPDATE SET
+      status = 'completed',
+      progress = 100,
+      assigned_academics = 0,
+      started_at = excluded.started_at,
+      completed_at = excluded.completed_at,
+      updated_at = excluded.updated_at`,
+);
 const updateRecruitmentFinishAtStmt = db.prepare(
   `UPDATE unit_recruitments
    SET finish_at = ?
@@ -275,6 +296,17 @@ const setVillageResources = (villageId, resources) => {
   const gold = Math.max(0, Number(resources?.gold ?? current.gold ?? 0));
   const coins = Math.max(0, Number(resources?.coins ?? current.coins ?? 0));
   upsertResourcePocketStmt.run(Number(villageId), wood, stone, iron, gold, coins);
+};
+const setResearchCompleted = (playerId, region, researchId) => {
+  const finishedAt = new Date().toISOString();
+  upsertResearchProgressCompletedStmt.run(
+    Number(playerId),
+    Number(region),
+    String(researchId),
+    finishedAt,
+    finishedAt,
+    finishedAt,
+  );
 };
 const findAttackerPayloadByMovement = (username, movementId) => {
   const player = getPlayer(username);
@@ -863,8 +895,10 @@ const runScenarioCommunicationThreadIsolation = () => {
 
 const runScenarioKnightSingleSlotPerVillage = () => {
   clearTransientState();
+  const attacker = getPlayer(ATTACKER_USERNAME);
   const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
   setVillageResources(attackerVillage.villageId, { wood: 50000, stone: 50000, iron: 50000 });
+  setResearchCompleted(Number(attacker.id), REGION_PRIMARY, 'knighthood-estate');
 
   setVillageUnits(attackerVillage.villageId, { knight: 1 });
   let blockedWithExistingKnight = null;
