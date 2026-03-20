@@ -163,11 +163,17 @@ function checkApiPathContract() {
 }
 
 function checkNetlifyProductionApiEnv() {
-  const command = spawnSync(
-    'npx',
-    ['netlify', 'env:get', 'VITE_API_BASE', '--context', 'production'],
-    { encoding: 'utf8', cwd: ROOT_DIR },
-  );
+  const command =
+    process.platform === 'win32'
+      ? spawnSync(
+          'cmd.exe',
+          ['/c', 'npx', 'netlify', 'env:get', 'VITE_API_BASE', '--context', 'production'],
+          { encoding: 'utf8', cwd: ROOT_DIR },
+        )
+      : spawnSync('npx', ['netlify', 'env:get', 'VITE_API_BASE', '--context', 'production'], {
+          encoding: 'utf8',
+          cwd: ROOT_DIR,
+        });
   if (command.error) {
     addWarn(`Netlify env check skipped (${command.error.message}).`);
     return;
@@ -179,7 +185,7 @@ function checkNetlifyProductionApiEnv() {
   }
 
   const value = String(command.stdout ?? '').trim();
-  if (!value) {
+  if (!value || /^No value set\b/i.test(value)) {
     addPass('Netlify production VITE_API_BASE is empty.');
     return;
   }
