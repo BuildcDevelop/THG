@@ -282,6 +282,16 @@ const setVillageBuildings = (villageId, buildingLevels = {}) => {
     upsertBuildingStmt.run(Number(villageId), String(buildingId), level);
   }
 };
+const setVillageDefenseBaseline = (villageId, options = {}) => {
+  const fortificationLevel = Math.max(0, Math.floor(Number(options?.fortification ?? 0)));
+  const gateLevel = Math.max(0, Math.floor(Number(options?.gate ?? 0)));
+  // Keep townhall below unlock threshold so automated garrison does not alter combat/loot scenario intent.
+  setVillageBuildings(villageId, {
+    townhall: 0,
+    fortification: fortificationLevel,
+    gate: gateLevel,
+  });
+};
 const setVillageResources = (villageId, resources) => {
   const current = selectResourcePocketByVillageStmt.get(Number(villageId)) ?? {
     wood: 0,
@@ -372,7 +382,7 @@ const runScenarioEmptyFortifiedNoLoss = () => {
 
   setVillageUnits(attackerVillage.villageId, { militia: 30, caravan: 2 });
   setVillageUnits(defenderVillage.villageId, {});
-  setVillageBuildings(defenderVillage.villageId, { fortification: 5, gate: 1 });
+  setVillageDefenseBaseline(defenderVillage.villageId, { fortification: 5, gate: 1 });
 
   const { payload } = runAttackAndGetPayload({
     username: ATTACKER_USERNAME,
@@ -396,7 +406,7 @@ const runScenarioRamBreaksGate = () => {
 
   setVillageUnits(attackerVillage.villageId, { militia: 20, ram: 1 });
   setVillageUnits(defenderVillage.villageId, {});
-  setVillageBuildings(defenderVillage.villageId, { fortification: 5, gate: 1 });
+  setVillageDefenseBaseline(defenderVillage.villageId, { fortification: 5, gate: 1 });
 
   const { payload } = runAttackAndGetPayload({
     username: ATTACKER_USERNAME,
@@ -422,7 +432,7 @@ const runScenarioMixedScoutAttackAndLoot = () => {
 
   setVillageUnits(attackerVillage.villageId, { militia: 1, scout: 5 });
   setVillageUnits(defenderVillage.villageId, {});
-  setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+  setVillageDefenseBaseline(defenderVillage.villageId);
   setVillageResources(defenderVillage.villageId, { wood: 300, stone: 300, iron: 300 });
 
   const { payload } = runAttackAndGetPayload({
@@ -455,7 +465,7 @@ const runScenarioScoutComboAttackMatrix = () => {
     updateVillageOwnerStmt.run(Number(defenderPlayer.id), KINGDOM_DEFENDER, Number(defenderVillage.villageId));
     setVillageUnits(attackerVillage.villageId, { scout: 5, [unitId]: 3 });
     setVillageUnits(defenderVillage.villageId, {});
-    setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+    setVillageDefenseBaseline(defenderVillage.villageId);
     setVillageResources(defenderVillage.villageId, { wood: 1200, stone: 1200, iron: 1200 });
 
     try {
@@ -528,7 +538,7 @@ const runScenarioLootCapacity = () => {
   };
   setVillageUnits(attackerVillage.villageId, attackUnits);
   setVillageUnits(defenderVillage.villageId, {});
-  setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+  setVillageDefenseBaseline(defenderVillage.villageId);
   setVillageResources(defenderVillage.villageId, { wood: 800, stone: 800, iron: 800 });
 
   const { payload } = runAttackAndGetPayload({
@@ -555,7 +565,7 @@ const runScenarioDefaultBalancedLootPriority = () => {
 
   setVillageUnits(attackerVillage.villageId, { militia: 2 });
   setVillageUnits(defenderVillage.villageId, {});
-  setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+  setVillageDefenseBaseline(defenderVillage.villageId);
   setVillageResources(defenderVillage.villageId, { wood: 100, stone: 100, iron: 100 });
 
   const { payload } = runAttackAndGetPayload({
@@ -663,7 +673,7 @@ const runScenarioConquestKnightLootCapacity = () => {
 
   setVillageUnits(attackerVillage.villageId, { knight: 1 });
   setVillageUnits(defenderVillage.villageId, {});
-  setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+  setVillageDefenseBaseline(defenderVillage.villageId);
   setVillageResources(defenderVillage.villageId, { wood: 300, stone: 300, iron: 300 });
 
   const { payload } = runAttackAndGetPayload({
@@ -762,7 +772,7 @@ const runScenarioLargeArmyBalance = () => {
 
   setVillageUnits(attackerVillage.villageId, { militia: 200 });
   setVillageUnits(defenderVillage.villageId, { militia: 5 });
-  setVillageBuildings(defenderVillage.villageId, { fortification: 0, gate: 0 });
+  setVillageDefenseBaseline(defenderVillage.villageId);
 
   const { payload } = runAttackAndGetPayload({
     username: ATTACKER_USERNAME,

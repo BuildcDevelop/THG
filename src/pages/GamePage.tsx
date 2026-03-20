@@ -15777,7 +15777,7 @@ const VillagePanel = memo(({
       return [
         {
           label: 'Posádka',
-          value: 'Načítám detail složení…',
+          value: 'Načítám detail…',
         },
       ];
     }
@@ -15785,29 +15785,30 @@ const VillagePanel = memo(({
       return [
         {
           label: 'Posádka',
-          value: 'Detail posádky není dostupný.',
+          value: 'Detail není dostupný.',
         },
       ];
     }
     if (!villageIntelData.garrisonUnlocked) {
       return [
         {
-          label: 'Posádka je uzamčena',
-          value: 'Odemyká se od Radnice 5. Rezervace 300 populace je aktivní hned.',
+          label: 'Posádka uzamčena',
+          value: 'Odemkne se od Radnice 5.',
         },
       ];
     }
     return villageIntelData.garrisonDetails.map((unit) => {
       const amountLabel = `${unit.amount.toLocaleString('cs-CZ')}/${unit.cap.toLocaleString('cs-CZ')}`;
-      const lossLabel =
-        unit.missing > 0 ? `ztráty ${unit.missing.toLocaleString('cs-CZ')}` : 'bez ztrát';
-      const refillStepLabel =
-        unit.refillSecPerUnit > 0 ? `+1 za ${formatDurationLabel(unit.refillSecPerUnit)}` : 'doplnění n/a';
-      const nextTickLabel =
-        unit.nextRefillSec != null ? `⏱ další doplnění za ${formatDurationLabel(unit.nextRefillSec)}` : '⏱ bez čekajícího doplnění';
+      const missingLabel =
+        unit.missing > 0 ? `chybí ${unit.missing.toLocaleString('cs-CZ')}` : 'plný stav';
+      const refillLabel = unit.refillSecPerUnit > 0 ? `+1/${formatDurationLabel(unit.refillSecPerUnit)}` : '+1/n/a';
+      const nextRefillLabel =
+        unit.missing > 0 && unit.nextRefillSec != null
+          ? `další za ${formatDurationLabel(unit.nextRefillSec)}`
+          : null;
       return {
-        label: `${unit.unitName}: ${amountLabel}`,
-        value: `${lossLabel} · ${refillStepLabel} · ${nextTickLabel}`,
+        label: `${unit.unitName} ${amountLabel}`,
+        value: nextRefillLabel == null ? `${missingLabel} · ${refillLabel}` : `${missingLabel} · ${refillLabel} · ${nextRefillLabel}`,
       };
     });
   }, [hasVillageIntel, isVillageIntelLoading, villageIntelData]);

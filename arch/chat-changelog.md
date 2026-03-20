@@ -946,3 +946,19 @@ Entry template:
 - Files: arch/chat-changelog.md
 - Verification: `git merge --no-ff feat/build-0.1.14` (OK), `npm run build` (OK), `npm run test:regression` (FAIL: 7 testů), `.dev-full.log` (`client ... port=5173`, `server ... port=3001`), `Invoke-WebRequest http://localhost:5173` (`200`), `Invoke-WebRequest http://localhost:3001/api/health` (`200`)
 - Notes: Na `develop` je backend port `3001` řízen branch runtime profilem; pokud chceš explicitně `3003`, je potřeba lokální override pro `develop`.
+
+## 2026-03-20 16:07 | branch: develop
+
+- Request: Vysvětlit význam vybraných failing regresních testů pro combat/loot a navrhnout směr opravy.
+- Summary: Prošel jsem příslušné scénáře i resolver bitvy/lootu a ověřil reálné výstupy scénářů. Hlavní závěr: několik failů už neukazuje na čistou chybu výpočtu, ale na střet starých testových očekávání s novou logikou posádky. `empty-fortified-no-loss`, `loot-capacity-all-units` i `large-army-balance` dnes implicitně bojují proti auto-garrisonu přimíchanému do obrany, takže „prázdná“ vesnice ve scénáři ve skutečnosti není prázdná a loot vychází nulový proto, že útočníci nepřežijí. U `default-balanced-loot-priority` je navíc vidět nekonzistence report payloadu: resolver loot priority normalizuje na `balanced`, ale zničená útočná armáda dostává report bez pole `lootPriority`, takže test čte prázdný string. Doporučení jsem rozdělil na dvě roviny: nejdřív srovnat feature contract testů s posádkou, potom upravit report serialization a případně casualty model pro méně binární porážky.
+- Files: arch/chat-changelog.md
+- Verification: `node tests/regression/game-rules.scenario.mjs empty-fortified-no-loss`, `node tests/regression/game-rules.scenario.mjs loot-capacity-all-units`, `node tests/regression/game-rules.scenario.mjs default-balanced-loot-priority`, `node tests/regression/game-rules.scenario.mjs large-army-balance`, statická analýza `tests/regression/game-rules.scenario.mjs` a `server/gameService.js`
+- Notes: Bez implementace; šlo o analýzu root cause a návrh pořadí oprav s ohledem na guardrails.
+
+## 2026-03-20 16:31 | branch: develop
+
+- Request: Implementovat opravy failujících combat/loot testů podle návrhu a opravit tooltip Posádky v kartě léna, aby nebyl roztahaný do výšky.
+- Summary: Nasadil jsem bezpečný fix ve třech vrstvách. V regresních scénářích jsem přidal helper `setVillageDefenseBaseline`, který u scénářů testujících čistý boj/loot explicitně nastaví `townhall: 0` (vypnutí auto-posádky) a tím vrací scénářům původní deterministický contract bez skrytých obránců. V bojových reportech jsem sjednotil payload a doplnil `lootPriority`, `lootTaken` a `returnMovement` i pro větev „armyDestroyed“, takže UI/reporting drží konzistentní datový tvar. U tooltipu Posádky jsem zkrátil texty v `garrisonTooltipRows` na čitelnější jednořádkové hodnoty a upravil layout `.village-intel-tooltip` na jednokolonový, s korektním wrappingem bez vertikálního „natažení“ textu.
+- Files: tests/regression/game-rules.scenario.mjs, server/gameService.js, src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `node --test tests/regression/game-rules.regression.test.mjs` (PASS 28/28), `npm run build` (PASS; známé Vite warningy o velikosti chunku)
+- Notes: Guardrails: žádný nový polling, žádná změna tick/read flow; změny jsou lokální v test scénářích, report serializaci a tooltip render/CSS.

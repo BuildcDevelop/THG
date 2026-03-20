@@ -9888,6 +9888,9 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
               defender: defenderName,
               outcome: 'defender_victory',
               gateBlocked: blockedByGate,
+              lootPriority,
+              lootTaken,
+              returnMovement: returnMovementPayload ?? undefined,
               armyDestroyed: true,
               battle,
               sentArmy: {
