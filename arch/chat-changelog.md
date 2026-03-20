@@ -938,3 +938,11 @@ Entry template:
 - Files: arch/chat-changelog.md
 - Verification: `node tmp-research-check.mjs` (runtime snapshot s novými cenami), `.dev-full.log` po restartu (`[backend] Listening on http://localhost:3003`, klient `http://localhost:5173`)
 - Notes: Po restartu backendu je potřeba v prohlížeči udělat hard refresh, aby UI neukazovalo starý stav z předchozí session.
+
+## 2026-03-20 15:33 | branch: develop
+
+- Request: Sloučit `feat/build-0.1.14` do `develop`, otestovat bez maskování chyb a spustit localhost na `5173`.
+- Summary: Přepnul jsem se na `develop` a provedl merge `feat/build-0.1.14` (`cf01075`) bez konfliktů. Následně jsem spustil build a plnou regresní sadu; build je zelený, ale regresní testy hlásí 7 failů (boj/loot scénáře), které jsem ponechal transparentně bez „greenwashing“. Nakonec jsem spustil detached lokální runtime; frontend běží na `5173` a backend pro scope `develop` na `3001` (branch runtime default), obojí dostupné.
+- Files: arch/chat-changelog.md
+- Verification: `git merge --no-ff feat/build-0.1.14` (OK), `npm run build` (OK), `npm run test:regression` (FAIL: 7 testů), `.dev-full.log` (`client ... port=5173`, `server ... port=3001`), `Invoke-WebRequest http://localhost:5173` (`200`), `Invoke-WebRequest http://localhost:3001/api/health` (`200`)
+- Notes: Na `develop` je backend port `3001` řízen branch runtime profilem; pokud chceš explicitně `3003`, je potřeba lokální override pro `develop`.
