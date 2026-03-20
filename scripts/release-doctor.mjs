@@ -266,7 +266,7 @@ async function runSmokeChecks(baseUrl, expectedVersion) {
 
   const communicationPayload = await requestJson(
     baseUrl,
-    `/api/v1/communication?threadLimit=1&messageLimit=1`,
+    `/api/v1/communication?username=${encodeURIComponent(options.username)}&threadLimit=1&messageLimit=1`,
     { method: 'GET' },
     cookieJar,
   );

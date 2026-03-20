@@ -499,9 +499,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_player_notifications_source_unique
   ON player_notifications(player_id, source_type, source_id)
   WHERE source_type IS NOT NULL AND source_id IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_player_notifications_report_ref
-  ON player_notifications(player_id, report_id, created_at DESC, id DESC);
-
 CREATE TABLE IF NOT EXISTS player_profiles (
   player_id INTEGER PRIMARY KEY,
   avatar_url TEXT,
