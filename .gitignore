@@ -18,6 +18,7 @@ server/data/*.sqlite-*
 server/data/*.sqlite.backup-wal
 server/data/*.sqlite.backup-shm
 server/data/*.sqlite.backup.pre-*
+server/data/branches/
 
 # Local backups / consolidation output (should never ship)
 dir/

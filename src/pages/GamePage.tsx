@@ -179,6 +179,26 @@ type SettlementOrderMarkerCounts = {
   knightAttack: number;
 };
 
+type SettlementCanvasBadgeKind = MapOrderCommandType | 'knight-attack';
+
+type SettlementCanvasOrderBadge = {
+  kind: SettlementCanvasBadgeKind;
+  symbol: string;
+  count: number;
+};
+
+type MapSettlementCanvasMarker = {
+  settlement: RegionSettlement;
+  localX: number;
+  localY: number;
+  mapKind: MapSettlementKind;
+  prestigeMeta: SettlementPrestigeMeta;
+  isFocused: boolean;
+  coverageCommandTypes: MapOrderCommandType[];
+  orderBadges: SettlementCanvasOrderBadge[];
+  hasOrderMarker: boolean;
+};
+
 type PanelMeta = {
   type: PanelType;
   label: string;
@@ -1203,6 +1223,11 @@ type TooltipCursorPosition = {
   y: number;
 };
 
+type TooltipSize = {
+  width: number;
+  height: number;
+};
+
 const TOOLTIP_CURSOR_OFFSET_X = 18;
 const TOOLTIP_CURSOR_OFFSET_Y = 18;
 const TOOLTIP_VIEWPORT_PADDING = 10;
@@ -1214,6 +1239,8 @@ const clampTooltipPosition = (
   viewportWidth: number,
   viewportHeight: number,
 ): TooltipCursorPosition => {
+  const minLeft = TOOLTIP_VIEWPORT_PADDING;
+  const minTop = TOOLTIP_VIEWPORT_PADDING;
   const maxLeft = Math.max(
     TOOLTIP_VIEWPORT_PADDING,
     Math.floor(viewportWidth - tooltipWidth - TOOLTIP_VIEWPORT_PADDING),
@@ -1222,11 +1249,148 @@ const clampTooltipPosition = (
     TOOLTIP_VIEWPORT_PADDING,
     Math.floor(viewportHeight - tooltipHeight - TOOLTIP_VIEWPORT_PADDING),
   );
-  const preferredLeft = Math.floor(cursorPosition.x + TOOLTIP_CURSOR_OFFSET_X);
-  const preferredTop = Math.floor(cursorPosition.y + TOOLTIP_CURSOR_OFFSET_Y);
+  const preferredRight = Math.floor(cursorPosition.x + TOOLTIP_CURSOR_OFFSET_X);
+  const preferredLeft = Math.floor(cursorPosition.x - tooltipWidth - TOOLTIP_CURSOR_OFFSET_X);
+  const preferredBottom = Math.floor(cursorPosition.y + TOOLTIP_CURSOR_OFFSET_Y);
+  const preferredTop = Math.floor(cursorPosition.y - tooltipHeight - TOOLTIP_CURSOR_OFFSET_Y);
+
+  const fitsRight = preferredRight + tooltipWidth <= viewportWidth - TOOLTIP_VIEWPORT_PADDING;
+  const fitsLeft = preferredLeft >= TOOLTIP_VIEWPORT_PADDING;
+  const fitsBottom = preferredBottom + tooltipHeight <= viewportHeight - TOOLTIP_VIEWPORT_PADDING;
+  const fitsTop = preferredTop >= TOOLTIP_VIEWPORT_PADDING;
+
+  const availableRight = viewportWidth - TOOLTIP_VIEWPORT_PADDING - cursorPosition.x;
+  const availableLeft = cursorPosition.x - TOOLTIP_VIEWPORT_PADDING;
+  const availableBottom = viewportHeight - TOOLTIP_VIEWPORT_PADDING - cursorPosition.y;
+  const availableTop = cursorPosition.y - TOOLTIP_VIEWPORT_PADDING;
+
+  const horizontalCandidate =
+    fitsRight || (!fitsLeft && availableRight >= availableLeft) ? preferredRight : preferredLeft;
+  const verticalCandidate =
+    fitsBottom || (!fitsTop && availableBottom >= availableTop) ? preferredBottom : preferredTop;
+
   return {
-    x: Math.min(Math.max(preferredLeft, TOOLTIP_VIEWPORT_PADDING), maxLeft),
-    y: Math.min(Math.max(preferredTop, TOOLTIP_VIEWPORT_PADDING), maxTop),
+    x: Math.min(Math.max(horizontalCandidate, minLeft), maxLeft),
+    y: Math.min(Math.max(verticalCandidate, minTop), maxTop),
+  };
+};
+
+const readTooltipSize = (node: HTMLDivElement | null, fallbackSize: TooltipSize): TooltipSize => {
+  if (!node) {
+    return fallbackSize;
+  }
+  const bounds = node.getBoundingClientRect();
+  const width = Math.max(1, Math.ceil(bounds.width));
+  const height = Math.max(1, Math.ceil(bounds.height));
+  if (!Number.isFinite(width) || !Number.isFinite(height)) {
+    return fallbackSize;
+  }
+  return { width, height };
+};
+
+const useFollowCursorTooltipPositioning = ({
+  cursorPosition,
+  fallbackCursorPosition,
+  estimatedSize,
+  isEnabled = true,
+}: {
+  cursorPosition?: TooltipCursorPosition | null;
+  fallbackCursorPosition?: TooltipCursorPosition | null;
+  estimatedSize: TooltipSize;
+  isEnabled?: boolean;
+}) => {
+  const tooltipNodeRef = useRef<HTMLDivElement | null>(null);
+  const [tooltipSize, setTooltipSize] = useState<TooltipSize | null>(null);
+
+  const preferredCursor = cursorPosition ?? fallbackCursorPosition ?? null;
+  const preferredCursorX = preferredCursor?.x ?? null;
+  const preferredCursorY = preferredCursor?.y ?? null;
+
+  const syncTooltipSize = useCallback(() => {
+    const nextSize = readTooltipSize(tooltipNodeRef.current, estimatedSize);
+    setTooltipSize((currentSize) =>
+      currentSize &&
+      currentSize.width === nextSize.width &&
+      currentSize.height === nextSize.height
+        ? currentSize
+        : nextSize,
+    );
+  }, [estimatedSize]);
+
+  const tooltipRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      tooltipNodeRef.current = node;
+      if (!node) {
+        return;
+      }
+      const nextSize = readTooltipSize(node, estimatedSize);
+      setTooltipSize((currentSize) =>
+        currentSize &&
+        currentSize.width === nextSize.width &&
+        currentSize.height === nextSize.height
+          ? currentSize
+          : nextSize,
+      );
+    },
+    [estimatedSize],
+  );
+
+  useEffect(() => {
+    if (!isEnabled || preferredCursorX == null || preferredCursorY == null || typeof window === 'undefined') {
+      return;
+    }
+    const node = tooltipNodeRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const resizeObserver = new ResizeObserver(() => {
+      syncTooltipSize();
+    });
+    resizeObserver.observe(node);
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [isEnabled, preferredCursorX, preferredCursorY, syncTooltipSize]);
+
+  useEffect(() => {
+    if (!isEnabled || preferredCursorX == null || preferredCursorY == null || typeof window === 'undefined') {
+      return;
+    }
+    const handleResize = () => {
+      syncTooltipSize();
+    };
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [isEnabled, preferredCursorX, preferredCursorY, syncTooltipSize]);
+
+  const resolvedCursorPosition = useMemo(() => {
+    if (!isEnabled || preferredCursorX == null || preferredCursorY == null || typeof window === 'undefined') {
+      return null;
+    }
+    const effectiveTooltipSize = tooltipSize ?? estimatedSize;
+    return clampTooltipPosition(
+      { x: preferredCursorX, y: preferredCursorY },
+      effectiveTooltipSize.width,
+      effectiveTooltipSize.height,
+      window.innerWidth,
+      window.innerHeight,
+    );
+  }, [estimatedSize, isEnabled, preferredCursorX, preferredCursorY, tooltipSize]);
+
+  const tooltipStyle: CSSProperties | undefined =
+    resolvedCursorPosition
+      ? {
+          left: `${resolvedCursorPosition.x}px`,
+          top: `${resolvedCursorPosition.y}px`,
+        }
+      : undefined;
+
+  return {
+    tooltipRef,
+    tooltipStyle,
+    resolvedCursorPosition,
   };
 };
 
@@ -1238,36 +1402,31 @@ const MovementArmyTooltip = ({
   cursorPosition?: TooltipCursorPosition | null;
 }) => {
   const orderedUnits = getOrderedMovementUnits(movement);
-
-  const resolvedCursorPosition = useMemo(() => {
-    if (!cursorPosition || typeof window === 'undefined') {
-      return null;
+  const estimatedTooltipSize = useMemo<TooltipSize>(() => {
+    if (typeof window === 'undefined') {
+      return {
+        width: 280,
+        height: 210,
+      };
     }
-    const estimatedTooltipWidth = Math.max(220, Math.min(360, Math.floor(window.innerWidth * 0.34)));
-    const estimatedTooltipHeight = 210;
-    return clampTooltipPosition(
-      cursorPosition,
-      estimatedTooltipWidth,
-      estimatedTooltipHeight,
-      window.innerWidth,
-      window.innerHeight,
-    );
-  }, [cursorPosition]);
+    return {
+      width: Math.max(220, Math.min(360, Math.floor(window.innerWidth * 0.34))),
+      height: 210,
+    };
+  }, []);
+  const { tooltipRef, tooltipStyle } = useFollowCursorTooltipPositioning({
+    cursorPosition,
+    estimatedSize: estimatedTooltipSize,
+    isEnabled: Boolean(cursorPosition) && orderedUnits.length > 0,
+  });
 
   if (orderedUnits.length <= 0) {
     return null;
   }
 
-  const tooltipStyle: CSSProperties | undefined =
-    resolvedCursorPosition
-      ? {
-          left: `${resolvedCursorPosition.x}px`,
-          top: `${resolvedCursorPosition.y}px`,
-        }
-      : undefined;
-
   const tooltipNode = (
     <div
+      ref={tooltipRef}
       className={`commands-army-tooltip${cursorPosition ? ' is-follow-cursor' : ''}`}
       style={tooltipStyle}
       role="tooltip"
@@ -1325,21 +1484,24 @@ const BuildingUpgradePreviewTooltip = ({
   const deltaLines = preview?.deltas ?? [];
   const unlockLines = preview?.unlocks ?? [];
   const hasPreviewContent = Boolean(preview) && (deltaLines.length > 0 || unlockLines.length > 0);
-
-  const resolvedCursorPosition = useMemo(() => {
-    if (!cursorPosition || typeof window === 'undefined') {
-      return null;
+  const estimatedTooltipSize = useMemo<TooltipSize>(() => {
+    if (typeof window === 'undefined') {
+      return {
+        width: 360,
+        height: 260,
+      };
     }
-    const estimatedTooltipWidth = Math.max(260, Math.min(430, Math.floor(window.innerWidth * 0.4)));
-    const estimatedTooltipHeight = 260;
-    return clampTooltipPosition(
-      cursorPosition,
-      estimatedTooltipWidth,
-      estimatedTooltipHeight,
-      window.innerWidth,
-      window.innerHeight,
-    );
-  }, [cursorPosition]);
+    return {
+      width: Math.max(260, Math.min(430, Math.floor(window.innerWidth * 0.4))),
+      height: 260,
+    };
+  }, []);
+
+  const { tooltipRef, tooltipStyle, resolvedCursorPosition } = useFollowCursorTooltipPositioning({
+    cursorPosition,
+    estimatedSize: estimatedTooltipSize,
+    isEnabled: Boolean(cursorPosition),
+  });
 
   if (!resolvedCursorPosition) {
     return null;
@@ -1347,11 +1509,9 @@ const BuildingUpgradePreviewTooltip = ({
 
   const tooltipNode = (
     <div
+      ref={tooltipRef}
       className={`commands-army-tooltip building-upgrade-tooltip${cursorPosition ? ' is-follow-cursor' : ''}`}
-      style={{
-        left: `${resolvedCursorPosition.x}px`,
-        top: `${resolvedCursorPosition.y}px`,
-      }}
+      style={tooltipStyle}
       role="tooltip"
     >
       <p>
@@ -1426,33 +1586,27 @@ const ResearchCollaborationTooltip = ({
 }) => {
   const collaborations = project.assignedVillageBreakdown ?? [];
   const showCollaborations = project.status === 'researching' && collaborations.length > 0;
-
-  const resolvedCursorPosition = useMemo(() => {
-    if (!cursorPosition || typeof window === 'undefined') {
-      return null;
+  const estimatedTooltipSize = useMemo<TooltipSize>(() => {
+    if (typeof window === 'undefined') {
+      return {
+        width: 340,
+        height: 250,
+      };
     }
-    const estimatedTooltipWidth = Math.max(260, Math.min(420, Math.floor(window.innerWidth * 0.36)));
-    const estimatedTooltipHeight = 250;
-    return clampTooltipPosition(
-      cursorPosition,
-      estimatedTooltipWidth,
-      estimatedTooltipHeight,
-      window.innerWidth,
-      window.innerHeight,
-    );
-  }, [cursorPosition]);
+    return {
+      width: Math.max(260, Math.min(420, Math.floor(window.innerWidth * 0.36))),
+      height: 250,
+    };
+  }, []);
+  const { tooltipRef, tooltipStyle } = useFollowCursorTooltipPositioning({
+    cursorPosition,
+    estimatedSize: estimatedTooltipSize,
+    isEnabled: showCollaborations && Boolean(cursorPosition),
+  });
 
   if (!showCollaborations) {
     return null;
   }
-
-  const tooltipStyle: CSSProperties | undefined =
-    resolvedCursorPosition
-      ? {
-          left: `${resolvedCursorPosition.x}px`,
-          top: `${resolvedCursorPosition.y}px`,
-        }
-      : undefined;
 
   const etaLabel =
     project.estimatedCompletionAt && project.remainingSec != null
@@ -1461,6 +1615,7 @@ const ResearchCollaborationTooltip = ({
 
   const tooltipNode = (
     <div
+      ref={tooltipRef}
       className={`commands-army-tooltip research-collaboration-tooltip${cursorPosition ? ' is-follow-cursor' : ''}`}
       style={tooltipStyle}
       role="tooltip"
@@ -1495,26 +1650,35 @@ const CityResourceSummaryTooltip = ({
   cursorPosition?: TooltipCursorPosition | null;
 }) => {
   const isTwoColumnLayout = rows.length > 4;
-  const resolvedCursorPosition = useMemo(() => {
+  const estimatedTooltipSize = useMemo<TooltipSize>(() => {
+    if (typeof window === 'undefined') {
+      return {
+        width: isTwoColumnLayout ? 520 : 380,
+        height: isTwoColumnLayout ? 300 : 380,
+      };
+    }
+    return {
+      width: isTwoColumnLayout
+        ? Math.max(420, Math.min(660, Math.floor(window.innerWidth * 0.62)))
+        : Math.max(320, Math.min(460, Math.floor(window.innerWidth * 0.44))),
+      height: isTwoColumnLayout ? 300 : 380,
+    };
+  }, [isTwoColumnLayout]);
+  const fallbackCursorPosition = useMemo<TooltipCursorPosition | null>(() => {
     if (typeof window === 'undefined') {
       return null;
     }
-    const estimatedTooltipWidth = isTwoColumnLayout
-      ? Math.max(420, Math.min(660, Math.floor(window.innerWidth * 0.62)))
-      : Math.max(320, Math.min(460, Math.floor(window.innerWidth * 0.44)));
-    const estimatedTooltipHeight = isTwoColumnLayout ? 300 : 380;
-    const preferredCursor = cursorPosition ?? {
+    return {
       x: Math.floor(window.innerWidth * 0.54),
       y: Math.floor(window.innerHeight * 0.24),
     };
-    return clampTooltipPosition(
-      preferredCursor,
-      estimatedTooltipWidth,
-      estimatedTooltipHeight,
-      window.innerWidth,
-      window.innerHeight,
-    );
-  }, [cursorPosition, isTwoColumnLayout]);
+  }, []);
+  const { tooltipRef, tooltipStyle, resolvedCursorPosition } = useFollowCursorTooltipPositioning({
+    cursorPosition,
+    fallbackCursorPosition,
+    estimatedSize: estimatedTooltipSize,
+    isEnabled: rows.length > 0,
+  });
 
   if (rows.length <= 0 || !resolvedCursorPosition) {
     return null;
@@ -1522,11 +1686,9 @@ const CityResourceSummaryTooltip = ({
 
   const tooltipNode = (
     <div
+      ref={tooltipRef}
       className={`commands-army-tooltip city-resource-stock-tooltip-overlay is-follow-cursor ${isTwoColumnLayout ? 'is-two-columns' : ''}`}
-      style={{
-        left: `${resolvedCursorPosition.x}px`,
-        top: `${resolvedCursorPosition.y}px`,
-      }}
+      style={tooltipStyle}
       role="tooltip"
     >
       <p>Detail surovin</p>
@@ -1574,20 +1736,23 @@ const QueueActionTooltip = ({
   description: string;
   cursorPosition: TooltipCursorPosition | null;
 }) => {
-  const resolvedCursorPosition = useMemo(() => {
-    if (typeof window === 'undefined' || !cursorPosition) {
-      return null;
+  const estimatedTooltipSize = useMemo<TooltipSize>(() => {
+    if (typeof window === 'undefined') {
+      return {
+        width: 300,
+        height: 132,
+      };
     }
-    const estimatedTooltipWidth = Math.max(240, Math.min(360, Math.floor(window.innerWidth * 0.32)));
-    const estimatedTooltipHeight = 132;
-    return clampTooltipPosition(
-      cursorPosition,
-      estimatedTooltipWidth,
-      estimatedTooltipHeight,
-      window.innerWidth,
-      window.innerHeight,
-    );
-  }, [cursorPosition]);
+    return {
+      width: Math.max(240, Math.min(360, Math.floor(window.innerWidth * 0.32))),
+      height: 132,
+    };
+  }, []);
+  const { tooltipRef, tooltipStyle, resolvedCursorPosition } = useFollowCursorTooltipPositioning({
+    cursorPosition,
+    estimatedSize: estimatedTooltipSize,
+    isEnabled: Boolean(cursorPosition),
+  });
 
   if (!resolvedCursorPosition || !title.trim() || !description.trim()) {
     return null;
@@ -1595,11 +1760,9 @@ const QueueActionTooltip = ({
 
   const tooltipNode = (
     <div
+      ref={tooltipRef}
       className="commands-army-tooltip city-queue-action-tooltip is-follow-cursor"
-      style={{
-        left: `${resolvedCursorPosition.x}px`,
-        top: `${resolvedCursorPosition.y}px`,
-      }}
+      style={tooltipStyle}
       role="tooltip"
     >
       <p>{title}</p>
@@ -1627,24 +1790,33 @@ const VillageIntelTooltip = ({
   rows: Array<{ label: string; value: string }>;
   cursorPosition?: TooltipCursorPosition | null;
 }) => {
-  const resolvedCursorPosition = useMemo(() => {
+  const estimatedTooltipSize = useMemo<TooltipSize>(() => {
+    if (typeof window === 'undefined') {
+      return {
+        width: 360,
+        height: Math.max(180, Math.min(420, 96 + rows.length * 44)),
+      };
+    }
+    return {
+      width: Math.max(300, Math.min(460, Math.floor(window.innerWidth * 0.42))),
+      height: Math.max(180, Math.min(420, 96 + rows.length * 44)),
+    };
+  }, [rows.length]);
+  const fallbackCursorPosition = useMemo<TooltipCursorPosition | null>(() => {
     if (typeof window === 'undefined') {
       return null;
     }
-    const estimatedTooltipWidth = Math.max(300, Math.min(460, Math.floor(window.innerWidth * 0.42)));
-    const estimatedTooltipHeight = Math.max(180, Math.min(420, 96 + rows.length * 44));
-    const preferredCursor = cursorPosition ?? {
+    return {
       x: Math.floor(window.innerWidth * 0.52),
       y: Math.floor(window.innerHeight * 0.26),
     };
-    return clampTooltipPosition(
-      preferredCursor,
-      estimatedTooltipWidth,
-      estimatedTooltipHeight,
-      window.innerWidth,
-      window.innerHeight,
-    );
-  }, [cursorPosition, rows.length]);
+  }, []);
+  const { tooltipRef, tooltipStyle, resolvedCursorPosition } = useFollowCursorTooltipPositioning({
+    cursorPosition,
+    fallbackCursorPosition,
+    estimatedSize: estimatedTooltipSize,
+    isEnabled: rows.length > 0,
+  });
 
   if (rows.length <= 0 || !resolvedCursorPosition) {
     return null;
@@ -1652,11 +1824,9 @@ const VillageIntelTooltip = ({
 
   const tooltipNode = (
     <div
+      ref={tooltipRef}
       className="commands-army-tooltip village-intel-tooltip is-follow-cursor"
-      style={{
-        left: `${resolvedCursorPosition.x}px`,
-        top: `${resolvedCursorPosition.y}px`,
-      }}
+      style={tooltipStyle}
       role="tooltip"
     >
       <p>{title}</p>
@@ -1809,12 +1979,6 @@ type PersistedShortcutSettings = {
   bindings?: Partial<Record<ShortcutActionId, unknown>>;
   mapPreviewTravelModifier?: unknown;
   settlementColors?: unknown;
-};
-
-const MAP_ORDER_ICON_LABELS: Record<MapOrderCommandType, string> = {
-  attack: 'Útok',
-  support: 'Podpora',
-  move: 'Přesun',
 };
 
 const MAP_ORDER_COMMAND_TYPES: MapOrderCommandType[] = ['attack', 'support', 'move'];
@@ -2029,6 +2193,7 @@ const MARKET_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['commands']);
 const LANDSCAPE_PANEL_TYPES = new Set<PanelType>([
   'messages',
   'activity',
+  'battleReport',
   'village',
   'profile',
   'settings',
@@ -2936,7 +3101,7 @@ const canTargetSettlementForArmyCommand = ({
   }
 
   if (commandType === 'support') {
-    return isOwnSettlement;
+    return true;
   }
 
   const targetProtectionRemainingSec = getSettlementProtectionRemainingSec(settlement);
@@ -3064,6 +3229,112 @@ const toGridPixelPosition = (
   left: (position.x - 1) * (cellSize + cellGap) + inset,
   top: (position.y - 1) * (cellSize + cellGap) + inset,
 });
+
+const settlementCanvasImageCache = new Map<string, HTMLImageElement>();
+
+const MAP_SETTLEMENT_CANVAS_KIND_STYLE: Record<
+  MapSettlementKind,
+  {
+    fill: string;
+    border: string;
+    glowRgb: [number, number, number];
+  }
+> = {
+  active: { fill: 'rgba(248, 251, 255, 0.2)', border: 'rgba(248, 251, 255, 0.92)', glowRgb: [229, 241, 255] },
+  own: { fill: 'rgba(242, 194, 105, 0.18)', border: 'rgba(242, 194, 105, 0.78)', glowRgb: [242, 194, 105] },
+  bot: { fill: 'rgba(159, 140, 255, 0.18)', border: 'rgba(159, 140, 255, 0.74)', glowRgb: [159, 140, 255] },
+  royal: { fill: 'rgba(143, 201, 255, 0.2)', border: 'rgba(143, 201, 255, 0.78)', glowRgb: [143, 201, 255] },
+  allied: { fill: 'rgba(97, 191, 143, 0.18)', border: 'rgba(97, 191, 143, 0.72)', glowRgb: [97, 191, 143] },
+  nap: { fill: 'rgba(111, 198, 216, 0.18)', border: 'rgba(111, 198, 216, 0.72)', glowRgb: [111, 198, 216] },
+  opponent: { fill: 'rgba(138, 96, 52, 0.24)', border: 'rgba(181, 131, 73, 0.84)', glowRgb: [145, 103, 56] },
+  enemy: { fill: 'rgba(208, 103, 103, 0.2)', border: 'rgba(208, 103, 103, 0.82)', glowRgb: [208, 103, 103] },
+  abandoned: { fill: 'rgba(143, 151, 160, 0.14)', border: 'rgba(143, 151, 160, 0.66)', glowRgb: [152, 163, 176] },
+};
+
+const MAP_SETTLEMENT_CANVAS_TIER_STYLE: Record<
+  SettlementPrestigeTier,
+  {
+    haloScale: number;
+    haloOpacity: number;
+    haloRgb: [number, number, number];
+  }
+> = {
+  A: { haloScale: 0.86, haloOpacity: 0.22, haloRgb: [144, 169, 194] },
+  B: { haloScale: 1, haloOpacity: 0.28, haloRgb: [125, 176, 224] },
+  C: { haloScale: 1.14, haloOpacity: 0.34, haloRgb: [118, 188, 165] },
+  D: { haloScale: 1.3, haloOpacity: 0.42, haloRgb: [225, 185, 115] },
+  E: { haloScale: 1.48, haloOpacity: 0.54, haloRgb: [252, 220, 142] },
+};
+
+const MAP_SETTLEMENT_CANVAS_BADGE_STYLE: Record<
+  SettlementCanvasBadgeKind,
+  {
+    fill: string;
+    border: string;
+    text: string;
+    glow: string;
+  }
+> = {
+  attack: {
+    fill: 'rgba(111, 19, 26, 0.92)',
+    border: 'rgba(255, 110, 110, 0.82)',
+    text: '#f8fcff',
+    glow: 'rgba(255, 74, 74, 0.32)',
+  },
+  support: {
+    fill: 'rgba(16, 45, 82, 0.92)',
+    border: 'rgba(126, 184, 255, 0.82)',
+    text: '#f8fcff',
+    glow: 'rgba(125, 186, 255, 0.3)',
+  },
+  move: {
+    fill: 'rgba(98, 69, 18, 0.92)',
+    border: 'rgba(238, 199, 109, 0.84)',
+    text: '#f8fcff',
+    glow: 'rgba(239, 201, 111, 0.3)',
+  },
+  'knight-attack': {
+    fill: 'rgba(69, 34, 96, 0.92)',
+    border: 'rgba(206, 167, 255, 0.82)',
+    text: '#f8fcff',
+    glow: 'rgba(206, 167, 255, 0.28)',
+  },
+};
+
+const getSettlementCanvasImage = (imagePath: string): HTMLImageElement => {
+  const cachedImage = settlementCanvasImageCache.get(imagePath);
+  if (cachedImage) {
+    return cachedImage;
+  }
+
+  const image = new Image();
+  image.decoding = 'async';
+  image.src = imagePath;
+  settlementCanvasImageCache.set(imagePath, image);
+  return image;
+};
+
+const traceRoundedRectPath = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+): void => {
+  const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + safeRadius, y);
+  ctx.lineTo(x + width - safeRadius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  ctx.lineTo(x + width, y + height - safeRadius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  ctx.lineTo(x + safeRadius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  ctx.lineTo(x, y + safeRadius);
+  ctx.quadraticCurveTo(x, y, x + safeRadius, y);
+  ctx.closePath();
+};
 
 const getPanelMinSize = (type: PanelType): WindowSize => {
   if (type === 'map') {
@@ -4637,7 +4908,6 @@ const extractVillageBaseName = (label: string): string => {
 
 const CityPanel = memo(({
   villageLabel,
-  regionLabel,
   prestige,
   cityResourceSnapshot,
   availableResources,
@@ -4655,7 +4925,6 @@ const CityPanel = memo(({
   buildingNotices,
 }: {
   villageLabel: string;
-  regionLabel: string;
   prestige: number;
   cityResourceSnapshot: CityPanelResourceSnapshot;
   availableResources: ResourceCost;
@@ -4749,6 +5018,7 @@ const CityPanel = memo(({
     () => new Map(buildings.map((building) => [building.id, building])),
     [buildings],
   );
+  const settlementPrestigeMeta = useMemo(() => resolveSettlementPrestigeMeta(prestige), [prestige]);
 
   const groupedBuildings = useMemo(() => {
     const seenBuildingIds = new Set<string>();
@@ -4888,14 +5158,12 @@ const CityPanel = memo(({
         <div className="city-layout">
           <section className="city-stats-grid city-overview-summary">
             <article>
-              <h4>Město</h4>
+              <h4>{settlementPrestigeMeta.label}</h4>
               <strong>{villageLabel}</strong>
-              <span>{regionLabel}</span>
             </article>
             <article>
               <h4>Prestiž</h4>
               <strong>{prestige.toLocaleString('cs-CZ')} bodů</strong>
-              <span>Tier: opevněné město</span>
             </article>
             <article
               className="city-resource-stock-card"
@@ -5017,6 +5285,9 @@ const CityPanel = memo(({
                             };
                           })
                         : [];
+                      const shouldShowInlineUpgradeCost =
+                        hoveredBuildingId === building.id && !isMaxed && costRows.length > 0;
+                      const shouldShowUpgradeCue = hoveredBuildingId === building.id && !isMaxed;
 
                       return (
                         <article
@@ -5091,6 +5362,34 @@ const CityPanel = memo(({
                               ) : null}
                             </div>
                           </div>
+                          {shouldShowInlineUpgradeCost ? (
+                            <div className="city-building-hover-cost" aria-hidden="true">
+                              {costRows.map((row) => {
+                                const resourceLabel = LOOT_PRIORITY_LABELS[row.resourceType];
+                                const resourceIcon = resolveResourceGlyph(resourceLabel);
+                                return (
+                                  <span
+                                    key={`${building.id}-inline-cost-${row.resourceType}`}
+                                    className={`city-building-hover-cost-chip ${row.canAffordResource ? 'ok' : 'missing'}`}
+                                  >
+                                    <span className="city-building-hover-cost-icon" aria-hidden="true">
+                                      {resourceIcon.startsWith('/') ? (
+                                        <img src={resourceIcon} alt="" loading="lazy" decoding="async" draggable={false} />
+                                      ) : (
+                                        resourceIcon
+                                      )}
+                                    </span>
+                                    <strong>{row.requiredAmount.toLocaleString('cs-CZ')}</strong>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                          {shouldShowUpgradeCue ? (
+                            <span className="city-building-upgrade-cue" aria-hidden="true">
+                              <span>⚒</span>
+                            </span>
+                          ) : null}
                           {hoveredBuildingId === building.id ? (
                             <BuildingUpgradePreviewTooltip
                               building={building}
@@ -5187,6 +5486,34 @@ const CityPanel = memo(({
                           <i />
                           <i />
                         </span>
+                        <div className="city-upgrade-queue-reorder">
+                          <button
+                            type="button"
+                            className="city-upgrade-queue-action city-upgrade-queue-action-move"
+                            {...bindQueueActionTooltip(
+                              'Posunout výše',
+                              'Posune tuto kartu o jednu pozici výš. Aktivní první pozici nelze přeskočit.',
+                            )}
+                            onClick={() => onReorderBuildingUpgrade(order.id, order.queueIndex - 1)}
+                            disabled={!canMoveUp || isReorderPending}
+                            aria-label="Posunout výše"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            className="city-upgrade-queue-action city-upgrade-queue-action-move"
+                            {...bindQueueActionTooltip(
+                              'Posunout níže',
+                              'Posune tuto kartu o jednu pozici níž ve frontě.',
+                            )}
+                            onClick={() => onReorderBuildingUpgrade(order.id, order.queueIndex + 1)}
+                            disabled={!canMoveDown || isReorderPending}
+                            aria-label="Posunout níže"
+                          >
+                            ↓
+                          </button>
+                        </div>
                         <div className="city-upgrade-queue-item-main">
                           <div className="city-upgrade-queue-item-head">
                             <span
@@ -5220,32 +5547,6 @@ const CityPanel = memo(({
                           {order.queueIndex + 1}
                         </div>
                         <div className="city-upgrade-queue-actions">
-                          <button
-                            type="button"
-                            className="city-upgrade-queue-action"
-                            {...bindQueueActionTooltip(
-                              'Posunout výše',
-                              'Posune tuto kartu o jednu pozici výš. Aktivní první pozici nelze přeskočit.',
-                            )}
-                            onClick={() => onReorderBuildingUpgrade(order.id, order.queueIndex - 1)}
-                            disabled={!canMoveUp || isReorderPending}
-                            aria-label="Posunout výše"
-                          >
-                            ↑
-                          </button>
-                          <button
-                            type="button"
-                            className="city-upgrade-queue-action"
-                            {...bindQueueActionTooltip(
-                              'Posunout níže',
-                              'Posune tuto kartu o jednu pozici níž ve frontě.',
-                            )}
-                            onClick={() => onReorderBuildingUpgrade(order.id, order.queueIndex + 1)}
-                            disabled={!canMoveDown || isReorderPending}
-                            aria-label="Posunout níže"
-                          >
-                            ↓
-                          </button>
                           <button
                             type="button"
                             className="city-upgrade-queue-action is-danger"
@@ -13316,6 +13617,220 @@ const SettingsPanel = ({
   );
 };
 
+const MapSettlementCanvasLayer = memo(
+  ({
+    markers,
+    cellSize,
+    cellGap,
+    gridSizePx,
+  }: {
+    markers: MapSettlementCanvasMarker[];
+    cellSize: number;
+    cellGap: number;
+    gridSizePx: number;
+  }) => {
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const [imageRevision, setImageRevision] = useState(0);
+    const imagePaths = useMemo(
+      () => Array.from(new Set(markers.map((marker) => marker.prestigeMeta.imagePath))),
+      [markers],
+    );
+    const imagePathsKey = imagePaths.join('|');
+
+    useEffect(() => {
+      const cleanups: Array<() => void> = [];
+      for (const imagePath of imagePaths) {
+        const image = getSettlementCanvasImage(imagePath);
+        if (image.complete) {
+          continue;
+        }
+        const handleReady = () => {
+          setImageRevision((previous) => previous + 1);
+        };
+        image.addEventListener('load', handleReady);
+        image.addEventListener('error', handleReady);
+        cleanups.push(() => {
+          image.removeEventListener('load', handleReady);
+          image.removeEventListener('error', handleReady);
+        });
+      }
+      return () => {
+        for (const cleanup of cleanups) {
+          cleanup();
+        }
+      };
+    }, [imagePathsKey, imagePaths]);
+
+    useEffect(() => {
+      const canvas = canvasRef.current;
+      if (!canvas || typeof window === 'undefined') {
+        return;
+      }
+
+      const devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
+      const logicalWidth = Math.max(1, Math.round(gridSizePx));
+      const logicalHeight = Math.max(1, Math.round(gridSizePx));
+      const physicalWidth = Math.max(1, Math.round(logicalWidth * devicePixelRatio));
+      const physicalHeight = Math.max(1, Math.round(logicalHeight * devicePixelRatio));
+
+      if (canvas.width !== physicalWidth) {
+        canvas.width = physicalWidth;
+      }
+      if (canvas.height !== physicalHeight) {
+        canvas.height = physicalHeight;
+      }
+      canvas.style.width = `${logicalWidth}px`;
+      canvas.style.height = `${logicalHeight}px`;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        return;
+      }
+
+      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+      ctx.clearRect(0, 0, logicalWidth, logicalHeight);
+      ctx.imageSmoothingEnabled = true;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      // Draw passive marker visuals in a single canvas pass; DOM buttons remain only for hit-testing.
+      for (const marker of markers) {
+        const position = toGridPixelPosition({ x: marker.localX, y: marker.localY }, cellSize, cellGap);
+        const centerX = position.left + cellSize / 2;
+        const centerY = position.top + cellSize / 2;
+        const tierStyle = MAP_SETTLEMENT_CANVAS_TIER_STYLE[marker.prestigeMeta.tier];
+        const kindStyle = MAP_SETTLEMENT_CANVAS_KIND_STYLE[marker.mapKind];
+
+        marker.coverageCommandTypes.forEach((commandType, index) => {
+          const badgeStyle = MAP_SETTLEMENT_CANVAS_BADGE_STYLE[commandType];
+          const radius = Math.max(cellSize * 1.75, cellSize * (1.95 + index * 0.48));
+          const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
+          gradient.addColorStop(0, badgeStyle.glow.replace('0.32', '0.34').replace('0.3', '0.34').replace('0.28', '0.3'));
+          gradient.addColorStop(0.42, badgeStyle.glow);
+          gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+          ctx.fillStyle = gradient;
+          ctx.beginPath();
+          ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+          ctx.fill();
+        });
+
+        const haloRadius = Math.max(cellSize * 0.4, cellSize * 0.43 * tierStyle.haloScale);
+        const haloGradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, haloRadius);
+        haloGradient.addColorStop(
+          0,
+          `rgba(${tierStyle.haloRgb[0]}, ${tierStyle.haloRgb[1]}, ${tierStyle.haloRgb[2]}, ${Math.min(0.68, tierStyle.haloOpacity + 0.08)})`,
+        );
+        haloGradient.addColorStop(
+          0.58,
+          `rgba(${tierStyle.haloRgb[0]}, ${tierStyle.haloRgb[1]}, ${tierStyle.haloRgb[2]}, ${tierStyle.haloOpacity})`,
+        );
+        haloGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = haloGradient;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, haloRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        const inset = Math.max(1, Math.min(4, cellSize * 0.08));
+        const markerSize = Math.max(6, cellSize - inset * 2);
+        const markerLeft = position.left + inset;
+        const markerTop = position.top + inset;
+        const markerRadius = Math.max(2, Math.min(6, markerSize * 0.18));
+
+        traceRoundedRectPath(ctx, markerLeft, markerTop, markerSize, markerSize, markerRadius);
+        ctx.fillStyle = kindStyle.fill;
+        ctx.fill();
+        ctx.lineWidth = Math.max(1, cellSize * 0.05);
+        ctx.strokeStyle = kindStyle.border;
+        ctx.stroke();
+
+        if (marker.mapKind === 'own' || marker.mapKind === 'active') {
+          traceRoundedRectPath(
+            ctx,
+            markerLeft + 1.25,
+            markerTop + 1.25,
+            Math.max(2, markerSize - 2.5),
+            Math.max(2, markerSize - 2.5),
+            Math.max(1.5, markerRadius - 0.75),
+          );
+          ctx.lineWidth = marker.mapKind === 'active' ? Math.max(1.6, cellSize * 0.09) : Math.max(1.2, cellSize * 0.06);
+          ctx.strokeStyle = marker.mapKind === 'active' ? 'rgba(248, 251, 255, 0.96)' : 'rgba(236, 245, 255, 0.92)';
+          ctx.stroke();
+        }
+
+        if (marker.isFocused) {
+          traceRoundedRectPath(
+            ctx,
+            markerLeft - 1,
+            markerTop - 1,
+            markerSize + 2,
+            markerSize + 2,
+            Math.max(2, markerRadius + 0.5),
+          );
+          ctx.lineWidth = Math.max(1.3, cellSize * 0.07);
+          ctx.strokeStyle = 'rgba(149, 205, 247, 0.95)';
+          ctx.shadowColor = 'rgba(149, 205, 247, 0.38)';
+          ctx.shadowBlur = Math.max(8, cellSize * 0.5);
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+        }
+
+        const image = getSettlementCanvasImage(marker.prestigeMeta.imagePath);
+        const imageSize = clamp(cellSize * 0.72, 10, 34);
+        if (image.complete && image.naturalWidth > 0 && image.naturalHeight > 0) {
+          ctx.save();
+          ctx.shadowColor = 'rgba(0, 0, 0, 0.54)';
+          ctx.shadowBlur = Math.max(4, cellSize * 0.24);
+          ctx.drawImage(image, centerX - imageSize / 2, centerY - imageSize / 2, imageSize, imageSize);
+          ctx.restore();
+        } else {
+          ctx.fillStyle = `rgba(${kindStyle.glowRgb[0]}, ${kindStyle.glowRgb[1]}, ${kindStyle.glowRgb[2]}, 0.7)`;
+          ctx.beginPath();
+          ctx.arc(centerX, centerY, Math.max(3, imageSize * 0.28), 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        if (marker.orderBadges.length > 0) {
+          const badgeHeight = Math.max(11, Math.min(16, cellSize * 0.34));
+          const badgeGap = Math.max(2, cellSize * 0.08);
+          const badgeY = position.top - badgeHeight - Math.max(2, cellSize * 0.08);
+          const badgeWidths = marker.orderBadges.map((badge) =>
+            Math.max(badgeHeight, badgeHeight + (badge.count > 1 ? badgeHeight * 0.6 : 0)),
+          );
+          const totalBadgeWidth =
+            badgeWidths.reduce((sum, width) => sum + width, 0) +
+            badgeGap * Math.max(0, marker.orderBadges.length - 1);
+          let badgeX = centerX - totalBadgeWidth / 2;
+
+          marker.orderBadges.forEach((badge, index) => {
+            const badgeWidth = badgeWidths[index];
+            const badgeStyle = MAP_SETTLEMENT_CANVAS_BADGE_STYLE[badge.kind];
+            traceRoundedRectPath(ctx, badgeX, badgeY, badgeWidth, badgeHeight, badgeHeight / 2);
+            ctx.fillStyle = badgeStyle.fill;
+            ctx.shadowColor = badgeStyle.glow;
+            ctx.shadowBlur = Math.max(3, badgeHeight * 0.5);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = badgeStyle.border;
+            ctx.stroke();
+
+            ctx.fillStyle = badgeStyle.text;
+            ctx.font = `700 ${Math.max(7, badgeHeight * 0.58)}px "Segoe UI Symbol", serif`;
+            ctx.fillText(
+              badge.count > 1 ? `${badge.symbol}${badge.count}` : badge.symbol,
+              badgeX + badgeWidth / 2,
+              badgeY + badgeHeight / 2 + 0.25,
+            );
+            badgeX += badgeWidth + badgeGap;
+          });
+        }
+      }
+    }, [cellGap, cellSize, gridSizePx, imageRevision, markers]);
+
+    return <canvas ref={canvasRef} className="map-settlement-canvas-layer" aria-hidden="true" />;
+  },
+);
+
 const MapPanel = memo(({
   settlements,
   regionId,
@@ -13395,6 +13910,8 @@ const MapPanel = memo(({
   const dragSuppressClickUntilRef = useRef(0);
   const processedCenterRequestNonceRef = useRef<number | null>(null);
   const hoverClearTimeoutRef = useRef<number | null>(null);
+  const copyCoordsFeedbackTimeoutRef = useRef<number | null>(null);
+  const [copyCoordsFeedback, setCopyCoordsFeedback] = useState<string | null>(null);
   const [gridViewportState, setGridViewportState] = useState({
     scrollLeft: 0,
     scrollTop: 0,
@@ -13427,6 +13944,15 @@ const MapPanel = memo(({
       clearHoverTimeout();
     },
     [clearHoverTimeout],
+  );
+  useEffect(
+    () => () => {
+      if (copyCoordsFeedbackTimeoutRef.current != null) {
+        window.clearTimeout(copyCoordsFeedbackTimeoutRef.current);
+        copyCoordsFeedbackTimeoutRef.current = null;
+      }
+    },
+    [],
   );
 
   useEffect(() => {
@@ -13581,12 +14107,6 @@ const MapPanel = memo(({
       if (focusedSettlementId && settlement.id === focusedSettlementId) {
         score += 10000;
       }
-      if (safePinnedSettlementId && settlement.id === safePinnedSettlementId) {
-        score += 8000;
-      }
-      if (safeHoveredId && settlement.id === safeHoveredId) {
-        score += 6000;
-      }
 
       const mapKind = getSettlementMapKind(settlement, activeVillageId);
       score += kindPriority[mapKind] * 1000;
@@ -13639,8 +14159,6 @@ const MapPanel = memo(({
     focusedSettlementId,
     regionSize,
     resolveSettlementGridCoords,
-    safeHoveredId,
-    safePinnedSettlementId,
     settlements,
   ]);
   const mapDisplaySettlementById = useMemo(() => {
@@ -13776,15 +14294,10 @@ const MapPanel = memo(({
     return settlements.find((settlement) => settlement.kind === 'own' || settlement.relation === 'self') ?? null;
   }, [activeVillageId, settlements]);
   const mapRenderSettlements = useMemo(() => {
+    // Keep marker DOM scoped to the viewport (+overscan). Hover/pin visuals are rendered separately.
     const alwaysVisibleIds = new Set<string>();
     if (focusedSettlementId) {
       alwaysVisibleIds.add(focusedSettlementId);
-    }
-    if (safePinnedSettlementId) {
-      alwaysVisibleIds.add(safePinnedSettlementId);
-    }
-    if (safeHoveredId) {
-      alwaysVisibleIds.add(safeHoveredId);
     }
     if (distanceOriginSettlement?.id) {
       alwaysVisibleIds.add(distanceOriginSettlement.id);
@@ -13809,9 +14322,43 @@ const MapPanel = memo(({
     renderedCellRange.maxY,
     renderedCellRange.minX,
     renderedCellRange.minY,
-    safeHoveredId,
-    safePinnedSettlementId,
   ]);
+  const resolveStateOverlayCell = useCallback(
+    (
+      settlementId: string | null,
+    ): { id: string; localX: number; localY: number; mapKind: MapSettlementKind } | null => {
+      if (!settlementId) {
+        return null;
+      }
+      const settlement = settlementsById.get(settlementId);
+      if (!settlement) {
+        return null;
+      }
+      const visibleEntry = mapDisplaySettlementById.get(settlement.id);
+      const fallbackGridPosition = visibleEntry ? null : resolveSettlementGridCoords(settlement);
+      const localX = visibleEntry?.localX ?? fallbackGridPosition?.x ?? 0;
+      const localY = visibleEntry?.localY ?? fallbackGridPosition?.y ?? 0;
+      if (localX < 1 || localX > regionSize || localY < 1 || localY > regionSize) {
+        return null;
+      }
+      return {
+        id: settlement.id,
+        localX,
+        localY,
+        mapKind: getSettlementMapKind(settlement, activeVillageId),
+      };
+    },
+    [activeVillageId, mapDisplaySettlementById, regionSize, resolveSettlementGridCoords, settlementsById],
+  );
+  const hoveredOverlayCell = useMemo(
+    () => resolveStateOverlayCell(safeHoveredId),
+    [resolveStateOverlayCell, safeHoveredId],
+  );
+  const pinnedOverlayCell = useMemo(
+    () => resolveStateOverlayCell(safePinnedSettlementId),
+    [resolveStateOverlayCell, safePinnedSettlementId],
+  );
+  const shouldShowHoveredOverlay = hoveredOverlayCell != null && hoveredOverlayCell.id !== pinnedOverlayCell?.id;
 
   const previewDistanceTiles = useMemo(() => {
     if (!previewSettlement || !distanceOriginSettlement) {
@@ -14044,6 +14591,50 @@ const MapPanel = memo(({
       window.removeEventListener('blur', handleWindowBlur);
     };
   }, []);
+
+  const handleCopySettlementCoordinates = useCallback(
+    async (settlement: RegionSettlement | null) => {
+      if (!settlement) {
+        return;
+      }
+      const coordsText = `${Math.round(Number(settlement.globalX))}|${Math.round(Number(settlement.globalY))}`;
+      let copied = false;
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(coordsText);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+      }
+      if (!copied && typeof document !== 'undefined') {
+        const textarea = document.createElement('textarea');
+        textarea.value = coordsText;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        try {
+          copied = document.execCommand('copy');
+        } catch {
+          copied = false;
+        }
+        document.body.removeChild(textarea);
+      }
+      setCopyCoordsFeedback(copied ? `Souřadnice ${coordsText} zkopírovány.` : 'Souřadnice nešlo zkopírovat.');
+      if (copyCoordsFeedbackTimeoutRef.current != null) {
+        window.clearTimeout(copyCoordsFeedbackTimeoutRef.current);
+      }
+      copyCoordsFeedbackTimeoutRef.current = window.setTimeout(() => {
+        copyCoordsFeedbackTimeoutRef.current = null;
+        setCopyCoordsFeedback(null);
+      }, 1800);
+    },
+    [],
+  );
 
   useEffect(
     () => () => {
@@ -14412,10 +15003,7 @@ const MapPanel = memo(({
     clearHoverTimeout();
 
     const target = event.target as HTMLElement;
-    if (target.closest('.region-cell.settlement')) {
-      // Settlement click should open village panel, not start map panning capture.
-      return;
-    }
+    const startedFromSettlement = target.closest('.region-cell.settlement') != null;
     if (target.closest('.map-settlement-info-card')) {
       return;
     }
@@ -14437,14 +15025,16 @@ const MapPanel = memo(({
       startLeft: wrap.scrollLeft,
       startTop: wrap.scrollTop,
       didDrag: false,
-      captureNode: event.currentTarget,
+      captureNode: startedFromSettlement ? null : event.currentTarget,
     };
     panTargetScrollRef.current = {
       left: wrap.scrollLeft,
       top: wrap.scrollTop,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    event.preventDefault();
+    if (!startedFromSettlement) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    }
   };
 
   const handleRegionWheel = (event: ReactWheelEvent<HTMLElement>) => {
@@ -14553,16 +15143,11 @@ const MapPanel = memo(({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
   };
-
-  const settlementMarkers = useMemo(
+  const mapCanvasMarkers = useMemo<MapSettlementCanvasMarker[]>(
     () =>
       mapRenderSettlements.map(({ settlement, localX, localY }) => {
-        const settlementMapKind = getSettlementMapKind(settlement, activeVillageId);
-        const settlementPrestigeMeta = resolveSettlementPrestigeMeta(Number(settlement.prestige ?? 0));
-        const settlementPrestigeTier = settlementPrestigeMeta.tier;
-        const isHoveredPlayerSettlement =
-          safeHoveredId === settlement.id &&
-          (settlementMapKind === 'opponent' || settlementMapKind === 'enemy' || settlementMapKind === 'nap');
+        const mapKind = getSettlementMapKind(settlement, activeVillageId);
+        const prestigeMeta = resolveSettlementPrestigeMeta(Number(settlement.prestige ?? 0));
         const markerState =
           settlement.villageId != null
             ? orderMarkersByVillageId.get(Number(settlement.villageId)) ?? null
@@ -14570,12 +15155,53 @@ const MapPanel = memo(({
         const coverageCommandTypes = markerState
           ? MAP_ORDER_COMMAND_TYPES.filter((commandType) => Number(markerState[commandType] ?? 0) > 0)
           : [];
+        const orderBadges: SettlementCanvasOrderBadge[] = [];
+        if (markerState) {
+          for (const commandType of MAP_ORDER_COMMAND_TYPES) {
+            const count = Number(markerState[commandType] ?? 0);
+            if (count > 0) {
+              orderBadges.push({
+                kind: commandType,
+                symbol: getArmyCommandSymbol(commandType),
+                count,
+              });
+            }
+          }
+          const knightAttackCount = Number(markerState.knightAttack ?? 0);
+          if (knightAttackCount > 0) {
+            orderBadges.push({
+              kind: 'knight-attack',
+              symbol: '♞',
+              count: knightAttackCount,
+            });
+          }
+        }
 
+        return {
+          settlement,
+          localX,
+          localY,
+          mapKind,
+          prestigeMeta,
+          isFocused: focusedSettlementId === settlement.id,
+          coverageCommandTypes,
+          orderBadges,
+          hasOrderMarker: orderBadges.length > 0,
+        };
+      }),
+    [activeVillageId, focusedSettlementId, mapRenderSettlements, orderMarkersByVillageId],
+  );
+
+  const settlementMarkers = useMemo(
+    () =>
+      mapCanvasMarkers.map((marker) => {
+        const { settlement, localX, localY, mapKind, prestigeMeta, isFocused, hasOrderMarker } = marker;
         return (
           <button
             key={settlement.id}
-            className={`region-cell settlement ${settlementMapKind} prestige-tier-${settlementPrestigeTier.toLocaleLowerCase('cs-CZ')} ${focusedSettlementId === settlement.id ? 'focused' : ''} ${isHoveredPlayerSettlement ? 'hover-player' : ''} ${markerState ? 'has-order-marker' : ''}`}
+            className={`region-cell settlement map-settlement-hit-target ${mapKind} prestige-tier-${prestigeMeta.tier.toLocaleLowerCase('cs-CZ')} ${isFocused ? 'focused' : ''} ${hasOrderMarker ? 'has-order-marker' : ''}`}
             data-settlement-id={settlement.id}
+            aria-label={`${settlement.name} (${settlement.globalX}|${settlement.globalY})`}
             style={{
               gridColumnStart: localX,
               gridRowStart: localY,
@@ -14593,13 +15219,6 @@ const MapPanel = memo(({
             }}
             onBlur={() => {
               scheduleHoveredSettlementClear(settlement.id);
-            }}
-            onPointerDown={(event) => {
-              if (event.button !== 0) {
-                return;
-              }
-              // Prevent region wrapper from taking pointer capture and swallowing click.
-              event.stopPropagation();
             }}
             onClick={(event) => {
               event.preventDefault();
@@ -14621,17 +15240,17 @@ const MapPanel = memo(({
               setPinnedSettlementId((previous) => (previous === settlement.id ? null : settlement.id));
               setHoveredId(settlement.id);
             }}
-            title={`${settlement.name} (${settlement.globalX}|${settlement.globalY}) • ${settlementPrestigeMeta.label} (${settlementPrestigeMeta.letter})`}
+            title={`${settlement.name} (${settlement.globalX}|${settlement.globalY}) • ${prestigeMeta.label} (${prestigeMeta.letter})`}
           >
             {showSettlementBannerCards && shouldShowCtrlSettlementBanner(settlement) ? (
               <span
-                className={`map-settlement-banner ${settlementMapKind} prestige-tier-${settlementPrestigeTier.toLocaleLowerCase('cs-CZ')} ${safeHoveredId === settlement.id || safePinnedSettlementId === settlement.id || focusedSettlementId === settlement.id ? 'is-highlighted' : ''}`}
+                className={`map-settlement-banner ${mapKind} prestige-tier-${prestigeMeta.tier.toLocaleLowerCase('cs-CZ')} ${isFocused ? 'is-highlighted' : ''}`}
                 aria-hidden="true"
               >
                 <span className="map-settlement-banner-kicker">
-                  <span>{MAP_SETTLEMENT_KIND_LABELS[settlementMapKind]}</span>
+                  <span>{MAP_SETTLEMENT_KIND_LABELS[mapKind]}</span>
                   <span className="map-settlement-banner-divider">✦</span>
-                  <span>{settlementPrestigeMeta.letter}</span>
+                  <span>{prestigeMeta.letter}</span>
                 </span>
                 <strong className="map-settlement-banner-title">{settlement.name}</strong>
                 <span className="map-settlement-banner-meta">
@@ -14640,69 +15259,14 @@ const MapPanel = memo(({
                 </span>
               </span>
             ) : null}
-            <span className="settlement-art" aria-hidden="true">
-              <img
-                src={settlementPrestigeMeta.imagePath}
-                alt=""
-                loading="lazy"
-                decoding="async"
-                draggable={false}
-              />
-            </span>
-            {coverageCommandTypes.length > 0 ? (
-              <div className="settlement-order-coverage" aria-hidden="true">
-                {coverageCommandTypes.map((commandType, index) => (
-                  <span
-                    key={`${settlement.id}-coverage-${commandType}`}
-                    className={`coverage-dot ${commandType} layer-${index + 1}`}
-                  />
-                ))}
-              </div>
-            ) : null}
-            {markerState ? (
-              <div className="settlement-order-icons" aria-hidden="true">
-                {MAP_ORDER_COMMAND_TYPES.map((commandType) => {
-                  const markerCount = Number(markerState[commandType] ?? 0);
-                  if (markerCount <= 0) {
-                    return null;
-                  }
-
-                  const symbol = getArmyCommandSymbol(commandType);
-
-                  return (
-                    <span
-                      key={`${settlement.id}-${commandType}`}
-                      className={`settlement-order-icon ${commandType}`}
-                      title={`${MAP_ORDER_ICON_LABELS[commandType]}${markerCount > 1 ? ` x${markerCount}` : ''}`}
-                    >
-                      <span className="symbol">{symbol}</span>
-                      {markerCount > 1 ? <small>{markerCount}</small> : null}
-                    </span>
-                  );
-                })}
-                {Number(markerState.knightAttack ?? 0) > 0 ? (
-                  <span
-                    className="settlement-order-icon knight-attack"
-                    title={`Pohyb rytíře${Number(markerState.knightAttack) > 1 ? ` x${Number(markerState.knightAttack)}` : ''}`}
-                  >
-                    <span className="symbol">♞</span>
-                    {Number(markerState.knightAttack) > 1 ? <small>{Number(markerState.knightAttack)}</small> : null}
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
           </button>
         );
       }),
+    // Marker visuals live on canvas; DOM markers remain only as lightweight interaction targets.
     [
-      activeVillageId,
       clearHoverTimeout,
-      focusedSettlementId,
-      mapRenderSettlements,
+      mapCanvasMarkers,
       onOpenSettlement,
-      orderMarkersByVillageId,
-      safeHoveredId,
-      safePinnedSettlementId,
       scheduleHoveredSettlementClear,
       showSettlementBannerCards,
     ],
@@ -14763,10 +15327,25 @@ const MapPanel = memo(({
     previewCardStyle,
     previewSettlement,
   ]);
-
   const renderPreviewSettlementCard = (cardStyle: CSSProperties, usePortal: boolean) => {
     const ownerLabel = isPreviewAbandoned ? 'opuštěná osada' : (previewSettlement?.owner ?? 'neznámý hráč');
     const settlementPrestige = Math.max(0, Math.floor(Number(previewSettlement?.prestige ?? 0)));
+    const playerTotalPrestige = Math.max(
+      settlementPrestige,
+      Math.floor(Number(previewPlayerTotalPrestige ?? settlementPrestige)),
+    );
+    const kingdomLabel = String(previewSettlement?.kingdom ?? '').trim() || 'Neutral';
+    const coordinatesLabel =
+      previewSettlement != null
+        ? `${Math.round(Number(previewSettlement.globalX))}|${Math.round(Number(previewSettlement.globalY))}`
+        : '-';
+    const isPreviewOwnedByPlayer =
+      previewSettlementKind === 'active' ||
+      previewSettlementKind === 'own' ||
+      previewSettlementKind === 'allied' ||
+      previewSettlementKind === 'opponent' ||
+      previewSettlementKind === 'enemy' ||
+      previewSettlementKind === 'nap';
     const shouldShowPlayerTotalPrestige =
       previewPlayerTotalPrestige != null &&
       previewSettlementKind !== 'abandoned' &&
@@ -14787,25 +15366,46 @@ const MapPanel = memo(({
         onWheel={handleRegionWheel}
       >
         <header>
-          <h4>
-            {previewSettlement?.name} ({ownerLabel})
-          </h4>
+          <h4>{previewSettlement?.name}</h4>
         </header>
         <div className="map-settlement-info-body">
           <div className="map-settlement-overview">
-            <p className="map-settlement-prestige">
-              Prestiž léna <strong>{settlementPrestige.toLocaleString('cs-CZ')}</strong>
-              {shouldShowPlayerTotalPrestige ? (
-                <em> (hráč celkem {previewPlayerTotalPrestige.toLocaleString('cs-CZ')})</em>
-              ) : null}
+            <p className={`map-settlement-owner ${isPreviewOwnedByPlayer ? 'player-owner' : ''}`}>
+              <span className="map-settlement-owner-label">Hráč</span>
+              <strong>{ownerLabel}</strong>
             </p>
             <p className="map-settlement-kingdom">
-              Království <strong>{previewSettlement?.kingdom || '-'}</strong>{' '}
+              Království <strong>{kingdomLabel}</strong>{' '}
               <em>
                 ({previewSettlementTypeLabel}
                 {shouldShowKingdomTotalPrestige ? ` · ${previewKingdomTotalPrestige.toLocaleString('cs-CZ')}` : ''})
               </em>
             </p>
+            <p className="map-settlement-prestige-total">
+              Hráč celkem <strong>{playerTotalPrestige.toLocaleString('cs-CZ')}</strong>
+            </p>
+            <p className="map-settlement-prestige">
+              Prestiž léna <strong>{settlementPrestige.toLocaleString('cs-CZ')}</strong>{' '}
+              {shouldShowPlayerTotalPrestige ? <em>(detail léna)</em> : null}
+            </p>
+            <div className="map-settlement-copy-row">
+              <span>
+                Souřadnice <strong>{coordinatesLabel}</strong>
+              </span>
+              <button
+                type="button"
+                className="secondary-action map-settlement-copy-button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void handleCopySettlementCoordinates(previewSettlement ?? null);
+                }}
+                title="Kopírovat souřadnice léna"
+                aria-label="Kopírovat souřadnice léna"
+              >
+                Kopírovat
+              </button>
+            </div>
+            {copyCoordsFeedback ? <p className="map-settlement-copy-feedback">{copyCoordsFeedback}</p> : null}
             <p className="map-settlement-distance">
               Vzdálenost od <em>{distanceOriginSettlement?.name ?? 'aktivního léna'}</em>{' '}
               <strong>{previewDistanceTiles == null ? '-' : `${previewDistanceTiles} polí`}</strong>
@@ -14924,7 +15524,35 @@ const MapPanel = memo(({
               } as CSSProperties
             }
           >
+            <MapSettlementCanvasLayer
+              markers={mapCanvasMarkers}
+              cellSize={cellSize}
+              cellGap={mapCellGapPx}
+              gridSizePx={mapGridSizePx}
+            />
             {settlementMarkers}
+            {shouldShowHoveredOverlay || pinnedOverlayCell ? (
+              <div className="map-settlement-state-overlay-layer" aria-hidden="true">
+                {shouldShowHoveredOverlay && hoveredOverlayCell ? (
+                  <span
+                    className={`map-settlement-state-overlay is-hover ${hoveredOverlayCell.mapKind === 'opponent' || hoveredOverlayCell.mapKind === 'enemy' || hoveredOverlayCell.mapKind === 'nap' ? 'is-player-target' : ''}`}
+                    style={{
+                      gridColumnStart: hoveredOverlayCell.localX,
+                      gridRowStart: hoveredOverlayCell.localY,
+                    }}
+                  />
+                ) : null}
+                {pinnedOverlayCell ? (
+                  <span
+                    className={`map-settlement-state-overlay is-pinned ${pinnedOverlayCell.mapKind === 'opponent' || pinnedOverlayCell.mapKind === 'enemy' || pinnedOverlayCell.mapKind === 'nap' ? 'is-player-target' : ''}`}
+                    style={{
+                      gridColumnStart: pinnedOverlayCell.localX,
+                      gridRowStart: pinnedOverlayCell.localY,
+                    }}
+                  />
+                ) : null}
+              </div>
+            ) : null}
             {previewSettlement && previewCardStyle && !previewCardPortalStyle
               ? renderPreviewSettlementCard(previewCardStyle, false)
               : null}
@@ -15113,7 +15741,7 @@ const VillagePanel = memo(({
       return [
         {
           label: 'Posádka',
-          value: 'Načítám detail složení…',
+          value: 'Načítám detail…',
         },
       ];
     }
@@ -15121,29 +15749,30 @@ const VillagePanel = memo(({
       return [
         {
           label: 'Posádka',
-          value: 'Detail posádky není dostupný.',
+          value: 'Detail není dostupný.',
         },
       ];
     }
     if (!villageIntelData.garrisonUnlocked) {
       return [
         {
-          label: 'Posádka je uzamčena',
-          value: 'Odemyká se od Radnice 5. Rezervace 300 populace je aktivní hned.',
+          label: 'Posádka uzamčena',
+          value: 'Odemkne se od Radnice 5.',
         },
       ];
     }
     return villageIntelData.garrisonDetails.map((unit) => {
       const amountLabel = `${unit.amount.toLocaleString('cs-CZ')}/${unit.cap.toLocaleString('cs-CZ')}`;
-      const lossLabel =
-        unit.missing > 0 ? `ztráty ${unit.missing.toLocaleString('cs-CZ')}` : 'bez ztrát';
-      const refillStepLabel =
-        unit.refillSecPerUnit > 0 ? `+1 za ${formatDurationLabel(unit.refillSecPerUnit)}` : 'doplnění n/a';
-      const nextTickLabel =
-        unit.nextRefillSec != null ? `⏱ další doplnění za ${formatDurationLabel(unit.nextRefillSec)}` : '⏱ bez čekajícího doplnění';
+      const missingLabel =
+        unit.missing > 0 ? `chybí ${unit.missing.toLocaleString('cs-CZ')}` : 'plný stav';
+      const refillLabel = unit.refillSecPerUnit > 0 ? `+1/${formatDurationLabel(unit.refillSecPerUnit)}` : '+1/n/a';
+      const nextRefillLabel =
+        unit.missing > 0 && unit.nextRefillSec != null
+          ? `další za ${formatDurationLabel(unit.nextRefillSec)}`
+          : null;
       return {
-        label: `${unit.unitName}: ${amountLabel}`,
-        value: `${lossLabel} · ${refillStepLabel} · ${nextTickLabel}`,
+        label: `${unit.unitName} ${amountLabel}`,
+        value: nextRefillLabel == null ? `${missingLabel} · ${refillLabel}` : `${missingLabel} · ${refillLabel} · ${nextRefillLabel}`,
       };
     });
   }, [hasVillageIntel, isVillageIntelLoading, villageIntelData]);
@@ -16561,9 +17190,6 @@ export const GamePage = () => {
     };
   }, [activeVillageBaseName, isVillageRenameOpen]);
 
-  const villageRegionLabel = gameState
-    ? `Region ${gameState.village.region}, království ${gameState.village.kingdom}`
-    : 'Čekám na data backendu';
   const leaderboardRows = useMemo(() => {
     const rows = gameState?.leaderboard?.length ? gameState.leaderboard : RANKING_FALLBACK;
     return rows.filter((entry) => !entry.username.startsWith('__abandoned_ai__'));
@@ -18252,9 +18878,10 @@ export const GamePage = () => {
   }, []);
 
   const openSettlementPanel = useCallback(
-    (settlement: RegionSettlement, options?: { pinSide?: PinSide }) => {
+    (settlement: RegionSettlement, options?: { pinSide?: PinSide; centerOnMap?: boolean }) => {
       const pinSide = options?.pinSide ?? null;
       const shouldPin = pinSide != null;
+      const shouldCenterOnMap = options?.centerOnMap !== false;
       const { viewportWidth, viewportHeight } = getCanvasViewportSize();
       const id = `village-${settlement.id}`;
       const label = `${settlement.name} (${settlement.globalX}|${settlement.globalY})`;
@@ -18266,7 +18893,9 @@ export const GamePage = () => {
           : null;
 
       syncOwnSettlementSelection(settlement);
-      requestMapCenterOnSettlement(settlement.id);
+      if (shouldCenterOnMap) {
+        requestMapCenterOnSettlement(settlement.id);
+      }
 
       if (settlementVillageId != null && ownedVillageIdSet.has(settlementVillageId)) {
         void loadVillageIntel(settlementVillageId);
@@ -18356,7 +18985,7 @@ export const GamePage = () => {
 
   const pinSettlementPanelToSide = useCallback(
     (settlement: RegionSettlement, side: PinSide) => {
-      openSettlementPanel(settlement, { pinSide: side });
+      openSettlementPanel(settlement, { pinSide: side, centerOnMap: false });
     },
     [openSettlementPanel],
   );
@@ -18554,7 +19183,10 @@ export const GamePage = () => {
           setPlayerAvatarByUsername((previous) => ({
             ...previous,
             [key]: {
-              avatarUrl: exact && exact.kind === 'user' ? exact.avatarUrl ?? null : null,
+              avatarUrl:
+                exact && exact.kind === 'user'
+                  ? exact.avatarUrl ?? previous[key]?.avatarUrl ?? null
+                  : previous[key]?.avatarUrl ?? null,
               loaded: true,
             },
           }));
@@ -20893,7 +21525,6 @@ export const GamePage = () => {
         return (
           <CityPanel
             villageLabel={villageLabel}
-            regionLabel={villageRegionLabel}
             prestige={gameState?.village.prestige ?? 0}
             cityResourceSnapshot={cityPanelResourceSnapshot}
             availableResources={cityPanelAvailableResources}
@@ -20932,7 +21563,9 @@ export const GamePage = () => {
             zoomPercent={mapZoomPercent}
             orderMarkersByVillageId={mapOrderMarkersByVillageId}
             onZoomChange={setMapZoomPercent}
-            onOpenSettlement={openSettlementPanel}
+            onOpenSettlement={(settlement) => {
+              openSettlementPanel(settlement, { centerOnMap: false });
+            }}
             onPinSettlement={pinSettlementPanelToSide}
             onQuickArmyCommand={handleMapQuickArmyCommand}
           />
@@ -21376,23 +22009,15 @@ export const GamePage = () => {
   const hasDockedPanels =
     fullDockPanels.length > 0 || leftDockPanels.length > 0 || rightDockPanels.length > 0;
   const currentCanvasViewport = getCanvasViewportSize();
+  const stretchedMainStageFrame = getStretchedPanelFrame(
+    currentCanvasViewport.viewportWidth,
+    currentCanvasViewport.viewportHeight,
+  );
   const dockFrame = {
-    x: 8,
-    y: 12,
-    width: Math.round(
-      clamp(
-        currentCanvasViewport.viewportWidth - 16,
-        PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH,
-        currentCanvasViewport.viewportWidth - 16,
-      ),
-    ),
-    height: Math.round(
-      clamp(
-        currentCanvasViewport.viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
-        PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT,
-        currentCanvasViewport.viewportHeight - PANEL_VIEWPORT_MARGIN_Y,
-      ),
-    ),
+    x: stretchedMainStageFrame.x,
+    y: stretchedMainStageFrame.y,
+    width: stretchedMainStageFrame.width,
+    height: stretchedMainStageFrame.height,
   };
 
   const renderPanelWindow = (panel: PanelWindow, options?: { docked?: boolean }) => {
@@ -21431,6 +22056,16 @@ export const GamePage = () => {
         style={
           isDocked
             ? undefined
+            : isMainMenuPanel
+              ? {
+                  left: `${stretchedMainStageFrame.x}px`,
+                  top: `${stretchedMainStageFrame.y}px`,
+                  zIndex: isMapPanel
+                    ? MAP_BACKGROUND_PANEL_Z_INDEX
+                    : FLOATING_PANEL_BASE_Z_INDEX + panel.z,
+                  width: `${stretchedMainStageFrame.width}px`,
+                  height: `${stretchedMainStageFrame.height}px`,
+                }
             : {
                 left: shouldAnchorVillageToBottom ? '50%' : `${panel.x}px`,
                 top: shouldAnchorVillageToBottom ? undefined : `${panel.y}px`,

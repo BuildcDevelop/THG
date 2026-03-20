@@ -85,7 +85,13 @@ Na Netlify to nastav jako environment variable pro build.
 
 ### Bezpecny lokalni vyvoj (dulezite)
 
-- Lokalni `npm run dev` ma mit `VITE_API_BASE=http://localhost:3001` (viz `.env.development`).
+- `npm run dev` je ted branch-aware:
+  - `develop` pouzije frontend `http://localhost:5173`, backend `http://localhost:3001` a SQLite v `server/data/branches/develop/`
+  - `main`/`master` pouzije frontend `http://localhost:5174`, backend `http://localhost:3002` a SQLite v `server/data/branches/main/`
+  - ostatni branche defaultne pouziji vlastni branch scope a fallback porty `5175/3003`, pokud si je neprebijes v `.env.<branch>.local`
+- Pri prvnim lokalnim startu po teto zmene se stary sdileny `server/data/game.sqlite` automaticky zkopiruje do aktualni branch slozky, aby se neztratil rozpracovany stav.
+- Sdilene lokalni hodnoty nech v `.env.local`; branch-specific porty/data patri do `.env.develop.local`, `.env.main.local` nebo `.env.<branch>.local`.
+- Lokalni `npm run dev` ma mit `VITE_API_BASE` namirene na lokalni backend dane branche.
 - Pokud otevres aplikaci na `localhost` a `VITE_API_BASE` miri na vzdalenou API domenu, klient to ted zablokuje.
 - Vyjimka je mozna jen vedome pres `VITE_ALLOW_REMOTE_API_FROM_LOCALHOST=true`.
 

@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactElement } from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { hasSelectedWorld, isAdminAuthenticated, isAuthenticated } from './auth';
-import { fetchHealthStatus } from './api/gameApi';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { hasSelectedWorld, isAdminAuthenticated, isAuthenticated, logout } from './auth';
+import { AUTH_REQUIRED_EVENT, fetchHealthStatus } from './api/gameApi';
 import { CommunicationHub } from './components/CommunicationHub';
 import { AdminPage } from './pages/AdminPage';
 import { GamePage } from './pages/GamePage';
@@ -54,9 +54,23 @@ const AdminRoute = ({ children }: { children: ReactElement }) => {
 
 function App() {
   const location = useLocation();
+  const navigate = useNavigate();
   const [deploymentNotice, setDeploymentNotice] = useState<DeploymentNoticeState | null>(null);
   const isGameRoute = location.pathname.startsWith('/game');
   const shouldPollDeployment = isAuthenticated() && isGameRoute;
+
+  useEffect(() => {
+    const handleAuthRequired = () => {
+      logout();
+      setDeploymentNotice(null);
+      if (location.pathname !== '/login') {
+        navigate('/login', { replace: true });
+      }
+    };
+
+    window.addEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
+  }, [location.pathname, navigate]);
 
   useEffect(() => {
     if (!shouldPollDeployment) {

@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveLocalRuntimeProfile } from './runtimeProfile.js';
 import {
   BUILDING_DEFS,
   BUILDING_ORDER,
@@ -37,8 +38,11 @@ const enableLocalTestSetup =
   !isProduction && String(process.env.TLD_LOCAL_TEST_SETUP ?? 'true').trim().toLowerCase() !== 'false';
 const allowServerlessSqlite =
   String(process.env.TLD_ALLOW_SERVERLESS_SQLITE ?? '').trim().toLowerCase() === 'true';
-const localDataDir = path.join(process.cwd(), 'server', 'data');
-const localSeedDbPath = path.join(localDataDir, 'game.seed.sqlite.backup');
+const localRuntimeProfile = resolveLocalRuntimeProfile({ cwd: process.cwd(), env: process.env });
+const legacyLocalDataDir = path.join(process.cwd(), 'server', 'data');
+const legacyLocalDbPath = path.join(legacyLocalDataDir, 'game.sqlite');
+const localDataDir = localRuntimeProfile.dataDir;
+const localSeedDbPath = localRuntimeProfile.seedDbPath;
 const dataDir = configuredDataDir
   ? path.resolve(configuredDataDir)
   : isNetlifyRuntime
@@ -46,6 +50,21 @@ const dataDir = configuredDataDir
     : localDataDir;
 const dbPath = path.join(dataDir, 'game.sqlite');
 const seedDbPath = configuredSeedDbPath ? path.resolve(configuredSeedDbPath) : localSeedDbPath;
+
+const copySqliteFileSet = (sourceDbPath, targetDbPath) => {
+  fs.copyFileSync(sourceDbPath, targetDbPath);
+
+  for (const suffix of ['-wal', '-shm']) {
+    const sourceCompanionPath = `${sourceDbPath}${suffix}`;
+    const targetCompanionPath = `${targetDbPath}${suffix}`;
+
+    if (!fs.existsSync(sourceCompanionPath)) {
+      continue;
+    }
+
+    fs.copyFileSync(sourceCompanionPath, targetCompanionPath);
+  }
+};
 
 if (isProduction && isNetlifyRuntime && !allowServerlessSqlite) {
   throw new Error(
@@ -59,8 +78,18 @@ if (!fs.existsSync(dataDir)) {
 }
 
 const hasExistingDatabase = fs.existsSync(dbPath) && fs.statSync(dbPath).size > 0;
-if (!hasExistingDatabase && fs.existsSync(seedDbPath)) {
-  fs.copyFileSync(seedDbPath, dbPath);
+const useBranchScopedLocalDataDir =
+  !configuredDataDir &&
+  !isNetlifyRuntime &&
+  path.resolve(localDataDir) !== path.resolve(legacyLocalDataDir);
+const hasLegacySharedDatabase = fs.existsSync(legacyLocalDbPath) && fs.statSync(legacyLocalDbPath).size > 0;
+
+if (!hasExistingDatabase) {
+  if (useBranchScopedLocalDataDir && hasLegacySharedDatabase) {
+    copySqliteFileSet(legacyLocalDbPath, dbPath);
+  } else if (fs.existsSync(seedDbPath)) {
+    copySqliteFileSet(seedDbPath, dbPath);
+  }
 }
 
 export const db = new Database(dbPath);
