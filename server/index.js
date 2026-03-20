@@ -45,7 +45,9 @@ import {
   recallKnight,
   renameVillage,
   recruitUnits,
+  rebaseStationedSupport,
   restartVillageProgress,
+  reorderRecruitmentQueue,
   spawnPlayerInWorld,
   runGameTick,
   sendMarketLogistics,
@@ -92,7 +94,7 @@ const app = express();
 const port = Number(process.env.PORT ?? 3001);
 const tickSchedule = process.env.GAME_TICK_SCHEDULE ?? '* * * * * *';
 const versionLabel =
-  String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.11').trim() || 'build-0.1.11';
+  String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.14').trim() || 'build-0.1.14';
 const buildId =
   String(process.env.TLD_BUILD_ID ?? process.env.NETLIFY_COMMIT_REF ?? process.env.COMMIT_REF ?? versionLabel).trim() ||
   versionLabel;
@@ -1339,6 +1341,35 @@ app.post('/api/v1/units/recruitments/:recruitmentId/cancel', async (req, res, ne
   }
 });
 
+app.post('/api/v1/units/recruitments/reorder', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const recruitmentId = Number(req.body?.recruitmentId ?? 0);
+    const targetIndex = Number(req.body?.targetIndex ?? Number.NaN);
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = reorderRecruitmentQueue(username, recruitmentId, targetIndex, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
+      return { result, state };
+    });
+
+    res.json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
 app.post('/api/v1/townhall/knight/recall', async (req, res, next) => {
   try {
     const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
@@ -1549,6 +1580,34 @@ app.post('/api/v1/army/command/:movementId/cancel', async (req, res, next) => {
     const payload = await executeWithWriteOperation(() => {
       runGameTick();
       const result = cancelArmyCommand(username, movementId, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
+      return { result, state };
+    });
+
+    res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/army/support/:movementId/rebase', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const movementId = Number(String(req.params.movementId ?? '').trim());
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = rebaseStationedSupport(username, movementId, normalizedVillageId, worldId);
       const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
       return { result, state };
     });

@@ -144,6 +144,20 @@ Production deploy:
 npx netlify deploy --prod --build
 ```
 
+### Release doctor (pred/po deployi)
+
+Pro rychly release contract + smoke check:
+
+```bash
+npm run release:doctor:prod
+```
+
+Volitelne lze kontrolovat i Netlify production env kontrakt:
+
+```bash
+npm run release:doctor -- --base-url=https://thelastdominion.netlify.app --check-netlify-env
+```
+
 ## Prihlaseni (prototyp)
 
 - Specialni ucty:

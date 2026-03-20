@@ -970,3 +970,59 @@ Entry template:
 - Files: arch/chat-changelog.md, .gitignore, README.md, package.json, scripts/run-local-client.mjs, scripts/run-local-server.mjs, server/communicationService.js, server/db.js, server/gameConfig.js, server/gameService.js, server/index.js, server/runtimeProfile.js, src/App.css, src/App.tsx, src/api/gameApi.ts, src/pages/GamePage.tsx, tests/config/local-runtime-profile.test.mjs, tests/regression/game-rules.scenario.mjs, vite.config.ts
 - Verification: `npm run build` (PASS), `node --test tests/regression/game-rules.regression.test.mjs` (PASS 28/28), `Invoke-WebRequest http://localhost:3002/api/health` (`200`), `netlify.toml` redirecty na backend `https://thg.89-167-89-109.sslip.io/api`
 - Notes: Netlify build je připravený na trigger pushnutím `main`; backend routování je zachované přes Netlify redirects na self-host API.
+
+## 2026-03-20 17:41 | branch: main
+
+- Request: Přepnout aktuální workspace do větve `main`.
+- Summary: Ověřil jsem, že pracovní strom je čistý a nic nebude blokovat přepnutí větve. Následně jsem v tomto workspace provedl `git switch --ignore-other-worktrees main`; větev `main` je aktivní a synchronní s `origin/main`.
+- Files: arch/chat-changelog.md
+- Verification: `git status --short` (čistý pracovní strom), `git branch --show-current` před přepnutím (`develop`), `git switch --ignore-other-worktrees main` (OK)
+- Notes: Žádné další změny repozitáře ani dat nebyly provedeny.
+
+## 2026-03-20 17:56 | branch: main
+
+- Request: Diagnostikovat, proč produkce neukazuje změny 0.1.14 (zejména výzkum) a určit místo rozchodu mezi kódem a nasazením.
+- Summary: Ověřil jsem produkční Netlify i backend zvlášť. Netlify frontend je skutečně nasazený z aktuálního `main` commitu `0f5fe41` a servíruje stejný asset hash jako lokální build (`index-BeYX6f1H.js`, `index-BdemgXJo.css`). Produkční backend ale zjevně není spolehlivě verzovaný a zároveň servíruje starý runtime obsah výzkumu; v `main` repu jsou nové definice výzkumu v `server/gameService.js`, zatímco živá hra podle UI stále vrací staré ceny. Zásadní zjištění je dvojí: 1) release je rozdělený na auto-deploy Netlify frontendu a samostatný self-host backend deploy, takže samotný merge/push do `main` nestačí pro serverové změny; 2) observability je teď matoucí, protože frontend i backend fallback verze zůstaly na `0.1.11` (`package.json`, `src/version.ts`, `server/index.js`), takže `api/health` neumí bez env proměnných jasně potvrdit skutečný release.
+- Files: arch/chat-changelog.md
+- Verification: `npx netlify api listSiteDeploys --data '{"site_id":"29de8cb8-4e2b-4dd9-8738-97dd1241f20b","page":1,"per_page":3}'` (produkční deploy z commitu `0f5fe41`), `Invoke-WebRequest https://thelastdominion.netlify.app/` (assety `index-BeYX6f1H.js` / `index-BdemgXJo.css`), `npm run build` (lokálně stejné asset hashe), `Invoke-WebRequest https://thelastdominion.netlify.app/api/health` (backend health), `npx netlify env:get VITE_API_BASE` (produkce míří přímo na `https://thg.89-167-89-109.sslip.io`)
+- Notes: Produkční klient nepoužívá jen Netlify redirect, ale má build-time `VITE_API_BASE` nastavený přímo na self-host backend. Jakákoli backendová změna z `main` tedy zůstane neviditelná, dokud se ten server samostatně nepřepne na nový commit/obraz.
+
+## 2026-03-20 18:07 | branch: main
+
+- Request: Rozpadnout po bodech, co z velkého seznamu map/combat/research/knight změn je na produkci opravdu živé, co je jen v repu a co stále není implementované.
+- Summary: Porovnal jsem aktuální `main` s předchozím produkčním commitem `0581a99`, prošel diff klíčových frontend/backend souborů a oddělil změny podle závislosti na frontend deployi vs self-host backend deployi. Výsledek: mapové UI úpravy a další čistě frontendové věci jsou na produkci živé, protože Netlify běží z aktuálního `main`; serverově řízené novinky jako nové ceny výzkumu, `Rytířský stav`, knight cost/time, podpora cizích lén a avatar storage fix jsou jen v repu a na produkci chybí kvůli stale backendu; veřejný pořádek, queue-based recruit, převod podpory na nové domovské léno a část combat redesignu nejsou hotové vůbec.
+- Files: arch/chat-changelog.md
+- Verification: `git diff --name-only 0581a9953b8958d3104b1f719756632512ef9c7f..0f5fe4177bb8c3215b4575e3c03d4a7a6aff14b5`, targeted `git diff ... -- server/gameService.js src/pages/GamePage.tsx src/App.css server/gameConfig.js server/communicationService.js`, `Select-String` v aktuálním `main` pro map drag/copy, opponent color, battle report sizing, avatar storage, research defs, knight config a recruitment flow
+- Notes: Stav „živé“ znamená, že je změna v produkčním frontendu nebo už byla součástí staršího produkčního backendu; neznamená to automaticky, že byla manuálně vizuálně retestovaná v každém edge case.
+
+## 2026-03-20 18:19 | branch: main
+
+- Request: Navrhnout, jak efektivně a konzistentně doprogramovat chybějící části, doplnit neúplné věci a zlepšit nasazené systémy s důrazem na kvalitu.
+- Summary: Připravil jsem implementační roadmapu na základě guardrails a aktuálního stavu repa. Hlavní doporučení: nejdřív opravit release a observability contract (frontend/backend musí nést stejný build id), potom uzavřít neúplné backendové věci z 0.1.14, následně řešit chybějící mechaniky po doménách. Za klíčové architektonické body považuji nezneužít `loyalty` pro veřejný pořádek, ale zavést samostatný world-scoped player state; nábor jednotek předělat na skutečnou frontu s lokálním rebalancem per village; combat/reporting sjednotit přes explicitní visibility/escort contract; activity a battle reports oddělit jako inbox vs immutable detail; a rozdělit monolit `GamePage.tsx` po doménách, ne přidávat další cross-cutting stav do jedné komponenty.
+- Files: arch/chat-changelog.md
+- Verification: `Get-Content C:\\Users\\Patrik\\.codex\\skills\\last-dominion-feature-guardrails\\references\\playbook.md`, targeted `Select-String` / `git diff` nad `server/gameService.js`, `server/gameConfig.js`, `server/communicationService.js`, `src/pages/GamePage.tsx`, `src/App.css`
+- Notes: Nešlo o implementaci, ale o návrh pořadí, datových modelů, guardrails a regression strategie pro bezpečné pokračování.
+
+## 2026-03-20 18:31 | branch: main
+
+- Request: Upřesnit UI umístění veřejného pořádku, navrhnout `Armádu všech lén`, rozložit obě věci do implementačních fází a vysvětlit dlouhodobý přesun marker layer mapy na canvas.
+- Summary: Na základě guardrails jsem navrhl veřejný pořádek jako world-scoped systém s UI badge hned vedle aktivního léna, kde se procento zobrazuje jen pod 100 % a debuffy se zvýrazňují barevně i tooltipem. Novou stránku `Armáda všech lén` jsem rozvrhl jako samostatný lightweight read-model s přehledem jednotek, opevnění, brány, posádky a aktuálního rekrutu bez tabulkového vzhledu a bez nafukování hlavního snapshotu. Současně jsem začlenil do backlogu release contract, backend rollout 0.1.14, audit reportů, veřejný pořádek, recruit queue, support rebase, combat/report kontrakt, DB migrace, release doctor a view-model testy a připravil vysvětlení, proč canvas marker layer řeší výkon renderu bez odbočení od herní funkčnosti.
+- Files: arch/chat-changelog.md
+- Verification: `Get-Content C:\\Users\\Patrik\\.codex\\skills\\last-dominion-feature-guardrails\\SKILL.md`, `Get-Content C:\\Users\\Patrik\\.codex\\skills\\last-dominion-feature-guardrails\\references\\playbook.md`, `Get-Content D:\\The Last Dominion\\arch\\chat-changelog.md -Tail 30`
+- Notes: Šlo o plánovací návrh; bez změny runtime kódu a bez zásahu do herních dat.
+
+## 2026-03-20 18:45 | branch: main
+
+- Request: Dopsat canvas marker layer do roadmapy a udelat dalsi navazujici krok pred implementaci.
+- Summary: Vytvoril jsem samostatny implementacni dokument `arch/verejny-poradek-armada-mapa-implementacni-milniky-v1.md`, ktery sjednocuje verejny poradek, `Armadu vsech len`, release contract, uzavreni 0.1.14, recruit queue, support rebase, combat/report kontrakt, technicky zaklad a dlouhodoby prechod settlement marker vrstvy mapy na `canvas`. Soucasti dokumentu jsou feature contracts, guardrails, poradi milniku, vysvetleni prinosu `canvas` rendereru a explicitni `dalsi krok pred implementaci`: pripravit navazujici API spec, DB spec a acceptance scenare pro tuto vlnu praci.
+- Files: arch/verejny-poradek-armada-mapa-implementacni-milniky-v1.md, arch/chat-changelog.md
+- Verification: `Get-Content D:\\The Last Dominion\\arch\\optimalizace-a-vykonove-guardrails.md -TotalCount 120`, `Get-Content D:\\The Last Dominion\\arch\\planovac-implementacni-milniky-v1.md -TotalCount 120`, manual review noveho dokumentu
+- Notes: Slo o pripravu implementacniho backlogu a specifikacniho kroku; bez zmen runtime kodu a bez zasahu do hernich dat.
+
+## 2026-03-20 19:09 | branch: main
+
+- Request: Pokracovat navazujicim krokem pred implementaci a pripravit konkretni specifikace pro verejny poradek, `Armadu vsech len`, recruit queue, support rebase a souvisejici retention/guardrails.
+- Summary: Na zaklade guardrails a existujiciho backend/frontend contractu jsem pripravil tri navazujici arch dokumenty: `arch/verejny-poradek-armada-api-spec-v1.md`, `arch/verejny-poradek-armada-db-spec-v1.md` a `arch/verejny-poradek-armada-acceptance-scenare-v1.md`. API spec zavadi `publicOrder` summary do `GET /api/v1/state`, rozsiruje existujici `GET /api/v1/army/overview` pro novou stranku `Armada vsech len`, definuje `POST /api/v1/units/recruitments/reorder`, upresnuje cancel contract recruit queue a pridava `POST /api/v1/army/support/:movementId/rebase`. DB spec pridava `player_world_governance`, audit eventy verejneho poradku, kanonickou podobu `unit_recruitments` v2, audit `army_movement_events` a explicitni report reference v `player_notifications`. Acceptance dokument pokryva badge a tooltip verejneho poradku, lifecycle `Armady vsech len`, queue reorder/cancel, support rebase, report retention, combat visibility edge cases a guardrails kolem pollingu a payloadu. Soucasne jsem upravil roadmap dokument, aby `Armada vsech len` preferovala rozsireni existujiciho `army/overview` endpointu misto vytvareni duplicitniho API.
+- Files: arch/verejny-poradek-armada-api-spec-v1.md, arch/verejny-poradek-armada-db-spec-v1.md, arch/verejny-poradek-armada-acceptance-scenare-v1.md, arch/verejny-poradek-armada-mapa-implementacni-milniky-v1.md, arch/chat-changelog.md
+- Verification: `Get-Content D:\\The Last Dominion\\arch\\planovac-api-spec-v1.md -TotalCount 220`, `Get-Content D:\\The Last Dominion\\arch\\planovac-db-spec-v1.md -TotalCount 220`, `Get-Content D:\\The Last Dominion\\arch\\planovac-acceptance-scenare-v1.md -TotalCount 220`, `Get-Content D:\\The Last Dominion\\server\\db.js` around schema blocks, `Get-Content D:\\The Last Dominion\\server\\index.js` around `GET /api/v1/army/overview`, `Get-Content D:\\The Last Dominion\\src\\api\\gameApi.ts` around `ArmyOverviewResponse`, `git status --short`
+- Notes: Slo o arch/spec pripravu bez runtime implementace a bez zasahu do hernich dat. Dulezite rozhodnuti: verejny poradek jde jako maly summary slice do hlavniho `state`, zatimco `Armada vsech len` zustava panel-scoped rozsireni existujiciho `army/overview`.

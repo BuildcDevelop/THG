@@ -1,7 +1,7 @@
 {
   "name": "tld-client",
   "private": true,
-  "version": "0.1.11",
+  "version": "0.1.14",
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n client,server \"npm run dev:client\" \"npm run dev:server\"",
@@ -12,6 +12,8 @@
     "test:regression": "node --test tests/regression/game-rules.regression.test.mjs",
     "test:stage6": "node --test --test-name-pattern \"stage6\" tests/regression/game-rules.regression.test.mjs",
     "report:stage6": "node scripts/generate-stage6-metrics-report.mjs",
+    "release:doctor": "node scripts/release-doctor.mjs",
+    "release:doctor:prod": "node scripts/release-doctor.mjs --base-url=https://thelastdominion.netlify.app --world-id=dominion-1",
     "lint": "eslint .",
     "preview": "vite preview",
     "server": "node scripts/run-local-server.mjs"

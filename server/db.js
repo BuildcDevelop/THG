@@ -320,10 +320,16 @@ CREATE TABLE IF NOT EXISTS unit_recruitments (
   wood_cost INTEGER NOT NULL,
   stone_cost INTEGER NOT NULL,
   iron_cost INTEGER NOT NULL,
+  queue_index INTEGER NOT NULL DEFAULT 0,
   started_at TEXT NOT NULL,
   finish_at TEXT NOT NULL,
-  status TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'canceled')),
+  base_duration_sec INTEGER NOT NULL DEFAULT 1,
+  effective_duration_sec INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   completed_at TEXT,
+  canceled_at TEXT,
   FOREIGN KEY (village_id) REFERENCES villages(id)
 );
 
@@ -363,6 +369,24 @@ CREATE TABLE IF NOT EXISTS army_movement_units (
   PRIMARY KEY (movement_id, unit_id),
   FOREIGN KEY (movement_id) REFERENCES army_movements(id)
 );
+
+CREATE TABLE IF NOT EXISTS army_movement_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  movement_id INTEGER NOT NULL,
+  player_id INTEGER NOT NULL,
+  region INTEGER NOT NULL DEFAULT 1,
+  event_type TEXT NOT NULL,
+  payload_json TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (movement_id) REFERENCES army_movements(id) ON DELETE CASCADE,
+  FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_army_movement_events_movement_created
+  ON army_movement_events(movement_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_army_movement_events_player_region_created
+  ON army_movement_events(player_id, region, created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS combat_retaliation_flags (
   aggressor_player_id INTEGER NOT NULL,
@@ -453,11 +477,13 @@ CREATE TABLE IF NOT EXISTS player_notifications (
   payload_json TEXT,
   source_type TEXT,
   source_id INTEGER,
+  report_id INTEGER,
   created_at TEXT NOT NULL,
   read_at TEXT,
   archived_at TEXT,
   deleted_at TEXT,
-  FOREIGN KEY (player_id) REFERENCES players(id)
+  FOREIGN KEY (player_id) REFERENCES players(id),
+  FOREIGN KEY (report_id) REFERENCES battle_reports(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_player_notifications_player_created
@@ -472,6 +498,9 @@ CREATE INDEX IF NOT EXISTS idx_player_notifications_cleanup
 CREATE UNIQUE INDEX IF NOT EXISTS idx_player_notifications_source_unique
   ON player_notifications(player_id, source_type, source_id)
   WHERE source_type IS NOT NULL AND source_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_player_notifications_report_ref
+  ON player_notifications(player_id, report_id, created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS player_profiles (
   player_id INTEGER PRIMARY KEY,
@@ -900,6 +929,35 @@ CREATE TABLE IF NOT EXISTS player_world_state (
 CREATE INDEX IF NOT EXISTS idx_player_world_state_world
   ON player_world_state(world_id, has_spawned, spawn_count);
 
+CREATE TABLE IF NOT EXISTS player_world_governance (
+  player_id INTEGER NOT NULL,
+  region INTEGER NOT NULL DEFAULT 1,
+  public_order INTEGER NOT NULL DEFAULT 100 CHECK (public_order >= 0 AND public_order <= 100),
+  last_regenerated_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (player_id, region),
+  FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_world_governance_region_updated
+  ON player_world_governance(region, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS player_world_governance_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  player_id INTEGER NOT NULL,
+  region INTEGER NOT NULL DEFAULT 1,
+  event_type TEXT NOT NULL,
+  delta INTEGER NOT NULL,
+  before_value INTEGER NOT NULL,
+  after_value INTEGER NOT NULL,
+  payload_json TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_world_governance_events_player_created
+  ON player_world_governance_events(player_id, region, created_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS app_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -1066,6 +1124,117 @@ CREATE INDEX IF NOT EXISTS idx_army_movements_plan_refs
   ON army_movements(plan_id, plan_leg_id, started_at DESC, id DESC);
 `);
 
+  const recruitmentColumns = db.prepare('PRAGMA table_info(unit_recruitments)').all();
+  const hasQueueIndexColumn = recruitmentColumns.some((column) => column.name === 'queue_index');
+  if (!hasQueueIndexColumn) {
+    db.prepare('ALTER TABLE unit_recruitments ADD COLUMN queue_index INTEGER NOT NULL DEFAULT 0').run();
+  }
+  const hasBaseDurationSecColumn = recruitmentColumns.some((column) => column.name === 'base_duration_sec');
+  if (!hasBaseDurationSecColumn) {
+    db.prepare('ALTER TABLE unit_recruitments ADD COLUMN base_duration_sec INTEGER NOT NULL DEFAULT 1').run();
+  }
+  const hasEffectiveDurationSecColumn = recruitmentColumns.some((column) => column.name === 'effective_duration_sec');
+  if (!hasEffectiveDurationSecColumn) {
+    db.prepare('ALTER TABLE unit_recruitments ADD COLUMN effective_duration_sec INTEGER NOT NULL DEFAULT 1').run();
+  }
+  const hasCreatedAtColumn = recruitmentColumns.some((column) => column.name === 'created_at');
+  if (!hasCreatedAtColumn) {
+    db.prepare("ALTER TABLE unit_recruitments ADD COLUMN created_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'").run();
+  }
+  const hasUpdatedAtColumn = recruitmentColumns.some((column) => column.name === 'updated_at');
+  if (!hasUpdatedAtColumn) {
+    db.prepare("ALTER TABLE unit_recruitments ADD COLUMN updated_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'").run();
+  }
+  const hasCanceledAtColumn = recruitmentColumns.some((column) => column.name === 'canceled_at');
+  if (!hasCanceledAtColumn) {
+    db.prepare('ALTER TABLE unit_recruitments ADD COLUMN canceled_at TEXT').run();
+  }
+
+  db.prepare(
+    `UPDATE unit_recruitments
+     SET created_at = COALESCE(NULLIF(created_at, '1970-01-01T00:00:00.000Z'), started_at, ?),
+         updated_at = COALESCE(NULLIF(updated_at, '1970-01-01T00:00:00.000Z'), created_at, started_at, ?)`,
+  ).run(nowIso(), nowIso());
+
+  db.prepare(
+    `UPDATE unit_recruitments
+     SET base_duration_sec = MAX(
+       1,
+       COALESCE(base_duration_sec, CAST((julianday(finish_at) - julianday(started_at)) * 86400 AS INTEGER), 1)
+     ),
+         effective_duration_sec = MAX(
+       1,
+       COALESCE(effective_duration_sec, CAST((julianday(finish_at) - julianday(started_at)) * 86400 AS INTEGER), 1)
+     )`,
+  ).run();
+
+  db.prepare(
+    `UPDATE unit_recruitments
+     SET status = CASE
+       WHEN status = 'in_progress' THEN 'queued'
+       WHEN status = 'completed' THEN 'completed'
+       WHEN status = 'canceled' THEN 'canceled'
+       ELSE status
+     END
+     WHERE status IS NOT NULL`,
+  ).run();
+
+  db.prepare(
+    `WITH ranked AS (
+       SELECT
+         id,
+         village_id,
+         ROW_NUMBER() OVER (
+           PARTITION BY village_id
+           ORDER BY finish_at ASC, id ASC
+         ) AS rn
+       FROM unit_recruitments
+       WHERE status IN ('queued', 'in_progress')
+     )
+     UPDATE unit_recruitments
+     SET queue_index = COALESCE(
+           (SELECT rn - 1 FROM ranked WHERE ranked.id = unit_recruitments.id),
+           queue_index
+         ),
+         status = COALESCE(
+           (SELECT CASE WHEN rn = 1 THEN 'in_progress' ELSE 'queued' END
+            FROM ranked
+            WHERE ranked.id = unit_recruitments.id),
+           status
+         )`,
+  ).run();
+
+  db.exec(`
+CREATE INDEX IF NOT EXISTS idx_unit_recruitments_village_queue
+  ON unit_recruitments(village_id, status, queue_index, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unit_recruitments_active_queue_position
+  ON unit_recruitments(village_id, queue_index)
+  WHERE status IN ('queued', 'in_progress');
+`);
+
+  const notificationColumns = db.prepare('PRAGMA table_info(player_notifications)').all();
+  const hasReportIdColumn = notificationColumns.some((column) => column.name === 'report_id');
+  if (!hasReportIdColumn) {
+    db.prepare('ALTER TABLE player_notifications ADD COLUMN report_id INTEGER').run();
+  }
+  db.exec(`
+CREATE INDEX IF NOT EXISTS idx_player_notifications_report_ref
+  ON player_notifications(player_id, report_id, created_at DESC, id DESC);
+`);
+
+  db.prepare(
+    `INSERT INTO player_world_governance (player_id, region, public_order, last_regenerated_at, updated_at)
+     SELECT DISTINCT
+       v.player_id,
+       v.region,
+       100,
+       COALESCE((SELECT last_tick_at FROM game_state WHERE id = 1), ?),
+       COALESCE((SELECT last_tick_at FROM game_state WHERE id = 1), ?)
+     FROM villages v
+     WHERE v.player_id IS NOT NULL
+     ON CONFLICT(player_id, region) DO NOTHING`,
+  ).run(nowIso(), nowIso());
+
   const marketGuildTargetColumns = db.prepare('PRAGMA table_info(market_guild_targets)').all();
   const hasPausedColumn = marketGuildTargetColumns.some((column) => column.name === 'is_paused');
   if (!hasPausedColumn) {
@@ -1170,12 +1339,15 @@ const clearWorld = db.transaction(() => {
 DELETE FROM building_upgrades;
 DELETE FROM unit_recruitments;
 DELETE FROM army_movement_units;
+DELETE FROM army_movement_events;
 DELETE FROM army_movements;
 DELETE FROM battle_reports;
 DELETE FROM combat_retaliation_flags;
 DELETE FROM kingdom_invites;
 DELETE FROM kingdom_events;
 DELETE FROM player_notifications;
+DELETE FROM player_world_governance_events;
+DELETE FROM player_world_governance;
 DELETE FROM chat_messages;
 DELETE FROM chat_thread_members;
 DELETE FROM chat_threads;

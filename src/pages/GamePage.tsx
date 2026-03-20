@@ -53,6 +53,7 @@ import {
   recallKnight as recallKnightRequest,
   reconfirmPlannerPlan as reconfirmPlannerPlanRequest,
   recruitUnit,
+  rebaseStationedSupport as rebaseStationedSupportRequest,
   reorderBuildingUpgradeQueue as reorderBuildingUpgradeQueueRequest,
   renameVillage as renameVillageRequest,
   restartVillageProgress as restartVillageProgressRequest,
@@ -350,6 +351,8 @@ type RecruitQueueOrder = {
   unitId: string;
   unitName: string;
   amount: number;
+  queueIndex: number;
+  status: string;
   remainingSec: number;
   finishAt: string;
 };
@@ -1794,12 +1797,12 @@ const VillageIntelTooltip = ({
     if (typeof window === 'undefined') {
       return {
         width: 360,
-        height: Math.max(180, Math.min(420, 96 + rows.length * 44)),
+        height: Math.max(140, Math.min(360, 84 + rows.length * 30)),
       };
     }
     return {
       width: Math.max(300, Math.min(460, Math.floor(window.innerWidth * 0.42))),
-      height: Math.max(180, Math.min(420, 96 + rows.length * 44)),
+      height: Math.max(140, Math.min(360, 84 + rows.length * 30)),
     };
   }, [rows.length]);
   const fallbackCursorPosition = useMemo<TooltipCursorPosition | null>(() => {
@@ -4480,6 +4483,43 @@ const formatDurationLabel = (seconds: number | null): string => {
   return `${secs}s`;
 };
 
+const formatArmadaGarrisonTooltip = (village: ArmyVillageSummary): string => {
+  const garrison = village.garrison;
+  if (!garrison?.isUnlocked) {
+    return 'Posádka není odemčená (Radnice L5).';
+  }
+  return `Posádka\nCelkem: ${Math.max(0, Number(garrison.totalUnits ?? 0)).toLocaleString('cs-CZ')} / ${Math.max(
+    0,
+    Number(garrison.totalCap ?? 0),
+  ).toLocaleString('cs-CZ')}\nMilice: ${Math.max(0, Number(garrison.militia ?? 0)).toLocaleString(
+    'cs-CZ',
+  )}\nLučištníci: ${Math.max(0, Number(garrison.archer ?? 0)).toLocaleString('cs-CZ')}`;
+};
+
+const formatArmadaRecruitmentTooltip = (village: ArmyVillageSummary): string => {
+  const queue = [...(village.activeRecruitments ?? [])].sort(
+    (left, right) => Number(left.queueIndex ?? 0) - Number(right.queueIndex ?? 0),
+  );
+  if (queue.length <= 0) {
+    return 'Žádný aktivní nábor.';
+  }
+  const rows = queue.slice(0, 6).map((entry, index) => {
+    const amount = Math.max(0, Math.floor(Number(entry.amount ?? 0))).toLocaleString('cs-CZ');
+    const eta = formatDurationLabel(Math.max(0, Math.floor(Number(entry.remainingSec ?? 0))));
+    const status =
+      String(entry.status ?? '').toLowerCase() === 'in_progress'
+        ? 'běží'
+        : String(entry.status ?? '').toLowerCase() === 'queued'
+          ? 've frontě'
+          : String(entry.status ?? '');
+    return `${index + 1}. ${entry.unitName} +${amount} · ${eta} (${status})`;
+  });
+  if (queue.length > 6) {
+    rows.push(`… +${(queue.length - 6).toLocaleString('cs-CZ')} dalších položek`);
+  }
+  return `Aktuální nábor\n${rows.join('\n')}`;
+};
+
 const formatCompactResourceAmount = (amountRaw: number): string => {
   const amount = Math.max(0, Math.floor(Number(amountRaw ?? 0)));
   if (amount >= 1_000_000) {
@@ -6978,6 +7018,28 @@ const ArmyPanel = memo(({
                       Království: {village.kingdom} · Jednotky {village.totalOwnUnits.toLocaleString('cs-CZ')} (
                       {village.totalSupportUnits.toLocaleString('cs-CZ')})
                     </small>
+                    <div className="armada-village-intel-row">
+                      <span className="armada-village-intel-pill">
+                        Opevnění L{Math.max(0, Math.floor(Number(village.fortificationLevel ?? 0)))}
+                      </span>
+                      <span className="armada-village-intel-pill">
+                        Brána L{Math.max(0, Math.floor(Number(village.gateLevel ?? 0)))}
+                      </span>
+                      <span
+                        className="armada-village-intel-pill is-tooltip"
+                        title={formatArmadaGarrisonTooltip(village)}
+                        aria-label={formatArmadaGarrisonTooltip(village)}
+                      >
+                        Posádka {Math.max(0, Math.floor(Number(village.garrison?.totalUnits ?? 0))).toLocaleString('cs-CZ')}
+                      </span>
+                      <span
+                        className="armada-village-intel-pill is-tooltip"
+                        title={formatArmadaRecruitmentTooltip(village)}
+                        aria-label={formatArmadaRecruitmentTooltip(village)}
+                      >
+                        Nábor {Math.max(0, Math.floor(Number(village.activeRecruitments?.length ?? 0))).toLocaleString('cs-CZ')}
+                      </span>
+                    </div>
                     <div className="armada-unit-pill-row">
                       {village.units.map((unit) => (
                         <span
@@ -9790,6 +9852,7 @@ const CommandsPanel = ({
   onIssueArmyCommand,
   onCancelArmyCommand,
   onReturnSupport,
+  onRebaseSupport,
   isArmyCommandPending,
   logisticsActionPending,
   guildActionPending,
@@ -9822,6 +9885,7 @@ const CommandsPanel = ({
     }) => void;
   onCancelArmyCommand: (movementId: number) => void;
   onReturnSupport: (supportMovementId: number) => void;
+  onRebaseSupport: (supportMovementId: number) => void;
   isArmyCommandPending: boolean;
   logisticsActionPending: boolean;
   guildActionPending: boolean;
@@ -11013,6 +11077,15 @@ const CommandsPanel = ({
                       disabled={isArmyCommandPending}
                     >
                       Poslat návrat
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-action"
+                      onClick={() => onRebaseSupport(movement.id)}
+                      disabled={isArmyCommandPending}
+                      title="Převede stacionovanou podporu na domovské jednotky cílového léna."
+                    >
+                      Převést na přesun
                     </button>
                   </div>
                   {hoveredMovementId === movement.id ? (
@@ -16747,6 +16820,10 @@ export const GamePage = () => {
 
     return [...(gameState.activeRecruitments ?? [])]
       .sort((a, b) => {
+        const byQueueIndex = Number(a.queueIndex ?? Number.MAX_SAFE_INTEGER) - Number(b.queueIndex ?? Number.MAX_SAFE_INTEGER);
+        if (byQueueIndex !== 0) {
+          return byQueueIndex;
+        }
         const byEta = a.remainingSec - b.remainingSec;
         if (byEta !== 0) {
           return byEta;
@@ -16758,6 +16835,8 @@ export const GamePage = () => {
         unitId: order.unitId,
         unitName: getUnitMetaById(order.unitId).fallbackName,
         amount: order.amount,
+        queueIndex: Math.max(0, Math.floor(Number(order.queueIndex ?? 0))),
+        status: String(order.status ?? 'queued'),
         remainingSec: order.remainingSec,
         finishAt: order.finishAt,
       }));
@@ -16967,6 +17046,24 @@ export const GamePage = () => {
     : 'Načítám město...';
   const activeVillageBaseName = gameState?.village.name ?? extractVillageBaseName(villageLabel);
   const activeVillageResolvedId = gameState?.village.id ?? activeVillageId ?? null;
+  const publicOrder = gameState?.publicOrder ?? null;
+  const publicOrderCurrentPct = Math.max(0, Math.min(100, Math.floor(Number(publicOrder?.currentPct ?? 100))));
+  const publicOrderBand = String(publicOrder?.band ?? 'stable');
+  const publicOrderBadgeTone =
+    publicOrderBand === 'critical' ? 'is-critical' : publicOrderBand === 'warning' ? 'is-warning' : 'is-stable';
+  const showPublicOrderPct = publicOrder != null && publicOrderCurrentPct < 100;
+  const publicOrderTooltipLabel = publicOrder
+    ? `${publicOrderBand === 'critical' ? 'KRIZE VEŘEJNÉHO POŘÁDKU' : publicOrderBand === 'warning' ? 'Napětí v zemi' : 'Veřejný pořádek je stabilní'}\n` +
+      `Stav: ${publicOrderCurrentPct}% · Obnova ${Math.max(0, Number(publicOrder.regenPctPerHour ?? 0)).toLocaleString('cs-CZ')}% / hod.\n` +
+      `Nábor rytíře: ${
+        publicOrder.knightRecruitBlocked ? 'blokován (pod 50 % veřejného pořádku)' : 'bez omezení'
+      }\n` +
+      `${
+        Number(publicOrder.globalSpeedPenaltyPct ?? 0) > 0
+          ? `Debuff: -${Math.floor(Number(publicOrder.globalSpeedPenaltyPct ?? 0))}% rychlost náboru, výstavby i produkce.`
+          : 'Bez globálních debuffů.'
+      }`
+    : 'Veřejný pořádek se načítá.';
   const currentVillageHistoryKey =
     activeVillageResolvedId != null && Number.isFinite(activeVillageResolvedId)
       ? String(Math.floor(activeVillageResolvedId))
@@ -19989,6 +20086,35 @@ export const GamePage = () => {
     ],
   );
 
+  const handleRebaseSupport = useCallback(
+    async (supportMovementId: number) => {
+      if (!Number.isFinite(supportMovementId) || supportMovementId <= 0) {
+        return;
+      }
+      setArmyCommandPending(true);
+      setArmyCommandNotice(null);
+
+      try {
+        const response = await rebaseStationedSupportRequest(
+          username,
+          supportMovementId,
+          gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
+        );
+        applyIncomingGameState(response.data);
+        setArmyCommandNotice(
+          `Podpora byla převedena na domovské léno ${String(response.result.targetVillageName ?? '')}.`,
+        );
+        void loadGameState(true, true);
+      } catch (error) {
+        setArmyCommandNotice(getErrorMessage(error));
+      } finally {
+        setArmyCommandPending(false);
+      }
+    },
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
+  );
+
   const handleCancelArmyCommand = useCallback(
     async (movementId: number) => {
       if (!Number.isFinite(movementId) || movementId <= 0) {
@@ -21626,6 +21752,7 @@ export const GamePage = () => {
             onIssueArmyCommand={handleIssueArmyCommand}
             onCancelArmyCommand={handleCancelArmyCommand}
             onReturnSupport={handleReturnSupport}
+            onRebaseSupport={handleRebaseSupport}
             isArmyCommandPending={armyCommandPending}
             logisticsActionPending={logisticsActionPending}
             guildActionPending={guildActionPending}
@@ -22341,7 +22468,21 @@ export const GamePage = () => {
                   {playerVillages.length === 0 ? 'Načítám léna...' : 'Seznam lén'}
                 </button>
                 <div className="village-resource-card-info">
-                  <p>Aktivní léno</p>
+                  <div className="village-resource-card-heading">
+                    <p>Aktivní léno</p>
+                    {publicOrder ? (
+                      <span
+                        className={`public-order-badge ${publicOrderBadgeTone}`}
+                        title={publicOrderTooltipLabel}
+                        aria-label={publicOrderTooltipLabel}
+                      >
+                        <span className="public-order-icon" aria-hidden="true">
+                          {publicOrderBand === 'critical' ? '⚠' : '⚖'}
+                        </span>
+                        {showPublicOrderPct ? <strong>{publicOrderCurrentPct}%</strong> : null}
+                      </span>
+                    ) : null}
+                  </div>
                   <div className="village-rename-inline" ref={villageRenameWrapRef}>
                     {isVillageRenameOpen ? (
                       <input
