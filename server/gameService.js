@@ -3104,11 +3104,6 @@ const stripVillageCoordinateSuffix = (value) =>
     .trim()
     .replace(/\s*\(?\d{1,4}\|\d{1,4}\)?\s*$/u, '')
     .trim();
-const buildDefaultPlayerVillageName = (usernameRaw) =>
-  normalizeVillageName(`${PLAYER_VILLAGE_NAME_PREFIX} ${String(usernameRaw ?? '').trim()}`);
-const shouldAutoRenameConqueredVillage = (villageNameRaw, previousOwnerUsernameRaw) =>
-  normalizeVillageName(stripVillageCoordinateSuffix(villageNameRaw)).toLocaleLowerCase('cs-CZ') ===
-  buildDefaultPlayerVillageName(previousOwnerUsernameRaw).toLocaleLowerCase('cs-CZ');
 
 const validateVillageName = (villageNameRaw) => {
   const villageName = normalizeVillageName(stripVillageCoordinateSuffix(villageNameRaw));
@@ -9615,33 +9610,16 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           Number(targetVillage.region),
         );
         const conquerorKingdom = String(kingdomRow?.kingdom ?? 'Neutral');
-        const nextOwnerUsername = String(attackerPlayer?.username ?? '').trim();
-        const shouldRenameVillage = shouldAutoRenameConqueredVillage(
-          String(targetVillage.name ?? ''),
-          String(targetVillage.ownerUsername ?? ''),
-        );
-        const nextVillageName = shouldRenameVillage
-          ? buildDefaultPlayerVillageName(nextOwnerUsername)
-          : String(targetVillage.name ?? '');
         clearResearchAssignmentsByVillageStmt.run(Number(targetVillage.id));
         removeAcademicsByVillageStmt.run(tickTimeIso, Number(targetVillage.id));
         updateVillageOwnerForConquestStmt.run(Number(movement.playerId), conquerorKingdom, Number(targetVillage.id));
-        if (shouldRenameVillage) {
-          updateVillageNameByOwnerAndRegionStmt.run(
-            nextVillageName,
-            Number(targetVillage.id),
-            Number(movement.playerId),
-            Number(targetVillage.region),
-          );
-        }
         villagesToRecalculatePrestige.add(Number(targetVillage.id));
         conquestPayload = {
           conquered: true,
           previousOwner: String(targetVillage.ownerUsername ?? ''),
           newOwner: String(attackerPlayer?.username ?? ''),
           targetVillageId: Number(targetVillage.id),
-          targetVillageName: nextVillageName,
-          renamed: shouldRenameVillage,
+          targetVillageName: String(targetVillage.name ?? ''),
         };
       }
       const autoReturnedSupports = [];
@@ -14218,27 +14196,17 @@ const conquerVillageTransaction = db.transaction((username, villageIdRaw, reques
 
   const kingdomRow = selectPrimaryKingdomByPlayerAndRegionStmt.get(Number(player.id), Number(world.region));
   const conquerorKingdom = String(kingdomRow?.kingdom ?? 'Neutral');
-  const shouldRenameVillage = shouldAutoRenameConqueredVillage(
-    String(targetVillage.name ?? ''),
-    String(targetVillage.ownerUsername ?? ''),
-  );
-  const nextVillageName = shouldRenameVillage
-    ? buildDefaultPlayerVillageName(String(player.username ?? ''))
-    : String(targetVillage.name ?? '');
 
   clearResearchAssignmentsByVillageStmt.run(Number(villageId));
   removeAcademicsByVillageStmt.run(nowIso(), Number(villageId));
   updateVillageOwnerForConquestStmt.run(Number(player.id), conquerorKingdom, villageId);
-  if (shouldRenameVillage) {
-    updateVillageNameByOwnerAndRegionStmt.run(nextVillageName, villageId, Number(player.id), Number(world.region));
-  }
 
   return {
     villageId,
-    villageName: nextVillageName,
+    villageName: targetVillage.name,
     previousOwner: targetVillage.ownerUsername,
     newOwner: player.username,
-    renamed: shouldRenameVillage,
+    renamed: false,
   };
 });
 

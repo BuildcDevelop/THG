@@ -5585,28 +5585,7 @@ html {
 }
 
 .region-cell.settlement::after {
-  content: '';
-  position: absolute;
-  inset: clamp(1px, calc(var(--map-cell-size) * 0.05), 4px);
-  border-radius: 6px;
-  border: 0 solid transparent;
-  box-sizing: border-box;
-  pointer-events: none;
-  z-index: 4;
-  opacity: 0;
-}
-
-.region-cell.settlement.own::after,
-.region-cell.settlement.active::after {
-  opacity: 1;
-  border-color: rgba(236, 245, 255, 0.94);
-  border-width: clamp(1px, calc(var(--map-cell-size) * 0.06), 3px);
-  box-shadow: inset 0 0 0 1px rgba(7, 15, 23, 0.72);
-}
-
-.region-cell.settlement.active::after {
-  border-style: double;
-  border-width: clamp(2px, calc(var(--map-cell-size) * 0.1), 4px);
+  display: none;
 }
 
 .settlement-art {
@@ -6177,26 +6156,6 @@ html {
 .mini-map-dot.active {
   background: var(--settlement-color-active);
   box-shadow: 0 0 0 1px rgba(15, 28, 39, 0.85), 0 0 8px rgba(248, 251, 255, 0.45);
-}
-
-.mini-map-dot.own,
-.mini-map-dot.active {
-  border-radius: 2px;
-  transform: translate(-50%, -50%) rotate(45deg);
-}
-
-.mini-map-dot.own::after,
-.mini-map-dot.active::after {
-  content: '';
-  position: absolute;
-  inset: 1px;
-  border: 1px solid rgba(7, 15, 23, 0.9);
-  border-radius: 1px;
-}
-
-.mini-map-dot.active::after {
-  border-color: rgba(9, 22, 35, 0.92);
-  box-shadow: 0 0 0 1px rgba(248, 251, 255, 0.72);
 }
 
 .mini-map-dot.royal {

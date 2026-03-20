@@ -1821,16 +1821,12 @@ export const fetchGameState = async (
 };
 
 export const fetchWorldMapSnapshot = async (
-  username: string,
+  _username: string,
   villageId?: number | null,
   worldId?: string | null,
   spawnDirection?: SpawnDirection | string | null,
 ): Promise<WorldMapSnapshotResponse> => {
   const params = new URLSearchParams();
-  const normalizedUsername = String(username ?? '').trim();
-  if (normalizedUsername.length > 0) {
-    params.set('username', normalizedUsername);
-  }
   if (villageId != null && Number.isFinite(villageId)) {
     params.set('villageId', String(villageId));
   }
