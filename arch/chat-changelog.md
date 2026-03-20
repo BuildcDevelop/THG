@@ -962,3 +962,11 @@ Entry template:
 - Files: tests/regression/game-rules.scenario.mjs, server/gameService.js, src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
 - Verification: `node --test tests/regression/game-rules.regression.test.mjs` (PASS 28/28), `npm run build` (PASS; známé Vite warningy o velikosti chunku)
 - Notes: Guardrails: žádný nový polling, žádná změna tick/read flow; změny jsou lokální v test scénářích, report serializaci a tooltip render/CSS.
+
+## 2026-03-20 17:08 | branch: main
+
+- Request: Sloučit `develop` do produkční větve `main` se zachováním herních dat a ověřit funkční build pro Netlify + backend.
+- Summary: V produkčním worktree `main` byly připravené staged změny, proto jsem je nejdřív commitnul jako samostatný checkpoint (`chore(main): checkpoint staged production changes`) a následně provedl merge `develop -> main`. Jediný konflikt byl v `arch/chat-changelog.md`, kde jsem zachoval novější historii z `develop` a doplnil auditní záznam tohoto merge. Runtime data zůstala zachována: SQLite soubory v `server/data/*.sqlite` a branch data ve `server/data/branches/` jsou ignorované v Gitu, stejně jako `server/storage/avatars/`; neproběhl žádný reset ani mazání datových adresářů. Po merge jsem ověřil produkční branch build, regresní testy a backend health na lokálním `main` profilu.
+- Files: arch/chat-changelog.md, .gitignore, README.md, package.json, scripts/run-local-client.mjs, scripts/run-local-server.mjs, server/communicationService.js, server/db.js, server/gameConfig.js, server/gameService.js, server/index.js, server/runtimeProfile.js, src/App.css, src/App.tsx, src/api/gameApi.ts, src/pages/GamePage.tsx, tests/config/local-runtime-profile.test.mjs, tests/regression/game-rules.scenario.mjs, vite.config.ts
+- Verification: `npm run build` (PASS), `node --test tests/regression/game-rules.regression.test.mjs` (PASS 28/28), `Invoke-WebRequest http://localhost:3002/api/health` (`200`), `netlify.toml` redirecty na backend `https://thg.89-167-89-109.sslip.io/api`
+- Notes: Netlify build je připravený na trigger pushnutím `main`; backend routování je zachované přes Netlify redirects na self-host API.
