@@ -1690,6 +1690,15 @@ const resolveUnsafeLocalhostRemoteApiMessage = (): string | null => {
 };
 
 const unsafeLocalhostRemoteApiMessage = resolveUnsafeLocalhostRemoteApiMessage();
+export const AUTH_REQUIRED_EVENT = 'tld:auth-required';
+
+const dispatchAuthRequiredEvent = (): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
+};
 
 const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   if (unsafeLocalhostRemoteApiMessage) {
@@ -1708,6 +1717,13 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   const payload: unknown = await response.json().catch(() => null);
 
   if (!response.ok) {
+    const errorCode =
+      payload && typeof payload === 'object' && 'errorCode' in payload
+        ? String((payload as ApiError).errorCode ?? '')
+        : '';
+    if (response.status === 401 || errorCode === 'AUTH_REQUIRED') {
+      dispatchAuthRequiredEvent();
+    }
     const message =
       payload && typeof payload === 'object' && 'error' in payload
         ? String((payload as ApiError).error)

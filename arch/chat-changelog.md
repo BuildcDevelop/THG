@@ -842,3 +842,99 @@ Entry template:
 - Files: arch/chat-changelog.md
 - Verification: `git push origin develop` (OK)
 - Notes: Lokální `.env.develop.local`, `.env.main.local` a branch-specific SQLite data zůstávají ignorované a neodesílají se do repozitáře.
+
+## 2026-03-15 15:51 | branch: feat/build-0.1.14
+
+- Request: Vytvořit větev `feat/build-0.1.14` a přepnout se na ni.
+- Summary: Vytvořil jsem novou git větev `feat/build-0.1.14` z aktuálního `develop` a přepnul pracovní strom na tuto větev.
+- Files: arch/chat-changelog.md
+- Verification: `git switch -c feat/build-0.1.14` (OK), `git branch --show-current` (`feat/build-0.1.14`)
+- Notes: Pracovní strom byl před přepnutím čistý.
+
+## 2026-03-15 16:37 | branch: feat/build-0.1.14
+
+- Request: Upravit stránku Přehled (stavební fronta, karty osady/prestiže, hover ceny staveb + ikona nástroje), zjemnit rámečky na stránce Prestiž a stabilizovat zobrazení hlavních panelů vůči PIN sloupcům.
+- Summary: V Přehledu jsem přesunul šipky reorder ve stavební frontě vedle drag gripu do svislého sloupce, změnil hlavičku karty osady na dynamický typ osady podle prestiže, odstranil regionový řádek a odebral řádek `Tier` z karty Prestiž. U karet staveb jsem při hoveru přidal neinteraktivní inline lištu nákladů (3 suroviny, ikona + množství přes celou šířku karty) a malou ikonu nástroje s jemným pulzním glow; oboje se nezobrazuje pro max level. Pro stabilitu hlavního rozhraní jsem sjednotil frame hlavních panelů na aktuální stretched stage frame (respekt pin sloupců), aby stránky neujížděly mimo herní plochu a nepřekrývaly se s mapou/pin oblastmi.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: Změny jsou UI-only bez nových polling smyček a bez zásahu do backend data-flow.
+
+## 2026-03-15 17:02 | branch: feat/build-0.1.14
+
+- Request: Spustit localhost pro větev `feat/build-0.1.14`.
+- Summary: Spustil jsem branch-aware lokální backend i frontend pro aktuální větev jako oddělené detached procesy. Runtime scope se mapuje na `feat-build-0-1-14`, backend běží nad branch-specific datovým adresářem a klient je napojený na lokální API této větve.
+- Files: arch/chat-changelog.md
+- Verification: backend log `[local-runtime] server scope=feat-build-0-1-14 port=3003` + `Listening on http://localhost:3003`, frontend log `[local-runtime] client scope=feat-build-0-1-14 port=5175 api=http://localhost:3003`, `netstat` LISTENING na `:3003` a `:5175`
+- Notes: Lokální běh je spuštěný mimo aktuální shell jako detached procesy, takže zůstává dostupný i po skončení tohoto chatu.
+
+## 2026-03-15 17:09 | branch: feat/build-0.1.14
+
+- Request: Přesunout localhost frontend z `5175` na `5173`.
+- Summary: Ukončil jsem původní klientské procesy běžící na `5175` a spustil nový frontend pro stejný branch scope s explicitním `VITE_DEV_PORT=5173`. Backend jsem ponechal beze změny na `3003`, takže klient dál komunikuje s branch-specific API a datovým profilem.
+- Files: arch/chat-changelog.md
+- Verification: klientský log `[local-runtime] client scope=feat-build-0-1-14 port=5173 api=http://localhost:3003`, Vite `Local: http://localhost:5173/`, `netstat` LISTENING na `:5173` a `:3003`
+- Notes: Port `5175` už po přepnutí neposlouchá.
+
+## 2026-03-15 17:35 | branch: feat/build-0.1.14
+
+- Request: Zajistit, aby localhost klient byl skutečně napojený na backend a bylo jasné, proč se nenačítají data z databáze.
+- Summary: Ověřil jsem, že backend na `3003` běží a branch SQLite profil obsahuje herní data (`players`, `villages`, `resources`, `buildings`). Problém byl ve frontend auth flow: klient se považoval za přihlášený jen podle `localStorage`, ale backend vracel `AUTH_REQUIRED`, takže UI zůstávalo ve „stale session“ stavu. Přidal jsem proto globální handling `AUTH_REQUIRED` v request vrstvě a v `App.tsx` automatický logout + redirect na login, aby se klient po ztrátě server session korektně znovu přihlásil místo tichého selhání.
+- Files: src/api/gameApi.ts, src/App.tsx, arch/chat-changelog.md
+- Verification: `Invoke-WebRequest http://localhost:3003/api/health` (OK), SQLite counts ve `server/data/branches/feat-build-0-1-14/game.sqlite`: `players=721`, `villages=855`, `resources=855`, `buildings=14535`, `npx tsc -b --pretty false` (OK), `npm run build` timeout při běžících dev procesech
+- Notes: Pro okamžité načtení dat na otevřeném localhostu může být potřeba jednou obnovit stránku a znovu se přihlásit, protože serverová session pro `3003` nebyla platná.
+
+## 2026-03-15 18:21 | branch: feat/build-0.1.14
+
+- Request: Varianta `1` k tooltipům v Přehledu: zajistit konzistentní zobrazení bez přetékání mimo viewport.
+- Summary: Nahradil jsem statické odhady pozic tooltipů sdílenou follow-cursor logikou, která měří reálnou velikost tooltipu (ref + `ResizeObserver`) a při kolizi s hranou viewportu automaticky flipuje umístění (pravá/dolní priorita, fallback levá/horní) + finální clamp s paddingem. Nové chování je napojené na tooltipy pohybu armády, preview rozšíření budovy, kolaborace výzkumu, detail surovin, queue action a village intel.
+- Files: src/pages/GamePage.tsx, arch/chat-changelog.md
+- Verification: `npm run build` (OK), `npx eslint src/pages/GamePage.tsx` (FAIL kvůli pre-existing lint problémům mimo tento zásah; nové tooltip hook chyby odstraněny)
+- Notes: Změna je UI-only, bez dopadu na polling/backend data-flow.
+
+## 2026-03-15 19:42 | branch: feat/build-0.1.14
+
+- Request: Implementovat map výkonové úpravy: render jen viditelných lén + overscan, oddělit hover/pin overlay od marker layer a připravit směr pro budoucí canvas render.
+- Summary: V map panelu jsem zachoval viewport-only render markerů s malým overscanem a odstranil navázání marker layer na `hover/pin` stav. `hovered/pinned` už neovlivňuje výběr/render marker listu; místo toho se renderuje samostatná overlay vrstva (`map-settlement-state-overlay-layer`) nad gridem, která zobrazuje hover/pin highlight bez přemapování celého `settlementMarkers`. Tím se výrazně zmenší rerender scope při pohybu kurzoru a pin akcích.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: Změna je UI/render-only bez úprav fetch modelu, pollingu a backend data-flow; další logický krok je samostatná canvas marker vrstva za feature flagem.
+
+## 2026-03-19 19:23 | branch: feat/build-0.1.14
+
+- Request: Pokračovat na `feat/build-0.1.14` v implementaci tří map výkonových bodů, hlavně převést marker layer na canvas při zachování viewport renderu a oddělené hover/pin vrstvy.
+- Summary: Dopsal jsem canvas marker vrstvu (`MapSettlementCanvasLayer`), která v jednom draw passu renderuje viditelné settlement markery, haly podle prestiže, základní order coverage a badge symboly. DOM vrstva markerů už slouží jen jako lehký hit-target pro hover/click/context menu a volitelný Ctrl banner, takže marker vizuál už negeneruje stovky vnořených uzlů. Viewport-only render s overscanem i oddělená hover/pin overlay vrstva zůstaly zachované.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (OK)
+- Notes: Změna je UI/render-only bez zásahu do fetch modelu, pollingu a backendu; další bottleneck zůstává minimapa a případné hromadné Ctrl bannery při velkém počtu viditelných lén.
+
+## 2026-03-15 18:48 | branch: feat/build-0.1.14
+
+- Request: Připravit rozsáhlou analýzu, jak zlepšit Core Web Vitals v rámci celého projektu, bez implementace.
+- Summary: Prošel jsem frontend entrypointy, routy, polling/data-flow, build output, CSS a asset pipeline i server snapshot vrstvu. Hlavní zjištění: aplikace se v produkci skládá do jediného velkého JS chunku (`645 kB`) a jediného globálního CSS bundle (`270 kB`), login route tak stahuje i kód a styly pro `GamePage` a `CommunicationHub`. `GamePage.tsx` (~21k řádků) drží rozsáhlý state a několik samostatných polling smyček, navíc po mnoha mutacích znovu volá `loadGameState(true, true)` i když mutation endpointy už vracejí aktualizovaný snapshot. V asset pipeline je ~58 MB statických assetů, z toho ~51 MB building PNG a další těžké PNG (`background2.png` ~2.8 MB, `louka.png` ~3.3 MB) jsou použité v globálním CSS backgroundu. Na serveru `GET /api/v1/state` stále synchronně skládá široký snapshot a řada write endpointů kombinuje `runGameTick()` + doménovou akci + nový snapshot v jedné odpovědi, což zvyšuje TTFB i tlak na klientský parse/render. Současně jsem zaznamenal i existující mitigation, které má smysl zachovat: mapa už omezuje render na `renderedCellRange` a polling panelů je částečně scopeovaný podle otevřených panelů.
+- Files: arch/chat-changelog.md
+- Verification: `npm run build` (OK; Vite warning na oversized chunk), kontrola `dist/assets`, statická analýza `src/App.tsx`, `src/pages/GamePage.tsx`, `src/components/CommunicationHub.tsx`, `src/App.css`, `src/index.css`, `server/index.js`, `server/gameService.js`, `vite.config.ts`, `netlify.toml`
+- Notes: Bez implementace; doporučení jsou prioritizovaná pro LCP/INP/CLS a mají respektovat existující guardrails proti broad rerenderům a novým polling smyčkám.
+
+## 2026-03-19 19:19 | branch: feat/build-0.1.14
+
+- Request: Ve `feat/build-0.1.14` rozběhnout localhost i s backendem a mít frontend na `5173`.
+- Summary: Přidal jsem branch-specific lokální env override pro scope `feat-build-0-1-14`, aby `npm run dev` na této větvi spouštěl frontend na `http://localhost:5173` a současně zachoval branch-isolated backend na `http://localhost:3003` nad `server/data/branches/feat-build-0-1-14`. Potom jsem ukončil staré visící instance na `5175/3003`, spustil nový detached `npm run dev` a ověřil jak přímý backend health check, tak proxy přístup přes Vite na `5173`.
+- Files: .env.feat-build-0-1-14.local, arch/chat-changelog.md
+- Verification: `.dev-full.log` obsahuje `[local-runtime] server scope=feat-build-0-1-14 port=3003` a `[local-runtime] client scope=feat-build-0-1-14 port=5173 api=http://localhost:3003`, `Get-NetTCPConnection` LISTENING na `:3003` a `:5173`, `Invoke-WebRequest http://localhost:3003/api/health` (OK), `Invoke-WebRequest http://localhost:5173` (`200`), `Invoke-WebRequest http://localhost:5173/api/health` (OK)
+- Notes: Override je jen lokální (`*.local` je ignorované), takže se nemění chování ostatních branchí ani repozitářový default fallback `5175/3003` pro nepojmenované feature branche.
+
+## 2026-03-19 20:43 | branch: feat/build-0.1.14
+
+- Request: Implementovat část gameplay/UI změn (mapa drag + karta léna + vypnutí auto-centeringu z map clicku + barva protivníka), stabilizovat avatary, umožnit podporu na jakékoliv léno, sjednotit battle report okno, upravit ceny výzkumu a přidat výzkum pro nábor rytíře.
+- Summary: Na mapě jsem opravil panning při drag startu přímo na lénu (bez rozbití click-open), vypnul auto-centering při otevření léna klikem z mapy (centering zůstává přes seznamy/pin/tab/center tlačítko) a přepracoval hover/pinned kartu léna: dominantní řádek hráče/království, výraznější „hráč celkem“ a tlačítko pro kopii souřadnic. Současně jsem ztmavil `opponent` paletu (Total War styl). Pro avatary jsem zpevnil backend storage path vůči `cwd` a zamezil klientskému přepisování již známého avataru na `null` při neúplné token-suggest odpovědi. Podpora je nově povolena na jakékoliv cílové léno (frontend i backend validace). `battleReport` panel jsem přepnul na fixní landscape frame (už ne auto-size „nudle“). V backendu jsem upravil ceny výzkumů dle zadání, přidal projekt `Rytířský stav` (100 mincí) a napojil ho jako research gate pro nábor `knight`; zároveň jsem změnil cenu/čas náboru rytíře na 5000/5000/5000 a 1 hodinu.
+- Files: src/pages/GamePage.tsx, src/App.css, server/gameService.js, server/gameConfig.js, server/communicationService.js, tests/regression/game-rules.scenario.mjs, arch/chat-changelog.md
+- Verification: `npm run build` (OK), `node --test --test-name-pattern "only one knight can exist or be queued per village at once" tests/regression/game-rules.regression.test.mjs` (OK), `npm run test:regression` (FAIL na více pre-existing scénářích mimo tento patch + aktualizovaný knight gate)
+- Notes: Guardrails: map interactions zůstaly lokální bez nového pollingu/network vazby; render riziko mitigováno zachováním canvas marker layer + lightweight hit targets.
+
+## 2026-03-19 20:58 | branch: feat/build-0.1.14
+
+- Request: Ujasnit, proč nejsou vidět nové ceny výzkumných projektů v mincích.
+- Summary: Ověřil jsem backend model i runtime snapshot: projekty vrací správné nové ceny (`300/300/500/500/1000/100/500`) a nový projekt `Rytířský stav` je přítomen. Problém byl v tom, že lokální backend neběží ve watch režimu, takže po změnách v `server/*.js` zůstal běžet starý proces. Restartoval jsem dev stack na `3003/5173`, aby se načetl nový server kód.
+- Files: arch/chat-changelog.md
+- Verification: `node tmp-research-check.mjs` (runtime snapshot s novými cenami), `.dev-full.log` po restartu (`[backend] Listening on http://localhost:3003`, klient `http://localhost:5173`)
+- Notes: Po restartu backendu je potřeba v prohlížeči udělat hard refresh, aby UI neukazovalo starý stav z předchozí session.
