@@ -1,4 +1,4 @@
-# Verejny poradek, armada vsech len a queue v1 - API spec
+# Verejny poradek, armada vsech len, mapa a queue v1 - API spec
 
 Tento dokument navazuje na:
 
@@ -8,6 +8,7 @@ Tento dokument navazuje na:
 Cil:
 
 - dodat presny API kontrakt pro verejny poradek, `Armadu vsech len`, recruit queue a support rebase,
+- dodat presny API kontrakt i pro mapovy ownership/diplomacy read model,
 - drzet se stavajiciho stylu `ok/data` a `result + data`,
 - nepritahovat tezka data do hlavniho snapshotu, pokud je nepotrebuje vic panelu zaroven.
 
@@ -16,6 +17,7 @@ Cil:
 V1 API pokryva:
 
 - summary `Verejny poradek` v hlavnim game state,
+- additive zpevneni kontraktu `GET /api/v1/world-map`,
 - rozsireni existujiciho `GET /api/v1/army/overview`,
 - reorder recruit queue,
 - cancel recruit queue item,
@@ -346,3 +348,96 @@ Upresneni kontraktu:
 - hidden `Armada` panel dela `0` requestu,
 - reorder/cancel/rebase nesmi spoustet nic mimo dotcene leno, krome nezbytneho snapshot refresh,
 - zadny novy polling loop.
+
+## 13. `GET /api/v1/world-map`
+
+Mapovy ownership/diplomacy kontrakt se ma resit additive rozsirenim existujiciho endpointu, ne novym read path.
+
+### 13.1 Request
+
+Request shape zustava stejny:
+
+```http
+GET /api/v1/world-map?username=Hayato&worldId=world-main&villageId=123
+```
+
+Pravidla:
+
+- zadne nove query parametry kvuli zoom/pan/hover,
+- endpoint zustava world read modelem pro hlavni mapu i minimapu,
+- response je additive; stavajici klienti se nesmi rozbit.
+
+### 13.2 Zmena response shape
+
+Do kazde polozky `settlements[]` se additive prida:
+
+```ts
+type WorldSettlementMapKind =
+  | 'active'
+  | 'own'
+  | 'royal'
+  | 'allied'
+  | 'don'
+  | 'opponent'
+  | 'enemy'
+  | 'bot'
+  | 'abandoned'
+
+type WorldSettlementDiplomacyKind =
+  | 'same_player'
+  | 'same_kingdom_foreign'
+  | 'ally'
+  | 'non_aggression'
+  | 'neutral'
+  | 'war'
+  | 'none'
+
+type WorldSettlementCommandPermissions = {
+  canMove: boolean
+  canSupport: boolean
+  canAttack: boolean
+}
+
+type WorldSettlement = {
+  // existing fields...
+  relation: 'self' | 'ally' | 'enemy' // deprecated compatibility field
+  mapKind: WorldSettlementMapKind
+  diplomacyKind: WorldSettlementDiplomacyKind
+  commandPermissions: WorldSettlementCommandPermissions
+}
+```
+
+### 13.3 Data contract
+
+- `mapKind` je autoritativni render bucket pro hlavni mapu i minimapu,
+- `diplomacyKind` je autoritativni vysvetlujici bucket pro tooltip, army target dialog a planner,
+- `commandPermissions` je autoritativni serverovy vysledek pro:
+  - mapove akce
+  - army command dialog
+  - planner target validation
+- klient uz nesmi odvozovat `DoN`, `ally`, `opponent` ani `enemy` z `note`, newbie ochrany nebo jine heuristiky,
+- stavajici `relation` zustava jen kvuli kompatibilite prechodove vrstvy a ma byt postupne odstavena z render logiky.
+
+### 13.4 Specialni pravidlo `same_kingdom_foreign`
+
+Pro ciziho hrace ve stejnem Kralovstvi plati:
+
+- `mapKind = 'opponent'`
+- `diplomacyKind = 'same_kingdom_foreign'`
+- `commandPermissions.canMove = false`
+- `commandPermissions.canSupport = true`
+- `commandPermissions.canAttack = true`
+
+Poznamky:
+
+- nema samostatnou legendovou barvu v prvni verzi,
+- nikdy se nesmi vracet jako `mapKind = 'own'`,
+- nikdy se nesmi maskovat jako `allied` nebo `don` jen proto, ze patri do stejneho Kralovstvi,
+- stejne Kralovstvi neni samo o sobe diplomaticky stav.
+
+### 13.5 Render a fetch guardrails
+
+- hlavni mapa, minimapa, army dialog a planner musi cist stejna pole bez dalsi transformacni heuristiky,
+- endpoint nesmi vracet tezsi detail len nebo dalsi payload, ktery uz patri do village detailu,
+- zoom, pan, hover a selection nesmi vytvaret nove requesty,
+- pokud se meni jen UI barva nebo target gating, nema se kvuli tomu rozsirivat `GET /api/v1/state`.

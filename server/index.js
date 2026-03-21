@@ -48,6 +48,7 @@ import {
   rebaseStationedSupport,
   restartVillageProgress,
   reorderRecruitmentQueue,
+  setKingdomDiplomacy,
   spawnPlayerInWorld,
   runGameTick,
   sendMarketLogistics,
@@ -2082,6 +2083,41 @@ app.post('/api/v1/kingdom/transfer-leadership', async (req, res, next) => {
     });
 
     res.status(201).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/kingdom/diplomacy', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const targetKingdom = String(req.body?.targetKingdom ?? '').trim();
+    const relationKind = String(req.body?.relationKind ?? '').trim();
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = setKingdomDiplomacy(
+        username,
+        targetKingdom,
+        relationKind,
+        normalizedVillageId,
+        worldId,
+      );
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
+      return { result, state };
+    });
+
+    res.status(200).json({
       ok: true,
       result: payload.result,
       data: payload.state,

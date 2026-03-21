@@ -1,4 +1,4 @@
-﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   CSSProperties,
@@ -55,12 +55,14 @@ import {
   recruitUnit,
   rebaseStationedSupport as rebaseStationedSupportRequest,
   reorderBuildingUpgradeQueue as reorderBuildingUpgradeQueueRequest,
+  reorderRecruitmentQueue as reorderRecruitmentQueueRequest,
   renameVillage as renameVillageRequest,
   restartVillageProgress as restartVillageProgressRequest,
   sendMarketLogistics as sendMarketLogisticsRequest,
   sendCommunicationFriendRequest,
   sendCommunicationMessageRequest,
   startResearchProject as startResearchProjectRequest,
+  setKingdomDiplomacy as setKingdomDiplomacyRequest,
   setCommunicationAvatarRequest,
   transferKingdomLeadership as transferKingdomLeadershipRequest,
   updatePlannerPlan as updatePlannerPlanRequest,
@@ -85,6 +87,8 @@ import {
   type KingdomIncomingInvite,
   type KingdomAvailableSummary,
   type KingdomAuditLogEntry,
+  type KingdomDiplomacyRelation,
+  type KingdomDiplomacyRelationKind,
   type LeaderboardRow,
   type LootPriority,
   type MarketGuildVillageEconomyState,
@@ -133,6 +137,19 @@ type MapSettlementKind =
   | 'opponent'
   | 'enemy'
   | 'abandoned';
+type SettlementDiplomacyKind =
+  | 'same_player'
+  | 'same_kingdom_foreign'
+  | 'ally'
+  | 'non_aggression'
+  | 'neutral'
+  | 'war'
+  | 'none';
+type SettlementCommandPermissions = {
+  canMove: boolean;
+  canSupport: boolean;
+  canAttack: boolean;
+};
 
 type RegionSettlement = {
   id: string;
@@ -152,6 +169,9 @@ type RegionSettlement = {
   note: string;
   visibility?: 'full' | 'public';
   relation?: 'self' | 'ally' | 'enemy';
+  mapKind?: MapSettlementKind;
+  diplomacyKind?: SettlementDiplomacyKind;
+  commandPermissions?: SettlementCommandPermissions;
   protectionUntil?: string | null;
   protectionRemainingSec?: number;
   protectionRuleDays?: number;
@@ -431,8 +451,8 @@ type VillageIntelEntry = {
   fetchedAt: number | null;
 };
 
-type RankingMode = 'players' | 'kingdoms' | 'attacker' | 'defender' | 'supporter';
-type CombatRankingMode = Extract<RankingMode, 'attacker' | 'defender' | 'supporter'>;
+type RankingMode = 'players' | 'kingdoms' | 'attacker' | 'defender' | 'supporter' | 'loot';
+type CombatRankingMode = Extract<RankingMode, 'attacker' | 'defender' | 'supporter' | 'loot'>;
 type KingdomRankingMetric = 'prestige' | 'attack' | 'defense' | 'support';
 type RankingPageSize = 20 | 50;
 
@@ -2113,6 +2133,22 @@ const EMPTY_KINGDOM_AVAILABLE: KingdomAvailableSummary[] = [];
 const EMPTY_KINGDOM_INVITES: KingdomIncomingInvite[] = [];
 const EMPTY_KINGDOM_MEMBERS: KingdomHubState['members'] = [];
 const EMPTY_KINGDOM_AUDIT_LOG: KingdomAuditLogEntry[] = [];
+const EMPTY_KINGDOM_DIPLOMACY_RELATIONS: KingdomDiplomacyRelation[] = [];
+const KINGDOM_DIPLOMACY_RELATION_LABELS: Record<KingdomDiplomacyRelationKind, string> = {
+  neutral: 'Neutrální',
+  ally: 'Spojenecké',
+  non_aggression: 'DoN',
+  war: 'Nepřátelské',
+};
+const KINGDOM_DIPLOMACY_RELATION_OPTIONS: Array<{
+  value: KingdomDiplomacyRelationKind;
+  label: string;
+}> = [
+  { value: 'neutral', label: 'Neutrální' },
+  { value: 'ally', label: 'Spojenecké' },
+  { value: 'non_aggression', label: 'DoN' },
+  { value: 'war', label: 'Nepřátelské' },
+];
 
 const REGION_SIZE = 50;
 const REGION_ORIGIN_X = 200;
@@ -3008,10 +3044,17 @@ const getSettlementProtectionRemainingSec = (
 const getSettlementMapKind = (
   settlement: Pick<
     RegionSettlement,
-    'kind' | 'relation' | 'owner' | 'villageId' | 'protectionRemainingSec' | 'protectionUntil' | 'note' | 'kingdom'
+    'kind' | 'relation' | 'owner' | 'villageId' | 'protectionRemainingSec' | 'protectionUntil' | 'kingdom' | 'mapKind'
   >,
   activeVillageId: number | null = null,
 ): MapSettlementKind => {
+  const mapKindRaw = String(settlement.mapKind ?? '')
+    .trim()
+    .toLowerCase();
+  if ((SETTLEMENT_COLOR_KEYS as readonly string[]).includes(mapKindRaw)) {
+    return mapKindRaw as MapSettlementKind;
+  }
+
   const ownerNormalized = settlement.owner.trim().toLowerCase();
   const isAbandonedSettlement =
     settlement.kind === 'abandoned' ||
@@ -3039,30 +3082,15 @@ const getSettlementMapKind = (
     return 'bot';
   }
 
+  if (isNeutralKingdom(String(settlement.kingdom ?? ''))) {
+    return 'royal';
+  }
+
   if (settlement.relation === 'ally') {
-    return 'allied';
-  }
-
-  const isEnemy = settlement.relation === 'enemy';
-  if (!isEnemy) {
     return 'opponent';
   }
 
-  const protectionRemainingSec = getSettlementProtectionRemainingSec(settlement);
-  const noteNormalized = String(settlement.note ?? '').toLowerCase();
-  if (protectionRemainingSec > 0 || /(nap|neútočení|neutoceni|pakt|příměří|primiri|dohoda)/i.test(noteNormalized)) {
-    return 'nap';
-  }
-
-  if (/(nepřítel|nepritel|válka|valka|hrozba|war|hostile)/i.test(noteNormalized)) {
-    return 'enemy';
-  }
-
-  if (String(settlement.kingdom ?? '').trim().toLowerCase() === 'neutral') {
-    return 'opponent';
-  }
-
-  return 'enemy';
+  return 'opponent';
 };
 
 const shouldShowCtrlSettlementBanner = (settlement: Pick<RegionSettlement, 'kind'>): boolean =>
@@ -3076,7 +3104,13 @@ const canTargetSettlementForArmyCommand = ({
 }: {
   settlement: Pick<
     RegionSettlement,
-    'villageId' | 'owner' | 'relation' | 'protectionRemainingSec' | 'protectionUntil' | 'prestigeAttackBlockedForViewer'
+    | 'villageId'
+    | 'owner'
+    | 'relation'
+    | 'commandPermissions'
+    | 'protectionRemainingSec'
+    | 'protectionUntil'
+    | 'prestigeAttackBlockedForViewer'
   >;
   commandType: ArmyCommandSelectableType;
   currentVillageId: number | null;
@@ -3094,10 +3128,19 @@ const canTargetSettlementForArmyCommand = ({
     return false;
   }
 
+  if (settlement.commandPermissions) {
+    if (commandType === 'move') {
+      return settlement.commandPermissions.canMove;
+    }
+    if (commandType === 'support') {
+      return settlement.commandPermissions.canSupport;
+    }
+    return settlement.commandPermissions.canAttack;
+  }
+
   const normalizedCurrentUsername = currentUsername.trim().toLowerCase();
   const normalizedOwner = settlement.owner.trim().toLowerCase();
   const isOwnSettlement = settlement.relation === 'self' || normalizedOwner === normalizedCurrentUsername;
-  const isAlliedSettlement = settlement.relation === 'ally';
 
   if (commandType === 'move') {
     return isOwnSettlement;
@@ -3115,7 +3158,7 @@ const canTargetSettlementForArmyCommand = ({
     return false;
   }
 
-  return !isOwnSettlement && !isAlliedSettlement;
+  return !isOwnSettlement;
 };
 
 const isNeutralKingdom = (kingdom: string): boolean => {
@@ -4593,19 +4636,17 @@ const useSecondClock = (enabled = true): number => {
     if (!enabled) {
       return;
     }
+    const initialTimer = window.setTimeout(() => {
+      setNowMs(Date.now());
+    }, 0);
     const timer = window.setInterval(() => {
       setNowMs(Date.now());
     }, 1000);
 
     return () => {
+      window.clearTimeout(initialTimer);
       window.clearInterval(timer);
     };
-  }, [enabled]);
-
-  useEffect(() => {
-    if (enabled) {
-      setNowMs(Date.now());
-    }
   }, [enabled]);
 
   return nowMs;
@@ -5646,12 +5687,12 @@ const ArmyPanel = memo(({
   isExpanded,
   onRecruit,
   onCancelRecruitment,
+  onReorderRecruitment,
   onUpgradeBuilding,
-  onUpgradeBuildingInVillage,
-  onRecruitInVillage,
   onOpenSettlementByVillageId,
   recruitPendingUnitId,
   cancelRecruitmentPendingId,
+  reorderRecruitmentPendingId,
   upgradePendingBuildingId,
   notice,
   noticeUnitId,
@@ -5665,29 +5706,21 @@ const ArmyPanel = memo(({
   isExpanded: boolean;
   onRecruit: (unit: Unit, amount: number) => Promise<boolean>;
   onCancelRecruitment: (order: RecruitQueueOrder) => void;
+  onReorderRecruitment: (recruitmentId: number, targetIndex: number) => void;
   onUpgradeBuilding: (building: Building) => void;
-  onUpgradeBuildingInVillage: (villageId: number, buildingId: string) => Promise<string>;
-  onRecruitInVillage: (
-    villageId: number,
-    unitId: string,
-    amount: number,
-  ) => Promise<string>;
   onOpenSettlementByVillageId: (villageId: number) => void;
   recruitPendingUnitId: string | null;
   cancelRecruitmentPendingId: number | null;
+  reorderRecruitmentPendingId: number | null;
   upgradePendingBuildingId: string | null;
   notice: string | null;
   noticeUnitId: string | null;
 }) => {
   const [recruitDraftAmounts, setRecruitDraftAmounts] = useState<Record<string, string>>({});
+  const [draggedRecruitQueueOrderId, setDraggedRecruitQueueOrderId] = useState<number | null>(null);
   const [armyViewMode, setArmyViewMode] = useState<'armadaPlanner' | 'selectedVillage' | 'multiVillage'>(
     'selectedVillage',
   );
-  const [multiVillageBuildingDraftById, setMultiVillageBuildingDraftById] = useState<Record<number, string>>({});
-  const [multiVillageUnitDraftById, setMultiVillageUnitDraftById] = useState<Record<number, string>>({});
-  const [multiVillageAmountDraftById, setMultiVillageAmountDraftById] = useState<Record<number, string>>({});
-  const [multiVillageNoticeById, setMultiVillageNoticeById] = useState<Record<number, string>>({});
-  const [multiVillagePendingById, setMultiVillagePendingById] = useState<Record<number, boolean>>({});
   const [armyOverview, setArmyOverview] = useState<ArmyOverviewResponse | null>(null);
   const [armyOverviewLoading, setArmyOverviewLoading] = useState(false);
   const [armyOverviewError, setArmyOverviewError] = useState<string | null>(null);
@@ -5820,75 +5853,6 @@ const ArmyPanel = memo(({
       });
     },
     [isRecruitMutationPending, onRecruit],
-  );
-
-  const ownSettlements = useMemo(
-    () =>
-      settlements.filter((settlement) => {
-        const ownerComparable = String(settlement.owner ?? '').trim().toLocaleLowerCase('cs-CZ');
-        const currentComparable = String(currentUsername ?? '').trim().toLocaleLowerCase('cs-CZ');
-        return (
-          settlement.villageId != null &&
-          Number.isFinite(settlement.villageId) &&
-          (settlement.kind === 'own' || settlement.relation === 'self' || ownerComparable === currentComparable)
-        );
-      }),
-    [currentUsername, settlements],
-  );
-
-  const handleMultiVillageUpgrade = useCallback(
-    async (villageId: number) => {
-      const draftBuildingId = String(
-        multiVillageBuildingDraftById[villageId] ??
-          buildingTable.find((building) => building.canUpgrade)?.id ??
-          buildingTable[0]?.id ??
-          '',
-      ).trim();
-      if (!draftBuildingId) {
-        return;
-      }
-      setMultiVillagePendingById((previous) => ({ ...previous, [villageId]: true }));
-      setMultiVillageNoticeById((previous) => ({ ...previous, [villageId]: '' }));
-      try {
-        const result = await onUpgradeBuildingInVillage(villageId, draftBuildingId);
-        setMultiVillageNoticeById((previous) => ({ ...previous, [villageId]: result }));
-      } finally {
-        setMultiVillagePendingById((previous) => ({ ...previous, [villageId]: false }));
-      }
-    },
-    [buildingTable, multiVillageBuildingDraftById, onUpgradeBuildingInVillage],
-  );
-
-  const handleMultiVillageRecruit = useCallback(
-    async (villageId: number) => {
-      const draftUnitId = String(
-        multiVillageUnitDraftById[villageId] ??
-          recruitTableUnits[0]?.id ??
-          '',
-      ).trim();
-      const draftAmount = Math.max(0, Math.floor(Number(multiVillageAmountDraftById[villageId] ?? 0)));
-      if (!draftUnitId || draftAmount <= 0) {
-        setMultiVillageNoticeById((previous) => ({
-          ...previous,
-          [villageId]: 'Zadej jednotku a počet > 0.',
-        }));
-        return;
-      }
-      setMultiVillagePendingById((previous) => ({ ...previous, [villageId]: true }));
-      setMultiVillageNoticeById((previous) => ({ ...previous, [villageId]: '' }));
-      try {
-        const result = await onRecruitInVillage(villageId, draftUnitId, draftAmount);
-        setMultiVillageNoticeById((previous) => ({ ...previous, [villageId]: result }));
-      } finally {
-        setMultiVillagePendingById((previous) => ({ ...previous, [villageId]: false }));
-      }
-    },
-    [
-      multiVillageAmountDraftById,
-      multiVillageUnitDraftById,
-      onRecruitInVillage,
-      recruitTableUnits,
-    ],
   );
 
   const plannerConstraints = useMemo<PlannerConstraints>(
@@ -6290,9 +6254,12 @@ const ArmyPanel = memo(({
     });
   }, [plannerDraft.legs, plannerDraft.targetVillageId, plannerTargetByVillageId, plannerVillageById]);
 
+  const plannerNowMs = useSecondClock(
+    plannerDraft.legs.length > 0 || Boolean(plannerDraft.targetPlayerUsername) || plannerDraft.targetVillageId != null,
+  );
   const plannerValidation = useMemo(() => {
     const issues: PlannerValidationIssue[] = [];
-    const nowMs = Date.now();
+    const nowMs = plannerNowMs;
     const leadTimeSec = Math.max(0, Number(plannerConstraints.leadTimeSec ?? DEFAULT_PLANNER_LEAD_TIME_SEC));
     const minGapMinutes = Math.max(1, Number(plannerConstraints.minImpactGapMinutes ?? DEFAULT_PLANNER_MIN_IMPACT_GAP_MINUTES));
     if (!plannerDraft.targetPlayerUsername || plannerDraft.targetVillageId == null) {
@@ -6373,7 +6340,15 @@ const ArmyPanel = memo(({
       status: hasBlocked ? 'blocked' : hasWarning ? 'warning' : 'ok',
       issues,
     };
-  }, [plannerConstraints.leadTimeSec, plannerConstraints.maxLegs, plannerConstraints.minImpactGapMinutes, plannerDraft.targetPlayerUsername, plannerDraft.targetVillageId, plannerLegRows]);
+  }, [
+    plannerConstraints.leadTimeSec,
+    plannerConstraints.maxLegs,
+    plannerConstraints.minImpactGapMinutes,
+    plannerDraft.targetPlayerUsername,
+    plannerDraft.targetVillageId,
+    plannerLegRows,
+    plannerNowMs,
+  ]);
 
   const plannerValidationIssuesByLegOriginVillageId = useMemo(() => {
     const byOriginVillageId = new Map<number, PlannerValidationIssue[]>();
@@ -6975,7 +6950,7 @@ const ArmyPanel = memo(({
           className={`secondary-action ${armyViewMode === 'multiVillage' ? 'is-active' : ''}`}
           onClick={() => setArmyViewMode('multiVillage')}
         >
-          Správa všech lén
+          Armády všech lén
         </button>
       </section>
       {armyViewMode === 'armadaPlanner' ? (
@@ -7516,128 +7491,115 @@ const ArmyPanel = memo(({
         </section>
       ) : armyViewMode === 'multiVillage' ? (
         <section className="army-panel-view is-enter">
-          <h3>Správa všech lén</h3>
+          <h3>Armády všech lén</h3>
           <p>
-            Z této stránky můžeš stavět a rekrutovat napříč všemi svými lény v aktuálním světě.
+            Read-only přehled všech vlastních lén. Nábor a stavby se tu neprovádí.
           </p>
-          {ownSettlements.length > 0 ? (
-            <ul className="commands-list multi-village-manage-list">
-              {ownSettlements.map((settlement) => (
-                <li key={`army-multi-${settlement.id}`} className="commands-item">
-                  <div className="commands-item-line">
-                    <strong>{settlement.name}</strong>
-                    <span>
-                      {settlement.globalX}|{settlement.globalY}
-                    </span>
-                  </div>
-                  <small>
-                    Království: {settlement.kingdom} · Region {settlement.region}
-                  </small>
-                  <div className="multi-village-actions-row">
-                    <label>
-                      Stavba
-                      <select
-                        value={multiVillageBuildingDraftById[Number(settlement.villageId)] ?? buildingTable[0]?.id ?? ''}
-                        onChange={(event) =>
-                          setMultiVillageBuildingDraftById((previous) => ({
-                            ...previous,
-                            [Number(settlement.villageId)]: event.target.value,
-                          }))
-                        }
-                        disabled={multiVillagePendingById[Number(settlement.villageId)]}
+          {armyOverviewError ? <p className="panel-feedback">{armyOverviewError}</p> : null}
+          {armyOverviewLoading ? <p>Načítám armádní přehled…</p> : null}
+          {!armyOverviewLoading && armyOverviewVillages.length > 0 ? (
+            <ul className="commands-list multi-village-overview-list">
+              {armyOverviewVillages.map((village) => {
+                const villageId = Math.max(0, Math.floor(Number(village.villageId ?? 0)));
+                const fortificationLevel = Math.max(0, Math.floor(Number(village.fortificationLevel ?? 0)));
+                const gateLevel = Math.max(0, Math.floor(Number(village.gateLevel ?? 0)));
+                const villageUnits = (village.units ?? [])
+                  .map((unit) => {
+                    const ownAmount = Math.max(0, Math.floor(Number(unit.ownAmount ?? 0)));
+                    const supportAmount = Math.max(0, Math.floor(Number(unit.supportAmount ?? 0)));
+                    const totalAmount = ownAmount + supportAmount;
+                    return {
+                      unit,
+                      ownAmount,
+                      supportAmount,
+                      totalAmount,
+                    };
+                  })
+                  .filter((entry) => entry.totalAmount > 0);
+                return (
+                  <li key={`army-multi-${village.villageId}`} className="commands-item multi-village-overview-item">
+                    <header className="multi-village-overview-top">
+                      <div>
+                        <div className="commands-item-line">
+                          <strong>{village.villageName}</strong>
+                          <span>
+                            {village.coordX}|{village.coordY}
+                          </span>
+                        </div>
+                        <small>
+                          Království: {village.kingdom} · Vlastní {village.totalOwnUnits.toLocaleString('cs-CZ')} ·
+                          Podpora {village.totalSupportUnits.toLocaleString('cs-CZ')}
+                        </small>
+                      </div>
+                      <button
+                        type="button"
+                        className="secondary-action compact multi-village-open-profile"
+                        onClick={() => {
+                          if (villageId > 0) {
+                            onOpenSettlementByVillageId(villageId);
+                          }
+                        }}
+                        disabled={villageId <= 0}
+                        title={`Otevřít profil léna ${village.villageName}`}
+                        aria-label={`Otevřít profil léna ${village.villageName}`}
                       >
-                        {buildingTable.map((building) => (
-                          <option key={`multi-building-${settlement.id}-${building.id}`} value={building.id}>
-                            {building.name} (lvl {building.level})
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <button
-                      type="button"
-                      className="secondary-action"
-                      onClick={() => {
-                        if (settlement.villageId != null) {
-                          void handleMultiVillageUpgrade(settlement.villageId);
-                        }
-                      }}
-                      disabled={settlement.villageId == null || multiVillagePendingById[Number(settlement.villageId)]}
-                    >
-                      {multiVillagePendingById[Number(settlement.villageId)] ? 'Provádím...' : 'Stavět/Vylepšit'}
-                    </button>
-                  </div>
-                  <div className="multi-village-actions-row">
-                    <label>
-                      Nábor
-                      <select
-                        value={multiVillageUnitDraftById[Number(settlement.villageId)] ?? recruitTableUnits[0]?.id ?? ''}
-                        onChange={(event) =>
-                          setMultiVillageUnitDraftById((previous) => ({
-                            ...previous,
-                            [Number(settlement.villageId)]: event.target.value,
-                          }))
-                        }
-                        disabled={multiVillagePendingById[Number(settlement.villageId)]}
+                        <span className="symbol" aria-hidden="true">
+                          ⌂
+                        </span>
+                      </button>
+                    </header>
+                    <div className="multi-village-overview-intel-row">
+                      <span
+                        className="multi-village-overview-level-pill"
+                        title={`Opevnění: úroveň ${fortificationLevel.toLocaleString('cs-CZ')}`}
+                        aria-label={`Opevnění: úroveň ${fortificationLevel.toLocaleString('cs-CZ')}`}
                       >
-                        {recruitTableUnits.map((unit) => (
-                          <option key={`multi-unit-${settlement.id}-${unit.id}`} value={unit.id}>
-                            {unit.name} (dostupné {unit.amount.toLocaleString('cs-CZ')})
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Počet
-                      <input
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={multiVillageAmountDraftById[Number(settlement.villageId)] ?? ''}
-                        onChange={(event) =>
-                          setMultiVillageAmountDraftById((previous) => ({
-                            ...previous,
-                            [Number(settlement.villageId)]: event.target.value,
-                          }))
-                        }
-                        disabled={multiVillagePendingById[Number(settlement.villageId)]}
-                        placeholder="1"
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      className="secondary-action"
-                      onClick={() => {
-                        if (settlement.villageId != null) {
-                          void handleMultiVillageRecruit(settlement.villageId);
-                        }
-                      }}
-                      disabled={settlement.villageId == null || multiVillagePendingById[Number(settlement.villageId)]}
-                    >
-                      {multiVillagePendingById[Number(settlement.villageId)] ? 'Provádím...' : 'Rekrutovat'}
-                    </button>
-                  </div>
-                  {settlement.villageId != null && multiVillageNoticeById[settlement.villageId] ? (
-                    <p className="panel-feedback">{multiVillageNoticeById[settlement.villageId]}</p>
-                  ) : null}
-                  <div className="activity-item-actions">
-                    <button
-                      type="button"
-                      className="secondary-action"
-                      onClick={() => {
-                        if (settlement.villageId != null) {
-                          onOpenSettlementByVillageId(settlement.villageId);
-                        }
-                      }}
-                    >
-                      Otevřít profil léna
-                    </button>
-                  </div>
-                </li>
-              ))}
+                        <span className="unit-icon-shell tiny" aria-hidden="true">
+                          <img src={BUILDING_ART.fortification.icon} alt="" className="unit-icon-image" loading="lazy" />
+                        </span>
+                        <strong>{fortificationLevel.toLocaleString('cs-CZ')}</strong>
+                      </span>
+                      <span
+                        className="multi-village-overview-level-pill"
+                        title={`Brána: úroveň ${gateLevel.toLocaleString('cs-CZ')}`}
+                        aria-label={`Brána: úroveň ${gateLevel.toLocaleString('cs-CZ')}`}
+                      >
+                        <span className="unit-icon-shell tiny" aria-hidden="true">
+                          <img src={BUILDING_ART.gate.icon} alt="" className="unit-icon-image" loading="lazy" />
+                        </span>
+                        <strong>{gateLevel.toLocaleString('cs-CZ')}</strong>
+                      </span>
+                    </div>
+                    {villageUnits.length > 0 ? (
+                      <div className="multi-village-unit-pill-row">
+                        {villageUnits.map(({ unit, ownAmount, supportAmount, totalAmount }) => {
+                          const unitMeta = getUnitMetaById(unit.unitId);
+                          return (
+                            <span
+                              key={`multi-village-unit-${village.villageId}-${unit.unitId}`}
+                              className="multi-village-unit-pill"
+                              title={`${unitMeta.fallbackName}: vlastní ${ownAmount.toLocaleString('cs-CZ')}, podpora ${supportAmount.toLocaleString('cs-CZ')}`}
+                              aria-label={`${unitMeta.fallbackName}: vlastní ${ownAmount.toLocaleString('cs-CZ')}, podpora ${supportAmount.toLocaleString('cs-CZ')}`}
+                            >
+                              <span className="unit-icon-shell tiny" aria-hidden="true">
+                                <img src={unitMeta.icon} alt="" className="unit-icon-image" loading="lazy" />
+                              </span>
+                              <strong>{totalAmount.toLocaleString('cs-CZ')}</strong>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="row-help">Léno je bez jednotek.</p>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
-          ) : (
+          ) : null}
+          {!armyOverviewLoading && armyOverviewVillages.length <= 0 ? (
             <p>V tomto světě zatím nemáš žádná dostupná léna.</p>
-          )}
+          ) : null}
         </section>
       ) : (
       <>
@@ -7787,7 +7749,7 @@ const ArmyPanel = memo(({
       </section>
       <section>
         <h3>Fronta kasáren</h3>
-        <p>Každý záznam běží paralelně. ETA se odečítá podle backend ticku.</p>
+        <p>Fronta běží sekvenčně. Aktivní je vždy první položka, další čekají v pořadí.</p>
         <table>
           <thead>
             <tr>
@@ -7799,38 +7761,103 @@ const ArmyPanel = memo(({
             </tr>
           </thead>
           <tbody>
-            {recruitQueueOrders.map((order, index) => (
-              <tr key={`rq-${order.id}`} className="queue-row">
-                <td>{index + 1}</td>
-                <td>
-                  <span className="unit-name-with-icon unit-name-with-icon-strong">
-                    <span className="unit-icon-shell" aria-hidden="true">
-                      <img
-                        src={getUnitMetaById(order.unitId).icon}
-                        alt=""
-                        className="unit-icon-image"
-                        loading="lazy"
-                      />
+            {recruitQueueOrders.map((order, index) => {
+              const isActiveQueueItem = order.queueIndex <= 0;
+              const queueActionPending = cancelRecruitmentPendingId != null || reorderRecruitmentPendingId != null;
+              const canMoveWithinQueue = !isActiveQueueItem && !queueActionPending;
+              const canMoveUp = canMoveWithinQueue && order.queueIndex > 1;
+              const canMoveDown = canMoveWithinQueue && order.queueIndex < recruitQueueOrders.length - 1;
+              const isReorderPending = reorderRecruitmentPendingId === order.id;
+              const isCancelPending = cancelRecruitmentPendingId === order.id;
+              const isDragSource = draggedRecruitQueueOrderId === order.id;
+              const isDragTarget =
+                draggedRecruitQueueOrderId != null &&
+                draggedRecruitQueueOrderId !== order.id &&
+                !isActiveQueueItem;
+
+              return (
+                <tr
+                  key={`rq-${order.id}`}
+                  className={`queue-row ${isDragSource ? 'is-drag-source' : ''} ${isDragTarget ? 'is-drag-target' : ''}`}
+                  draggable={canMoveWithinQueue}
+                  onDragStart={() => setDraggedRecruitQueueOrderId(order.id)}
+                  onDragOver={(event) => {
+                    if (
+                      draggedRecruitQueueOrderId == null ||
+                      draggedRecruitQueueOrderId === order.id ||
+                      isActiveQueueItem
+                    ) {
+                      return;
+                    }
+                    event.preventDefault();
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    if (
+                      draggedRecruitQueueOrderId == null ||
+                      draggedRecruitQueueOrderId === order.id ||
+                      isActiveQueueItem
+                    ) {
+                      return;
+                    }
+                    onReorderRecruitment(draggedRecruitQueueOrderId, order.queueIndex);
+                    setDraggedRecruitQueueOrderId(null);
+                  }}
+                  onDragEnd={() => setDraggedRecruitQueueOrderId(null)}
+                >
+                  <td>{index + 1}</td>
+                  <td>
+                    <span className="unit-name-with-icon unit-name-with-icon-strong">
+                      <span className="unit-icon-shell" aria-hidden="true">
+                        <img
+                          src={getUnitMetaById(order.unitId).icon}
+                          alt=""
+                          className="unit-icon-image"
+                          loading="lazy"
+                        />
+                      </span>
+                      <span>{order.unitName}</span>
                     </span>
-                    <span>{order.unitName}</span>
-                  </span>
-                </td>
-                <td>+{order.amount}</td>
-                <td>{formatDurationLabel(order.remainingSec)}</td>
-                <td>
-                  <button
-                    type="button"
-                    className="inline-cancel-button"
-                    onClick={() => onCancelRecruitment(order)}
-                    disabled={cancelRecruitmentPendingId === order.id}
-                    title="Zrušit tuto položku náboru"
-                    aria-label="Zrušit náborovou položku"
-                  >
-                    {cancelRecruitmentPendingId === order.id ? '…' : '✕'}
-                  </button>
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td>+{order.amount}</td>
+                  <td>{formatDurationLabel(order.remainingSec)}</td>
+                  <td className="queue-row-actions">
+                    <div className="recruit-queue-actions">
+                      <button
+                        type="button"
+                        className="recruit-queue-move-button"
+                        onClick={() => onReorderRecruitment(order.id, order.queueIndex - 1)}
+                        disabled={!canMoveUp || isReorderPending}
+                        title="Posunout položku výš"
+                        aria-label="Posunout náborovou položku výš"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        className="recruit-queue-move-button"
+                        onClick={() => onReorderRecruitment(order.id, order.queueIndex + 1)}
+                        disabled={!canMoveDown || isReorderPending}
+                        title="Posunout položku níž"
+                        aria-label="Posunout náborovou položku níž"
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        className="inline-cancel-button"
+                        onClick={() => onCancelRecruitment(order)}
+                        disabled={isCancelPending || reorderRecruitmentPendingId != null}
+                        title="Zrušit tuto položku náboru"
+                        aria-label="Zrušit náborovou položku"
+                      >
+                        {isCancelPending ? '…' : '✕'}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
             {recruitQueueOrders.length === 0 ? (
               <tr>
                 <td colSpan={5}>Náborová fronta je prázdná.</td>
@@ -8032,6 +8059,7 @@ const MilitaryPanel = ({
       }) ?? null,
     [mercenaryContracts],
   );
+  const mercenaryNowMs = useSecondClock(activeMercenaryContract != null);
   type MercenaryDeploymentState = {
     status: 'en_route' | 'active';
     remainingSec: number;
@@ -8039,73 +8067,64 @@ const MilitaryPanel = ({
     summaryLabel: string;
     hoverLabel: string;
   };
-  const mercenaryDeployment = useMemo<MercenaryDeploymentState | null>(() => {
-    if (!activeMercenaryContract) {
-      return null;
-    }
-
-    const nowMs = Date.now();
+  let mercenaryDeployment: MercenaryDeploymentState | null = null;
+  if (activeMercenaryContract) {
+    const nowMs = mercenaryNowMs;
     const status = String(activeMercenaryContract.status ?? '').toLocaleLowerCase('cs-CZ');
     if (status === 'en_route') {
       const orderedAtMs = Date.parse(String(activeMercenaryContract.orderedAt));
       const arriveAtMs = Date.parse(String(activeMercenaryContract.arriveAt));
-      if (!Number.isFinite(arriveAtMs)) {
-        return null;
+      if (Number.isFinite(arriveAtMs)) {
+        const fallbackDeliverySec =
+          Number.isFinite(orderedAtMs) && Number.isFinite(arriveAtMs)
+            ? Math.max(1, Math.floor((arriveAtMs - orderedAtMs) / 1000))
+            : 1;
+        const totalDeliverySec = mercenaryDeliveryDelaySec > 0 ? mercenaryDeliveryDelaySec : fallbackDeliverySec;
+        const remainingDeliverySec = Math.max(0, Math.ceil((arriveAtMs - nowMs) / 1000));
+        const overlayPercent = Math.max(
+          0,
+          Math.min(100, Math.round((remainingDeliverySec / Math.max(1, totalDeliverySec)) * 100)),
+        );
+        mercenaryDeployment = {
+          status: 'en_route',
+          remainingSec: remainingDeliverySec,
+          overlayPercent,
+          summaryLabel: `Spawn za ${formatDurationLabel(remainingDeliverySec)} · ${formatDateTimeLabel(
+            activeMercenaryContract.arriveAt,
+          )}`,
+          hoverLabel: `Žoldáci dorazí ${formatDateTimeLabel(activeMercenaryContract.arriveAt)} (za ${formatDurationLabel(
+            remainingDeliverySec,
+          )}).`,
+        };
       }
-      const fallbackDeliverySec =
-        Number.isFinite(orderedAtMs) && Number.isFinite(arriveAtMs)
-          ? Math.max(1, Math.floor((arriveAtMs - orderedAtMs) / 1000))
-          : 1;
-      const totalDeliverySec = mercenaryDeliveryDelaySec > 0 ? mercenaryDeliveryDelaySec : fallbackDeliverySec;
-      const remainingDeliverySec = Math.max(0, Math.ceil((arriveAtMs - nowMs) / 1000));
-      const overlayPercent = Math.max(
-        0,
-        Math.min(100, Math.round((remainingDeliverySec / Math.max(1, totalDeliverySec)) * 100)),
-      );
-      return {
-        status: 'en_route',
-        remainingSec: remainingDeliverySec,
-        overlayPercent,
-        summaryLabel: `Spawn za ${formatDurationLabel(remainingDeliverySec)} · ${formatDateTimeLabel(
-          activeMercenaryContract.arriveAt,
-        )}`,
-        hoverLabel: `Žoldáci dorazí ${formatDateTimeLabel(activeMercenaryContract.arriveAt)} (za ${formatDurationLabel(
-          remainingDeliverySec,
-        )}).`,
-      };
-    }
-
-    if (status === 'active') {
+    } else if (status === 'active') {
       const arriveAtMs = Date.parse(String(activeMercenaryContract.arriveAt));
       const expiresAtMs = Date.parse(String(activeMercenaryContract.expiresAt));
-      if (!Number.isFinite(expiresAtMs)) {
-        return null;
+      if (Number.isFinite(expiresAtMs)) {
+        const fallbackDurationSec =
+          Number.isFinite(arriveAtMs) && Number.isFinite(expiresAtMs)
+            ? Math.max(1, Math.floor((expiresAtMs - arriveAtMs) / 1000))
+            : 1;
+        const totalDurationSec = mercenaryDurationSec > 0 ? mercenaryDurationSec : fallbackDurationSec;
+        const remainingDurationSec = Math.max(0, Math.ceil((expiresAtMs - nowMs) / 1000));
+        const overlayPercent = Math.max(
+          0,
+          Math.min(100, Math.round((remainingDurationSec / Math.max(1, totalDurationSec)) * 100)),
+        );
+        mercenaryDeployment = {
+          status: 'active',
+          remainingSec: remainingDurationSec,
+          overlayPercent,
+          summaryLabel: `Nasazení končí za ${formatDurationLabel(remainingDurationSec)} · ${formatDateTimeLabel(
+            activeMercenaryContract.expiresAt,
+          )}`,
+          hoverLabel: `Žoldáci v lénu do ${formatDateTimeLabel(activeMercenaryContract.expiresAt)} (zbývá ${formatDurationLabel(
+            remainingDurationSec,
+          )}).`,
+        };
       }
-      const fallbackDurationSec =
-        Number.isFinite(arriveAtMs) && Number.isFinite(expiresAtMs)
-          ? Math.max(1, Math.floor((expiresAtMs - arriveAtMs) / 1000))
-          : 1;
-      const totalDurationSec = mercenaryDurationSec > 0 ? mercenaryDurationSec : fallbackDurationSec;
-      const remainingDurationSec = Math.max(0, Math.ceil((expiresAtMs - nowMs) / 1000));
-      const overlayPercent = Math.max(
-        0,
-        Math.min(100, Math.round((remainingDurationSec / Math.max(1, totalDurationSec)) * 100)),
-      );
-      return {
-        status: 'active',
-        remainingSec: remainingDurationSec,
-        overlayPercent,
-        summaryLabel: `Nasazení končí za ${formatDurationLabel(remainingDurationSec)} · ${formatDateTimeLabel(
-          activeMercenaryContract.expiresAt,
-        )}`,
-        hoverLabel: `Žoldáci v lénu do ${formatDateTimeLabel(activeMercenaryContract.expiresAt)} (zbývá ${formatDurationLabel(
-          remainingDurationSec,
-        )}).`,
-      };
     }
-
-    return null;
-  }, [activeMercenaryContract, mercenaryDeliveryDelaySec, mercenaryDurationSec]);
+  }
   const mercenaryHiringOptions = useMemo(
     () =>
       [...(mercenaries?.hiringOptions ?? [])].sort((left, right) => {
@@ -8136,26 +8155,25 @@ const MilitaryPanel = ({
   );
   const displayedHiringOptions = coinEligibleHiringOptions.length > 0 ? coinEligibleHiringOptions : mercenaryHiringOptions;
   const hasCoinEligibleHiringOptions = coinEligibleHiringOptions.length > 0;
-  useEffect(() => {
+  const resolvedSelectedMercenaryVillageId = useMemo(() => {
     if (displayedHiringOptions.length <= 0) {
-      setSelectedMercenaryVillageId(null);
-      return;
+      return null;
     }
-    setSelectedMercenaryVillageId((previous) => {
-      if (previous != null && displayedHiringOptions.some((option) => option.villageId === previous)) {
-        return previous;
-      }
-      const currentVillageOption =
-        displayedHiringOptions.find((option) => option.isCurrentVillage) ?? displayedHiringOptions[0];
-      return currentVillageOption?.villageId ?? null;
-    });
-  }, [displayedHiringOptions]);
+    if (
+      selectedMercenaryVillageId != null &&
+      displayedHiringOptions.some((option) => option.villageId === selectedMercenaryVillageId)
+    ) {
+      return selectedMercenaryVillageId;
+    }
+    const currentVillageOption = displayedHiringOptions.find((option) => option.isCurrentVillage) ?? displayedHiringOptions[0];
+    return currentVillageOption?.villageId ?? null;
+  }, [displayedHiringOptions, selectedMercenaryVillageId]);
   const selectedMercenaryVillage = useMemo(
     () =>
-      displayedHiringOptions.find((option) => option.villageId === selectedMercenaryVillageId) ??
-      mercenaryHiringOptions.find((option) => option.villageId === selectedMercenaryVillageId) ??
+      displayedHiringOptions.find((option) => option.villageId === resolvedSelectedMercenaryVillageId) ??
+      mercenaryHiringOptions.find((option) => option.villageId === resolvedSelectedMercenaryVillageId) ??
       null,
-    [displayedHiringOptions, mercenaryHiringOptions, selectedMercenaryVillageId],
+    [displayedHiringOptions, mercenaryHiringOptions, resolvedSelectedMercenaryVillageId],
   );
   const canHireMercenaries = Boolean(selectedMercenaryVillage?.canHire) && !mercenaryActionPending;
   const resolveMercenaryContractStatusLabel = (statusRaw: string): string => {
@@ -8406,7 +8424,7 @@ const MilitaryPanel = ({
           <label>
             Léno pro nábor
             <select
-              value={selectedMercenaryVillageId ?? ''}
+              value={resolvedSelectedMercenaryVillageId ?? ''}
               onChange={(event) => setSelectedMercenaryVillageId(Number(event.target.value) || null)}
               disabled={mercenaryActionPending || displayedHiringOptions.length <= 0}
             >
@@ -8421,10 +8439,10 @@ const MilitaryPanel = ({
             type="button"
             className="secondary-action"
             onClick={() => {
-              if (selectedMercenaryVillageId == null) {
+              if (resolvedSelectedMercenaryVillageId == null) {
                 return;
               }
-              onHireMercenaries(selectedMercenaryVillageId);
+              onHireMercenaries(resolvedSelectedMercenaryVillageId);
             }}
             disabled={!canHireMercenaries}
           >
@@ -9086,7 +9104,9 @@ const hasBattleIntel = (payload: BattleReportPayload): boolean =>
       (payload.lootTaken &&
         (normalizeBattleAmount(payload.lootTaken.wood) > 0 ||
           normalizeBattleAmount(payload.lootTaken.stone) > 0 ||
-          normalizeBattleAmount(payload.lootTaken.iron) > 0)),
+          normalizeBattleAmount(payload.lootTaken.iron) > 0 ||
+          normalizeBattleAmount(payload.lootTaken.gold) > 0 ||
+          normalizeBattleAmount(payload.lootTaken.coins) > 0)),
   );
 
 const formatBattlePower = (value: number | undefined): string =>
@@ -9217,7 +9237,9 @@ const BattleReportPanel = ({
   const lootWood = normalizeBattleAmount(lootTaken?.wood);
   const lootStone = normalizeBattleAmount(lootTaken?.stone);
   const lootIron = normalizeBattleAmount(lootTaken?.iron);
-  const totalLoot = lootWood + lootStone + lootIron;
+  const lootGold = normalizeBattleAmount(lootTaken?.gold);
+  const lootCoins = normalizeBattleAmount(lootTaken?.coins);
+  const totalLoot = lootWood + lootStone + lootIron + lootGold + lootCoins;
   const attackerLosses = sumBattleSelection(battle?.attacker?.losses);
   const defenderLosses = sumBattleSelection(defenderSnapshot?.losses);
   const hasPowerIntel =
@@ -9592,6 +9614,12 @@ const BattleReportPanel = ({
                 Železo <strong>{lootIron.toLocaleString('cs-CZ')}</strong>
               </span>
               <span>
+                Zlato <strong>{lootGold.toLocaleString('cs-CZ')}</strong>
+              </span>
+              <span>
+                Mince <strong>{lootCoins.toLocaleString('cs-CZ')}</strong>
+              </span>
+              <span>
                 Celkem <strong>{totalLoot.toLocaleString('cs-CZ')}</strong>
               </span>
             </div>
@@ -9869,7 +9897,7 @@ const CommandsPanel = ({
   units: Unit[];
   settlements: RegionSettlement[];
   market: GameStateResponse['market'] | undefined;
-  resources: Pick<GameStateResponse['resources'], 'wood' | 'stone' | 'iron'> | undefined;
+  resources: Pick<GameStateResponse['resources'], 'wood' | 'stone' | 'iron' | 'gold' | 'coins'> | undefined;
   currentVillageId: number | null;
   currentUsername: string;
   commandHistory: Partial<Record<MapOrderCommandType, number>>;
@@ -9891,7 +9919,14 @@ const CommandsPanel = ({
   guildActionPending: boolean;
   cancelLogisticsPendingId: number | null;
   commandNotice: string | null;
-  onSendMarketLogistics: (payload: { targetVillageId: number; wood: number; stone: number; iron: number }) => void;
+  onSendMarketLogistics: (payload: {
+    targetVillageId: number;
+    wood: number;
+    stone: number;
+    iron: number;
+    gold: number;
+    coins: number;
+  }) => void;
   onCancelMarketLogistics: (routeId: number) => void;
   onConfigureMarketGuildAutomation: (payload: {
     enabled: boolean;
@@ -9928,10 +9963,18 @@ const CommandsPanel = ({
   const [tooltipCursorPosition, setTooltipCursorPosition] = useState<TooltipCursorPosition | null>(null);
   const [logisticsTargetVillageId, setLogisticsTargetVillageId] = useState<number | null>(null);
   const [manualLogisticsTargetDraft, setManualLogisticsTargetDraft] = useState('');
-  const [logisticsDraft, setLogisticsDraft] = useState<{ wood: string; stone: string; iron: string }>({
+  const [logisticsDraft, setLogisticsDraft] = useState<{
+    wood: string;
+    stone: string;
+    iron: string;
+    gold: string;
+    coins: string;
+  }>({
     wood: '',
     stone: '',
     iron: '',
+    gold: '',
+    coins: '',
   });
   const [guildAddVillageIdDraft, setGuildAddVillageIdDraft] = useState('');
   const [draggedGuildTargetVillageId, setDraggedGuildTargetVillageId] = useState<number | null>(null);
@@ -10339,7 +10382,9 @@ const CommandsPanel = ({
   const logisticsWood = parseLogisticsAmount(logisticsDraft.wood);
   const logisticsStone = parseLogisticsAmount(logisticsDraft.stone);
   const logisticsIron = parseLogisticsAmount(logisticsDraft.iron);
-  const logisticsTotal = logisticsWood + logisticsStone + logisticsIron;
+  const logisticsGold = parseLogisticsAmount(logisticsDraft.gold);
+  const logisticsCoins = parseLogisticsAmount(logisticsDraft.coins);
+  const logisticsTotal = logisticsWood + logisticsStone + logisticsIron + logisticsGold + logisticsCoins;
   const selectedLogisticsSettlement =
     effectiveLogisticsTargetVillageId == null
       ? null
@@ -10397,6 +10442,12 @@ const CommandsPanel = ({
   }
   if (logisticsIron > Number(resources?.iron ?? 0)) {
     logisticsWarnings.push('Nedostatek železa.');
+  }
+  if (logisticsGold > Number(resources?.gold ?? 0)) {
+    logisticsWarnings.push('Nedostatek zlata.');
+  }
+  if (logisticsCoins > Number(resources?.coins ?? 0)) {
+    logisticsWarnings.push('Nedostatek mincí.');
   }
   if (logisticsDistanceTiles != null && marketMaxDistance > 0 && logisticsDistanceTiles > marketMaxDistance) {
     logisticsWarnings.push(`Cíl je mimo dosah trhu (${marketMaxDistance} polí).`);
@@ -11253,6 +11304,38 @@ const CommandsPanel = ({
                   disabled={logisticsActionPending}
                 />
               </label>
+              <label>
+                🪙 Zlato
+                <input
+                  type="number"
+                  min={0}
+                  step={100}
+                  value={logisticsDraft.gold}
+                  onChange={(event) =>
+                    setLogisticsDraft((previous) => ({
+                      ...previous,
+                      gold: event.target.value,
+                    }))
+                  }
+                  disabled={logisticsActionPending}
+                />
+              </label>
+              <label>
+                💰 Mince
+                <input
+                  type="number"
+                  min={0}
+                  step={100}
+                  value={logisticsDraft.coins}
+                  onChange={(event) =>
+                    setLogisticsDraft((previous) => ({
+                      ...previous,
+                      coins: event.target.value,
+                    }))
+                  }
+                  disabled={logisticsActionPending}
+                />
+              </label>
             </div>
             <div className="army-command-preview">
               <p className="army-command-preview-target">
@@ -11287,6 +11370,8 @@ const CommandsPanel = ({
                     wood: logisticsWood,
                     stone: logisticsStone,
                     iron: logisticsIron,
+                    gold: logisticsGold,
+                    coins: logisticsCoins,
                   });
                 }}
                 disabled={!canSendLogistics}
@@ -11317,7 +11402,9 @@ const CommandsPanel = ({
                   <small>
                     🌲 {Math.max(0, Math.floor(Number(route.wood))).toLocaleString('cs-CZ')} · 🧱{' '}
                     {Math.max(0, Math.floor(Number(route.stone))).toLocaleString('cs-CZ')} · ⛓{' '}
-                    {Math.max(0, Math.floor(Number(route.iron))).toLocaleString('cs-CZ')}
+                    {Math.max(0, Math.floor(Number(route.iron))).toLocaleString('cs-CZ')} · 🪙{' '}
+                    {Math.max(0, Math.floor(Number(route.gold ?? 0))).toLocaleString('cs-CZ')} · 💰{' '}
+                    {Math.max(0, Math.floor(Number(route.coins ?? 0))).toLocaleString('cs-CZ')}
                   </small>
                   <small>
                     ETA {route.status === 'completed' ? 'doručeno' : formatDurationLabel(route.remainingSec)} · Start{' '}
@@ -11740,6 +11827,7 @@ const KingdomPanel = ({
   onLeaveKingdom,
   onKickMember,
   onTransferLeadership,
+  onSetDiplomacy,
   onOpenPlayerProfile,
   onOpenKingdomProfile,
 }: {
@@ -11754,24 +11842,69 @@ const KingdomPanel = ({
   onLeaveKingdom: () => void;
   onKickMember: (targetUsername: string) => void;
   onTransferLeadership: (targetUsername: string) => void;
+  onSetDiplomacy: (targetKingdom: string, relationKind: KingdomDiplomacyRelationKind) => void;
   onOpenPlayerProfile: (username: string) => void;
   onOpenKingdomProfile: (kingdomName: string) => void;
 }) => {
   const [createKingdomName, setCreateKingdomName] = useState('');
   const [inviteTargetUsername, setInviteTargetUsername] = useState('');
   const [selectedIncomingInviteId, setSelectedIncomingInviteId] = useState<number | null>(null);
+  const [selectedDiplomacyKingdom, setSelectedDiplomacyKingdom] = useState('');
+  const [selectedDiplomacyRelationKind, setSelectedDiplomacyRelationKind] =
+    useState<KingdomDiplomacyRelationKind>('neutral');
   const availableKingdoms: KingdomAvailableSummary[] =
     kingdomHub?.availableKingdoms ?? EMPTY_KINGDOM_AVAILABLE;
   const incomingInvites: KingdomIncomingInvite[] = kingdomHub?.incomingInvites ?? EMPTY_KINGDOM_INVITES;
   const members = kingdomHub?.members ?? EMPTY_KINGDOM_MEMBERS;
+  const diplomacyRelations = kingdomHub?.diplomacyRelations ?? EMPTY_KINGDOM_DIPLOMACY_RELATIONS;
   const selectedIncomingInvite =
     incomingInvites.find((invite) => invite.id === selectedIncomingInviteId) ?? incomingInvites[0] ?? null;
   const auditLog = kingdomHub?.auditLog ?? EMPTY_KINGDOM_AUDIT_LOG;
   const currentKingdom = kingdomHub?.isMember ? kingdomHub.kingdom : null;
   const canManageInvites = kingdomHub?.canManageInvites ?? false;
+  const canManageDiplomacy = kingdomHub?.canManageDiplomacy ?? false;
   const isKingdomLeader = kingdomHub?.leaderUsername === currentUsername;
   const totalKingdomPrestige = members.reduce((sum, member) => sum + member.prestige, 0);
   const totalKingdomVillages = members.reduce((sum, member) => sum + member.villages, 0);
+  const diplomacyTargets = useMemo(
+    () =>
+      availableKingdoms.filter(
+        (entry) =>
+          !currentKingdom ||
+          entry.kingdom.toLocaleLowerCase('cs-CZ') !== currentKingdom.toLocaleLowerCase('cs-CZ'),
+      ),
+    [availableKingdoms, currentKingdom],
+  );
+  const resolvedSelectedDiplomacyKingdom = useMemo(() => {
+    if (diplomacyTargets.length === 0) {
+      return '';
+    }
+
+    const selectedComparable = selectedDiplomacyKingdom.trim().toLocaleLowerCase('cs-CZ');
+    const selectedTarget = diplomacyTargets.find(
+      (entry) => entry.kingdom.toLocaleLowerCase('cs-CZ') === selectedComparable,
+    );
+    return selectedTarget?.kingdom ?? diplomacyTargets[0]?.kingdom ?? '';
+  }, [diplomacyTargets, selectedDiplomacyKingdom]);
+  const selectedDiplomacyRelationKindForRender = useMemo(() => {
+    if (!resolvedSelectedDiplomacyKingdom) {
+      return 'neutral' as KingdomDiplomacyRelationKind;
+    }
+
+    if (resolvedSelectedDiplomacyKingdom === selectedDiplomacyKingdom) {
+      return selectedDiplomacyRelationKind;
+    }
+
+    return (
+      diplomacyRelations.find((entry) => entry.kingdom === resolvedSelectedDiplomacyKingdom)?.relationKind ??
+      'neutral'
+    );
+  }, [
+    diplomacyRelations,
+    resolvedSelectedDiplomacyKingdom,
+    selectedDiplomacyKingdom,
+    selectedDiplomacyRelationKind,
+  ]);
 
   const handleCreateKingdomSubmit = () => {
     const normalizedKingdomName = createKingdomName.trim();
@@ -11819,6 +11952,14 @@ const KingdomPanel = ({
       return;
     }
     onTransferLeadership(targetUsername);
+  };
+
+  const handleSetDiplomacySubmit = () => {
+    const targetKingdom = resolvedSelectedDiplomacyKingdom.trim();
+    if (!targetKingdom) {
+      return;
+    }
+    onSetDiplomacy(targetKingdom, selectedDiplomacyRelationKindForRender);
   };
 
   if (!kingdomHub) {
@@ -12087,6 +12228,99 @@ const KingdomPanel = ({
       ) : null}
 
       <section>
+        <h3>Diplomacie království</h3>
+        {diplomacyRelations.length > 0 ? (
+          <table className="kingdom-diplomacy-table">
+            <thead>
+              <tr>
+                <th>Království</th>
+                <th>Vztah</th>
+                <th>Poslední změna</th>
+              </tr>
+            </thead>
+            <tbody>
+              {diplomacyRelations.map((entry) => (
+                <tr key={`kingdom-diplomacy-${entry.kingdom}`}>
+                  <td>
+                    <button
+                      type="button"
+                      className="ranking-link-button"
+                      onClick={() => onOpenKingdomProfile(entry.kingdom)}
+                    >
+                      {entry.kingdom}
+                    </button>
+                  </td>
+                  <td>{KINGDOM_DIPLOMACY_RELATION_LABELS[entry.relationKind] ?? 'Neutrální'}</td>
+                  <td>
+                    {entry.updatedAt
+                      ? `${new Date(entry.updatedAt).toLocaleString('cs-CZ')}${
+                          entry.updatedByUsername ? ` · ${entry.updatedByUsername}` : ''
+                        }`
+                      : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p>V tomto světě zatím nejsou dostupná další hráčská království.</p>
+        )}
+        {canManageDiplomacy ? (
+          diplomacyTargets.length > 0 ? (
+            <div className="kingdom-diplomacy-controls">
+              <label>
+                Cílové království
+                <select
+                  value={resolvedSelectedDiplomacyKingdom}
+                  onChange={(event) => {
+                    const nextKingdom = event.target.value;
+                    setSelectedDiplomacyKingdom(nextKingdom);
+                    const currentRelation =
+                      diplomacyRelations.find((entry) => entry.kingdom === nextKingdom)?.relationKind ?? 'neutral';
+                    setSelectedDiplomacyRelationKind(currentRelation);
+                  }}
+                  disabled={actionPending}
+                >
+                  {diplomacyTargets.map((entry) => (
+                    <option key={`diplomacy-target-${entry.kingdom}`} value={entry.kingdom}>
+                      {entry.kingdom}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="kingdom-inline-actions kingdom-diplomacy-relation-picker">
+                {KINGDOM_DIPLOMACY_RELATION_OPTIONS.map((option) => (
+                  <button
+                    key={`diplomacy-option-${option.value}`}
+                    type="button"
+                    className={`secondary-action kingdom-action-button ${
+                      selectedDiplomacyRelationKindForRender === option.value ? 'is-active' : ''
+                    }`}
+                    onClick={() => setSelectedDiplomacyRelationKind(option.value)}
+                    disabled={actionPending}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="upgrade-action kingdom-action-button"
+                onClick={handleSetDiplomacySubmit}
+                disabled={actionPending || resolvedSelectedDiplomacyKingdom.trim().length === 0}
+              >
+                Uložit diplomatický stav
+              </button>
+            </div>
+          ) : (
+            <p className="row-help">Není dostupné žádné jiné aktivní království pro změnu diplomacie.</p>
+          )
+        ) : (
+          <p className="row-help">Diplomacii může měnit pouze Král tvého království.</p>
+        )}
+      </section>
+
+      <section>
         <h3>Audit log (debug)</h3>
         {auditLog.length > 0 ? (
           <ul className="kingdom-audit-list">
@@ -12244,6 +12478,7 @@ const RankingPanel = ({
       attacker: buildRows('attacker', (entry) => Number(entry.attackerScore ?? 0)),
       defender: buildRows('defender', (entry) => Number(entry.defenderScore ?? 0)),
       supporter: buildRows('supporter', (entry) => Number(entry.supporterScore ?? 0)),
+      loot: buildRows('loot', (entry) => Number(entry.lootScore ?? 0)),
     };
   }, [rows]);
 
@@ -12256,7 +12491,9 @@ const RankingPanel = ({
           ? combatRowsByMode.attacker
           : mode === 'defender'
             ? combatRowsByMode.defender
-            : combatRowsByMode.supporter;
+            : mode === 'supporter'
+              ? combatRowsByMode.supporter
+              : combatRowsByMode.loot;
   const totalRows = activeRows.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
   const normalizedCurrentPage = clamp(currentPage, 1, totalPages);
@@ -12280,7 +12517,9 @@ const RankingPanel = ({
         ? combatRowsByMode.attacker
         : mode === 'defender'
           ? combatRowsByMode.defender
-          : combatRowsByMode.supporter;
+          : mode === 'supporter'
+            ? combatRowsByMode.supporter
+            : combatRowsByMode.loot;
     return combatRows.findIndex((entry) => entry.username === currentUsername);
   }, [mode, rows, currentUsername, currentKingdom, kingdomRows, combatRowsByMode]);
 
@@ -12297,6 +12536,9 @@ const RankingPanel = ({
     }
     if (mode === 'supporter') {
       return combatRowsByMode.supporter.find((entry) => entry.username === currentUsername) ?? null;
+    }
+    if (mode === 'loot') {
+      return combatRowsByMode.loot.find((entry) => entry.username === currentUsername) ?? null;
     }
     return null;
   }, [mode, combatRowsByMode, currentUsername]);
@@ -12331,7 +12573,9 @@ const RankingPanel = ({
           ? 'Top útočník'
           : mode === 'defender'
             ? 'Top obránce'
-            : 'Top podporovatel';
+            : mode === 'supporter'
+              ? 'Top podporovatel'
+              : 'Top lupič';
   const centerButtonLabel = 'Vycentruj mě';
   const currentPlacementLabel =
     mode === 'players'
@@ -12354,7 +12598,9 @@ const RankingPanel = ({
           ? 'v pořadí útočníků'
           : mode === 'defender'
             ? 'v pořadí obránců'
-            : 'v pořadí podporovatelů';
+            : mode === 'supporter'
+              ? 'v pořadí podporovatelů'
+              : 'v pořadí lupičů';
   const summaryNoun =
     mode === 'players'
       ? 'hráčů'
@@ -12364,8 +12610,10 @@ const RankingPanel = ({
           ? 'útočníků'
           : mode === 'defender'
             ? 'obránců'
-            : 'podporovatelů';
-  const combatScoreColumnLabel = mode === 'supporter' ? 'Padlé jednotky' : 'Zabitých jednotek';
+            : mode === 'supporter'
+              ? 'podporovatelů'
+              : 'lupičů';
+  const combatScoreColumnLabel = mode === 'loot' ? 'Uloupených surovin' : 'Padlých jednotek (obě strany)';
   const kingdomMetricLabel =
     kingdomMetric === 'attack'
       ? 'Útočník'
@@ -12472,6 +12720,12 @@ const RankingPanel = ({
                 onClick={() => selectPlayerMode('supporter')}
               >
                 Podporovatel
+              </button>
+              <button
+                className={mode === 'loot' ? 'is-active' : ''}
+                onClick={() => selectPlayerMode('loot')}
+              >
+                Kořist
               </button>
             </div>
           ) : (
@@ -12939,9 +13193,11 @@ const PlayerProfilePanel = ({
   const attackerScore = Number(playerRow?.attackerScore ?? 0);
   const defenderScore = Number(playerRow?.defenderScore ?? 0);
   const supporterScore = Number(playerRow?.supporterScore ?? 0);
+  const lootScore = Number(playerRow?.lootScore ?? 0);
   const attackerRankLabel = playerRow?.attackerRank ? `#${playerRow.attackerRank}` : 'N/A';
   const defenderRankLabel = playerRow?.defenderRank ? `#${playerRow.defenderRank}` : 'N/A';
   const supporterRankLabel = playerRow?.supporterRank ? `#${playerRow.supporterRank}` : 'N/A';
+  const lootRankLabel = playerRow?.lootRank ? `#${playerRow.lootRank}` : 'N/A';
 
   const handleSendFriendRequest = useCallback(async () => {
     if (isSelfProfile || friendRequestPending) {
@@ -13031,15 +13287,19 @@ const PlayerProfilePanel = ({
         <div className="player-profile-combat-stats">
           <article className="player-profile-stat-card player-profile-stat-card-compact">
             <span>Útočník</span>
-            <strong>{`${attackerRankLabel} (${attackerScore.toLocaleString('cs-CZ')} zabitých)`}</strong>
+            <strong>{`${attackerRankLabel} (${attackerScore.toLocaleString('cs-CZ')} padlých)`}</strong>
           </article>
           <article className="player-profile-stat-card player-profile-stat-card-compact">
             <span>Obránce</span>
-            <strong>{`${defenderRankLabel} (${defenderScore.toLocaleString('cs-CZ')} zabitých)`}</strong>
+            <strong>{`${defenderRankLabel} (${defenderScore.toLocaleString('cs-CZ')} padlých)`}</strong>
           </article>
           <article className="player-profile-stat-card player-profile-stat-card-compact">
             <span>Podporovatel</span>
-            <strong>{`${supporterRankLabel} (${supporterScore.toLocaleString('cs-CZ')} zabitých)`}</strong>
+            <strong>{`${supporterRankLabel} (${supporterScore.toLocaleString('cs-CZ')} padlých)`}</strong>
+          </article>
+          <article className="player-profile-stat-card player-profile-stat-card-compact">
+            <span>Kořist</span>
+            <strong>{`${lootRankLabel} (${lootScore.toLocaleString('cs-CZ')} uloupeno)`}</strong>
           </article>
         </div>
         {protectedVillages.length > 0 ? (
@@ -13108,6 +13368,7 @@ const ProfilePanel = ({
   attackerRank,
   defenderRank,
   supporterRank,
+  lootRank,
 }: {
   username: string;
   kingdom: string;
@@ -13117,6 +13378,7 @@ const ProfilePanel = ({
   attackerRank: number | null;
   defenderRank: number | null;
   supporterRank: number | null;
+  lootRank: number | null;
 }) => (
   <div className="panel-stack player-profile-panel">
     <section className="player-profile-hero-card">
@@ -13160,6 +13422,10 @@ const ProfilePanel = ({
         <article className="player-profile-stat-card player-profile-stat-card-compact">
           <span>Podporovatel</span>
           <strong>{supporterRank ? `#${supporterRank}` : 'N/A'}</strong>
+        </article>
+        <article className="player-profile-stat-card player-profile-stat-card-compact">
+          <span>Kořist</span>
+          <strong>{lootRank ? `#${lootRank}` : 'N/A'}</strong>
         </article>
       </div>
 
@@ -14028,14 +14294,18 @@ const MapPanel = memo(({
     [],
   );
 
+  const resetMapInteractionState = useEffectEvent(() => {
+    clearHoverTimeout();
+    setHoveredId(null);
+    setPinnedSettlementId(null);
+  });
+
   useEffect(() => {
     if (isInteractionEnabled) {
       return;
     }
-    clearHoverTimeout();
-    setHoveredId(null);
-    setPinnedSettlementId(null);
-  }, [clearHoverTimeout, isInteractionEnabled]);
+    resetMapInteractionState();
+  }, [isInteractionEnabled]);
 
   useEffect(() => {
     const normalizedIncoming = clamp(Number(zoomPercent), MAP_ZOOM_MIN, MAP_ZOOM_MAX);
@@ -14051,8 +14321,12 @@ const MapPanel = memo(({
     zoomPercentRef.current = normalizedIncoming;
     pendingZoomCommitRef.current = normalizedIncoming;
     // Local map zoom stays UI-first; this controlled sync is intentional.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLocalZoomPercent(normalizedIncoming);
+    const syncTimer = window.setTimeout(() => {
+      setLocalZoomPercent(normalizedIncoming);
+    }, 0);
+    return () => {
+      window.clearTimeout(syncTimer);
+    };
   }, [zoomPercent]);
 
   const scheduleZoomCommit = useCallback(
@@ -16330,6 +16604,7 @@ export const GamePage = () => {
   const [cancelLogisticsPendingId, setCancelLogisticsPendingId] = useState<number | null>(null);
   const [recruitPendingUnitId, setRecruitPendingUnitId] = useState<string | null>(null);
   const [cancelRecruitmentPendingId, setCancelRecruitmentPendingId] = useState<number | null>(null);
+  const [reorderRecruitmentPendingId, setReorderRecruitmentPendingId] = useState<number | null>(null);
   const [armyCommandPending, setArmyCommandPending] = useState(false);
   const [upgradePendingBuildingId, setUpgradePendingBuildingId] = useState<string | null>(null);
   const [cancelUpgradePendingOrderId, setCancelUpgradePendingOrderId] = useState<number | null>(null);
@@ -16472,6 +16747,7 @@ export const GamePage = () => {
     mutationPendingRef.current = Boolean(
       recruitPendingUnitId ||
         cancelRecruitmentPendingId != null ||
+        reorderRecruitmentPendingId != null ||
         upgradePendingBuildingId ||
         cancelUpgradePendingOrderId != null ||
         reorderUpgradePendingOrderId != null ||
@@ -16493,6 +16769,7 @@ export const GamePage = () => {
     armyCommandPending,
     cancelLogisticsPendingId,
     cancelRecruitmentPendingId,
+    reorderRecruitmentPendingId,
     cancelUpgradePendingOrderId,
     reorderUpgradePendingOrderId,
     cancelUpgradeQueuePending,
@@ -17302,6 +17579,7 @@ export const GamePage = () => {
       attackerRank: normalizeRankValue(ranking.attackerRank),
       defenderRank: normalizeRankValue(ranking.defenderRank),
       supporterRank: normalizeRankValue(ranking.supporterRank),
+      lootRank: normalizeRankValue(ranking.lootRank),
     };
   }, [gameState?.playerRanking]);
   const playerLeaderboardEntry = useMemo(
@@ -17317,6 +17595,9 @@ export const GamePage = () => {
   );
   const resolvedPlayerSupporterRank = normalizeRankValue(
     playerLeaderboardEntry?.supporterRank ?? playerRankingSummary?.supporterRank,
+  );
+  const resolvedPlayerLootRank = normalizeRankValue(
+    playerLeaderboardEntry?.lootRank ?? playerRankingSummary?.lootRank,
   );
   const leaderboardMenuBadgeLabel = useMemo(() => {
     if (resolvedPlayerRank == null) {
@@ -19876,50 +20157,14 @@ export const GamePage = () => {
     ],
   );
 
-  const handleRecruitInVillage = useCallback(
-    async (
-      villageIdRaw: number,
-      unitIdRaw: string,
-      amountRaw: number,
-    ): Promise<string> => {
-      const villageId = Math.max(0, Math.floor(Number(villageIdRaw)));
-      const unitId = String(unitIdRaw ?? '').trim();
-      const amount = Math.max(0, Math.floor(Number(amountRaw)));
-      if (!villageId || !unitId || amount <= 0) {
-        return 'Neplatné parametry náboru.';
-      }
-
-      try {
-        const nextState = await recruitUnit(
-          username,
-          unitId,
-          amount,
-          villageId,
-          selectedWorldId,
-        );
-        if ((gameState?.village.id ?? activeVillageId) === villageId) {
-          applyIncomingGameState(nextState);
-          void loadGameState(true, true);
-        }
-        const unitLabel = getUnitMetaById(unitId).fallbackName;
-        return `Léno #${villageId}: nábor ${unitLabel} +${amount.toLocaleString('cs-CZ')} spuštěn.`;
-      } catch (error) {
-        return getErrorMessage(error);
-      }
-    },
-    [
-      activeVillageId,
-      applyIncomingGameState,
-      gameState?.village.id,
-      loadGameState,
-      selectedWorldId,
-      username,
-    ],
-  );
-
   const handleCancelRecruitment = useCallback(
     async (order: RecruitQueueOrder) => {
       if (!Number.isFinite(order.id) || order.id <= 0) {
+        return;
+      }
+      if (reorderRecruitmentPendingId != null) {
+        setArmyNotice('Fronta se právě upravuje. Zkus to znovu za okamžik.');
+        setArmyNoticeUnitId(null);
         return;
       }
 
@@ -19952,6 +20197,75 @@ export const GamePage = () => {
       applyIncomingGameState,
       gameState?.village.id,
       loadGameState,
+      reorderRecruitmentPendingId,
+      selectedWorldId,
+      username,
+    ],
+  );
+
+  const handleReorderRecruitment = useCallback(
+    async (recruitmentIdRaw: number, targetIndexRaw: number): Promise<void> => {
+      const recruitmentId = Math.max(0, Math.floor(Number(recruitmentIdRaw)));
+      const rawTargetIndex = Math.floor(Number(targetIndexRaw));
+      if (!Number.isFinite(recruitmentId) || recruitmentId <= 0) {
+        setArmyNotice('Neplatná položka náborové fronty.');
+        setArmyNoticeUnitId(null);
+        return;
+      }
+      if (!Number.isFinite(rawTargetIndex) || rawTargetIndex <= 0) {
+        setArmyNotice('Neplatná cílová pozice náborové fronty.');
+        setArmyNoticeUnitId(null);
+        return;
+      }
+      if (cancelRecruitmentPendingId != null || reorderRecruitmentPendingId != null) {
+        setArmyNotice('Fronta se právě upravuje. Zkus to znovu za okamžik.');
+        setArmyNoticeUnitId(null);
+        return;
+      }
+
+      const movedRecruitment = (gameState?.activeRecruitments ?? []).find(
+        (recruitment) => Number(recruitment.id) === recruitmentId,
+      );
+      const movedUnitId = movedRecruitment ? String(movedRecruitment.unitId ?? '') : '';
+      const targetIndex = Math.max(1, rawTargetIndex);
+
+      setReorderRecruitmentPendingId(recruitmentId);
+      setArmyNotice(null);
+      setArmyNoticeUnitId(null);
+
+      try {
+        const response = await reorderRecruitmentQueueRequest(
+          username,
+          recruitmentId,
+          targetIndex,
+          gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
+        );
+        applyIncomingGameState(response.data);
+        const fromDisplay = Number(response.result.fromIndex ?? 0) + 1;
+        const toDisplay = Number(response.result.toIndex ?? 0) + 1;
+        const notice =
+          response.result.moved === false
+            ? 'Pořadí náborové fronty zůstalo beze změny.'
+            : `Pořadí náborové fronty upraveno: #${fromDisplay.toLocaleString('cs-CZ')} → #${toDisplay.toLocaleString('cs-CZ')}.`;
+        setArmyNotice(notice);
+        setArmyNoticeUnitId(movedUnitId || null);
+        void loadGameState(true, true);
+      } catch (error) {
+        setArmyNotice(getErrorMessage(error));
+        setArmyNoticeUnitId(null);
+      } finally {
+        setReorderRecruitmentPendingId(null);
+      }
+    },
+    [
+      activeVillageId,
+      applyIncomingGameState,
+      cancelRecruitmentPendingId,
+      gameState?.activeRecruitments,
+      gameState?.village.id,
+      loadGameState,
+      reorderRecruitmentPendingId,
       selectedWorldId,
       username,
     ],
@@ -20112,7 +20426,14 @@ export const GamePage = () => {
         setArmyCommandPending(false);
       }
     },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
+    [
+      activeVillageId,
+      applyIncomingGameState,
+      gameState?.village.id,
+      loadGameState,
+      selectedWorldId,
+      username,
+    ],
   );
 
   const handleCancelArmyCommand = useCallback(
@@ -20276,7 +20597,14 @@ export const GamePage = () => {
   );
 
   const handleSendMarketLogistics = useCallback(
-    async (payload: { targetVillageId: number; wood: number; stone: number; iron: number }) => {
+    async (payload: {
+      targetVillageId: number;
+      wood: number;
+      stone: number;
+      iron: number;
+      gold: number;
+      coins: number;
+    }) => {
       if (logisticsSendLockRef.current) {
         return;
       }
@@ -20289,6 +20617,8 @@ export const GamePage = () => {
           wood: payload.wood,
           stone: payload.stone,
           iron: payload.iron,
+          gold: payload.gold,
+          coins: payload.coins,
           villageId: gameState?.village.id ?? activeVillageId,
           worldId: selectedWorldId,
         });
@@ -20324,7 +20654,7 @@ export const GamePage = () => {
         );
         applyIncomingGameState(response.data);
         setResearchNotice(
-          `Transport #${response.result.canceledRouteId} zrušen. Vráceno: ${response.result.refunded.wood.toLocaleString('cs-CZ')} dřeva, ${response.result.refunded.stone.toLocaleString('cs-CZ')} kamene, ${response.result.refunded.iron.toLocaleString('cs-CZ')} železa.`,
+          `Transport #${response.result.canceledRouteId} zrušen. Vráceno: ${response.result.refunded.wood.toLocaleString('cs-CZ')} dřeva, ${response.result.refunded.stone.toLocaleString('cs-CZ')} kamene, ${response.result.refunded.iron.toLocaleString('cs-CZ')} železa, ${response.result.refunded.gold.toLocaleString('cs-CZ')} zlata, ${response.result.refunded.coins.toLocaleString('cs-CZ')} mincí.`,
         );
         void loadGameState(true, true);
       } catch (error) {
@@ -20470,29 +20800,6 @@ export const GamePage = () => {
     setVillageRenameDraft(activeVillageBaseName);
   }, [activeVillageBaseName, handleRenameVillage, renameVillagePending, villageRenameDraft]);
 
-  const handleUpgradeBuildingInVillage = useCallback(
-    async (villageIdRaw: number, buildingIdRaw: string): Promise<string> => {
-      const villageId = Math.max(0, Math.floor(Number(villageIdRaw)));
-      const buildingId = String(buildingIdRaw ?? '').trim();
-      if (!villageId || !buildingId) {
-        return 'Neplatné parametry výstavby.';
-      }
-
-      try {
-        const nextState = await upgradeBuilding(username, buildingId, villageId, selectedWorldId);
-        if ((gameState?.village.id ?? activeVillageId) === villageId) {
-          applyIncomingGameState(nextState);
-          void loadGameState(true, true);
-        }
-        const buildingLabel = BUILDING_ART[buildingId]?.fallbackName ?? buildingId;
-        return `Léno #${villageId}: ${buildingLabel} bylo zařazeno do výstavby.`;
-      } catch (error) {
-        return getErrorMessage(error);
-      }
-    },
-    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
-  );
-
   const handleRecallKnight = useCallback(async () => {
     setRecallKnightPending(true);
     setBuildingNotices((previous) => ({
@@ -20520,7 +20827,14 @@ export const GamePage = () => {
     } finally {
       setRecallKnightPending(false);
     }
-  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username]);
+  }, [
+    activeVillageId,
+    applyIncomingGameState,
+    gameState?.village.id,
+    loadGameState,
+    selectedWorldId,
+    username,
+  ]);
 
   const handleCancelBuildingUpgrade = useCallback(
     async (
@@ -20963,7 +21277,14 @@ export const GamePage = () => {
     } finally {
       setKingdomActionPending(false);
     }
-  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username]);
+  }, [
+    activeVillageId,
+    applyIncomingGameState,
+    gameState?.village.id,
+    loadGameState,
+    selectedWorldId,
+    username,
+  ]);
 
   const handleKickKingdomMember = useCallback(
     async (targetUsername: string) => {
@@ -21015,6 +21336,42 @@ export const GamePage = () => {
         const nextState = response.data;
         applyIncomingGameState(nextState);
         setKingdomNotice(`Titul Krále byl předán hráči ${response.result.newLeaderUsername}.`);
+        void loadGameState(true, true);
+      } catch (error) {
+        setKingdomNotice(getErrorMessage(error));
+      } finally {
+        setKingdomActionPending(false);
+      }
+    },
+    [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username],
+  );
+
+  const handleSetKingdomDiplomacy = useCallback(
+    async (targetKingdom: string, relationKind: KingdomDiplomacyRelationKind) => {
+      const normalizedTargetKingdom = targetKingdom.trim();
+      if (!normalizedTargetKingdom) {
+        return;
+      }
+
+      setKingdomActionPending(true);
+      setKingdomNotice(null);
+
+      try {
+        const response = await setKingdomDiplomacyRequest(
+          username,
+          normalizedTargetKingdom,
+          relationKind,
+          gameState?.village.id ?? activeVillageId,
+          selectedWorldId,
+        );
+        const nextState = response.data;
+        applyIncomingGameState(nextState);
+        const relationLabel = KINGDOM_DIPLOMACY_RELATION_LABELS[response.result.relationKind] ?? 'Neutrální';
+        if (response.result.changed) {
+          setKingdomNotice(`Diplomacie vůči ${response.result.targetKingdom} nastavena na ${relationLabel}.`);
+        } else {
+          setKingdomNotice(`Diplomacie vůči ${response.result.targetKingdom} už byla nastavena na ${relationLabel}.`);
+        }
         void loadGameState(true, true);
       } catch (error) {
         setKingdomNotice(getErrorMessage(error));
@@ -21162,7 +21519,15 @@ export const GamePage = () => {
     } finally {
       setRestartVillagePending(false);
     }
-  }, [activeVillageId, applyIncomingGameState, gameState?.village.id, loadGameState, selectedWorldId, username]);
+  }, [
+    activeVillageId,
+    applyIncomingGameState,
+    gameState?.village.id,
+    loadGameState,
+    selectedSpawnDirection,
+    selectedWorldId,
+    username,
+  ]);
 
   const handleLogout = useCallback(() => {
     logout();
@@ -21708,12 +22073,14 @@ export const GamePage = () => {
             isExpanded={panel.expanded}
             onRecruit={handleRecruit}
             onCancelRecruitment={handleCancelRecruitment}
+            onReorderRecruitment={(recruitmentId, targetIndex) => {
+              void handleReorderRecruitment(recruitmentId, targetIndex);
+            }}
             onUpgradeBuilding={handleBuildingUpgrade}
-            onUpgradeBuildingInVillage={handleUpgradeBuildingInVillage}
-            onRecruitInVillage={handleRecruitInVillage}
             onOpenSettlementByVillageId={openSettlementByVillageId}
             recruitPendingUnitId={recruitPendingUnitId}
             cancelRecruitmentPendingId={cancelRecruitmentPendingId}
+            reorderRecruitmentPendingId={reorderRecruitmentPendingId}
             upgradePendingBuildingId={upgradePendingBuildingId}
             notice={armyNotice}
             noticeUnitId={armyNoticeUnitId}
@@ -21838,6 +22205,7 @@ export const GamePage = () => {
             onLeaveKingdom={handleLeaveKingdom}
             onKickMember={handleKickKingdomMember}
             onTransferLeadership={handleTransferKingdomLeadership}
+            onSetDiplomacy={handleSetKingdomDiplomacy}
             onOpenPlayerProfile={openPlayerProfilePanel}
             onOpenKingdomProfile={openKingdomProfilePanel}
           />
@@ -21939,6 +22307,7 @@ export const GamePage = () => {
             attackerRank={resolvedPlayerAttackerRank}
             defenderRank={resolvedPlayerDefenderRank}
             supporterRank={resolvedPlayerSupporterRank}
+            lootRank={resolvedPlayerLootRank}
           />
         );
       case 'settings':

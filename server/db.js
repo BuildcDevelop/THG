@@ -349,6 +349,8 @@ CREATE TABLE IF NOT EXISTS army_movements (
   carry_wood INTEGER NOT NULL DEFAULT 0,
   carry_stone INTEGER NOT NULL DEFAULT 0,
   carry_iron INTEGER NOT NULL DEFAULT 0,
+  carry_gold INTEGER NOT NULL DEFAULT 0,
+  carry_coins INTEGER NOT NULL DEFAULT 0,
   started_at TEXT NOT NULL,
   arrive_at TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -464,6 +466,26 @@ CREATE INDEX IF NOT EXISTS idx_kingdom_events_actor_created
 
 CREATE INDEX IF NOT EXISTS idx_kingdom_events_target_created
   ON kingdom_events(target_player_id, region, created_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS kingdom_diplomacy (
+  region INTEGER NOT NULL DEFAULT 1,
+  kingdom_low TEXT NOT NULL,
+  kingdom_high TEXT NOT NULL,
+  relation_kind TEXT NOT NULL DEFAULT 'neutral',
+  created_by_player_id INTEGER,
+  updated_by_player_id INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (region, kingdom_low, kingdom_high),
+  FOREIGN KEY (created_by_player_id) REFERENCES players(id),
+  FOREIGN KEY (updated_by_player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kingdom_diplomacy_region
+  ON kingdom_diplomacy(region, kingdom_low, kingdom_high);
+
+CREATE INDEX IF NOT EXISTS idx_kingdom_diplomacy_updated_by
+  ON kingdom_diplomacy(updated_by_player_id, region, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS player_notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -689,6 +711,8 @@ CREATE TABLE IF NOT EXISTS logistics_routes (
   wood INTEGER NOT NULL DEFAULT 0,
   stone INTEGER NOT NULL DEFAULT 0,
   iron INTEGER NOT NULL DEFAULT 0,
+  gold INTEGER NOT NULL DEFAULT 0,
+  coins INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'in_progress',
   started_at TEXT NOT NULL,
   arrive_at TEXT NOT NULL,
@@ -1116,10 +1140,28 @@ END;
   if (!hasCarryIronColumn) {
     db.prepare('ALTER TABLE army_movements ADD COLUMN carry_iron INTEGER NOT NULL DEFAULT 0').run();
   }
+  const hasCarryGoldColumn = movementColumns.some((column) => column.name === 'carry_gold');
+  if (!hasCarryGoldColumn) {
+    db.prepare('ALTER TABLE army_movements ADD COLUMN carry_gold INTEGER NOT NULL DEFAULT 0').run();
+  }
+  const hasCarryCoinsColumn = movementColumns.some((column) => column.name === 'carry_coins');
+  if (!hasCarryCoinsColumn) {
+    db.prepare('ALTER TABLE army_movements ADD COLUMN carry_coins INTEGER NOT NULL DEFAULT 0').run();
+  }
   db.exec(`
 CREATE INDEX IF NOT EXISTS idx_army_movements_plan_refs
   ON army_movements(plan_id, plan_leg_id, started_at DESC, id DESC);
 `);
+
+  const logisticsRouteColumns = db.prepare('PRAGMA table_info(logistics_routes)').all();
+  const hasLogisticsGoldColumn = logisticsRouteColumns.some((column) => column.name === 'gold');
+  if (!hasLogisticsGoldColumn) {
+    db.prepare('ALTER TABLE logistics_routes ADD COLUMN gold INTEGER NOT NULL DEFAULT 0').run();
+  }
+  const hasLogisticsCoinsColumn = logisticsRouteColumns.some((column) => column.name === 'coins');
+  if (!hasLogisticsCoinsColumn) {
+    db.prepare('ALTER TABLE logistics_routes ADD COLUMN coins INTEGER NOT NULL DEFAULT 0').run();
+  }
 
   const recruitmentColumns = db.prepare('PRAGMA table_info(unit_recruitments)').all();
   const hasQueueIndexColumn = recruitmentColumns.some((column) => column.name === 'queue_index');
@@ -1342,6 +1384,7 @@ DELETE FROM battle_reports;
 DELETE FROM combat_retaliation_flags;
 DELETE FROM kingdom_invites;
 DELETE FROM kingdom_events;
+DELETE FROM kingdom_diplomacy;
 DELETE FROM player_notifications;
 DELETE FROM player_world_governance_events;
 DELETE FROM player_world_governance;
@@ -2626,15 +2669,30 @@ const ensureReferentialIntegrity = db.transaction(() => {
     db.prepare(
       `DELETE FROM kingdom_events
        WHERE (
-           kingdom_events.actor_player_id IS NOT NULL
+            kingdom_events.actor_player_id IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM players p WHERE p.id = kingdom_events.actor_player_id
+            )
+          )
+           OR (
+            kingdom_events.target_player_id IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM players p WHERE p.id = kingdom_events.target_player_id
+            )
+          )`,
+    ),
+    db.prepare(
+      `DELETE FROM kingdom_diplomacy
+       WHERE (
+           kingdom_diplomacy.created_by_player_id IS NOT NULL
            AND NOT EXISTS (
-             SELECT 1 FROM players p WHERE p.id = kingdom_events.actor_player_id
+             SELECT 1 FROM players p WHERE p.id = kingdom_diplomacy.created_by_player_id
            )
          )
           OR (
-           kingdom_events.target_player_id IS NOT NULL
+           kingdom_diplomacy.updated_by_player_id IS NOT NULL
            AND NOT EXISTS (
-             SELECT 1 FROM players p WHERE p.id = kingdom_events.target_player_id
+             SELECT 1 FROM players p WHERE p.id = kingdom_diplomacy.updated_by_player_id
            )
          )`,
     ),

@@ -34,15 +34,19 @@ UI contract:
 
 - badge je hned vedle aktivniho lena,
 - ikona je viditelna vzdy,
+- ikona je zamerne o neco vetsi nez okoli, aby se neztracela v headeru,
 - `100 %` zobrazi jen ikonu,
 - `<100 %` zobrazi ikonu + procento,
 - `49-30 %` vizualni varovani,
 - `29-0 %` silnejsi varovani,
-- tooltip je kratky, tematicky a popisuje aktualni efekt.
+- tooltip je kratky, tematicky a popisuje:
+  - co ikona znamena
+  - aktualni procento
+  - zda bezi debuff nebo je stav bez postihu.
 
 ### 2.2 Armada vsech len
 
-- Goal: rychly prehled armady, opevneni, brany, posadky a aktualniho rekrutu ve vsech hracovych lenech.
+- Goal: rychly read-only prehled vsech vlastnich len se zamenenim dnesni akcni `Spravy vsech len` za kompakni list.
 - Authoritative state: server-side read model po lenu.
 - Fetch model: samostatny endpoint pouze pri otevrenem panelu `Armada vsech len`.
 - Affected panels: nova podstranka pod `Armada`.
@@ -52,11 +56,16 @@ UI contract:
 
 UI contract:
 
+- panel je read-only, bez build/recruit akci,
+- vhodny na mensi obrazovky, bez samostatnych akcnych radku,
 - zadne tvrde tabulkove mrizky,
 - zadne tezke ramecky,
-- roster styl s horizontálními pruhy, ikonami a jemnymi separatoru,
+- roster styl s horizontalnimi pruhy, malymi ikonami a jemnymi separatory,
+- jednotky jsou zobrazene do radku podobne jako v detailu lena z mapy, ale s mensimi minimalistickymi ikonami,
+- opevneni a brana se zobrazuji jen jako ikona + uroven,
+- `Otevrit profil lena` zustava jako kompaktni inline ikona v hlavicce radku,
 - tooltip `Posadka` se znovu pouzije beze zmen kontraktu,
-- tooltip `Aktualni rekrut` bude obdobne kratky a informacni.
+- `Aktualni rekrut` se v tomto listu nezobrazuje.
 
 ### 2.3 Canvas marker layer
 
@@ -208,8 +217,12 @@ Payload per village:
 - `gateLevel`
 - `unitsSummary`
 - `garrisonSummary`
-- `recruitSummary`
 - `statusBadges`
+
+Poznamka:
+
+- pro prvni read-only verzi preferovat reuse existujiciho `army/overview` payloadu,
+- dalsi pole nepridavat, pokud nejsou potreba primo pro render kompaktniho listu.
 
 Guardrails:
 
@@ -227,28 +240,30 @@ Exit:
 Scope:
 
 - nova podstranka pod `Armada`,
+- premena dnesni `Spravy vsech len` na read-only prehledovy list,
 - roster-like layout bez tabulkoveho vzhledu.
 
 Deliverables:
 
-- `Armada vsech len` panel,
+- panel prejmenovany a zretelne komunikovany jako prehled, ne jako akcni sprava,
 - radky/pruhy:
   - nazev lena
   - souradnice
-  - jednotky a pocty
-  - `Opevneni Lx`
-  - `Brana Lx`
+  - inline ikona pro otevreni profilu lena
+  - jednotky a pocty v kompaktnim ikonovem radku
+  - `Opevneni` jako ikona + `Lx`
+  - `Brana` jako ikona + `Lx`
   - `Posadka`
-  - `Aktualni rekrut`
 - znovupouzity tooltip `Posadka`,
-- novy tooltip `Aktualni rekrut`,
-- quick open do detailu lena,
+- zadny souhrn ani tooltip aktualniho rekrutu,
+- quick open do detailu lena pres inline ikonu,
 - nula requestu, kdyz panel neni aktivni.
 
 Exit:
 
 - panel je citelny i pri vetsim poctu len,
-- render neni tabulkovy a neni DOM-tezky.
+- render neni tabulkovy a neni DOM-tezky,
+- i na mensim displeji nevznika samostatny radek jen pro akce.
 
 ## 9. Milnik G - Recruit queue a support rebase
 
@@ -385,7 +400,197 @@ Exit:
 - release je overitelny,
 - logika ma regression coverage.
 
-## 13. Doporucene poradi realizace
+## 13. Milnik K - Research plati z aktivniho lena + zlato/mince v logistice
+
+Scope:
+
+- zpevnit kontrakt `research pays from active village`,
+- umoznit presun `gold` a `coins` mezi vlastnimi leny pres stavajici logistiku,
+- zachovat jeden ekonomicky a auditni flow.
+
+Deliverables:
+
+- research panel vzdy pracuje s explicitnim `activeVillageId`,
+- research UI jasne ukazuje, ze projekt platis z aktualne vybraneho lena,
+- manualni logistika v research panelu rozsiri payload o:
+  - `wood`
+  - `stone`
+  - `iron`
+  - `gold`
+  - `coins`
+- znovupouzije se stavajici route `POST /api/v1/market/logistics/send`,
+- pokud logisticka trasa uklada payload do DB, schema a tick delivery/refund flow se rozsiri konzistentne i pro `gold/coins`.
+
+Guardrails:
+
+- nezavadet druhy transfer system,
+- nemichat regionalni research progres s lokalni ekonomikou,
+- neexpandovat hlavni `state snapshot`.
+
+Exit:
+
+- projekt lze spustit z aktivne vybraneho vlastniho lena bez fallback mateni,
+- hrac umi preskladat mince a zlato mezi vlastnimi leny bez noveho subsystemu.
+
+## 14. Milnik L - Mapovy ownership + diplomacy contract
+
+Scope:
+
+- sjednotit barevne rozliseni mapy a minimapy pod jeden serverovy kontrakt,
+- oddelit `ownership` a `diplomacy`,
+- sjednotit command gating pro mapu, dialog armady a planner.
+
+Deliverables:
+
+- server vraci autoritativni mapove rozliseni odvozene z:
+  - vlastnictvi hrace
+  - typu lena
+  - diplomacie mezi Kralovstvimi
+- klient prestane vyrabet `DoN/opponent/enemy` heuristikou z `note` nebo newbie ochrany,
+- `DoN` a `spojenec` vznikaji pouze z diplomacie Kralovstvi,
+- `royal` je explicitni serverova kategorie, ne mrtva klientska legenda,
+- command permissions se nebudou odvozovat z barev ad hoc.
+- soucasti milestone je i explicitni permission matrix pro:
+  - `move`
+  - `support`
+  - `attack`
+
+Pozadovany kontrakt:
+
+- `active` = aktualne vybrane vlastni leno
+- `own` = ostatni vlastni lena
+- `royal` = kralovska lena
+- `allied` = diplomacie `ally`
+- `don` = diplomacie `non-aggression`
+- `opponent` = neutralni cizi hrac bez specialni diplomacie
+- `enemy` = aktivni valecny stav mezi Kralovstvimi
+
+Permission matrix k finalnimu potvrzeni v acceptance:
+
+- `move` = pouze mezi vlastnimi leny
+- `support` = povolena na vlastni, royal, allied, don, opponent i enemy cile; nikdy se neblokuje jen kvuli barve vztahu
+- `attack` = povolen na royal, allied, don, opponent i enemy cile; barva vztahu neni sama o sobe blokace
+- `self-attack` = specialni podmnozina `attack` s vlastnim kontraktem
+
+Finalni decision note pro `jiny hrac ve stejnem Kralovstvi`:
+
+- nema samostatnou legendovou barvu v prvni verzi, aby se nekomplikoval mapovy kontrakt
+- vizualne se radi do `opponent`
+- server o nem ale stale vraci explicitni informaci jako o cizim hraci ve stejnem Kralovstvi pro tooltip, army dialog a planner
+- `move` = nepovolen
+- `support` = povolen
+- `attack` = povolen
+- tento stav se nikdy nesmi sloucit s `own`, `allied` ani `don`
+- stejne Kralovstvi samo o sobe nevytvari diplomatickou barvu; tu vytvari jen diplomaticky stav mezi Kralovstvimi
+
+Bezpecnostni poznamka:
+
+- pokud se povoli `self-attack`, musi byt explicitne rozhodnuto, zda plati:
+  - bez lootu
+  - bez dobyti
+  - bez retaliation flagu
+  - bez war/rank side efektu
+- bez tohoto sub-kontraktu se self-attack nema shipovat jen odblokovanim validace.
+
+Exit:
+
+- mapa, minimapa, army target dialog a planner ctou stejnou pravdu,
+- hrac nikdy neuvidi ciziho hrace jako `moje leno` jen proto, ze je ve stejnem Kralovstvi.
+
+## 15. Milnik M - Recruit queue UI completion
+
+Scope:
+
+- dokoncit frontend pro reorder naborove fronty,
+- opravit copy a UX kolem sekvencniho casovani.
+
+Deliverables:
+
+- preusporadani queued polozek pres sipky nebo drag/drop,
+- aktivne probihaici polozka zustava neprenositelna,
+- UI vola existujici `POST /api/v1/units/recruitments/reorder`,
+- texty a tooltipy odpovidaji realne sekvencni backend timeline,
+- zachova se stavajici cancel flow.
+
+Guardrails:
+
+- zadny novy polling,
+- poradim a ETA zustavaji autoritativni na serveru.
+
+Exit:
+
+- hrac vidi poradi, ETA a umi queued polozky prehazovat primo v naboru,
+- UI nelze splest s paralelnim zpracovanim.
+
+## 16. Milnik N - Combat ranky podle novych pravidel
+
+Scope:
+
+- upravit serverove agregace `attacker/defender/supporter` bez klientskych prepocitu.
+
+Deliverables:
+
+- `attackerScore = defenderLosses + attackerLosses`,
+- `defenderScore = defenderLosses + attackerLosses`,
+- `supporterScore = attackerLosses + supportLosses`,
+- centralni zmena v jednom serverovem agregacnim miste,
+- bez derivace ve frontendu.
+
+Exit:
+
+- zebricek a profilove ranky ctou stejnou agregaci,
+- pravidla odpovidaji novemu produktovemu zadani.
+
+## 17. Milnik O - Loot model + zebricek uloupenych surovin
+
+Scope:
+
+- rozsirit skutecny battle loot model o `gold` a `coins`,
+- pridat novy player-only zebricek uloupenych surovin.
+
+Deliverables:
+
+- battle payload a reporty eviduji:
+  - `wood`
+  - `stone`
+  - `iron`
+  - `gold`
+  - `coins`
+- return movement carry model je s loot payloadem konzistentni,
+- nova leaderboard stranka nebo tab pro `uloupene suroviny`,
+- bez kingdom agregace nebo kingdom verze tehoz zebricku.
+
+Guardrails:
+
+- nejdriv rozsirit zdroj pravdy v combat/report modelu,
+- az potom pridat novy zebricek.
+
+Exit:
+
+- hrac vidi ve zprave i zebricku stejne loot hodnoty,
+- do zebricku vstupuji vsechny uloupene suroviny vcetne zlata a minci.
+
+## 18. Milnik P - Verejny poradek UI polish
+
+Scope:
+
+- doladit uz nasazenou badge a tooltip bez zmen backend state modelu.
+
+Deliverables:
+
+- badge zustava vedle `Aktivniho lena`,
+- ikona je vetsi a citelnejsi,
+- tooltip potvrzuje:
+  - nazev ikony/systemu
+  - aktualni procento
+  - zda bezi debuff nebo ne,
+- zachovat stavajici fetch model bez noveho pollingu.
+
+Exit:
+
+- verejny poradek je srozumitelny i bez cteni detailu jinde ve hre.
+
+## 19. Doporucene poradi realizace
 
 1. Milnik A - release contract
 2. Milnik B - uzavreni 0.1.14
@@ -394,15 +599,22 @@ Exit:
 5. Milnik E - armada overview backend
 6. Milnik F - armada overview UI
 7. Milnik G - recruit queue a support rebase
-8. Milnik H - combat a report contract
-9. Milnik J - technicky zaklad a QA
-10. Milnik I - canvas marker layer
+8. Milnik M - recruit queue UI completion
+9. Milnik K - research aktivni leno + logistika zlata/minci
+10. Milnik L - mapovy ownership + diplomacy contract
+11. Milnik H - combat a report contract
+12. Milnik N - combat ranky
+13. Milnik O - loot model + loot leaderboard
+14. Milnik P - verejny poradek UI polish
+15. Milnik J - technicky zaklad a QA
+16. Milnik I - canvas marker layer
 
 Poznamka:
 
 - `canvas` je zamerne az na konci teto vlny, protoze je to renderer upgrade, ne nahrada za cistejsi data flow.
+- `Milnik L` ma prednost pred finalnim doladenim barev na klientu, protoze klient nesmi dal domyslet vztahy po svem.
 
-## 14. Dalsi krok pred implementaci
+## 20. Dalsi krok pred implementaci
 
 Pred samotnym psanim kodu vytvorit tri navazujici specifikace:
 
@@ -410,11 +622,17 @@ Pred samotnym psanim kodu vytvorit tri navazujici specifikace:
 - `public-order summary`
 - `army villages overview`
 - `support rebase`
+- `world-map ownership + diplomacy`
+- `research source village`
+- `market logistics gold/coins`
+- `loot leaderboard`
 
 2. `DB spec`
 - `player_world_governance`
 - recruit queue timeline schema
 - event/audit schema pro combat/report retention
+- rozsireni `logistics_routes` pro `gold/coins`, pokud zustanou soucasti route persistence
+- loot carry schema pro `gold/coins`
 
 3. `Acceptance scenare`
 - verejny poradek thresholdy
@@ -423,5 +641,10 @@ Pred samotnym psanim kodu vytvorit tri navazujici specifikace:
 - recruit queue reorder/cancel
 - support rebase validace
 - scout/caravan/combat visibility
+- mapove rozliseni `active/own/royal/allied/don/opponent/enemy`
+- edge case `jiny hrac ve stejnem Kralovstvi` = render jako `opponent`, `support/attack` povoleny, `move` blokovany, nikdy ne `own`
+- research placeny z aktivniho lena
+- logistika zlata/minci mezi vlastnimi leny
+- player-only zebricek uloupenych surovin
 
 Toto je dalsi krok pred implementaci, protoze bez techto tri dokumentu by se zacaly michat UI rozhodnuti, backend kontrakty a gameplay pravidla.

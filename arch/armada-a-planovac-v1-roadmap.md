@@ -31,7 +31,7 @@ Detailni navazne dokumenty:
 
 ## 1. Cile v1
 
-- Vytvorit novou stranku/panel `Armada` jako read-only souhrn vsech vlastnich len.
+- Vytvorit novou stranku/panel `Armada` jako read-only kompaktni roster vsech vlastnich len.
 - Vytvorit novy `Planovac` pro jeden casovany utok na jeden cil z vice vlastnich len.
 - Zachovat vykon hry tim, ze nova data nepujdou do hlavniho `gameState` snapshotu.
 - Odpojit klik na leno v Armade od zmeny aktivniho lena hry.
@@ -42,17 +42,25 @@ Detailni navazne dokumenty:
 
 - Zobrazuje pouze vlastni lena v aktualnim svete.
 - Lena jsou razena A/Z stejne jako jinde ve hre.
-- Kazda karta lena ukazuje:
+- Kazdy radek/karta lena ukazuje:
   - nazev lena
   - souradnice
-  - horizontalni unit pills
-  - hodnoty ve formatu `vlastni (podpora)`
+  - horizontalni pruh jednotek s malou ikonou a hodnotou
+  - hodnoty ve formatu `vlastni (podpora)` nebo kompaktni ekvivalent `vlastni +podpora`
+  - opevneni jen jako ikona + uroven
+  - branu jen jako ikona + uroven
+  - kompakni inline ikonu pro otevreni profilu lena
+- V prehledu se nezobrazuje `Aktualni rekrut`.
 - `podpora` znamena stacionovane obranne jednotky poslanych do lena jako support.
 - Podpora je pouze informacni a nelze ji pouzit do utoku.
-- Klik kamkoliv na kartu lena:
+- Hlavni klik na radek/kartu lena:
   - neprepne aktivni leno hry
   - otevre Planovac, pokud neni otevreny
   - prida dane leno jako novy leg do konceptu planu
+- Klik na inline ikonu profilu:
+  - neprepne aktivni leno hry
+  - otevre detail/profil vybraneho lena
+  - nespousti `Pridat do planovace`
 - Pokud je leno v planu uz vybrane:
   - nevytvori se duplikat
   - planner fokusne existujici leg
@@ -128,11 +136,13 @@ Detailni navazne dokumenty:
 
 ### Armada
 
-- Kompaktni karty, zadne tezke tabulky.
+- Kompaktni radky nebo nizke karty, zadne tezke tabulky.
 - Jednotky horizontalne vedle sebe.
-- Sirka jednotlivych unit pill se prizpusobuje textu.
+- Ikony jednotek jsou mensi a minimalisticke, aby roster zustal citelny i na mensim displeji.
+- Sirka jednotkovych prvku se prizpusobuje hodnotam, ne dlouhym nazvum.
 - Support je informacni a vizualne slabsi nez vlastni jednotky.
-- Klik na kartu = hlavni akce `Pridat do planovace`.
+- Profil lena je dostupny pres malou inline ikonu v hlavicce radku, ne pres samostatny blok akci.
+- Klik na hlavni cast radku = hlavni akce `Pridat do planovace`.
 
 ### Planovac
 
@@ -497,14 +507,18 @@ Exit criteria:
 
 - implementovat `army/overview`
 - vykreslit novy seznam vlastnich len
-- pridat unit pills `vlastni (podpora)`
+- pridat kompaktni jednotkovy pruh `ikona + hodnota`
+- pridat opevneni a branu jako `ikona + uroven`
+- odebrat souhrn aktualniho rekrutu z overview
+- pridat inline ikonu `Otevrit profil lena`
 - pridat akci `Pridat do planovace`
 - pridat limit 10 legu a fokus existujiciho legu
 
 Exit criteria:
 
 - Armada funguje jako read-only overview
-- karta lena pridava leg do planneru
+- hlavni klik na radek/kartu pridava leg do planneru
+- profil lena jde otevrit bez samostatneho akcniho radku
 
 ### Phase 3 - Planner Draft UI
 

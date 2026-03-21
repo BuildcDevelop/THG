@@ -3426,7 +3426,8 @@ html {
 }
 
 .kingdom-create-controls input,
-.kingdom-invite-controls input {
+.kingdom-invite-controls input,
+.kingdom-diplomacy-controls select {
   border: 1px solid rgba(157, 203, 239, 0.28);
   border-radius: 9px;
   padding: 0.48rem 0.58rem;
@@ -3436,8 +3437,30 @@ html {
 }
 
 .kingdom-create-controls input:disabled,
-.kingdom-invite-controls input:disabled {
+.kingdom-invite-controls input:disabled,
+.kingdom-diplomacy-controls select:disabled {
   opacity: 0.56;
+}
+
+.kingdom-diplomacy-table td:nth-child(2) {
+  font-weight: 600;
+}
+
+.kingdom-diplomacy-controls {
+  display: grid;
+  gap: 0.46rem;
+}
+
+.kingdom-diplomacy-controls label {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: #bbd2e6;
+}
+
+.kingdom-diplomacy-relation-picker .kingdom-action-button.is-active {
+  border-color: rgba(214, 162, 74, 0.72);
+  color: #f5dcab;
 }
 
 .kingdom-audit-list {
@@ -3640,9 +3663,57 @@ html {
   font-size: 0.72rem;
 }
 
-.queue-row td:last-child {
-  width: 2.4rem;
+.queue-row td.queue-row-actions {
+  width: 8.1rem;
   text-align: right;
+}
+
+.recruit-queue-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.24rem;
+}
+
+.recruit-queue-move-button {
+  border: 1px solid rgba(139, 170, 212, 0.5);
+  border-radius: 7px;
+  min-width: 1.66rem;
+  height: 1.66rem;
+  padding: 0;
+  line-height: 1;
+  font-size: 0.84rem;
+  background: linear-gradient(180deg, rgba(19, 43, 71, 0.92), rgba(13, 31, 53, 0.92));
+  color: #d7e7f6;
+  display: inline-grid;
+  place-items: center;
+  transition: border-color 0.16s ease, color 0.16s ease, opacity 0.16s ease;
+}
+
+.recruit-queue-move-button:hover:not(:disabled) {
+  border-color: rgba(175, 202, 239, 0.82);
+  color: #f4fbff;
+}
+
+.recruit-queue-move-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.queue-row[draggable='true'] {
+  cursor: grab;
+}
+
+.queue-row[draggable='true']:active {
+  cursor: grabbing;
+}
+
+.queue-row.is-drag-source {
+  opacity: 0.6;
+}
+
+.queue-row.is-drag-target td {
+  box-shadow: inset 0 0 0 1px rgba(227, 187, 112, 0.48);
 }
 
 .inline-cancel-button {
@@ -11528,8 +11599,95 @@ html {
   gap: 0.42rem;
 }
 
-.multi-village-manage-list {
-  gap: 0.6rem;
+.multi-village-overview-list {
+  gap: 0.54rem;
+}
+
+.multi-village-overview-item {
+  display: grid;
+  gap: 0.38rem;
+}
+
+.multi-village-overview-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.56rem;
+}
+
+.multi-village-open-profile {
+  min-height: 1.9rem;
+  min-width: 1.9rem;
+  padding: 0.24rem 0.26rem;
+  display: inline-grid;
+  place-items: center;
+}
+
+.multi-village-open-profile .symbol {
+  font-size: 0.94rem;
+  line-height: 1;
+}
+
+.multi-village-overview-intel-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.32rem;
+}
+
+.multi-village-overview-level-pill {
+  border: 1px solid rgba(127, 154, 206, 0.3);
+  border-radius: 999px;
+  background: rgba(10, 18, 30, 0.78);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.24rem;
+  padding: 0.12rem 0.38rem 0.12rem 0.14rem;
+}
+
+.multi-village-overview-level-pill .unit-icon-shell.tiny {
+  width: 0.98rem;
+  height: 0.98rem;
+}
+
+.multi-village-overview-level-pill .unit-icon-shell.tiny .unit-icon-image {
+  width: 0.56rem;
+  height: 0.56rem;
+}
+
+.multi-village-overview-level-pill strong {
+  font-size: 0.72rem;
+  color: #f1d6a5;
+}
+
+.multi-village-unit-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.28rem;
+}
+
+.multi-village-unit-pill {
+  border: 1px solid rgba(124, 150, 198, 0.34);
+  border-radius: 999px;
+  background: rgba(8, 15, 25, 0.76);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  padding: 0.1rem 0.34rem 0.1rem 0.1rem;
+}
+
+.multi-village-unit-pill .unit-icon-shell.tiny {
+  width: 0.98rem;
+  height: 0.98rem;
+}
+
+.multi-village-unit-pill .unit-icon-shell.tiny .unit-icon-image {
+  width: 0.56rem;
+  height: 0.56rem;
+}
+
+.multi-village-unit-pill strong {
+  font-size: 0.72rem;
+  color: #f3ca85;
 }
 
 .selected-village-building-strip {
@@ -11595,30 +11753,19 @@ html {
   min-height: 2.2em;
 }
 
-.multi-village-actions-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-  align-items: end;
-}
+@media (max-width: 780px) {
+  .multi-village-overview-top {
+    gap: 0.36rem;
+  }
 
-.multi-village-actions-row label {
-  display: grid;
-  gap: 0.22rem;
-  min-width: 180px;
-  color: #b9cfe3;
-  font-size: 0.8rem;
-}
+  .multi-village-overview-top .commands-item-line {
+    gap: 0.24rem;
+  }
 
-.multi-village-actions-row select,
-.multi-village-actions-row input {
-  width: 100%;
-  border: 1px solid rgba(145, 188, 223, 0.34);
-  border-radius: 8px;
-  background: rgba(8, 16, 27, 0.84);
-  color: #e2edf8;
-  padding: 0.36rem 0.52rem;
-  font: inherit;
+  .multi-village-overview-top small {
+    display: inline-block;
+    margin-top: 0.08rem;
+  }
 }
 
 .military-panel .commands-kpi-strip {

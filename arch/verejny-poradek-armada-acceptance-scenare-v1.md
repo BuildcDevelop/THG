@@ -1,4 +1,4 @@
-# Verejny poradek, armada vsech len a queue v1 - acceptance scenare
+# Verejny poradek, armada vsech len, mapa a queue v1 - acceptance scenare
 
 Tento dokument navazuje na:
 
@@ -9,6 +9,7 @@ Tento dokument navazuje na:
 Cil:
 
 - dodat konkretni scenare pro implementaci a QA,
+- dodat konkretni scenare i pro mapovy ownership/diplomacy kontrakt,
 - overit UX, data-flow i guardrails,
 - zachytit edge cases pred runtime implementaci.
 
@@ -336,3 +337,79 @@ Expected:
   - FPS pri pan/zoom,
   - pocet DOM node,
   - stabilitu hover/selection parity.
+
+## 8. Mapa - ownership a diplomacy
+
+### MAP-001 Aktivni vlastni leno
+
+Precondition:
+
+- hrac ma vybrane jedno vlastni aktivni leno
+
+Expected:
+
+- settlement vrati `mapKind = active`,
+- settlement vrati `diplomacyKind = same_player`,
+- hlavni mapa i minimapa pouziji stejnou aktivni barvu,
+- render se neodvozuje z klientskych poznamek ani ochrany.
+
+### MAP-002 Ostatni vlastni leno
+
+Precondition:
+
+- hrac ma aspon dve vlastni lena
+
+Expected:
+
+- neaktivni vlastni leno vrati `mapKind = own`,
+- nikdy se nezobrazi jako `active`,
+- army dialog i planner ho stale berou jako vlastni cil pro `move`.
+
+### MAP-003 Cizi hrac ve stejnem Kralovstvi
+
+Precondition:
+
+- viewer i cilovy hrac jsou ve stejnem Kralovstvi,
+- cilove leno nepatri viewerovi
+
+Expected:
+
+- settlement vrati `mapKind = opponent`,
+- settlement vrati `diplomacyKind = same_kingdom_foreign`,
+- `commandPermissions.canMove = false`,
+- `commandPermissions.canSupport = true`,
+- `commandPermissions.canAttack = true`,
+- cil se nikdy nikde nevykresli jako `own`,
+- tooltip, army dialog i planner umi tento stav popsat bez nove legendove barvy.
+
+### MAP-004 Diplomacie se ridi jen Kralovstvimi
+
+Precondition:
+
+- mezi Kralovstvimi existuje stav `ally`, `non_aggression` nebo `war`
+
+Expected:
+
+- `mapKind` a `diplomacyKind` se odvodi pouze z diplomatickeho stavu,
+- newbie protection ani `note` nevytvori `allied`, `don` ani `enemy`,
+- zmena diplomatickeho stavu se propise konzistentne na mapu, minimapu, army dialog i planner.
+
+### MAP-005 Kralovska lena
+
+Precondition:
+
+- cil je kralovske leno
+
+Expected:
+
+- settlement vrati `mapKind = royal`,
+- `royal` neni jen klientsky legend item bez serverove opory,
+- target gating se ridi `commandPermissions`, ne barvou samotnou.
+
+### MAP-006 Jeden zdroj pravdy pro target gating
+
+Expected:
+
+- hlavni mapa, minimapa, army target dialog a planner ctou stejne `commandPermissions`,
+- nevznika situace, kdy jedna cast UI utok povoli a jina blokuje jen kvuli vlastni heuristice,
+- fallback field `relation` nema vliv na finalni render ani permissions po migraci.
