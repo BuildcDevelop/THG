@@ -2228,7 +2228,7 @@ const LEADERBOARD_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['rankings', 'profi
 const KINGDOM_HUB_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['kingdom', 'messages']);
 const RESEARCH_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['research']);
 const MERCENARY_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['military']);
-const MARKET_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['commands']);
+const MARKET_DEPENDENT_PANEL_TYPES = new Set<PanelType>(['commands', 'research']);
 const LANDSCAPE_PANEL_TYPES = new Set<PanelType>([
   'messages',
   'activity',
@@ -8530,26 +8530,395 @@ const MilitaryPanel = ({
   );
 };
 
+const ResearchTreasuryTransferSection = ({
+  market,
+  resources,
+  settlements,
+  currentVillageId,
+  currentUsername,
+  logisticsActionPending,
+  cancelLogisticsPendingId,
+  notice,
+  onSendMarketLogistics,
+  onCancelMarketLogistics,
+}: {
+  market: GameStateResponse['market'] | undefined;
+  resources: Pick<GameStateResponse['resources'], 'gold' | 'coins'> | undefined;
+  settlements: RegionSettlement[];
+  currentVillageId: number | null;
+  currentUsername: string;
+  logisticsActionPending: boolean;
+  cancelLogisticsPendingId: number | null;
+  notice: string | null;
+  onSendMarketLogistics: (payload: {
+    targetVillageId: number;
+    wood: number;
+    stone: number;
+    iron: number;
+    gold: number;
+    coins: number;
+  }) => void;
+  onCancelMarketLogistics: (routeId: number) => void;
+}) => {
+  const [targetVillageId, setTargetVillageId] = useState<number | null>(null);
+  const [transferDraft, setTransferDraft] = useState<{ gold: string; coins: string }>({
+    gold: '',
+    coins: '',
+  });
+  const marketLevel = Math.max(0, Math.floor(Number(market?.level ?? 0)));
+  const marketCapacity = Math.max(0, Math.floor(Number(market?.capacity ?? 0)));
+  const marketMaxDistance = Math.max(0, Math.floor(Number(market?.maxDistance ?? 0)));
+  const treasuryRoutes = useMemo(
+    () =>
+      [...(market?.logisticsRoutes ?? [])]
+        .filter(
+          (route) =>
+            Math.max(0, Math.floor(Number(route.gold ?? 0))) > 0 ||
+            Math.max(0, Math.floor(Number(route.coins ?? 0))) > 0,
+        )
+        .sort((left, right) => left.remainingSec - right.remainingSec || left.id - right.id),
+    [market?.logisticsRoutes],
+  );
+  const currentUsernameComparable = useMemo(
+    () => String(currentUsername ?? '').toLocaleLowerCase('cs-CZ'),
+    [currentUsername],
+  );
+  const logisticsTargets = useMemo(
+    () =>
+      settlements
+        .filter((settlement) => {
+          const villageId = Number(settlement.villageId ?? 0);
+          if (!Number.isFinite(villageId) || villageId <= 0) {
+            return false;
+          }
+          const ownerComparable = String(settlement.owner ?? '').toLocaleLowerCase('cs-CZ');
+          const isOwnedSettlement =
+            settlement.kind === 'own' ||
+            settlement.relation === 'self' ||
+            (currentUsernameComparable.length > 0 && ownerComparable === currentUsernameComparable);
+          if (!isOwnedSettlement) {
+            return false;
+          }
+          return currentVillageId == null || villageId !== Number(currentVillageId);
+        })
+        .sort((left, right) =>
+          compareVillageLabelNatural(
+            { name: left.name, coordX: left.globalX, coordY: left.globalY },
+            { name: right.name, coordX: right.globalX, coordY: right.globalY },
+          ),
+        ),
+    [currentUsernameComparable, currentVillageId, settlements],
+  );
+  const effectiveTargetVillageId = useMemo(() => {
+    if (
+      targetVillageId != null &&
+      logisticsTargets.some((settlement) => Number(settlement.villageId) === Number(targetVillageId))
+    ) {
+      return Number(targetVillageId);
+    }
+    const fallbackVillageId = Number(logisticsTargets[0]?.villageId ?? 0);
+    return Number.isFinite(fallbackVillageId) && fallbackVillageId > 0 ? fallbackVillageId : null;
+  }, [targetVillageId, logisticsTargets]);
+  const parseTransferAmount = (value: string): number => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return 0;
+    }
+    return Math.max(0, Math.floor(parsed));
+  };
+  const transferGold = parseTransferAmount(transferDraft.gold);
+  const transferCoins = parseTransferAmount(transferDraft.coins);
+  const transferTotal = transferGold + transferCoins;
+  const resolveTreasuryRouteStatusLabel = (statusRaw: string): string => {
+    const status = String(statusRaw ?? '').toLocaleLowerCase('cs-CZ');
+    if (status === 'ordered') {
+      return 'Objednáno';
+    }
+    if (status === 'active') {
+      return 'Aktivní';
+    }
+    if (status === 'expired') {
+      return 'Vypršelo';
+    }
+    if (status === 'canceled') {
+      return 'Zrušeno';
+    }
+    if (status === 'in_progress') {
+      return 'Na cestě';
+    }
+    if (status === 'completed') {
+      return 'Doručeno';
+    }
+    return statusRaw;
+  };
+  const resolveTreasuryRouteModeLabel = (modeRaw: string): string => {
+    const mode = String(modeRaw ?? '').toLocaleLowerCase('cs-CZ');
+    if (mode === 'guild-auto') {
+      return 'Cech';
+    }
+    if (mode === 'manual') {
+      return 'Ručně';
+    }
+    return modeRaw;
+  };
+  const selectedTargetSettlement =
+    effectiveTargetVillageId == null
+      ? null
+      : logisticsTargets.find((settlement) => Number(settlement.villageId) === Number(effectiveTargetVillageId)) ?? null;
+  const distanceTiles = useMemo(() => {
+    if (!selectedTargetSettlement) {
+      return null;
+    }
+    const originSettlement =
+      currentVillageId == null
+        ? null
+        : settlements.find((settlement) => Number(settlement.villageId) === Number(currentVillageId)) ?? null;
+    if (!originSettlement) {
+      return null;
+    }
+    return Math.max(
+      Math.abs(Number(originSettlement.globalX) - Number(selectedTargetSettlement.globalX)),
+      Math.abs(Number(originSettlement.globalY) - Number(selectedTargetSettlement.globalY)),
+    );
+  }, [currentVillageId, selectedTargetSettlement, settlements]);
+  const transferEtaSec =
+    distanceTiles == null ? null : Math.max(60, Math.floor((10 + distanceTiles * 2) * 60));
+  const transferWarnings: string[] = [];
+  if (marketLevel > 0 && logisticsTargets.length <= 0) {
+    transferWarnings.push('Pro převod nejsou dostupná žádná další vlastní léna.');
+  }
+  if (transferTotal > marketCapacity && marketLevel > 0) {
+    transferWarnings.push(`Součet převodu překračuje kapacitu trhu (${marketCapacity.toLocaleString('cs-CZ')}).`);
+  }
+  if (transferGold > Number(resources?.gold ?? 0)) {
+    transferWarnings.push('Nedostatek zlata.');
+  }
+  if (transferCoins > Number(resources?.coins ?? 0)) {
+    transferWarnings.push('Nedostatek mincí.');
+  }
+  if (distanceTiles != null && marketMaxDistance > 0 && distanceTiles > marketMaxDistance) {
+    transferWarnings.push(`Cíl je mimo dosah trhu (${marketMaxDistance} polí).`);
+  }
+  const canSendTransfer =
+    marketLevel > 0 &&
+    selectedTargetSettlement != null &&
+    transferTotal > 0 &&
+    transferWarnings.length === 0 &&
+    !logisticsActionPending;
+
+  return (
+    <section>
+      <h3>Pokladnice mezi lény</h3>
+      <p className="row-help">
+        Přesunuje zlato a mince z aktivního léna do jiného tvého léna přes stávající logistiku trhu.
+      </p>
+      <div className="commands-kpi-strip">
+        <article>
+          <span>Úroveň trhu</span>
+          <strong>{marketLevel.toLocaleString('cs-CZ')}</strong>
+        </article>
+        <article>
+          <span>Kapacita převodu</span>
+          <strong>{marketCapacity.toLocaleString('cs-CZ')}</strong>
+        </article>
+        <article>
+          <span>Zlato v lénu</span>
+          <strong>{Math.max(0, Math.floor(Number(resources?.gold ?? 0))).toLocaleString('cs-CZ')}</strong>
+        </article>
+        <article>
+          <span>Mince v lénu</span>
+          <strong>{Math.max(0, Math.floor(Number(resources?.coins ?? 0))).toLocaleString('cs-CZ')}</strong>
+        </article>
+      </div>
+      {marketLevel > 0 ? (
+        <div className="research-logistics-form">
+          <label>
+            Cílové léno
+            <select
+              value={effectiveTargetVillageId == null ? '' : String(effectiveTargetVillageId)}
+              onChange={(event) => {
+                const value = String(event.target.value ?? '').trim();
+                setTargetVillageId(value ? Number(value) : null);
+              }}
+              disabled={logisticsActionPending || logisticsTargets.length === 0}
+            >
+              <option value="">-</option>
+              {logisticsTargets.map((settlement) => (
+                <option key={`research-treasury-target-${settlement.id}`} value={settlement.villageId}>
+                  {settlement.name} ({settlement.globalX}|{settlement.globalY})
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="research-logistics-grid">
+            <label>
+              🪙 Zlato
+              <input
+                type="number"
+                min={0}
+                step={100}
+                value={transferDraft.gold}
+                onChange={(event) =>
+                  setTransferDraft((previous) => ({
+                    ...previous,
+                    gold: event.target.value,
+                  }))
+                }
+                disabled={logisticsActionPending}
+              />
+            </label>
+            <label>
+              💰 Mince
+              <input
+                type="number"
+                min={0}
+                step={100}
+                value={transferDraft.coins}
+                onChange={(event) =>
+                  setTransferDraft((previous) => ({
+                    ...previous,
+                    coins: event.target.value,
+                  }))
+                }
+                disabled={logisticsActionPending}
+              />
+            </label>
+          </div>
+          <div className="army-command-preview">
+            <p className="army-command-preview-target">
+              Cíl:{' '}
+              <strong>
+                {selectedTargetSettlement
+                  ? `${selectedTargetSettlement.name} (${selectedTargetSettlement.globalX}|${selectedTargetSettlement.globalY})`
+                  : '-'}
+              </strong>{' '}
+              · ETA: <strong>{transferEtaSec == null ? '-' : formatDurationLabel(transferEtaSec)}</strong>
+            </p>
+            <p>
+              Součet převodu: <strong>{transferTotal.toLocaleString('cs-CZ')}</strong> /{' '}
+              <strong>{marketCapacity.toLocaleString('cs-CZ')}</strong>
+            </p>
+          </div>
+          {transferWarnings.map((warning) => (
+            <p key={`research-treasury-warning-${warning}`} className="panel-feedback is-danger">
+              {warning}
+            </p>
+          ))}
+          <div className="research-panel-inline-actions">
+            <button
+              type="button"
+              className="secondary-action"
+              onClick={() => {
+                if (selectedTargetSettlement == null) {
+                  return;
+                }
+                onSendMarketLogistics({
+                  targetVillageId: Number(selectedTargetSettlement.villageId ?? 0),
+                  wood: 0,
+                  stone: 0,
+                  iron: 0,
+                  gold: transferGold,
+                  coins: transferCoins,
+                });
+              }}
+              disabled={!canSendTransfer}
+            >
+              {logisticsActionPending ? 'Odesílám převod...' : 'Poslat zlato a mince'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <p>Postav Městský trh alespoň na úroveň 1, potom lze převádět zlato a mince mezi lény.</p>
+      )}
+      {treasuryRoutes.length > 0 ? (
+        <ul className="commands-list">
+          {treasuryRoutes.map((route) => {
+            const isCancelPending = cancelLogisticsPendingId === Number(route.id);
+            return (
+              <li key={`research-treasury-route-${route.id}`} className="commands-item">
+                <div className="commands-item-line">
+                  <strong>
+                    {route.sourceVillageName} → {route.targetVillageName}
+                  </strong>
+                  <span>
+                    {resolveTreasuryRouteStatusLabel(route.status)} · {resolveTreasuryRouteModeLabel(route.mode)}
+                  </span>
+                </div>
+                <small>
+                  ETA {formatDurationLabel(Math.max(0, Math.floor(Number(route.remainingSec ?? 0)) ?? 0))} · dorazí{' '}
+                  {formatDateTimeLabel(route.arriveAt)} · 🪙{' '}
+                  {Math.max(0, Math.floor(Number(route.gold ?? 0))).toLocaleString('cs-CZ')} · 💰{' '}
+                  {Math.max(0, Math.floor(Number(route.coins ?? 0))).toLocaleString('cs-CZ')}
+                </small>
+                {String(route.status ?? '').toLocaleLowerCase('cs-CZ') === 'in_progress' ? (
+                  <div className="research-panel-inline-actions">
+                    <button
+                      type="button"
+                      className="secondary-action"
+                      onClick={() => onCancelMarketLogistics(route.id)}
+                      disabled={isCancelPending || logisticsActionPending}
+                    >
+                      {isCancelPending ? 'Ruším převod...' : 'Zrušit převod'}
+                    </button>
+                  </div>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="row-help">Žádné aktivní převody zlata nebo mincí z tohoto trhu.</p>
+      )}
+      {notice ? <p className="panel-feedback">{notice}</p> : null}
+    </section>
+  );
+};
+
 const ResearchPanel = ({
   research,
   rules,
+  market,
   resources,
+  settlements,
+  currentVillageId,
+  currentUsername,
   notice,
+  logisticsNotice,
   researchActionPending,
+  logisticsActionPending,
+  cancelLogisticsPendingId,
   onHireAcademics,
   onAdjustResearchAcademics,
   onStartResearchProject,
+  onSendMarketLogistics,
+  onCancelMarketLogistics,
 }: {
   research: GameStateResponse['research'] | undefined;
   rules: GameStateResponse['rules'] | undefined;
+  market: GameStateResponse['market'] | undefined;
   resources:
     | Pick<GameStateResponse['resources'], 'coins' | 'gold' | 'productionPerHour' | 'protection'>
     | undefined;
+  settlements: RegionSettlement[];
+  currentVillageId: number | null;
+  currentUsername: string;
   notice: string | null;
+  logisticsNotice: string | null;
   researchActionPending: boolean;
+  logisticsActionPending: boolean;
+  cancelLogisticsPendingId: number | null;
   onHireAcademics: (amount: number) => Promise<boolean>;
   onAdjustResearchAcademics: (researchId: string, delta: number) => Promise<boolean>;
   onStartResearchProject: (researchId: string, academics: number) => void;
+  onSendMarketLogistics: (payload: {
+    targetVillageId: number;
+    wood: number;
+    stone: number;
+    iron: number;
+    gold: number;
+    coins: number;
+  }) => void;
+  onCancelMarketLogistics: (routeId: number) => void;
 }) => {
   const projects = useMemo(() => research?.projects ?? [], [research?.projects]);
   const [isHireImpactActive, setIsHireImpactActive] = useState(false);
@@ -8896,6 +9265,19 @@ const ResearchPanel = ({
           ) : null}
         </div>
       </section>
+
+      <ResearchTreasuryTransferSection
+        market={market}
+        resources={resources}
+        settlements={settlements}
+        currentVillageId={currentVillageId}
+        currentUsername={currentUsername}
+        logisticsActionPending={logisticsActionPending}
+        cancelLogisticsPendingId={cancelLogisticsPendingId}
+        notice={logisticsNotice}
+        onSendMarketLogistics={onSendMarketLogistics}
+        onCancelMarketLogistics={onCancelMarketLogistics}
+      />
 
       <section>
         <h3>Pravidla světa</h3>
@@ -22136,12 +22518,21 @@ export const GamePage = () => {
           <ResearchPanel
             research={gameState?.research}
             rules={gameState?.rules}
+            market={gameState?.market}
             resources={gameState?.resources}
+            settlements={mapSettlements}
+            currentVillageId={gameState?.village.id ?? activeVillageId}
+            currentUsername={username}
             notice={researchNotice}
+            logisticsNotice={armyCommandNotice}
             researchActionPending={researchActionPending}
+            logisticsActionPending={logisticsActionPending}
+            cancelLogisticsPendingId={cancelLogisticsPendingId}
             onHireAcademics={handleHireAcademics}
             onAdjustResearchAcademics={handleAdjustResearchAcademics}
             onStartResearchProject={handleStartResearchProject}
+            onSendMarketLogistics={handleSendMarketLogistics}
+            onCancelMarketLogistics={handleCancelMarketLogistics}
           />
         );
       case 'messages':

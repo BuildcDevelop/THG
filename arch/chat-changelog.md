@@ -1192,3 +1192,10 @@ Entry template:
 - Summary: Commitnul jsem rozpracovane zmeny na `feat/build-0.1.15` jako `11aed5f feat(gameplay): finalize 0.1.15 roadmap rollout`, lokalni `develop` jsem na ne fast-forward mergnul a provedl cisty restart lokalniho dev behu. Nova session bezi pres `npm run dev` nad vetvi `develop` s klientem na `http://localhost:5173` a backendem na `http://localhost:3001`.
 - Files: arch/chat-changelog.md
 - Verification: `git merge --ff-only feat/build-0.1.15` (PASS), `npm run dev` na `develop` (RUNNING), porty `5173` a `3001` naslouchaji
+
+## 2026-03-21 | branch: develop
+
+- Request: Overit, kde je v UI moznost posilat zlato a mince, a pote ji doplnit i do panelu vyzkumu.
+- Summary: Overil jsem, ze prevody `gold/coins` byly uz implementovane v `CommandsPanel > Trh a logistika`, ale ne ve vyzkumu. Proto jsem pridal do `ResearchPanel` novou sekci `Pokladnice mezi lény`, ktera nad existujicim market-logistics API umi z aktivniho lena posilat zlato a mince do jineho vlastniho lena, zobrazovat ETA, kapacitu trhu, aktivni prevody a zruseni prevodu. Soucasne jsem rozsiril market-dependent fetch i pro rozbaleny panel vyzkumu, aby se data nacitala bez noveho globalniho pollingu.
+- Files: src/pages/GamePage.tsx, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS), `npm run test:regression` (PASS, 31/31)
