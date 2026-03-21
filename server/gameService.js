@@ -773,6 +773,9 @@ const deleteKingdomInvitesByRegionStmt = db.prepare(
 const deleteKingdomEventsByRegionStmt = db.prepare(
   'DELETE FROM kingdom_events WHERE region = ?',
 );
+const deleteKingdomDiplomacyByRegionStmt = db.prepare(
+  'DELETE FROM kingdom_diplomacy WHERE region = ?',
+);
 const deletePlayerNotificationsByRegionStmt = db.prepare(
   'DELETE FROM player_notifications WHERE region = ?',
 );
@@ -1248,10 +1251,12 @@ const insertArmyMovementStmt = db.prepare(
       carry_wood,
       carry_stone,
       carry_iron,
+      carry_gold,
+      carry_coins,
       started_at,
       arrive_at,
       status
-   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 const insertArmyMovementWithPlannerRefsStmt = db.prepare(
   `INSERT INTO army_movements (
@@ -1266,10 +1271,12 @@ const insertArmyMovementWithPlannerRefsStmt = db.prepare(
       carry_wood,
       carry_stone,
       carry_iron,
+      carry_gold,
+      carry_coins,
       started_at,
       arrive_at,
       status
-   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 const insertArmyMovementUnitStmt = db.prepare(
   'INSERT INTO army_movement_units (movement_id, unit_id, amount) VALUES (?, ?, ?)',
@@ -1297,6 +1304,8 @@ const selectDueArmyMovementsStmt = db.prepare(
       carry_wood AS carryWood,
       carry_stone AS carryStone,
       carry_iron AS carryIron,
+      carry_gold AS carryGold,
+      carry_coins AS carryCoins,
       started_at AS startedAt,
       arrive_at AS arriveAt,
       status
@@ -1318,6 +1327,8 @@ const selectActiveArmyMovementsByPlayerStmt = db.prepare(
       m.carry_wood AS carryWood,
       m.carry_stone AS carryStone,
       m.carry_iron AS carryIron,
+      m.carry_gold AS carryGold,
+      m.carry_coins AS carryCoins,
       m.started_at AS startedAt,
       m.arrive_at AS arriveAt,
       ov.name AS originName,
@@ -1349,6 +1360,8 @@ const selectIncomingArmyMovementsByVillageOwnerStmt = db.prepare(
       m.carry_wood AS carryWood,
       m.carry_stone AS carryStone,
       m.carry_iron AS carryIron,
+      m.carry_gold AS carryGold,
+      m.carry_coins AS carryCoins,
       m.started_at AS startedAt,
       m.arrive_at AS arriveAt,
       ov.name AS originName,
@@ -1785,6 +1798,8 @@ const selectStationedSupportMovementsByPlayerStmt = db.prepare(
       m.carry_wood AS carryWood,
       m.carry_stone AS carryStone,
       m.carry_iron AS carryIron,
+      m.carry_gold AS carryGold,
+      m.carry_coins AS carryCoins,
       m.started_at AS startedAt,
       m.arrive_at AS arriveAt,
       ov.name AS originName,
@@ -1993,10 +2008,12 @@ const insertLogisticsRouteStmt = db.prepare(
       wood,
       stone,
       iron,
+      gold,
+      coins,
       status,
       started_at,
       arrive_at
-   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?)`,
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?)`,
 );
 const selectDueLogisticsRoutesStmt = db.prepare(
   `SELECT
@@ -2009,6 +2026,8 @@ const selectDueLogisticsRoutesStmt = db.prepare(
       wood,
       stone,
       iron,
+      gold,
+      coins,
       started_at AS startedAt,
       arrive_at AS arriveAt
    FROM logistics_routes
@@ -2026,6 +2045,8 @@ const selectInProgressLogisticsRouteByIdForPlayerStmt = db.prepare(
       lr.wood,
       lr.stone,
       lr.iron,
+      lr.gold,
+      lr.coins,
       lr.status,
       lr.started_at AS startedAt,
       lr.arrive_at AS arriveAt
@@ -2053,6 +2074,8 @@ const selectRecentLogisticsByVillageStmt = db.prepare(
       lr.wood,
       lr.stone,
       lr.iron,
+      lr.gold,
+      lr.coins,
       lr.status,
       lr.started_at AS startedAt,
       lr.arrive_at AS arriveAt,
@@ -2821,6 +2844,11 @@ const countKingdomEventsByRegionStmt = db.prepare(
    FROM kingdom_events
    WHERE region = ?`,
 );
+const countKingdomDiplomacyByRegionStmt = db.prepare(
+  `SELECT COUNT(*) AS total
+   FROM kingdom_diplomacy
+   WHERE region = ?`,
+);
 const countPlayerNotificationsByRegionStmt = db.prepare(
   `SELECT COUNT(*) AS total
    FROM player_notifications
@@ -3079,6 +3107,55 @@ const selectKingdomEventsByPlayerStmt = db.prepare(
    ORDER BY ke.created_at DESC, ke.id DESC
    LIMIT ?`,
 );
+const selectKingdomDiplomacyByRegionStmt = db.prepare(
+  `SELECT
+      kd.region,
+      kd.kingdom_low AS kingdomLow,
+      kd.kingdom_high AS kingdomHigh,
+      kd.relation_kind AS relationKind,
+      kd.created_by_player_id AS createdByPlayerId,
+      kd.updated_by_player_id AS updatedByPlayerId,
+      kd.created_at AS createdAt,
+      kd.updated_at AS updatedAt,
+      updater.username AS updatedByUsername
+   FROM kingdom_diplomacy kd
+   LEFT JOIN players updater ON updater.id = kd.updated_by_player_id
+   WHERE kd.region = ?
+   ORDER BY kd.updated_at DESC, kd.kingdom_low COLLATE NOCASE ASC, kd.kingdom_high COLLATE NOCASE ASC`,
+);
+const selectKingdomDiplomacyByPairStmt = db.prepare(
+  `SELECT
+      relation_kind AS relationKind,
+      updated_by_player_id AS updatedByPlayerId,
+      updated_at AS updatedAt
+   FROM kingdom_diplomacy
+   WHERE region = ?
+     AND kingdom_low = ?
+     AND kingdom_high = ?
+   LIMIT 1`,
+);
+const upsertKingdomDiplomacyStmt = db.prepare(
+  `INSERT INTO kingdom_diplomacy (
+      region,
+      kingdom_low,
+      kingdom_high,
+      relation_kind,
+      created_by_player_id,
+      updated_by_player_id,
+      created_at,
+      updated_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(region, kingdom_low, kingdom_high) DO UPDATE SET
+     relation_kind = excluded.relation_kind,
+     updated_by_player_id = excluded.updated_by_player_id,
+     updated_at = excluded.updated_at`,
+);
+const deleteKingdomDiplomacyByPairStmt = db.prepare(
+  `DELETE FROM kingdom_diplomacy
+   WHERE region = ?
+     AND kingdom_low = ?
+     AND kingdom_high = ?`,
+);
 
 const RESOURCE_STORAGE_PRECISION = 1000;
 const roundResource = (value) => {
@@ -3104,6 +3181,108 @@ const normalizeKingdomComparable = (value) =>
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
     .toLowerCase();
+
+const normalizeKingdomDiplomacyRelationKind = (valueRaw) => {
+  const normalized = String(valueRaw ?? '')
+    .trim()
+    .toLowerCase();
+  if (normalized === 'ally') {
+    return 'ally';
+  }
+  if (normalized === 'non_aggression' || normalized === 'nap' || normalized === 'don') {
+    return 'non_aggression';
+  }
+  if (normalized === 'war' || normalized === 'enemy') {
+    return 'war';
+  }
+  if (normalized === 'neutral' || normalized === 'none') {
+    return 'neutral';
+  }
+  return null;
+};
+
+const coerceKingdomDiplomacyRelationKind = (valueRaw) =>
+  normalizeKingdomDiplomacyRelationKind(valueRaw) ?? 'neutral';
+
+const KINGDOM_DIPLOMACY_RELATION_LABELS = Object.freeze({
+  neutral: 'Neutralni',
+  ally: 'Spojenectvi',
+  non_aggression: 'Dohoda o neutoceni',
+  war: 'Valka',
+});
+
+const resolveKingdomDiplomacyPair = (leftKingdomRaw, rightKingdomRaw) => {
+  const leftKingdom = normalizeKingdomValue(leftKingdomRaw).replace(/\s+/g, ' ');
+  const rightKingdom = normalizeKingdomValue(rightKingdomRaw).replace(/\s+/g, ' ');
+  if (!leftKingdom || !rightKingdom) {
+    return null;
+  }
+
+  const leftComparable = normalizeKingdomComparable(leftKingdom);
+  const rightComparable = normalizeKingdomComparable(rightKingdom);
+  if (!leftComparable || !rightComparable) {
+    return null;
+  }
+
+  if (leftComparable <= rightComparable) {
+    return {
+      kingdomLow: leftKingdom,
+      kingdomHigh: rightKingdom,
+      kingdomLowComparable: leftComparable,
+      kingdomHighComparable: rightComparable,
+    };
+  }
+
+  return {
+    kingdomLow: rightKingdom,
+    kingdomHigh: leftKingdom,
+    kingdomLowComparable: rightComparable,
+    kingdomHighComparable: leftComparable,
+  };
+};
+
+const buildKingdomDiplomacyPairKey = (kingdomLowComparable, kingdomHighComparable) =>
+  `${kingdomLowComparable}::${kingdomHighComparable}`;
+
+const buildKingdomDiplomacyIndexFromRows = (rows) => {
+  const diplomacyByPair = new Map();
+
+  for (const row of rows) {
+    const pair = resolveKingdomDiplomacyPair(row.kingdomLow, row.kingdomHigh);
+    if (!pair) {
+      continue;
+    }
+
+    const pairKey = buildKingdomDiplomacyPairKey(pair.kingdomLowComparable, pair.kingdomHighComparable);
+    diplomacyByPair.set(pairKey, {
+      relationKind: coerceKingdomDiplomacyRelationKind(row.relationKind),
+      updatedAt: row.updatedAt ? String(row.updatedAt) : null,
+      updatedByPlayerId:
+        row.updatedByPlayerId != null && Number.isFinite(Number(row.updatedByPlayerId))
+          ? Number(row.updatedByPlayerId)
+          : null,
+      updatedByUsername: row.updatedByUsername ? String(row.updatedByUsername) : null,
+      kingdomLow: pair.kingdomLow,
+      kingdomHigh: pair.kingdomHigh,
+    });
+  }
+
+  return diplomacyByPair;
+};
+
+const resolveKingdomDiplomacyRelationBetween = (leftKingdomRaw, rightKingdomRaw, diplomacyByPair) => {
+  if (isNeutralKingdom(leftKingdomRaw) || isNeutralKingdom(rightKingdomRaw)) {
+    return 'neutral';
+  }
+
+  const pair = resolveKingdomDiplomacyPair(leftKingdomRaw, rightKingdomRaw);
+  if (!pair) {
+    return 'neutral';
+  }
+
+  const pairKey = buildKingdomDiplomacyPairKey(pair.kingdomLowComparable, pair.kingdomHighComparable);
+  return coerceKingdomDiplomacyRelationKind(diplomacyByPair.get(pairKey)?.relationKind);
+};
 
 const normalizeUsername = (value) => String(value ?? '').trim();
 const normalizeUsernameComparable = (value) => normalizeUsername(value).toLocaleLowerCase('cs-CZ');
@@ -3836,6 +4015,15 @@ const buildKingdomAuditLog = (playerId, region, kingdomName) => {
       message = `${actorUsername} vyhodil hráče ${targetUsername} z království.`;
     } else if (row.eventType === 'leadership_transferred') {
       message = `${actorUsername} předal titul Krále hráči ${targetUsername}.`;
+    } else if (row.eventType === 'diplomacy_updated') {
+      const counterpartKingdom = normalizeKingdomValue(payload.targetKingdom ?? payload.sourceKingdom);
+      const nextRelationKind = coerceKingdomDiplomacyRelationKind(payload.nextRelationKind);
+      const relationLabel = KINGDOM_DIPLOMACY_RELATION_LABELS[nextRelationKind] ?? 'Neutralni';
+      if (counterpartKingdom) {
+        message = `${actorUsername} nastavil diplomacii vůči ${counterpartKingdom}: ${relationLabel}.`;
+      } else {
+        message = `${actorUsername} změnil diplomatické nastavení království.`;
+      }
     } else if (typeof payload.message === 'string' && payload.message.trim()) {
       message = payload.message.trim();
     }
@@ -3912,6 +4100,67 @@ const listAvailableKingdoms = (region) =>
     }))
     .filter((row) => !isNeutralKingdom(row.kingdom));
 
+const resolveExistingActiveKingdomName = (kingdomNameRaw, region) => {
+  const normalizedComparable = normalizeKingdomComparable(kingdomNameRaw);
+  if (!normalizedComparable) {
+    return null;
+  }
+
+  const match = selectDistinctPlayerKingdomNamesStmt
+    .all(Number(region))
+    .map((row) => String(row.kingdom))
+    .find(
+      (candidate) =>
+        !isNeutralKingdom(candidate) && normalizeKingdomComparable(candidate) === normalizedComparable,
+    );
+  return match ? String(match) : null;
+};
+
+const listKingdomDiplomacyRelationsForKingdom = (kingdomName, region, availableKingdoms = null) => {
+  if (isNeutralKingdom(kingdomName)) {
+    return [];
+  }
+
+  const normalizedComparable = normalizeKingdomComparable(kingdomName);
+  const targetKingdoms = (availableKingdoms ?? listAvailableKingdoms(region))
+    .map((entry) => String(entry.kingdom))
+    .filter(
+      (candidateKingdom) =>
+        !isNeutralKingdom(candidateKingdom) &&
+        normalizeKingdomComparable(candidateKingdom) !== normalizedComparable,
+    );
+
+  if (targetKingdoms.length === 0) {
+    return [];
+  }
+
+  const diplomacyRows = selectKingdomDiplomacyByRegionStmt.all(Number(region));
+  const diplomacyByPair = buildKingdomDiplomacyIndexFromRows(diplomacyRows);
+
+  return targetKingdoms
+    .map((targetKingdom) => {
+      const pair = resolveKingdomDiplomacyPair(kingdomName, targetKingdom);
+      if (!pair) {
+        return {
+          kingdom: targetKingdom,
+          relationKind: 'neutral',
+          updatedAt: null,
+          updatedByUsername: null,
+        };
+      }
+
+      const pairKey = buildKingdomDiplomacyPairKey(pair.kingdomLowComparable, pair.kingdomHighComparable);
+      const relationEntry = diplomacyByPair.get(pairKey);
+      return {
+        kingdom: targetKingdom,
+        relationKind: coerceKingdomDiplomacyRelationKind(relationEntry?.relationKind),
+        updatedAt: relationEntry?.updatedAt ?? null,
+        updatedByUsername: relationEntry?.updatedByUsername ?? null,
+      };
+    })
+    .sort((left, right) => left.kingdom.localeCompare(right.kingdom, 'cs'));
+};
+
 const listIncomingKingdomInvites = (playerId, region) =>
   selectIncomingKingdomInvitesByTargetStmt.all(Number(playerId), Number(region)).map((invite) => ({
     id: Number(invite.id),
@@ -3968,16 +4217,23 @@ const buildKingdomHubState = (player, village) => {
   const inviteCandidates = canManageInvites ? listKingdomInviteCandidates(player.username, region) : [];
   const incomingInvites = listIncomingKingdomInvites(playerId, region);
   const auditLog = buildKingdomAuditLog(playerId, region, kingdomName);
+  const availableKingdoms = listAvailableKingdoms(region);
+  const diplomacyRelations = kingdomName
+    ? listKingdomDiplomacyRelationsForKingdom(kingdomName, region, availableKingdoms)
+    : [];
+  const canManageDiplomacy = canManageInvites;
 
   return {
     isMember,
     kingdom: kingdomName,
     leaderUsername: leader?.username ?? null,
     canManageInvites,
+    canManageDiplomacy,
     members,
     inviteCandidates,
     incomingInvites,
-    availableKingdoms: listAvailableKingdoms(region),
+    availableKingdoms,
+    diplomacyRelations,
     auditLog,
   };
 };
@@ -5269,6 +5525,7 @@ const buildWorldScopedWipeStats = (regionRaw) => {
     combatRetaliationFlags: Number(countCombatRetaliationByRegionStmt.get(region)?.total ?? 0),
     kingdomInvites: Number(countKingdomInvitesByRegionStmt.get(region)?.total ?? 0),
     kingdomEvents: Number(countKingdomEventsByRegionStmt.get(region)?.total ?? 0),
+    kingdomDiplomacy: Number(countKingdomDiplomacyByRegionStmt.get(region)?.total ?? 0),
     playerNotifications: Number(countPlayerNotificationsByRegionStmt.get(region)?.total ?? 0),
     notificationShares: Number(countNotificationSharesByRegionStmt.get(region)?.total ?? 0),
     marketOffers: Number(countMarketOffersByRegionStmt.get(region)?.total ?? 0),
@@ -5314,6 +5571,7 @@ const wipeWorldDataTransaction = db.transaction((worldIdRaw, options = {}) => {
   deleteCombatRetaliationFlagsByRegionStmt.run(region);
   deleteKingdomInvitesByRegionStmt.run(region);
   deleteKingdomEventsByRegionStmt.run(region);
+  deleteKingdomDiplomacyByRegionStmt.run(region);
   deleteNotificationSharesByRegionStmt.run(region);
   deletePlayerNotificationsByRegionStmt.run(region);
   deleteMarketGuildAuditByRegionStmt.run(region);
@@ -6067,9 +6325,10 @@ const sumSelectedCost = (selection) => {
   return total;
 };
 
-const LOOT_RESOURCE_ORDER = ['wood', 'stone', 'iron'];
+const LOOT_PRIORITY_RESOURCE_ORDER = ['wood', 'stone', 'iron'];
+const LOOT_RESOURCE_ORDER = [...LOOT_PRIORITY_RESOURCE_ORDER, 'gold', 'coins'];
 const LOOT_BALANCED_PRIORITY = 'balanced';
-const LOOT_PRIORITIES = [...LOOT_RESOURCE_ORDER, LOOT_BALANCED_PRIORITY];
+const LOOT_PRIORITIES = [...LOOT_PRIORITY_RESOURCE_ORDER, LOOT_BALANCED_PRIORITY];
 const CARAVAN_UNIT_ID = 'caravan';
 const COMBAT_ESCORT_UNIT_ORDER = UNIT_ORDER.filter((unitId) => unitId !== CARAVAN_UNIT_ID);
 const UNIT_LOOT_CAPACITY = Object.freeze({
@@ -6805,8 +7064,14 @@ const calculateLootCapacityFromSelection = (selection) =>
     return sum + amount * getUnitLootCapacity(unitId);
   }, 0);
 
+const sumLootPocketResources = (pocket) =>
+  LOOT_RESOURCE_ORDER.reduce((sum, resourceId) => {
+    const amount = Math.max(0, Math.floor(Number(pocket?.[resourceId] ?? 0)));
+    return sum + amount;
+  }, 0);
+
 const calculateBalancedLootDistribution = (resourcePocket, carryingCapacity) => {
-  const loot = { wood: 0, stone: 0, iron: 0 };
+  const loot = { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 };
   let remainingCapacity = Math.max(0, Math.floor(Number(carryingCapacity ?? 0)));
   if (remainingCapacity <= 0) {
     return { loot, total: 0 };
@@ -6864,7 +7129,7 @@ const calculateBalancedLootDistribution = (resourcePocket, carryingCapacity) => 
 
   return {
     loot,
-    total: loot.wood + loot.stone + loot.iron,
+    total: sumLootPocketResources(loot),
   };
 };
 
@@ -6873,13 +7138,13 @@ const calculateLootDistribution = (resourcePocket, priority, carryingCapacity) =
     return calculateBalancedLootDistribution(resourcePocket, carryingCapacity);
   }
 
-  const loot = { wood: 0, stone: 0, iron: 0 };
+  const loot = { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 };
   let remainingCapacity = Math.max(0, Math.floor(Number(carryingCapacity ?? 0)));
   if (remainingCapacity <= 0) {
     return { loot, total: 0 };
   }
 
-  const normalizedPriority = LOOT_RESOURCE_ORDER.includes(priority) ? priority : LOOT_RESOURCE_ORDER[0];
+  const normalizedPriority = LOOT_PRIORITY_RESOURCE_ORDER.includes(priority) ? priority : LOOT_PRIORITY_RESOURCE_ORDER[0];
   const order = [normalizedPriority, ...LOOT_RESOURCE_ORDER.filter((resourceId) => resourceId !== normalizedPriority)];
   for (const resourceId of order) {
     if (remainingCapacity <= 0) {
@@ -6897,7 +7162,7 @@ const calculateLootDistribution = (resourcePocket, priority, carryingCapacity) =
 
   return {
     loot,
-    total: loot.wood + loot.stone + loot.iron,
+    total: sumLootPocketResources(loot),
   };
 };
 
@@ -7184,6 +7449,8 @@ const calculateLootableResourcePocket = (resourcePocket, protectedPocket) => ({
   wood: Math.max(0, Math.floor(Number(resourcePocket?.wood ?? 0)) - Math.floor(Number(protectedPocket?.wood ?? 0))),
   stone: Math.max(0, Math.floor(Number(resourcePocket?.stone ?? 0)) - Math.floor(Number(protectedPocket?.stone ?? 0))),
   iron: Math.max(0, Math.floor(Number(resourcePocket?.iron ?? 0)) - Math.floor(Number(protectedPocket?.iron ?? 0))),
+  gold: Math.max(0, Math.floor(Number(resourcePocket?.gold ?? 0)) - Math.floor(Number(protectedPocket?.gold ?? 0))),
+  coins: Math.max(0, Math.floor(Number(resourcePocket?.coins ?? 0)) - Math.floor(Number(protectedPocket?.coins ?? 0))),
 });
 
 const calculateCurrencyProtectionPocket = (buildingLevels) => {
@@ -7694,6 +7961,8 @@ const toMovementWithUnits = (movementRow) => {
     carryWood: Math.max(0, Number(movementRow.carryWood ?? 0)),
     carryStone: Math.max(0, Number(movementRow.carryStone ?? 0)),
     carryIron: Math.max(0, Number(movementRow.carryIron ?? 0)),
+    carryGold: Math.max(0, Number(movementRow.carryGold ?? 0)),
+    carryCoins: Math.max(0, Number(movementRow.carryCoins ?? 0)),
     originName: movementRow.originName,
     originCoordX: Number(movementRow.originCoordX),
     originCoordY: Number(movementRow.originCoordY),
@@ -7973,7 +8242,11 @@ const requireVillageForUser = (
       const found = villages.find((entry) => Number(entry.id) === requested);
       if (found) {
         village = found;
+      } else if (options?.strictRequestedVillage === true) {
+        throw new GameRuleError('Vybrane aktivni leno nebylo nalezeno v tomto svete.', 404);
       }
+    } else if (options?.strictRequestedVillage === true) {
+      throw new GameRuleError('Pole villageId musi byt kladne cislo.', 400);
     }
   }
 
@@ -8019,13 +8292,89 @@ const normalizeSettlementKind = (isOwn, settlementKindRaw, isBotSettlement, isAb
   return isBotSettlement ? 'bot' : 'player';
 };
 
+const resolveWorldSettlementDiplomacyKind = ({
+  isOwn,
+  isAbandonedBot,
+  isBotSettlement,
+  sameKingdom,
+  diplomacyRelationKind = 'neutral',
+}) => {
+  if (isOwn) {
+    return 'same_player';
+  }
+  if (isAbandonedBot || isBotSettlement) {
+    return 'none';
+  }
+  if (sameKingdom) {
+    return 'same_kingdom_foreign';
+  }
+  if (diplomacyRelationKind === 'ally') {
+    return 'ally';
+  }
+  if (diplomacyRelationKind === 'non_aggression') {
+    return 'non_aggression';
+  }
+  if (diplomacyRelationKind === 'war') {
+    return 'war';
+  }
+  return 'neutral';
+};
+
+const resolveWorldSettlementMapKind = ({
+  isOwn,
+  isActive,
+  isAbandonedBot,
+  isBotSettlement,
+  isRoyal,
+  diplomacyKind,
+}) => {
+  if (isOwn && isActive) {
+    return 'active';
+  }
+  if (isOwn) {
+    return 'own';
+  }
+  if (isAbandonedBot) {
+    return 'abandoned';
+  }
+  if (isBotSettlement) {
+    return 'bot';
+  }
+  if (isRoyal) {
+    return 'royal';
+  }
+  if (diplomacyKind === 'ally') {
+    return 'allied';
+  }
+  if (diplomacyKind === 'non_aggression') {
+    return 'nap';
+  }
+  if (diplomacyKind === 'war') {
+    return 'enemy';
+  }
+  return 'opponent';
+};
+
+const resolveWorldSettlementCommandPermissions = ({
+  isOwn,
+  isActive,
+  attackBlockedForViewer,
+}) => ({
+  canMove: isOwn && !isActive,
+  canSupport: !isActive,
+  canAttack: !isOwn && !attackBlockedForViewer,
+});
+
 const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, world, referenceIso = nowIso()) => {
   const region = resolveWorldRegionDefinition(world);
   const spawnConfig = resolveWorldSpawnConfig(world);
   const villageProtectionRuleDays = Math.max(0, Number(spawnConfig.playerProtectionDays ?? 0));
   const referenceMs = Date.parse(String(referenceIso));
   const villages = selectAllVillagesForWorldStmt.all(Number(world.region));
-  const viewerKingdom = viewerVillage.kingdom;
+  const viewerKingdom = normalizeKingdomValue(viewerVillage.kingdom) || 'Neutral';
+  const viewerKingdomComparable = normalizeKingdomComparable(viewerKingdom);
+  const kingdomDiplomacyRows = selectKingdomDiplomacyByRegionStmt.all(Number(world.region));
+  const kingdomDiplomacyByPair = buildKingdomDiplomacyIndexFromRows(kingdomDiplomacyRows);
   const numericViewerPlayerId = Number(viewerPlayerId);
   const playerPrestigeByPlayerId = new Map();
 
@@ -8075,7 +8424,25 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
       storedSettlementKind === BOT_CITY_STATE_SETTLEMENT_KIND ||
       (storedSettlementKind == null && Number(row.isBot) === 1 && !isAbandonedBot);
     const isOwn = Number.isFinite(playerId) && playerId > 0 && playerId === numericViewerPlayerId;
-    const sameKingdom = !isAbandonedBot && !isBotSettlement && row.kingdom === viewerKingdom;
+    const isActive = isOwn && Number(row.id) === Number(viewerVillage?.id ?? 0);
+    const rowKingdom = normalizeKingdomValue(row.kingdom) || 'Neutral';
+    const rowKingdomComparable = normalizeKingdomComparable(rowKingdom);
+    const sameKingdom =
+      !isAbandonedBot &&
+      !isBotSettlement &&
+      viewerKingdomComparable &&
+      rowKingdomComparable &&
+      rowKingdomComparable === viewerKingdomComparable;
+    const diplomacyRelationKind = resolveKingdomDiplomacyRelationBetween(
+      viewerKingdom,
+      rowKingdom,
+      kingdomDiplomacyByPair,
+    );
+    const isRoyal =
+      !isOwn &&
+      !isAbandonedBot &&
+      !isBotSettlement &&
+      isNeutralKingdom(rowKingdom);
     const protectionUntil = isAbandonedBot
       ? null
       : resolveVillageProtectionUntilIso(row, villageProtectionRuleDays);
@@ -8094,6 +8461,7 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
     const retaliationFlag = prestigeCheckRelevant ? retaliationByAggressorId.get(playerId) ?? null : null;
     const retaliationUnlocked = blockedByPrestige && retaliationFlag != null;
     const prestigeAttackBlockedForViewer = blockedByPrestige && !retaliationUnlocked;
+    const attackBlockedForViewer = protectionRemainingSec > 0 || prestigeAttackBlockedForViewer;
     const minimumRequiredPrestige =
       viewerPrestige > 0 ? Math.max(1, Math.ceil(viewerPrestige * MIN_ATTACKABLE_PRESTIGE_RATIO)) : 0;
     let balanceHint = '';
@@ -8112,6 +8480,26 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
         : isBotSettlement
           ? `${BOT_CITY_STATE_TITLE}. Brani se jednotkami v osade, ale sama nevede utocne rozkazy.`
         : 'Cizi leno - podrobnosti o budovach a jednotkach jsou skryte.';
+    const diplomacyKind = resolveWorldSettlementDiplomacyKind({
+      isOwn,
+      isAbandonedBot,
+      isBotSettlement,
+      sameKingdom,
+      diplomacyRelationKind,
+    });
+    const mapKind = resolveWorldSettlementMapKind({
+      isOwn,
+      isActive,
+      isAbandonedBot,
+      isBotSettlement,
+      isRoyal,
+      diplomacyKind,
+    });
+    const commandPermissions = resolveWorldSettlementCommandPermissions({
+      isOwn,
+      isActive,
+      attackBlockedForViewer,
+    });
 
     return {
       id: `vlg-${row.id}`,
@@ -8130,7 +8518,17 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
       loyalty: isOwn ? Number(row.loyalty) : 0,
       note: `${baseNote}${balanceHint}`,
       visibility: isOwn ? 'full' : 'public',
-      relation: isOwn ? 'self' : isAbandonedBot || isBotSettlement ? 'enemy' : sameKingdom ? 'ally' : 'enemy',
+      relation:
+        isOwn
+          ? 'self'
+          : isAbandonedBot || isBotSettlement
+            ? 'enemy'
+            : sameKingdom || diplomacyKind === 'ally' || diplomacyKind === 'non_aggression'
+              ? 'ally'
+              : 'enemy',
+      mapKind,
+      diplomacyKind,
+      commandPermissions,
       protectionUntil,
       protectionRemainingSec,
       protectionRuleDays: villageProtectionRuleDays,
@@ -8287,7 +8685,8 @@ const buildCombatScoresByPlayerId = (world) => {
   const reports = world
     ? selectBattleReportsForLeaderboardByRegionStmt.all(Number(world.region), Number(world.region))
     : selectBattleReportsForLeaderboardStmt.all();
-  const scoresByPlayerId = new Map();
+  const parsedReports = [];
+  const attackerLossesByMovementId = new Map();
 
   for (const report of reports) {
     const playerId = Number(report.playerId);
@@ -8306,25 +8705,65 @@ const buildCombatScoresByPlayerId = (world) => {
     const role = String(payload.role ?? '')
       .trim()
       .toLowerCase();
-    const current = scoresByPlayerId.get(playerId) ?? {
+    const movementIdRaw = Number(payload?.movementId ?? 0);
+    const movementId = Number.isFinite(movementIdRaw) && movementIdRaw > 0 ? Math.floor(movementIdRaw) : null;
+    const attackerLosses = sumUnitMapValues(payload?.battle?.attacker?.losses);
+    if (movementId != null && attackerLosses > 0) {
+      const existing = Number(attackerLossesByMovementId.get(movementId) ?? 0);
+      attackerLossesByMovementId.set(movementId, Math.max(existing, attackerLosses));
+    }
+
+    parsedReports.push({
+      playerId,
+      payload,
+      perspective,
+      role,
+      movementId,
+    });
+  }
+
+  const scoresByPlayerId = new Map();
+  const supportAttackerLossAppliedByPlayerAndMovement = new Set();
+
+  for (const report of parsedReports) {
+    const current = scoresByPlayerId.get(report.playerId) ?? {
       attackerScore: 0,
       defenderScore: 0,
       supporterScore: 0,
+      lootScore: 0,
     };
+    const attackerLosses = sumUnitMapValues(report.payload?.battle?.attacker?.losses);
+    const defenderLosses = sumUnitMapValues(report.payload?.battle?.defender?.losses);
+    const supportLosses = sumUnitMapValues(report.payload?.support?.losses);
 
-    if (perspective === 'attacker') {
-      current.attackerScore += sumUnitMapValues(payload?.battle?.defender?.losses);
+    if (report.perspective === 'attacker') {
+      current.attackerScore += defenderLosses + attackerLosses;
+      const lootPocket = report.payload?.returnMovement?.lootTaken ?? report.payload?.lootTaken ?? null;
+      current.lootScore += sumLootPocketResources(lootPocket);
     }
 
-    if (perspective === 'defender' && role !== 'support') {
-      current.defenderScore += sumUnitMapValues(payload?.battle?.attacker?.losses);
+    if (report.perspective === 'defender' && report.role !== 'support') {
+      current.defenderScore += defenderLosses + attackerLosses;
     }
 
-    if (role === 'support') {
-      current.supporterScore += sumUnitMapValues(payload?.support?.losses);
+    if (report.role === 'support') {
+      const attackerLossesByBattle =
+        report.movementId == null
+          ? attackerLosses
+          : Number(attackerLossesByMovementId.get(report.movementId) ?? attackerLosses);
+      let attackerLossContribution = attackerLossesByBattle;
+      if (report.movementId != null && attackerLossContribution > 0) {
+        const key = `${Number(report.playerId)}:${Number(report.movementId)}`;
+        if (supportAttackerLossAppliedByPlayerAndMovement.has(key)) {
+          attackerLossContribution = 0;
+        } else {
+          supportAttackerLossAppliedByPlayerAndMovement.add(key);
+        }
+      }
+      current.supporterScore += attackerLossContribution + supportLosses;
     }
 
-    scoresByPlayerId.set(playerId, current);
+    scoresByPlayerId.set(report.playerId, current);
   }
 
   return scoresByPlayerId;
@@ -8385,6 +8824,7 @@ export const listPlayerLeaderboard = (worldId = null) => {
       attackerScore: 0,
       defenderScore: 0,
       supporterScore: 0,
+      lootScore: 0,
     };
 
     return {
@@ -8397,18 +8837,21 @@ export const listPlayerLeaderboard = (worldId = null) => {
       attackerScore: Number(combatScores.attackerScore ?? 0),
       defenderScore: Number(combatScores.defenderScore ?? 0),
       supporterScore: Number(combatScores.supporterScore ?? 0),
+      lootScore: Number(combatScores.lootScore ?? 0),
     };
   });
 
   const attackerRankByPlayerId = buildCombatRankByPlayerId(rows, 'attackerScore');
   const defenderRankByPlayerId = buildCombatRankByPlayerId(rows, 'defenderScore');
   const supporterRankByPlayerId = buildCombatRankByPlayerId(rows, 'supporterScore');
+  const lootRankByPlayerId = buildCombatRankByPlayerId(rows, 'lootScore');
 
   return rows.map((row) => ({
     ...row,
     attackerRank: attackerRankByPlayerId.get(row.playerId) ?? null,
     defenderRank: defenderRankByPlayerId.get(row.playerId) ?? null,
     supporterRank: supporterRankByPlayerId.get(row.playerId) ?? null,
+    lootRank: lootRankByPlayerId.get(row.playerId) ?? null,
   }));
 };
 
@@ -8936,6 +9379,8 @@ const processDueMarketGuildDispatches = (tickTimeIso) => {
         shipment.wood,
         shipment.stone,
         shipment.iron,
+        0,
+        0,
         String(tickTimeIso),
         arriveAtIso,
       );
@@ -9414,6 +9859,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             0,
             0,
             0,
+            0,
+            0,
             startedAtIso,
             arriveAtIso,
             'in_progress',
@@ -9431,7 +9878,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             toVillageId: Number(homeVillage.id),
             toVillageName: String(homeVillage.name ?? ''),
             units: returnUnits,
-            lootTaken: { wood: 0, stone: 0, iron: 0 },
+            lootTaken: { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 },
           };
           spawnedReturnMovements += 1;
         }
@@ -9668,6 +10115,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
             0,
             0,
             0,
+            0,
+            0,
             tickTimeIso,
             arriveAtIso,
             'in_progress',
@@ -9699,7 +10148,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         conquestPayload.knightConsumed = true;
       }
       const attackerSurvivorsAfterConquestTotal = sumSelectedUnits(returnUnits);
-      let lootTaken = { wood: 0, stone: 0, iron: 0 };
+      let lootTaken = { wood: 0, stone: 0, iron: 0, gold: 0, coins: 0 };
       if (battle.attackerWins && attackerSurvivorsAfterConquestTotal > 0) {
         const carryingCapacity = calculateLootCapacityFromSelection(returnUnits);
         const prestigeLootModifier = calculateLootModifier(attackerPrestige, defenderPrestige);
@@ -9707,7 +10156,10 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         if (effectiveCarryingCapacity > 0) {
           const defenderResources = synchronizeVillageEconomyAt(Number(targetVillage.id), tickTimeIso);
           if (defenderResources) {
-            const protectedPocket = calculateLootProtectionPocket(defenderBuildingLevels);
+            const protectedPocket = {
+              ...calculateLootProtectionPocket(defenderBuildingLevels),
+              ...calculateCurrencyProtectionPocket(defenderBuildingLevels),
+            };
             const lootableResourcePocket = calculateLootableResourcePocket(defenderResources, protectedPocket);
             const requestedLoot = calculateLootDistribution(lootableResourcePocket, lootPriority, effectiveCarryingCapacity);
             if (requestedLoot.total > 0) {
@@ -9716,6 +10168,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
                 wood: Math.max(0, Math.floor(Number(subtraction.taken.wood ?? 0))),
                 stone: Math.max(0, Math.floor(Number(subtraction.taken.stone ?? 0))),
                 iron: Math.max(0, Math.floor(Number(subtraction.taken.iron ?? 0))),
+                gold: Math.max(0, Math.floor(Number(subtraction.taken.gold ?? 0))),
+                coins: Math.max(0, Math.floor(Number(subtraction.taken.coins ?? 0))),
               };
             }
           }
@@ -9739,6 +10193,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           Number(lootTaken.wood ?? 0),
           Number(lootTaken.stone ?? 0),
           Number(lootTaken.iron ?? 0),
+          Number(lootTaken.gold ?? 0),
+          Number(lootTaken.coins ?? 0),
           startedAtIso,
           arriveAtIso,
           'in_progress',
@@ -10058,6 +10514,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
           0,
           0,
           0,
+          0,
+          0,
           tickTimeIso,
           arriveAtIso,
           'in_progress',
@@ -10099,8 +10557,10 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         wood: Math.max(0, Math.floor(Number(movement.carryWood ?? 0))),
         stone: Math.max(0, Math.floor(Number(movement.carryStone ?? 0))),
         iron: Math.max(0, Math.floor(Number(movement.carryIron ?? 0))),
+        gold: Math.max(0, Math.floor(Number(movement.carryGold ?? 0))),
+        coins: Math.max(0, Math.floor(Number(movement.carryCoins ?? 0))),
       };
-      if (carry.wood > 0 || carry.stone > 0 || carry.iron > 0) {
+      if (carry.wood > 0 || carry.stone > 0 || carry.iron > 0 || carry.gold > 0 || carry.coins > 0) {
         applyResourceDeltaWithCap(targetVillageId, carry);
       }
 
@@ -10119,6 +10579,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       wood: Math.max(0, Math.floor(Number(route.wood ?? 0))),
       stone: Math.max(0, Math.floor(Number(route.stone ?? 0))),
       iron: Math.max(0, Math.floor(Number(route.iron ?? 0))),
+      gold: Math.max(0, Math.floor(Number(route.gold ?? 0))),
+      coins: Math.max(0, Math.floor(Number(route.coins ?? 0))),
     });
     completeLogisticsRouteStmt.run(tickTimeIso, Number(route.id));
     completedLogisticsRoutes += 1;
@@ -10132,7 +10594,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         eventType: 'logistics_delivered',
         severity: 'info',
         title: 'Logisticka zasilka dorazila',
-        summary: `Zasilka #${Number(route.id)} dorucena (${Math.max(0, Number(delivered.applied.wood ?? 0))} dreva, ${Math.max(0, Number(delivered.applied.stone ?? 0))} kamene, ${Math.max(0, Number(delivered.applied.iron ?? 0))} zeleza).`,
+        summary: `Zasilka #${Number(route.id)} dorucena (${Math.max(0, Number(delivered.applied.wood ?? 0))} dreva, ${Math.max(0, Number(delivered.applied.stone ?? 0))} kamene, ${Math.max(0, Number(delivered.applied.iron ?? 0))} zeleza, ${Math.max(0, Number(delivered.applied.gold ?? 0))} zlata, ${Math.max(0, Number(delivered.applied.coins ?? 0))} minci).`,
         payload: {
           routeId: Number(route.id),
           targetVillageId: Number(route.targetVillageId),
@@ -11517,6 +11979,8 @@ const processPlannerDispatches = (tickTimeIso) => {
           Number(targetVillage.id),
           Number(originVillage.id),
           null,
+          0,
+          0,
           0,
           0,
           0,
@@ -12961,6 +13425,7 @@ export const getVillageSnapshot = (
     attackerRank: leaderboardEntry?.attackerRank ?? null,
     defenderRank: leaderboardEntry?.defenderRank ?? null,
     supporterRank: leaderboardEntry?.supporterRank ?? null,
+    lootRank: leaderboardEntry?.lootRank ?? null,
   };
   const kingdomHub = includeKingdomHub ? buildKingdomHubState(player, village) : null;
   const recentLogisticsRoutes = includeMarket
@@ -12983,6 +13448,8 @@ export const getVillageSnapshot = (
           wood: Math.max(0, Math.floor(Number(route.wood ?? 0))),
           stone: Math.max(0, Math.floor(Number(route.stone ?? 0))),
           iron: Math.max(0, Math.floor(Number(route.iron ?? 0))),
+          gold: Math.max(0, Math.floor(Number(route.gold ?? 0))),
+          coins: Math.max(0, Math.floor(Number(route.coins ?? 0))),
           startedAt: String(route.startedAt ?? nowIso()),
           arriveAt: String(route.arriveAt ?? nowIso()),
           completedAt: Number.isFinite(completedAtMs) ? String(route.completedAt) : null,
@@ -13336,6 +13803,8 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
       0,
       0,
       0,
+      0,
+      0,
       issuedAtIso,
       arriveAtIso,
       'in_progress',
@@ -13517,6 +13986,8 @@ const issueArmyCommandTransaction = db.transaction((username, requestedVillageId
     0,
     0,
     0,
+    0,
+    0,
     issuedAtIso,
     arriveAtIso,
     'in_progress',
@@ -13677,6 +14148,8 @@ const cancelArmyCommandTransaction = db.transaction((username, movementIdRaw, re
     Number(movement.homeVillageId),
     Number(movement.homeVillageId),
     null,
+    0,
+    0,
     0,
     0,
     0,
@@ -14713,6 +15186,139 @@ const transferKingdomLeadershipTransaction = db.transaction(
   },
 );
 
+const setKingdomDiplomacyTransaction = db.transaction(
+  (username, targetKingdomRaw, relationKindRaw, requestedVillageId = null, worldId = null) => {
+    const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
+    const worldRegion = Number(village.region);
+    const sourceKingdom = normalizeKingdomValue(village.kingdom) || 'Neutral';
+    requireKingdomLeadership(player, sourceKingdom, worldRegion);
+
+    const normalizedTargetKingdom = normalizeKingdomValue(targetKingdomRaw).replace(/\s+/g, ' ');
+    if (!normalizedTargetKingdom) {
+      throw new GameRuleError("Pole 'targetKingdom' je povinne.");
+    }
+
+    const targetKingdom = resolveExistingActiveKingdomName(normalizedTargetKingdom, worldRegion);
+    if (!targetKingdom) {
+      throw new GameRuleError(`Království '${normalizedTargetKingdom}' nebylo nalezeno.`, 404);
+    }
+    if (normalizeKingdomComparable(targetKingdom) === normalizeKingdomComparable(sourceKingdom)) {
+      throw new GameRuleError('Diplomacii nelze nastavovat vůči vlastnímu království.', 400);
+    }
+
+    const relationKind = normalizeKingdomDiplomacyRelationKind(relationKindRaw);
+    if (!relationKind) {
+      throw new GameRuleError("Neplatna hodnota 'relationKind'. Povoleno: neutral, ally, non_aggression, war.", 400);
+    }
+
+    const pair = resolveKingdomDiplomacyPair(sourceKingdom, targetKingdom);
+    if (!pair) {
+      throw new GameRuleError('Nepodařilo se vyhodnotit cílovou dvojici království.', 400);
+    }
+
+    const previous = selectKingdomDiplomacyByPairStmt.get(worldRegion, pair.kingdomLow, pair.kingdomHigh);
+    const previousRelationKind = coerceKingdomDiplomacyRelationKind(previous?.relationKind);
+    const changed = previousRelationKind !== relationKind;
+    const changedAt = nowIso();
+
+    if (changed) {
+      if (relationKind === 'neutral') {
+        deleteKingdomDiplomacyByPairStmt.run(worldRegion, pair.kingdomLow, pair.kingdomHigh);
+      } else {
+        upsertKingdomDiplomacyStmt.run(
+          worldRegion,
+          pair.kingdomLow,
+          pair.kingdomHigh,
+          relationKind,
+          Number(player.id),
+          Number(player.id),
+          changedAt,
+          changedAt,
+        );
+      }
+
+      createKingdomEvent({
+        region: worldRegion,
+        kingdom: sourceKingdom,
+        eventType: 'diplomacy_updated',
+        actorPlayerId: Number(player.id),
+        payload: {
+          targetKingdom,
+          previousRelationKind,
+          nextRelationKind: relationKind,
+        },
+      });
+      createKingdomEvent({
+        region: worldRegion,
+        kingdom: targetKingdom,
+        eventType: 'diplomacy_updated',
+        actorPlayerId: Number(player.id),
+        payload: {
+          sourceKingdom,
+          previousRelationKind,
+          nextRelationKind: relationKind,
+        },
+      });
+
+      const relationLabel = KINGDOM_DIPLOMACY_RELATION_LABELS[relationKind] ?? 'Neutralni';
+      const relationSeverity =
+        relationKind === 'war' ? 'warning' : relationKind === 'ally' ? 'success' : 'info';
+
+      createPlayerNotification({
+        playerId: Number(player.id),
+        region: worldRegion,
+        category: 'kingdom',
+        eventType: 'kingdom_diplomacy_updated',
+        severity: relationSeverity,
+        title: `Diplomacie nastavena: ${targetKingdom}`,
+        summary: `Vztah ${sourceKingdom} -> ${targetKingdom} je nyní: ${relationLabel}.`,
+        payload: {
+          sourceKingdom,
+          targetKingdom,
+          previousRelationKind,
+          nextRelationKind: relationKind,
+        },
+        sourceType: 'kingdom_event',
+        sourceId: null,
+        createdAt: changedAt,
+      });
+
+      const targetLeader = resolveKingdomLeader(targetKingdom, worldRegion);
+      if (targetLeader && Number(targetLeader.playerId) !== Number(player.id)) {
+        createPlayerNotification({
+          playerId: Number(targetLeader.playerId),
+          region: worldRegion,
+          category: 'kingdom',
+          eventType: 'kingdom_diplomacy_updated_external',
+          severity: relationSeverity,
+          title: `Diplomacie aktualizovana: ${sourceKingdom}`,
+          summary: `Království ${sourceKingdom} nastavilo vztah vůči ${targetKingdom}: ${relationLabel}.`,
+          payload: {
+            sourceKingdom,
+            targetKingdom,
+            previousRelationKind,
+            nextRelationKind: relationKind,
+            actorUsername: String(player.username),
+          },
+          sourceType: 'kingdom_event',
+          sourceId: null,
+          createdAt: changedAt,
+        });
+      }
+    }
+
+    return {
+      sourceKingdom,
+      targetKingdom,
+      previousRelationKind,
+      relationKind,
+      changed,
+      updatedByUsername: String(player.username),
+      updatedAt: changed ? changedAt : String(previous?.updatedAt ?? changedAt),
+    };
+  },
+);
+
 export const createKingdom = (username, kingdomName, requestedVillageId = null, worldId = null) =>
   createKingdomTransaction(username, kingdomName, requestedVillageId, worldId);
 
@@ -14733,6 +15339,9 @@ export const kickKingdomMember = (username, targetUsername, requestedVillageId =
 
 export const transferKingdomLeadership = (username, targetUsername, requestedVillageId = null, worldId = null) =>
   transferKingdomLeadershipTransaction(username, targetUsername, requestedVillageId, worldId);
+
+export const setKingdomDiplomacy = (username, targetKingdom, relationKind, requestedVillageId = null, worldId = null) =>
+  setKingdomDiplomacyTransaction(username, targetKingdom, relationKind, requestedVillageId, worldId);
 
 const recruitTransaction = db.transaction((username, unitId, amount, requestedVillageId, worldId = null) => {
   const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
@@ -15066,7 +15675,9 @@ const hireAcademicsTransaction = db.transaction((username, amountRaw, requestedV
 
 const startResearchProjectTransaction = db.transaction(
   (username, researchIdRaw, requestedAcademicsRaw, requestedVillageId, worldId = null) => {
-    const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
+    const { player, village } = requireVillageForUser(username, requestedVillageId, worldId, 'center', {
+      strictRequestedVillage: true,
+    });
     const researchId = String(researchIdRaw ?? '').trim();
     const definition = getResearchDefinition(researchId);
     if (!definition) {
@@ -15740,7 +16351,9 @@ const configureMarketGuildAutomationTransaction = db.transaction((username, payl
 });
 
 const sendMarketLogisticsTransaction = db.transaction((username, payload, requestedVillageId, worldId = null) => {
-  const { player, village } = requireVillageForUser(username, requestedVillageId, worldId);
+  const { player, village } = requireVillageForUser(username, requestedVillageId, worldId, 'center', {
+    strictRequestedVillage: true,
+  });
   const targetVillageId = requirePositiveInteger(payload?.targetVillageId, 'targetVillageId');
   const targetVillage = selectVillageByIdStmt.get(Number(targetVillageId));
   if (!targetVillage) {
@@ -15754,8 +16367,15 @@ const sendMarketLogisticsTransaction = db.transaction((username, payload, reques
     wood: Math.max(0, Math.floor(Number(payload?.wood ?? 0))),
     stone: Math.max(0, Math.floor(Number(payload?.stone ?? 0))),
     iron: Math.max(0, Math.floor(Number(payload?.iron ?? 0))),
+    gold: Math.max(0, Math.floor(Number(payload?.gold ?? 0))),
+    coins: Math.max(0, Math.floor(Number(payload?.coins ?? 0))),
   };
-  const total = resourcesToSend.wood + resourcesToSend.stone + resourcesToSend.iron;
+  const total =
+    resourcesToSend.wood +
+    resourcesToSend.stone +
+    resourcesToSend.iron +
+    resourcesToSend.gold +
+    resourcesToSend.coins;
   if (total <= 0) {
     throw new GameRuleError('Vypln alespon jednu surovinu k odeslani.', 400);
   }
@@ -15790,7 +16410,9 @@ const sendMarketLogisticsTransaction = db.transaction((username, payload, reques
   if (
     resourcesToSend.wood > currentPocket.wood ||
     resourcesToSend.stone > currentPocket.stone ||
-    resourcesToSend.iron > currentPocket.iron
+    resourcesToSend.iron > currentPocket.iron ||
+    resourcesToSend.gold > currentPocket.gold ||
+    resourcesToSend.coins > currentPocket.coins
   ) {
     throw new GameRuleError('Nedostatek surovin ve sklade zdrojove osady.', 400);
   }
@@ -15809,6 +16431,8 @@ const sendMarketLogisticsTransaction = db.transaction((username, payload, reques
     resourcesToSend.wood,
     resourcesToSend.stone,
     resourcesToSend.iron,
+    resourcesToSend.gold,
+    resourcesToSend.coins,
     startedAtIso,
     arriveAtIso,
   );
@@ -15859,14 +16483,16 @@ const cancelMarketLogisticsTransaction = db.transaction((username, routeIdRaw, r
     wood: Math.max(0, Math.floor(Number(route.wood ?? 0))),
     stone: Math.max(0, Math.floor(Number(route.stone ?? 0))),
     iron: Math.max(0, Math.floor(Number(route.iron ?? 0))),
-    gold: 0,
-    coins: 0,
+    gold: Math.max(0, Math.floor(Number(route.gold ?? 0))),
+    coins: Math.max(0, Math.floor(Number(route.coins ?? 0))),
   };
   const refundResult = applyResourceDeltaWithCap(Number(route.sourceVillageId), refundRequest);
   const refunded = {
     wood: Math.max(0, Math.floor(Number(refundResult?.applied?.wood ?? 0))),
     stone: Math.max(0, Math.floor(Number(refundResult?.applied?.stone ?? 0))),
     iron: Math.max(0, Math.floor(Number(refundResult?.applied?.iron ?? 0))),
+    gold: Math.max(0, Math.floor(Number(refundResult?.applied?.gold ?? 0))),
+    coins: Math.max(0, Math.floor(Number(refundResult?.applied?.coins ?? 0))),
   };
 
   createPlayerNotification({

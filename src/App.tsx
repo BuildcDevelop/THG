@@ -58,6 +58,7 @@ function App() {
   const [deploymentNotice, setDeploymentNotice] = useState<DeploymentNoticeState | null>(null);
   const isGameRoute = location.pathname.startsWith('/game');
   const shouldPollDeployment = isAuthenticated() && isGameRoute;
+  const visibleDeploymentNotice = shouldPollDeployment ? deploymentNotice : null;
 
   useEffect(() => {
     const handleAuthRequired = () => {
@@ -74,7 +75,6 @@ function App() {
 
   useEffect(() => {
     if (!shouldPollDeployment) {
-      setDeploymentNotice(null);
       return;
     }
     let disposed = false;
@@ -160,12 +160,12 @@ function App() {
         <Route path="*" element={<Navigate to={isAuthenticated() ? '/worlds' : '/login'} replace />} />
       </Routes>
       {isAuthenticated() && isGameRoute ? <CommunicationHub /> : null}
-      {deploymentNotice ? (
+      {visibleDeploymentNotice ? (
         <div className="deployment-overlay" role="alertdialog" aria-live="assertive" aria-modal="true">
           <section className="deployment-dialog">
             <h3>Nahráváme novou verzi hry</h3>
             <p>
-              {deploymentNotice.mode === 'updating'
+              {visibleDeploymentNotice.mode === 'updating'
                 ? 'Probíhá nasazení nové verze. Prosím vyčkej a během této chvíle neprováděj důležité akce.'
                 : 'Byla zjištěna nová verze hry. Pro jistotu obnov stránku, aby ses připojil na aktuální build.'}
             </p>
@@ -173,7 +173,7 @@ function App() {
               Klient: {GAME_VERSION_LABEL} ({CLIENT_BUILD_ID ?? 'bez ID'})
             </p>
             <p className="deployment-meta">
-              Server: {deploymentNotice.serverVersion ?? 'neznámá verze'} ({deploymentNotice.serverBuildId ?? 'bez ID'})
+              Server: {visibleDeploymentNotice.serverVersion ?? 'neznámá verze'} ({visibleDeploymentNotice.serverBuildId ?? 'bez ID'})
             </p>
             <div className="deployment-actions">
               <button type="button" className="secondary-action" onClick={() => window.location.reload()}>

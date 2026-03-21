@@ -406,6 +406,160 @@ test('economy: population overflow does not dissolve units during sync', () => {
   assert.ok(Number(result.populationOverflowAmount ?? 0) > 0);
 });
 
+test('economy: research pays from selected active village and rejects invalid villageId', () => {
+  const result = runScenario('research-active-village-payment');
+
+  assert.match(
+    String(result.invalidVillageError ?? ''),
+    /(aktivni leno nebylo nalezeno|villageid musi byt kladne cislo)/i,
+  );
+  assert.equal(
+    Number(result.primaryCoinsAfter ?? -1),
+    Number(result.primaryCoinsBefore ?? -2),
+    'primary village coins should stay unchanged when research runs from a different active village',
+  );
+  assert.ok(
+    Number(result.secondaryCoinsAfter ?? Infinity) < Number(result.secondaryCoinsBefore ?? 0),
+    'selected active village should pay both academics and research coin costs',
+  );
+  assert.equal(
+    Number(result.secondaryCoinsBefore ?? 0) - Number(result.secondaryCoinsAfter ?? 0),
+    Number(result.hiredCoinCost ?? 0) + Number(result.researchCoinCostPaid ?? 0),
+  );
+  assert.equal(Number(result.researchCoinCostPaid ?? -1), 100);
+});
+
+test('economy: market logistics supports gold/coins for send, cancel refund and delivery', () => {
+  const result = runScenario('market-logistics-gold-coins-flow');
+  const shipment = result?.shipment ?? {};
+  const sourceBefore = result?.sourceBefore ?? {};
+  const sourceAfterSend = result?.sourceAfterSend ?? {};
+  const sourceAfterCancel = result?.sourceAfterCancel ?? {};
+  const targetAfterDelivery = result?.targetAfterDelivery ?? {};
+  const canceledRefunded = result?.canceledRefunded ?? {};
+  const deliveredRoute = result?.deliveredRoute ?? {};
+
+  assert.match(
+    String(result.invalidVillageError ?? ''),
+    /(aktivni leno nebylo nalezeno|villageid musi byt kladne cislo)/i,
+  );
+  for (const resourceId of ['wood', 'stone', 'iron', 'gold', 'coins']) {
+    assert.equal(
+      Number(sourceBefore?.[resourceId] ?? 0) - Number(sourceAfterSend?.[resourceId] ?? 0),
+      Number(shipment?.[resourceId] ?? -1),
+      `source spend mismatch for ${resourceId}`,
+    );
+    assert.ok(
+      Math.abs(Number(sourceAfterCancel?.[resourceId] ?? 0) - Number(sourceBefore?.[resourceId] ?? 0)) <= 0.01,
+      `cancel refund should fully restore ${resourceId}`,
+    );
+    assert.equal(
+      Number(canceledRefunded?.[resourceId] ?? -1),
+      Number(shipment?.[resourceId] ?? -2),
+      `cancel API refunded mismatch for ${resourceId}`,
+    );
+    assert.ok(
+      Math.abs(Number(targetAfterDelivery?.[resourceId] ?? 0) - Number(shipment?.[resourceId] ?? 0)) <= 0.1,
+      `delivery mismatch for ${resourceId}`,
+    );
+    assert.equal(
+      Number(deliveredRoute?.[resourceId] ?? -1),
+      Number(shipment?.[resourceId] ?? -2),
+      `recent logistics route payload mismatch for ${resourceId}`,
+    );
+  }
+});
+
+test('economy: treasury-only transfers between own villages preserve non-treasury resources', () => {
+  const result = runScenario('treasury-transfer-own-village-flow');
+  const shipment = result?.shipment ?? {};
+  const sourceBefore = result?.sourceBefore ?? {};
+  const sourceAfterSend = result?.sourceAfterSend ?? {};
+  const sourceAfterCancel = result?.sourceAfterCancel ?? {};
+  const targetBefore = result?.targetBefore ?? {};
+  const targetAfterDelivery = result?.targetAfterDelivery ?? {};
+  const canceledRefunded = result?.canceledRefunded ?? {};
+  const deliveredRoute = result?.deliveredRoute ?? {};
+
+  assert.ok(Number(result?.treasuryVillageId ?? 0) > 0);
+
+  for (const resourceId of ['wood', 'stone', 'iron']) {
+    assert.ok(
+      Math.abs(Number(sourceAfterSend?.[resourceId] ?? 0) - Number(sourceBefore?.[resourceId] ?? 0)) <= 0.01,
+      `treasury send must not spend ${resourceId}`,
+    );
+    assert.ok(
+      Math.abs(Number(sourceAfterCancel?.[resourceId] ?? 0) - Number(sourceBefore?.[resourceId] ?? 0)) <= 0.01,
+      `treasury cancel must keep ${resourceId} unchanged`,
+    );
+    assert.ok(
+      Math.abs(Number(targetAfterDelivery?.[resourceId] ?? 0) - Number(targetBefore?.[resourceId] ?? 0)) <= 0.01,
+      `treasury delivery must not add ${resourceId}`,
+    );
+    assert.equal(Number(canceledRefunded?.[resourceId] ?? -1), 0, `treasury cancel refund for ${resourceId} must stay zero`);
+    assert.equal(Number(deliveredRoute?.[resourceId] ?? -1), 0, `delivered treasury route ${resourceId} must stay zero`);
+  }
+
+  for (const resourceId of ['gold', 'coins']) {
+    assert.equal(
+      Number(sourceBefore?.[resourceId] ?? 0) - Number(sourceAfterSend?.[resourceId] ?? 0),
+      Number(shipment?.[resourceId] ?? -1),
+      `treasury spend mismatch for ${resourceId}`,
+    );
+    assert.equal(
+      Number(sourceAfterCancel?.[resourceId] ?? -1),
+      Number(sourceBefore?.[resourceId] ?? -2),
+      `treasury cancel must fully restore ${resourceId}`,
+    );
+    assert.equal(
+      Number(targetAfterDelivery?.[resourceId] ?? 0) - Number(targetBefore?.[resourceId] ?? 0),
+      Number(shipment?.[resourceId] ?? -1),
+      `treasury delivery mismatch for ${resourceId}`,
+    );
+    assert.equal(
+      Number(canceledRefunded?.[resourceId] ?? -1),
+      Number(shipment?.[resourceId] ?? -2),
+      `treasury cancel refund mismatch for ${resourceId}`,
+    );
+    assert.equal(
+      Number(deliveredRoute?.[resourceId] ?? -1),
+      Number(shipment?.[resourceId] ?? -2),
+      `delivered treasury route mismatch for ${resourceId}`,
+    );
+  }
+});
+
+test('economy: treasury transfers obey baseline market guard rules', () => {
+  const result = runScenario('treasury-transfer-market-rule-guards');
+
+  assert.match(String(result?.zeroShipmentError ?? ''), /vypln alespon jednu surovinu k odeslani/i);
+  assert.match(String(result?.noMarketError ?? ''), /mestsky trh alespon na urovni 1/i);
+  assert.match(String(result?.overCapacityError ?? ''), /aktualni trh pojme maximalne/i);
+  assert.match(String(result?.insufficientResourcesError ?? ''), /nedostatek surovin ve sklade zdrojove osady/i);
+  assert.match(String(result?.merchantExhaustedError ?? ''), /vsechny obchodniky jsou aktualne na cestach/i);
+  assert.ok(Number(result?.firstRouteId ?? 0) > 0);
+  assert.equal(Number(result?.canceledRefunded?.gold ?? -1), 10);
+  assert.equal(Number(result?.canceledRefunded?.coins ?? -1), 10);
+});
+
+test('combat: attacker/defender/supporter formulas and loot leaderboard aggregation stay consistent', () => {
+  const result = runScenario('combat-loot-leaderboard-aggregation');
+  const battle = result?.battle ?? {};
+  const leaderboard = result?.leaderboard ?? {};
+
+  const expectedAttackerScore = Number(battle.attackerLosses ?? 0) + Number(battle.defenderLosses ?? 0);
+  const expectedDefenderScore = Number(battle.attackerLosses ?? 0) + Number(battle.defenderLosses ?? 0);
+  const expectedSupporterScore = Number(battle.attackerLosses ?? 0) + Number(battle.supportLosses ?? 0);
+
+  assert.equal(Boolean(battle.attackerWins), true);
+  assert.equal(Number(leaderboard?.attacker?.attackerScore ?? -1), expectedAttackerScore);
+  assert.equal(Number(leaderboard?.defender?.defenderScore ?? -1), expectedDefenderScore);
+  assert.equal(Number(leaderboard?.supporter?.supporterScore ?? -1), expectedSupporterScore);
+  assert.equal(Number(leaderboard?.attacker?.lootScore ?? -1), Number(result?.lootTotal ?? -2));
+  assert.ok(Number(result?.lootTaken?.gold ?? 0) + Number(result?.lootTaken?.coins ?? 0) > 0);
+  assert.ok(Number(leaderboard?.attacker?.lootRank ?? 0) >= 1);
+});
+
 test('stage6: map stress culls render scope in dense settlements', () => {
   const result = runScenario('map-render-scope-stress');
   const totalSettlements = Number(result?.totalSettlements ?? 0);

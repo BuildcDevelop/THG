@@ -6,6 +6,29 @@ type ResourceCost = {
 
 export type LootPriority = 'wood' | 'stone' | 'iron' | 'balanced';
 export type SpawnDirection = 'center' | 'north' | 'east' | 'south' | 'west';
+export type WorldSettlementMapKind =
+  | 'active'
+  | 'own'
+  | 'bot'
+  | 'royal'
+  | 'allied'
+  | 'nap'
+  | 'opponent'
+  | 'enemy'
+  | 'abandoned';
+export type WorldSettlementDiplomacyKind =
+  | 'same_player'
+  | 'same_kingdom_foreign'
+  | 'ally'
+  | 'non_aggression'
+  | 'neutral'
+  | 'war'
+  | 'none';
+export type WorldSettlementCommandPermissions = {
+  canMove: boolean;
+  canSupport: boolean;
+  canAttack: boolean;
+};
 
 export type WorldSettlement = {
   id: string;
@@ -25,6 +48,9 @@ export type WorldSettlement = {
   note: string;
   visibility: 'full' | 'public';
   relation: 'self' | 'ally' | 'enemy';
+  mapKind?: WorldSettlementMapKind;
+  diplomacyKind?: WorldSettlementDiplomacyKind;
+  commandPermissions?: WorldSettlementCommandPermissions;
   protectionUntil?: string | null;
   protectionRemainingSec?: number;
   protectionRuleDays?: number;
@@ -102,6 +128,8 @@ export type ArmyMovementState = {
   carryWood?: number;
   carryStone?: number;
   carryIron?: number;
+  carryGold?: number;
+  carryCoins?: number;
   startedAt: string;
   arriveAt: string;
   distance: number;
@@ -377,9 +405,11 @@ export type LeaderboardRow = {
   attackerScore?: number;
   defenderScore?: number;
   supporterScore?: number;
+  lootScore?: number;
   attackerRank?: number | null;
   defenderRank?: number | null;
   supporterRank?: number | null;
+  lootRank?: number | null;
 };
 
 export type PlayerRankingSummary = {
@@ -387,6 +417,7 @@ export type PlayerRankingSummary = {
   attackerRank: number | null;
   defenderRank: number | null;
   supporterRank: number | null;
+  lootRank: number | null;
 };
 
 export type KingdomHubMember = {
@@ -418,6 +449,15 @@ export type KingdomAvailableSummary = {
   prestige: number;
 };
 
+export type KingdomDiplomacyRelationKind = 'neutral' | 'ally' | 'non_aggression' | 'war';
+
+export type KingdomDiplomacyRelation = {
+  kingdom: string;
+  relationKind: KingdomDiplomacyRelationKind;
+  updatedAt: string | null;
+  updatedByUsername: string | null;
+};
+
 export type KingdomAuditLogEntry = {
   id: number;
   kingdom: string | null;
@@ -433,10 +473,12 @@ export type KingdomHubState = {
   kingdom: string | null;
   leaderUsername: string | null;
   canManageInvites: boolean;
+  canManageDiplomacy: boolean;
   members: KingdomHubMember[];
   inviteCandidates: KingdomInviteCandidate[];
   incomingInvites: KingdomIncomingInvite[];
   availableKingdoms: KingdomAvailableSummary[];
+  diplomacyRelations: KingdomDiplomacyRelation[];
   auditLog: KingdomAuditLogEntry[];
 };
 
@@ -492,6 +534,8 @@ export type LogisticsRouteState = {
   wood: number;
   stone: number;
   iron: number;
+  gold: number;
+  coins: number;
   startedAt: string;
   arriveAt: string;
   completedAt: string | null;
@@ -985,6 +1029,8 @@ export type BattleReportPayload = {
     wood: number;
     stone: number;
     iron: number;
+    gold?: number;
+    coins?: number;
   };
   returnMovement?: {
     movementId?: number;
@@ -1001,6 +1047,8 @@ export type BattleReportPayload = {
       wood: number;
       stone: number;
       iron: number;
+      gold?: number;
+      coins?: number;
     };
   };
   support?: {
@@ -1272,6 +1320,8 @@ export type SendMarketLogisticsResult = {
     wood: number;
     stone: number;
     iron: number;
+    gold: number;
+    coins: number;
   };
 };
 
@@ -1283,6 +1333,8 @@ export type CancelMarketLogisticsResult = {
     wood: number;
     stone: number;
     iron: number;
+    gold: number;
+    coins: number;
   };
   elapsedSec: number;
   totalDurationSec: number;
@@ -1343,6 +1395,16 @@ export type KingdomTransferLeadershipResult = {
   previousLeaderUsername: string;
   newLeaderUsername: string;
   transferredAt: string;
+};
+
+export type KingdomDiplomacySetResult = {
+  sourceKingdom: string;
+  targetKingdom: string;
+  previousRelationKind: KingdomDiplomacyRelationKind;
+  relationKind: KingdomDiplomacyRelationKind;
+  changed: boolean;
+  updatedByUsername: string;
+  updatedAt: string;
 };
 
 export type CommunicationRelation = 'friend' | 'kingdom' | 'stranger';
@@ -1837,12 +1899,15 @@ export const fetchGameState = async (
 };
 
 export const fetchWorldMapSnapshot = async (
-  _username: string,
+  username: string,
   villageId?: number | null,
   worldId?: string | null,
   spawnDirection?: SpawnDirection | string | null,
 ): Promise<WorldMapSnapshotResponse> => {
   const params = new URLSearchParams();
+  if (String(username).trim() !== '') {
+    params.set('username', String(username).trim());
+  }
   if (villageId != null && Number.isFinite(villageId)) {
     params.set('villageId', String(villageId));
   }
@@ -2366,6 +2431,8 @@ export const sendMarketLogistics = async (
     wood?: number;
     stone?: number;
     iron?: number;
+    gold?: number;
+    coins?: number;
     villageId?: number | null;
     worldId?: string | null;
   },
@@ -2382,6 +2449,8 @@ export const sendMarketLogistics = async (
         wood: payload.wood ?? 0,
         stone: payload.stone ?? 0,
         iron: payload.iron ?? 0,
+        gold: payload.gold ?? 0,
+        coins: payload.coins ?? 0,
       }),
     },
   );
@@ -3013,6 +3082,27 @@ export const transferKingdomLeadership = async (
     {
       method: 'POST',
       body: JSON.stringify({ username, targetUsername, villageId, worldId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const setKingdomDiplomacy = async (
+  username: string,
+  targetKingdom: string,
+  relationKind: KingdomDiplomacyRelationKind,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: KingdomDiplomacySetResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: KingdomDiplomacySetResult }>(
+    '/api/v1/kingdom/diplomacy',
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, targetKingdom, relationKind, villageId, worldId }),
     },
   );
 

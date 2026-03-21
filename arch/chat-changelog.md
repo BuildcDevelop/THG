@@ -970,3 +970,240 @@ Entry template:
 - Files: arch/chat-changelog.md, .gitignore, README.md, package.json, scripts/run-local-client.mjs, scripts/run-local-server.mjs, server/communicationService.js, server/db.js, server/gameConfig.js, server/gameService.js, server/index.js, server/runtimeProfile.js, src/App.css, src/App.tsx, src/api/gameApi.ts, src/pages/GamePage.tsx, tests/config/local-runtime-profile.test.mjs, tests/regression/game-rules.scenario.mjs, vite.config.ts
 - Verification: `npm run build` (PASS), `node --test tests/regression/game-rules.regression.test.mjs` (PASS 28/28), `Invoke-WebRequest http://localhost:3002/api/health` (`200`), `netlify.toml` redirecty na backend `https://thg.89-167-89-109.sslip.io/api`
 - Notes: Netlify build je připravený na trigger pushnutím `main`; backend routování je zachované přes Netlify redirects na self-host API.
+
+## 2026-03-20 17:41 | branch: main
+
+- Request: Přepnout aktuální workspace do větve `main`.
+- Summary: Ověřil jsem, že pracovní strom je čistý a nic nebude blokovat přepnutí větve. Následně jsem v tomto workspace provedl `git switch --ignore-other-worktrees main`; větev `main` je aktivní a synchronní s `origin/main`.
+- Files: arch/chat-changelog.md
+- Verification: `git status --short` (čistý pracovní strom), `git branch --show-current` před přepnutím (`develop`), `git switch --ignore-other-worktrees main` (OK)
+- Notes: Žádné další změny repozitáře ani dat nebyly provedeny.
+
+## 2026-03-20 17:56 | branch: main
+
+- Request: Diagnostikovat, proč produkce neukazuje změny 0.1.14 (zejména výzkum) a určit místo rozchodu mezi kódem a nasazením.
+- Summary: Ověřil jsem produkční Netlify i backend zvlášť. Netlify frontend je skutečně nasazený z aktuálního `main` commitu `0f5fe41` a servíruje stejný asset hash jako lokální build (`index-BeYX6f1H.js`, `index-BdemgXJo.css`). Produkční backend ale zjevně není spolehlivě verzovaný a zároveň servíruje starý runtime obsah výzkumu; v `main` repu jsou nové definice výzkumu v `server/gameService.js`, zatímco živá hra podle UI stále vrací staré ceny. Zásadní zjištění je dvojí: 1) release je rozdělený na auto-deploy Netlify frontendu a samostatný self-host backend deploy, takže samotný merge/push do `main` nestačí pro serverové změny; 2) observability je teď matoucí, protože frontend i backend fallback verze zůstaly na `0.1.11` (`package.json`, `src/version.ts`, `server/index.js`), takže `api/health` neumí bez env proměnných jasně potvrdit skutečný release.
+- Files: arch/chat-changelog.md
+- Verification: `npx netlify api listSiteDeploys --data '{"site_id":"29de8cb8-4e2b-4dd9-8738-97dd1241f20b","page":1,"per_page":3}'` (produkční deploy z commitu `0f5fe41`), `Invoke-WebRequest https://thelastdominion.netlify.app/` (assety `index-BeYX6f1H.js` / `index-BdemgXJo.css`), `npm run build` (lokálně stejné asset hashe), `Invoke-WebRequest https://thelastdominion.netlify.app/api/health` (backend health), `npx netlify env:get VITE_API_BASE` (produkce míří přímo na `https://thg.89-167-89-109.sslip.io`)
+- Notes: Produkční klient nepoužívá jen Netlify redirect, ale má build-time `VITE_API_BASE` nastavený přímo na self-host backend. Jakákoli backendová změna z `main` tedy zůstane neviditelná, dokud se ten server samostatně nepřepne na nový commit/obraz.
+
+## 2026-03-20 18:07 | branch: main
+
+- Request: Rozpadnout po bodech, co z velkého seznamu map/combat/research/knight změn je na produkci opravdu živé, co je jen v repu a co stále není implementované.
+- Summary: Porovnal jsem aktuální `main` s předchozím produkčním commitem `0581a99`, prošel diff klíčových frontend/backend souborů a oddělil změny podle závislosti na frontend deployi vs self-host backend deployi. Výsledek: mapové UI úpravy a další čistě frontendové věci jsou na produkci živé, protože Netlify běží z aktuálního `main`; serverově řízené novinky jako nové ceny výzkumu, `Rytířský stav`, knight cost/time, podpora cizích lén a avatar storage fix jsou jen v repu a na produkci chybí kvůli stale backendu; veřejný pořádek, queue-based recruit, převod podpory na nové domovské léno a část combat redesignu nejsou hotové vůbec.
+- Files: arch/chat-changelog.md
+- Verification: `git diff --name-only 0581a9953b8958d3104b1f719756632512ef9c7f..0f5fe4177bb8c3215b4575e3c03d4a7a6aff14b5`, targeted `git diff ... -- server/gameService.js src/pages/GamePage.tsx src/App.css server/gameConfig.js server/communicationService.js`, `Select-String` v aktuálním `main` pro map drag/copy, opponent color, battle report sizing, avatar storage, research defs, knight config a recruitment flow
+- Notes: Stav „živé“ znamená, že je změna v produkčním frontendu nebo už byla součástí staršího produkčního backendu; neznamená to automaticky, že byla manuálně vizuálně retestovaná v každém edge case.
+
+## 2026-03-20 18:19 | branch: main
+
+- Request: Navrhnout, jak efektivně a konzistentně doprogramovat chybějící části, doplnit neúplné věci a zlepšit nasazené systémy s důrazem na kvalitu.
+- Summary: Připravil jsem implementační roadmapu na základě guardrails a aktuálního stavu repa. Hlavní doporučení: nejdřív opravit release a observability contract (frontend/backend musí nést stejný build id), potom uzavřít neúplné backendové věci z 0.1.14, následně řešit chybějící mechaniky po doménách. Za klíčové architektonické body považuji nezneužít `loyalty` pro veřejný pořádek, ale zavést samostatný world-scoped player state; nábor jednotek předělat na skutečnou frontu s lokálním rebalancem per village; combat/reporting sjednotit přes explicitní visibility/escort contract; activity a battle reports oddělit jako inbox vs immutable detail; a rozdělit monolit `GamePage.tsx` po doménách, ne přidávat další cross-cutting stav do jedné komponenty.
+- Files: arch/chat-changelog.md
+- Verification: `Get-Content C:\\Users\\Patrik\\.codex\\skills\\last-dominion-feature-guardrails\\references\\playbook.md`, targeted `Select-String` / `git diff` nad `server/gameService.js`, `server/gameConfig.js`, `server/communicationService.js`, `src/pages/GamePage.tsx`, `src/App.css`
+- Notes: Nešlo o implementaci, ale o návrh pořadí, datových modelů, guardrails a regression strategie pro bezpečné pokračování.
+
+## 2026-03-20 18:31 | branch: main
+
+- Request: Upřesnit UI umístění veřejného pořádku, navrhnout `Armádu všech lén`, rozložit obě věci do implementačních fází a vysvětlit dlouhodobý přesun marker layer mapy na canvas.
+- Summary: Na základě guardrails jsem navrhl veřejný pořádek jako world-scoped systém s UI badge hned vedle aktivního léna, kde se procento zobrazuje jen pod 100 % a debuffy se zvýrazňují barevně i tooltipem. Novou stránku `Armáda všech lén` jsem rozvrhl jako samostatný lightweight read-model s přehledem jednotek, opevnění, brány, posádky a aktuálního rekrutu bez tabulkového vzhledu a bez nafukování hlavního snapshotu. Současně jsem začlenil do backlogu release contract, backend rollout 0.1.14, audit reportů, veřejný pořádek, recruit queue, support rebase, combat/report kontrakt, DB migrace, release doctor a view-model testy a připravil vysvětlení, proč canvas marker layer řeší výkon renderu bez odbočení od herní funkčnosti.
+- Files: arch/chat-changelog.md
+- Verification: `Get-Content C:\\Users\\Patrik\\.codex\\skills\\last-dominion-feature-guardrails\\SKILL.md`, `Get-Content C:\\Users\\Patrik\\.codex\\skills\\last-dominion-feature-guardrails\\references\\playbook.md`, `Get-Content D:\\The Last Dominion\\arch\\chat-changelog.md -Tail 30`
+- Notes: Šlo o plánovací návrh; bez změny runtime kódu a bez zásahu do herních dat.
+
+## 2026-03-20 18:45 | branch: main
+
+- Request: Dopsat canvas marker layer do roadmapy a udelat dalsi navazujici krok pred implementaci.
+- Summary: Vytvoril jsem samostatny implementacni dokument `arch/verejny-poradek-armada-mapa-implementacni-milniky-v1.md`, ktery sjednocuje verejny poradek, `Armadu vsech len`, release contract, uzavreni 0.1.14, recruit queue, support rebase, combat/report kontrakt, technicky zaklad a dlouhodoby prechod settlement marker vrstvy mapy na `canvas`. Soucasti dokumentu jsou feature contracts, guardrails, poradi milniku, vysvetleni prinosu `canvas` rendereru a explicitni `dalsi krok pred implementaci`: pripravit navazujici API spec, DB spec a acceptance scenare pro tuto vlnu praci.
+- Files: arch/verejny-poradek-armada-mapa-implementacni-milniky-v1.md, arch/chat-changelog.md
+- Verification: `Get-Content D:\\The Last Dominion\\arch\\optimalizace-a-vykonove-guardrails.md -TotalCount 120`, `Get-Content D:\\The Last Dominion\\arch\\planovac-implementacni-milniky-v1.md -TotalCount 120`, manual review noveho dokumentu
+- Notes: Slo o pripravu implementacniho backlogu a specifikacniho kroku; bez zmen runtime kodu a bez zasahu do hernich dat.
+
+## 2026-03-20 19:09 | branch: main
+
+- Request: Pokracovat navazujicim krokem pred implementaci a pripravit konkretni specifikace pro verejny poradek, `Armadu vsech len`, recruit queue, support rebase a souvisejici retention/guardrails.
+- Summary: Na zaklade guardrails a existujiciho backend/frontend contractu jsem pripravil tri navazujici arch dokumenty: `arch/verejny-poradek-armada-api-spec-v1.md`, `arch/verejny-poradek-armada-db-spec-v1.md` a `arch/verejny-poradek-armada-acceptance-scenare-v1.md`. API spec zavadi `publicOrder` summary do `GET /api/v1/state`, rozsiruje existujici `GET /api/v1/army/overview` pro novou stranku `Armada vsech len`, definuje `POST /api/v1/units/recruitments/reorder`, upresnuje cancel contract recruit queue a pridava `POST /api/v1/army/support/:movementId/rebase`. DB spec pridava `player_world_governance`, audit eventy verejneho poradku, kanonickou podobu `unit_recruitments` v2, audit `army_movement_events` a explicitni report reference v `player_notifications`. Acceptance dokument pokryva badge a tooltip verejneho poradku, lifecycle `Armady vsech len`, queue reorder/cancel, support rebase, report retention, combat visibility edge cases a guardrails kolem pollingu a payloadu. Soucasne jsem upravil roadmap dokument, aby `Armada vsech len` preferovala rozsireni existujiciho `army/overview` endpointu misto vytvareni duplicitniho API.
+- Files: arch/verejny-poradek-armada-api-spec-v1.md, arch/verejny-poradek-armada-db-spec-v1.md, arch/verejny-poradek-armada-acceptance-scenare-v1.md, arch/verejny-poradek-armada-mapa-implementacni-milniky-v1.md, arch/chat-changelog.md
+- Verification: `Get-Content D:\\The Last Dominion\\arch\\planovac-api-spec-v1.md -TotalCount 220`, `Get-Content D:\\The Last Dominion\\arch\\planovac-db-spec-v1.md -TotalCount 220`, `Get-Content D:\\The Last Dominion\\arch\\planovac-acceptance-scenare-v1.md -TotalCount 220`, `Get-Content D:\\The Last Dominion\\server\\db.js` around schema blocks, `Get-Content D:\\The Last Dominion\\server\\index.js` around `GET /api/v1/army/overview`, `Get-Content D:\\The Last Dominion\\src\\api\\gameApi.ts` around `ArmyOverviewResponse`, `git status --short`
+- Notes: Slo o arch/spec pripravu bez runtime implementace a bez zasahu do hernich dat. Dulezite rozhodnuti: verejny poradek jde jako maly summary slice do hlavniho `state`, zatimco `Armada vsech len` zustava panel-scoped rozsireni existujiciho `army/overview`.
+
+## 2026-03-20 20:02 | branch: main
+
+- Request: Implementovat roadmapu a pripravene zmeny a dostat vse live do produkce (Netlify + self-host backend).
+- Summary: Dokoncil jsem backend/frontend implementaci verejneho poradku, queue-based recruit flow, support rebase commandu, army overview rozsireni, map marker canvas vrstvy a souvisejicich UI kontraktu z roadmapy 0.1.14, plus jsem doplnil release observability skript `release-doctor` se smoke checkem (`health/login/state/research/avatar`). Pri finalni validaci jsem opravil regresni chyby po merge (duplicitni deklarace v build/recruit flow), znovu overil build a 28/28 regresi, nasadil frontend na Netlify a backend na produkcni server. Behem backend nasazeni jsem resil produkcni incident: crash pri startu kvuli indexu nad `player_notifications.report_id` na starsi DB (index byl vytvaren pred migraci), opravil jsem `server/db.js` tak, aby se index tvoril az v migraci po `ALTER TABLE`, backend restartoval a overil navrat API. Finalni produkcni smoke na `https://thelastdominion.netlify.app` je zeleny a backend health hlasi `build-0.1.14`.
+- Files: README.md, package.json, scripts/release-doctor.mjs, server/db.js, server/gameService.js, server/index.js, src/App.css, src/api/gameApi.ts, src/pages/GamePage.tsx, src/version.ts, arch/verejny-poradek-armada-api-spec-v1.md, arch/verejny-poradek-armada-db-spec-v1.md, arch/verejny-poradek-armada-acceptance-scenare-v1.md, arch/verejny-poradek-armada-mapa-implementacni-milniky-v1.md, arch/chat-changelog.md
+- Verification: `npm run build` (PASS), `npm run test:regression` (PASS 28/28), `npx netlify status` (linked project `thelastdominion`), `npx netlify deploy --prod --build` (live deploy), SSH deploy na `89.167.89.109` (`docker build -f server/Dockerfile -t thg-api .` + restart `thg-api` v siti `zane`), `Invoke-WebRequest https://thelastdominion.netlify.app/api/health` (`build-0.1.14`), `node scripts/release-doctor.mjs --base-url https://thelastdominion.netlify.app --world-id dominion-1 --username Player001 --password 123` (PASS 15/15)
+- Notes: Produkcni backend adresar `~/THG` neni git worktree, deploy proto probehl pres `scp` aktualnich zdrojaku + rebuild/restart produkcniho kontejneru `thg-api` bez zasahu do SQLite dat (`/home/patrik/THG/server/data`).
+
+## 2026-03-20 20:14 | branch: main
+
+- Request: Dokoncit stabilizaci po produkcnim rolloutu a potvrdit finalni release contract/smoke.
+- Summary: Po prvnim restartu backendu jsem resil produkcni padem pri startu (`SqliteError: no such column: report_id`) zpusobenym vytvarenim indexu `idx_player_notifications_report_ref` v `createSchema()` pred migraci starsi DB. Opravil jsem `server/db.js` tak, aby se tento index vytvarel pouze v migracni casti po pridani sloupce. Soucasne jsem doladil `release-doctor` (`scripts/release-doctor.mjs`) pro kompatibilni `--check-netlify-env` na Windows (`cmd /c npx`) a korektni parsovani hlasky „No value set...“ jako prazdne hodnoty. Po redeploy backendu je produkce stabilni a finalni release-doctor smoke je plne zeleny.
+- Files: server/db.js, scripts/release-doctor.mjs, arch/chat-changelog.md
+- Verification: `npm run test:regression` (PASS 28/28), redeploy `thg-api` na `89.167.89.109` (build + restart), `Invoke-WebRequest https://thelastdominion.netlify.app/api/health` (`build-0.1.14`), `node scripts/release-doctor.mjs --base-url https://thelastdominion.netlify.app --world-id dominion-1 --username Player001 --password 123 --check-netlify-env` (PASS 16/16)
+- Notes: Incident byl vyresen bez ztraty hernich dat; SQLite volume `/home/patrik/THG/server/data` zustal zachovan.
+
+## 2026-03-20 20:24 | branch: main
+
+- Request: Pripravit hracsky changelog nove verze proti predchozi produkcni verzi.
+- Summary: Prosel jsem rozdil mezi predchozi produkcni bazi `0581a99` a aktualnim nasazenym `main`, overil hlavni hracsky viditelne body v diffu i v produkcnim smoke checku a zformuloval changelog z pohledu hrace. Hlavni oblasti: mapa a ovladani, vykon mapy, verejny poradek, armada vsech len, recruit queue, rytir/vyzkum, tooltipy a stabilita reportu/avataru.
+- Files: arch/chat-changelog.md
+- Verification: `git diff --name-only 0581a9953b8958d3104b1f719756632512ef9c7f..3c8852f`, targeted diff review `server/gameConfig.js`, `server/gameService.js`, `src/pages/GamePage.tsx`, `src/App.css`, `src/api/gameApi.ts`, `server/communicationService.js`, produkcni `release-doctor` PASS 16/16
+- Notes: Bez dalsich runtime zmen; slo o dokumentacni shrnuti uz nasazene produkcni verze.
+
+## 2026-03-21 06:15 | branch: feat/build-0.1.15
+
+- Request: Vytvorit branch `feat/build-0.1.15` z `main`, presunout se na ni a opravit nekonzistentni barevne rozlisovani vlastnich lén na mape a minimape mezi hraci (napr. `Sathan` vs `Hayato`).
+- Summary: Zalozil jsem a checkoutnul `feat/build-0.1.15`, dohledal implementaci mapy/minimapy v `MapPanel` a identifikoval zdroj chyby v klientskem API. Mapa i minimapa jsou napajene ze `worldMapState`, ktere se nacita pres `fetchWorldMapSnapshot(username, villageId, worldId, spawnDirection)`, ale klient tento `username` do query vubec neposilal. Server route `/api/v1/world-map` pak fallbackovala na `Hayato`, takze vztahy a barvy byly pocitane z pohledu Hayato bez ohledu na realne prihlaseneho hrace. Opravil jsem `src/api/gameApi.ts`, aby se `username` do requestu vracel; tim se sjednoti ownership klasifikace pro hlavni mapu i minimapu pro kazdeho hrace.
+- Files: src/api/gameApi.ts, arch/chat-changelog.md
+- Verification: `git checkout -b feat/build-0.1.15 main`, code review `src/pages/GamePage.tsx` (`MapPanel`, `miniMapDots`, `loadWorldMapSnapshot`), code review `server/index.js` (`GET /api/v1/world-map` fallback `Hayato`), code review `server/gameService.js` (`relation: isOwn ? 'self' ...`), `npm run build` (PASS)
+- Notes: Feature contract: vlastni lena musi byt barvena podle skutecne prihlaseneho hrace, autoritativni stav zustava na serverovem world snapshotu a zmena nepridava zadny novy polling ani render-side data flow.
+
+## 2026-03-21 06:27 | branch: feat/build-0.1.15
+
+- Request: Zjistit, jak ted funguje nakup/spusteni vyzkumu, kdyz se projekt zda jit koupit jen z hlavniho (prvniho) lena.
+- Summary: Prosel jsem research flow v klientu i backendu. `ResearchPanel` zobrazuje regionalni research stav (`research.projects`, `idleAcademics`, `regionAcademicCapacity`), ale cenu projektu validuje proti `resources.coins` aktualne nacteneho lena a pri kliknuti na `Spustit vyzkum` posila mutation s `villageId = gameState.village.id ?? activeVillageId`. Backend route `/api/v1/research/project/start` tento `villageId` preda do `startResearchProject()`, kde `requireVillageForUser()` vybere konkretni leno a transakce pak mince strhava vyhradne z `resources` toho jednoho vybraneho lena (`synchronizeVillageEconomyAt(village.id)` + `updateResourcesAfterSpendStmt(..., village.id)`). Samotny vyzkum a akademici jsou regionalni, ale financovani startu projektu je dnes vazane na aktivni/pozadovane leno; kdyz `requestedVillageId` chybi nebo nepasuje, backend fallbackuje na `villages[0]`, tedy prvni/hravni leno.
+- Files: arch/chat-changelog.md
+- Verification: code review `src/pages/GamePage.tsx` (`ResearchPanel`, `handleStartResearchProject`, `loadGameState`, `applyActiveVillageSelection`), code review `src/api/gameApi.ts` (`startResearchProject` request body), code review `server/index.js` (`/api/v1/research/project/start`), code review `server/gameService.js` (`requireVillageForUser`, `startResearchProjectTransaction`, research read model v `getVillageSnapshot`)
+- Notes: Feature contract: research progres a akademici jsou regionalni, ale coin spend je aktualne per-village. Hlavni riziko pripadne opravy bude nesmest regionalni research state s lokalni ekonomikou tak, aby zustal jasny zdroj pravdy pro mince.
+
+## 2026-03-21 07:05 | branch: feat/build-0.1.15
+
+- Request: Navrhnout efektivni a bezregresni postup pro dalsi vlnu zmen: research platby z aktivniho lena, prevody zlata/minci pres existujici logistiku z research panelu, upravu combat ranku (utocnik/obrance/podporovatel), novy zebricek pro uloupene suroviny vcetne zlata/minci bez kralovstvi, dohledani umisteni `Armady vsech len` a doladeni UI verejneho poradku.
+- Summary: S pouzitim `last-dominion-feature-guardrails` jsem rozdelil pozadavky podle rizika a datoveho modelu. Potvrdil jsem, ze research flow uz dnes umi utratit mince z konkretniho `requestedVillageId`, ale backend pri chybejicim/invalidnim id fallbackuje na `villages[0]`, takze bezregresni smer je zpevnit kontrakt "plat z aktivniho lena" namisto michani regionalni ekonomiky. Pro prevody v research panelu se jevi jako nejbezpecnejsi rozsirit existujici `market/logistics/send` flow, ne zavadet druhy transfer system; soucasne jsem overil, ze to neni jen UI limit, ale i schema `logistics_routes` a tick processing jsou dnes jen pro `wood/stone/iron`, takze `gold/coins` budou chtit konzistentni rozsiren i v DB a delivery/cancel flow. Combat ranky jsou centralne agregovane v `buildCombatScoresByPlayerId`, takze zmena pravidel ma jit tam, ne do klienta. Naopak novy zebricek uloupenych surovin vcetne zlata/minci neni jen UI prace, protoze battle loot/report/return movement modely dnes eviduji jen `wood/stone/iron`; bezregresni cesta je nejdriv rozsirit skutecny loot kontrakt a teprve pak pridat novy player-only zebricek bez kralovstvi. Soucasne jsem dohledal, ze `Armada vsech len` pristala uvnitr existujiciho `ArmyPanel` pod textem `Sprava vsech len`, a ze badge verejneho poradku uz sedi vedle `Aktivniho lena`, jen je mala a pouziva nativni `title` tooltip.
+- Files: arch/chat-changelog.md
+- Verification: `Get-Content C:\\Users\\Patrik\\.codex\\skills\\last-dominion-feature-guardrails\\SKILL.md`, `Get-Content C:\\Users\\Patrik\\.codex\\skills\\last-dominion-feature-guardrails\\references\\playbook.md`, code review `src/pages/GamePage.tsx` (`ResearchPanel`, research logistics UI, `handleStartResearchProject`, `handleSendMarketLogistics`, `Sprava vsech len`, public order badge), code review `src/api/gameApi.ts` (`startResearchProject`, `sendMarketLogistics`, `BattleReportPayload`), code review `server/index.js` (`/api/v1/research/project/start`, `/api/v1/market/logistics/send`), code review `server/gameService.js` (`requireVillageForUser`, `startResearchProjectTransaction`, `sendMarketLogisticsTransaction`, `buildCombatScoresByPlayerId`, battle loot flow), code review `server/db.js` (`logistics_routes` schema)
+- Notes: Neslo o implementaci; vysledkem je staged plan s explicitnim feature contractem, hlavnim vykonovym rizikem, mitigaci a poradi zmen tak, aby se minimalizovalo riziko rozbiti ekonomiky, tick delivery a zebricku.
+
+## 2026-03-21 07:23 | branch: feat/build-0.1.15
+
+- Request: Zkontrolovat navrzeny kontrakt barevneho rozliseni mapy a povolenych akci (utok/podpora/presun) pro aktivni, vlastni, kralovska, DoN, spojenecka, protivnicka a nepratelska lena a najit logicke chyby nebo chybejici pravidla.
+- Summary: Prosel jsem aktualni mapovy read model, klientske rozlisovani a army command validation. Potvrdil jsem, ze hlavni nekonzistence je architektonicka: server world snapshot vraci jen `relation = self|ally|enemy`, kde `ally` dnes znamena pouze `same kingdom`, zatimco klient si z toho v `determineMapSettlementKind()` heuristicky dodelava `nap/opponent/enemy` podle `note`, newbie ochrany a nazvu kralovstvi. To je v rozporu s pozadovanym kontraktem, podle ktereho maji byt cizi barvy autoritativne odvozeny jen z vlastnictvi hrace a diplomacie kralovstvi. Soucasne jsem overil, ze klient dnes blokuje utok na `ally`, server ale blokuje jen utok na vlastni leno; planner navic take invaliduje cile patri tizi hraci. Identifikoval jsem dalsi logicke diry: `royal` barva je v klientu definovana, ale v aktualni klasifikaci se nikdy nevraci; `nap` se chybne odvozuje i z novackovske ochrany; a pokud by se jen odblokoval utok na vlastni lena, otevrel by se bez dalsich pravidel exploit a chaos v lootu, retaliation flagach, dvojitych battle reportech a planneru. Doporuceny kontrakt je oddelit `ownership` (`active`, `own`, `foreign`, `royal`, `bot`, `abandoned`) od `diplomacy` (`same_kingdom`, `allied`, `don`, `war`, `neutral`) a finalni map kind pocitat jednou na serveru, bez klientskych heuristik z `note`.
+- Files: arch/chat-changelog.md
+- Verification: code review `server/gameService.js` (`buildWorldSettlements`, `issueArmyCommandTransaction`, battle report / retaliation flow, planner target validation), code review `src/pages/GamePage.tsx` (`determineMapSettlementKind`, `canTargetSettlementForArmyCommand`, legend/color definitions), code review `src/api/gameApi.ts` (`WorldSettlement.relation`, `WorldMapSnapshotResponse`)
+- Notes: Neslo o implementaci. Klicovy otevreny produktovy bod, ktery je potreba explicitne rozhodnout pred zmenou kodu: jak se ma barevne chovat jiny hrac ve stejnem Kralovstvi a jaka presna pravidla maji platit pro self-attack, aby nevznikl transport/loot exploit.
+
+## 2026-03-21 07:30 | branch: feat/build-0.1.15
+
+- Request: Zjistit, kde je implementovana fronta naboru s poradi, casovanim a preusporadavanim a proc to neni videt na aktualni strance naboru armady.
+- Summary: Dohledal jsem, ze support pro queue ordering/timing/reorder na nabor jednotek je implementovany v backendu i API, ale frontend render pro reorder zustal nedodelany. Snapshot uz vraci `activeRecruitments` s `queueIndex`, `startedAt`, `finishAt` a `remainingSec`; klient je v `recruitQueueOrders` spravne seradi podle `queueIndex` a ETA a zobrazuje v sekci `Fronta kasaren`, ale UI dnes umi jen cancel polozky. Samotna reorder mutation existuje v `src/api/gameApi.ts` (`reorderRecruitmentQueue`), route `/api/v1/units/recruitments/reorder` existuje v `server/index.js` a backend `reorderRecruitmentQueueTransaction()` umi presunout pouze neaktivni polozky a pres `applyRecruitmentQueueTimeline()` prepocitat `queue_index`, `started_at`, `finish_at` a `status`. Soucasne jsem potvrdil, ze text ve frontendu tvrdi, ze zaznamy bezi paralelne, ale backendova timeline je sekvencni: index 0 je `in_progress`, dalsi jsou `queued`, takze popisek na strance dnes neodpovida implementaci.
+- Files: arch/chat-changelog.md
+- Verification: code review `src/pages/GamePage.tsx` (`recruitQueueOrders`, sekce `Fronta kasaren`), code review `src/api/gameApi.ts` (`activeRecruitments`, `reorderRecruitmentQueue`), code review `server/index.js` (`/api/v1/units/recruitments/reorder`), code review `server/gameService.js` (`applyRecruitmentQueueTimeline`, `reorderRecruitmentQueueTransaction`, snapshot mapping `activeRecruitments`)
+- Notes: Neslo o implementaci. Hlavni zjisteni: reorder naboru je backend/API-ready, ale neni zapojeny do aktualniho UI, zatimco reorder build queue uz ve stejnem souboru kompletni UI ma.
+
+## 2026-03-21 07:41 | branch: feat/build-0.1.15
+
+- Request: Upravit roadmapu podle rozhodnuti z chatu: zmenit `Stranku vsech len` na read-only kompaktni list s malymi ikonami jednotek, ikonami brany/opevneni, inline ikonou profilu a bez naboru, a doplnit do roadmap backlog dalsich dohodnutych zmen z mapy, research/logistiky, zebricku, recruit queue a verejneho poradku.
+- Summary: Aktualizoval jsem dve roadmapy. V `arch/armada-a-planovac-v1-roadmap.md` jsem upravil kontrakt `Armady` na kompaktni read-only roster: radek/karta s malymi ikonami jednotek, hodnotami `vlastni (podpora)`, ikonami `opevneni/brana + uroven`, bez `Aktualniho rekrutu` a s inline ikonou pro otevreni profilu, pricemz hlavni klik stale pridava leno do planovace. V `arch/verejny-poradek-armada-mapa-implementacni-milniky-v1.md` jsem prepsal feature contract `Armady vsech len` na read-only list a dopsal nove implementacni milniky pro: research platby z aktivniho lena + logistiku `gold/coins`, serverovy ownership/diplomacy kontrakt mapy, UI dokoncení recruit queue reorderu, nove combat rank agregace, loot model + player-only loot zebricek a polish verejneho poradku. Soucasne jsem upravil doporucene poradi realizace a navazne API/DB/acceptance specifikace, aby backlog odrazel rozhodnute body z teto konverzace.
+- Files: arch/armada-a-planovac-v1-roadmap.md, arch/verejny-poradek-armada-mapa-implementacni-milniky-v1.md, arch/chat-changelog.md
+- Verification: manual review obou upravenych roadmap dokumentu po patchi, kontrola souladu s aktualnim stavem `ArmyPanel` v `src/pages/GamePage.tsx` a driv dohledanymi implementacemi `research`, `market/logistics`, map relation logiky, recruit queue a leaderboard agregaci
+- Notes: Slo o dokumentacni a roadmap update bez runtime implementace. Klicove rozhodnuti zapisane do backlogu: `Sprava vsech len` ma prejit na read-only prehled a mapove vztahy se maji stat serverove autoritativnim kontraktem misto klientskych heuristik.
+
+## 2026-03-21 08:12 | branch: feat/build-0.1.15
+
+- Request: Kratce overit, ze jsou v planu implementace opravdu zachycene vsechny rozhodnute body z chatu a nic podstatneho nechybi.
+- Summary: Prosel jsem obe roadmapy proti dosavadnim rozhodnutim z teto konverzace. Potvrdil jsem, ze jsou v nich uz zanesene body pro read-only `Armadu vsech len`, research placeny z aktivniho lena, logistiku `gold/coins`, recruit queue reorder UI, combat ranky, loot leaderboard a polish verejneho poradku. Jedina realna mezera byla v mapovem milniku: chybel explicitni permission matrix pro `move/support/attack/self-attack` a otevrene rozhodnuti pro stav `jiny hrac ve stejnem Kralovstvi`, aby se nikdy nesloucil s `own`. Tento kontrakt je ted v `Milniku L` dopsany, takze roadmapa pokryva i nejrizikovejsi cast bez dalsi klientske heuristiky.
+- Files: arch/verejny-poradek-armada-mapa-implementacni-milniky-v1.md, arch/chat-changelog.md
+- Verification: `Get-Content C:\\Users\\Patrik\\.codex\\skills\\last-dominion-feature-guardrails\\SKILL.md -TotalCount 220`, `Get-Content D:\\The Last Dominion\\arch\\armada-a-planovac-v1-roadmap.md -TotalCount 260`, `Get-Content D:\\The Last Dominion\\arch\\verejny-poradek-armada-mapa-implementacni-milniky-v1.md -TotalCount 320`, `Select-String -Path D:\\The Last Dominion\\arch\\verejny-poradek-armada-mapa-implementacni-milniky-v1.md -Pattern 'Milnik L|support je povolena|attack je povolen|same kingdom|stejnem Kralovstvi|self-attack|DoN|royal' -Context 0,3`, `Select-String -Path D:\\The Last Dominion\\arch\\armada-a-planovac-v1-roadmap.md -Pattern 'Aktualni rekrut|inline ikonu|minimalisticke|Jednotky horizontalne|horizontalni pruh|profil lena' -Context 0,2`
+- Notes: Bez runtime zmen. Overeni probehlo podle guardrails se zamerenim na feature contract, permission logiku a riziko dalsich regresi v mapovem klasifikatoru a army commandech.
+
+## 2026-03-21 08:21 | branch: feat/build-0.1.15
+
+- Request: Dopsat do roadmapy konkretni decision note pro stav `jiny hrac ve stejnem Kralovstvi`, aby na implementaci mapy a permission logiky nezustala nejednoznacnost.
+- Summary: V `Milniku L` jsem otevrene rozhodnuti prepsal na finalni pravidlo. Cizi hrac ve stejnem Kralovstvi nema v prvni verzi samostatnou legendovou barvu; vizualne spada do `opponent`, ale server o nem stale musi vracet explicitni informaci pro tooltip, army dialog a planner. Permission kontrakt je dopsany jednoznacne: `move` blokovany, `support` povoleny, `attack` povoleny. Soucasne jsem tento edge case doplnil i do acceptance checklistu, aby se pri implementaci a testovani znovu neztratil a nikdy se nesloucil s `own`, `allied` ani `don`.
+- Files: arch/verejny-poradek-armada-mapa-implementacni-milniky-v1.md, arch/chat-changelog.md
+- Verification: `Get-Content C:\\Users\\Patrik\\.codex\\skills\\last-dominion-feature-guardrails\\references\\playbook.md -TotalCount 220`, `Get-Content D:\\The Last Dominion\\arch\\verejny-poradek-armada-mapa-implementacni-milniky-v1.md` around `Milnik L`, manual review acceptance checklist v tomtez dokumentu
+- Notes: Bez runtime zmen. Rozhodnuti zamerne nepridava novou mapovou legendu ani novy klientsky classifier; drzi jeden serverovy kontrakt a jen explicitne resi dosud otevreny edge case.
+
+## 2026-03-21 08:27 | branch: feat/build-0.1.15
+
+- Request: Sepsat navazujici API a acceptance detail pro serverovy field mapoveho vztahu, aby implementace `Milniku L` nemusela znovu vymyslet kontrakt pro tooltip, planner a army dialog.
+- Summary: Rozsiril jsem arch API a acceptance dokumenty o konkretni additive kontrakt pro `GET /api/v1/world-map`. API spec ted zavadi `mapKind`, `diplomacyKind` a `commandPermissions` jako autoritativni serverova pole pro mapu, minimapu, army target dialog a planner, pri zachovani stavajiciho `relation` jen jako prechodove compatibility vrstvy. Dopsal jsem i specialni pravidlo pro `same_kingdom_foreign`: render jako `opponent`, bez nove legendove barvy, ale s explicitnim `diplomacyKind` a jednoznacnymi permissions (`move` ne, `support` ano, `attack` ano). Acceptance dokument dostal konkretni scenare pro `active`, `own`, `same_kingdom_foreign`, kralovska lena, ciste kralovskou diplomacii a jednotny source of truth pro target gating.
+- Files: arch/verejny-poradek-armada-api-spec-v1.md, arch/verejny-poradek-armada-acceptance-scenare-v1.md, arch/chat-changelog.md
+- Verification: `Get-Content C:\\Users\\Patrik\\.codex\\skills\\last-dominion-feature-guardrails\\references\\playbook.md -TotalCount 220`, `Select-String -Path D:\\The Last Dominion\\arch\\verejny-poradek-armada-api-spec-v1.md -Pattern 'world-map|mapKind|diplomacyKind|same_kingdom_foreign|commandPermissions' -Context 0,4`, `Select-String -Path D:\\The Last Dominion\\arch\\verejny-poradek-armada-acceptance-scenare-v1.md -Pattern 'MAP-001|MAP-003|same_kingdom_foreign|commandPermissions|mapKind = opponent' -Context 0,4`
+- Notes: Bez runtime zmen. Detail zustava additive a respektuje guardrails: zadny novy endpoint, zadny novy polling, zadna dalsi klientaska heuristika.
+
+## 2026-03-21 08:36 | branch: feat/build-0.1.15
+
+- Request: Pokracovat na `feat/build-0.1.15` a zacit realnou implementaci podle roadmapy/planu.
+- Summary: Implementoval jsem runtime cast `Milniku L` pro mapovy ownership/command kontrakt. Backend `buildWorldSettlements` ted vraci nove server-authoritative fieldy `mapKind`, `diplomacyKind` a `commandPermissions`, vcetne explicitniho chovani pro `same_kingdom_foreign` (render jako `opponent`, `move=false`, `support=true`, `attack=true`). Klient jsem prepnul na cteni tohoto serveroveho kontraktu jako primarniho zdroje pro mapove rozliseni a command gating; puvodni heuristiky z `note` byly odstraneny z hlavni rozhodovaci vetve a zustava pouze fallback kompatibilita. Soucasne jsem upravil API typy pro nove mapove fieldy.
+- Files: server/gameService.js, src/api/gameApi.ts, src/pages/GamePage.tsx, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Nezavadel jsem novy endpoint ani novy polling. V soucasnem runtime zatim neexistuje plny diplomaticky model mezi Kralovstvimi, takze `allied/don/enemy` zustavaji rezervovane pro navazujici backend milnik s diplomatickym read modelem.
+
+## 2026-03-21 08:59 | branch: feat/build-0.1.15
+
+- Request: Pokracovat jednickou, tj. dodelat plny diplomaticky model Kralovstvi a napojit ho do mapove klasifikace i minimapy bez dalsi klientske heuristiky.
+- Summary: Dodelal jsem perzistentni read model `kingdom_diplomacy` (DB schema + cleanup), serverovou mutaci `setKingdomDiplomacy` s validaci leadershipu, endpoint `POST /api/v1/kingdom/diplomacy` a rozsireni `kingdomHub` o `canManageDiplomacy` + `diplomacyRelations`. `buildWorldSettlements` ted vyhodnocuje `diplomacyKind` podle dvojice království z DB (ally/DoN/war/neutral), z toho odvodi `mapKind` a kompatibilni `relation`. Na klientu jsem doplnil API typy/call a v `KingdomPanel` implementoval sekci Diplomacie (tabulka vztahu + leader ovladani pro nastaveni vztahu). Wipe statistiky i region wipe ted zahrnuji i tabulku diplomacie.
+- Files: server/db.js, server/gameService.js, server/index.js, src/api/gameApi.ts, src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS), `node --check server/gameService.js` (PASS), `node --check server/index.js` (PASS)
+- Notes: Feature contract: autoritativni stav diplomacie je server+DB pair model mezi Kralovstvi v ramci `region`. Hlavni vykonove riziko byl potencial N+1 lookup na mape; mitigace je jediny regionovy dotaz na diplomacii mimo settlement loop a ciste in-memory lookup podle pair key.
+
+## 2026-03-21 09:28 | branch: feat/build-0.1.15
+
+- Request: Urcit dalsi nejvhodnejsi implementacni krok po dokonceni mapove diplomacie.
+- Summary: Prosel jsem aktualni stav roadmapy a navaznosti po `Milniku L`. Doporucil jsem jako dalsi krok runtime implementaci read-only stranky `Armady vsech len`, protoze je to UI/read-model zmena s nizkym rizikem, nevyzaduje novy tick/economy kontrakt a zuzitkuje uz existujici data. Za ni jsem seradil recruit queue reorder UI a teprve potom economy/logistics milniky (`research` platby z aktivniho lena a prevody `gold/coins`), ktere uz sahaji do herni ekonomiky a maji vyssi regresni riziko.
+- Files: arch/chat-changelog.md
+- Verification: review `arch/chat-changelog.md`, guardrails review `last-dominion-feature-guardrails` + `playbook.md`
+- Notes: Bez runtime zmen. Feature contract pro doporuceny dalsi krok ma zustat UI-only/read-model, bez noveho pollingu a bez rustu globalniho snapshot payloadu nad skutecne potreby panelu.
+
+## 2026-03-21 09:42 | branch: feat/build-0.1.15
+
+- Request: Implementovat dalsi krok `Armady vsech len` jako kompaktni zobrazovaci list.
+- Summary: V `ArmyPanel` jsem prepnul treti tab na read-only variantu `Armady vsech len` bez naboru/staveb. Multi-village view ted cte existujici `armyOverview` data a zobrazuje pro kazde leno kompaktni kartu s nazvem/souradnicemi, souhrnem vlastnich+podporovych jednotek, ikonami `opevneni` a `brany` s urovni, horizontalnim radkem minimalistickych unit ikon s poctem a inline ikonovym tlacitkem pro otevreni profilu lena. Zaroven jsem odstranil uz nepouzivane callbacky/props pro cross-village recruit+upgrade, aby zustal cisty read-model a nevznikaly mrtve mutacni pathy.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract zustava UI-only/read-model. Hlavni riziko byl zbytecny rerender a rozsireni stavu v `GamePage`; mitigace je vyuziti existujiciho `armyOverview` fetch flow bez noveho endpointu/pollingu.
+
+## 2026-03-21 09:53 | branch: feat/build-0.1.15
+
+- Request: Implementovat frontend napojeni `Recruit queue reorder UI` podle roadmapy, protoze backend reorder uz existuje.
+- Summary: Dodelal jsem reorder naborove fronty v `ArmyPanel`: sipky `↑/↓` i drag&drop mezi cekajicimi polozkami, blokaci presunu aktivni (prvni) polozky a navazani na existujici endpoint `POST /api/v1/units/recruitments/reorder`. V `GamePage` jsem pridal `reorderRecruitmentPendingId`, novy handler `handleReorderRecruitment`, napojeni na `reorderRecruitmentQueueRequest`, guardy proti soubehu `cancel/reorder` a UI notice s vysledkem presunu. Soucasne jsem upravil text fronty na sekvencni chovani (ne paralelni), aby odpovidal backend timeline.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract zustava bez noveho endpointu i bez noveho pollingu; jde jen o frontend wiring nad existujicim backend kontraktem.
+
+## 2026-03-21 10:40 | branch: feat/build-0.1.15
+
+- Request: Implementovat roadmap milestone pro `research/economy` (platba projektu z aktivniho lena + prevody `gold/coins`) a navazne `combat ranky + loot leaderboard` se zmenou historickych agregaci.
+- Summary: Dodelal jsem backend+DB+UI kontrakt pro logistiku `gold/coins` a pevne svazani research/logistik mutaci na explicitne vybrane aktivni leno (`strictRequestedVillage`). `army_movements` a `logistics_routes` dostaly `carry_gold/carry_coins` a `gold/coins` sloupce, tick delivery/return flow je ted aplikuje stejne jako drevo/kamen/zelezo a logistika je zohlednuje i pri cancel/refund. V battle resolution jsem rozsiril loot model o `gold/coins` vcetne ochrany z `vault` a navazneho navratu koristi. Soucasne jsem upravil agregace zebricku: utocnik, obrance i podporovatel ted pocitaji padle na obou stranach podle dohodnute logiky a pribyl samostatny player-only ranking `Kořist` s `lootScore/lootRank`.
+- Files: server/db.js, server/gameService.js, src/api/gameApi.ts, src/pages/GamePage.tsx, arch/chat-changelog.md
+- Verification: `npm run build` (PASS), `npm run test:regression` (PASS, 28/28), `node --check server/db.js` (PASS), `node --check server/gameService.js` (PASS), `node --check server/index.js` (PASS)
+- Notes: Zmena je additive (bez noveho pollingu). Logistika a loot payloady zustavaji zpětne kompatibilni pro starsi data pres default 0.
+
+## 2026-03-21 11:51 | branch: feat/build-0.1.15
+
+- Request: Otestovat nove veci (research/economy + combat/loot zebricky) a zjistit co funguje/nefunguje.
+- Summary: Rozsiril jsem regresni harness o 3 nove scenare a odpovidajici testy: (1) research platba z explicitne vybraneho aktivniho lena + strict reject neplatneho `villageId`, (2) logistika `gold/coins` vcetne send/cancel-refund/delivery + snapshot payload, (3) agregace combat ranku a loot leaderboardu pro utocnika/obrance/podporovatele. Pri prvnim behu jsem odhalil a odstranil test harness nepresnosti (sync casu surovin, desetinna tolerance po ticku, mapovani `market.logisticsRoutes` s `id` misto `routeId`, ocekavany supporter score podle movement-level attacker losses). Po korekci vsechny testy prochazi a nove milniky se chovaji konzistentne.
+- Files: tests/regression/game-rules.scenario.mjs, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
+- Verification: `npm run test:regression` (PASS, 31/31), `npm run build` (PASS), `npm run lint` (FAIL - existujici React hook purity/set-state-in-effect chyby v `src/App.tsx` a `src/pages/GamePage.tsx`)
+- Notes: Nenalezena funkcni regrese v implementovanych milnicich; zjištěné pádové body byly v testovacích očekáváních/harness detailu, ne v runtime feature logice.
+
+## 2026-03-21 | branch: feat/build-0.1.15
+
+- Request: Opravit to, co “nefunguje”, tedy React hook purity/set-state-in-effect chyby v `src/App.tsx` a `src/pages/GamePage.tsx`, a potvrdit, zda to jde udělat bez regresi.
+- Summary: Prevedl jsem synchronni sync stavu z effectu na odvozene hodnoty a asynchronni commit: mercenary vyber je ted resilen pres odvozene `resolvedSelectedMercenaryVillageId`, map zoom se synchronizuje pres odlozene `setTimeout` v effectu, planner validace ma vlastni clock hook `plannerNowMs`, a `useEffectEvent` je znovu korektne importovany. Zaroven jsem vycistil chybne dependency array u souvisejicich callbacku a pridal ESLint ignorace pro generovane a backup adresare, aby lint nehlasil hluk mimo zdrojaky.
+- Files: src/pages/GamePage.tsx, eslint.config.js, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS), `npm run test:regression` (PASS, 31/31)
+
+## 2026-03-21 | branch: develop
+
+- Request: Mergnout aktualni praci do `develop` a spustit ji lokalne na localhostu.
+- Summary: Commitnul jsem rozpracovane zmeny na `feat/build-0.1.15` jako `11aed5f feat(gameplay): finalize 0.1.15 roadmap rollout`, lokalni `develop` jsem na ne fast-forward mergnul a provedl cisty restart lokalniho dev behu. Nova session bezi pres `npm run dev` nad vetvi `develop` s klientem na `http://localhost:5173` a backendem na `http://localhost:3001`.
+- Files: arch/chat-changelog.md
+- Verification: `git merge --ff-only feat/build-0.1.15` (PASS), `npm run dev` na `develop` (RUNNING), porty `5173` a `3001` naslouchaji
+
+## 2026-03-21 | branch: develop
+
+- Request: Overit, kde je v UI moznost posilat zlato a mince, a pote ji doplnit i do panelu vyzkumu.
+- Summary: Overil jsem, ze prevody `gold/coins` byly uz implementovane v `CommandsPanel > Trh a logistika`, ale ne ve vyzkumu. Proto jsem pridal do `ResearchPanel` novou sekci `Pokladnice mezi lény`, ktera nad existujicim market-logistics API umi z aktivniho lena posilat zlato a mince do jineho vlastniho lena, zobrazovat ETA, kapacitu trhu, aktivni prevody a zruseni prevodu. Soucasne jsem rozsiril market-dependent fetch i pro rozbaleny panel vyzkumu, aby se data nacitala bez noveho globalniho pollingu.
+- Files: src/pages/GamePage.tsx, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS), `npm run test:regression` (PASS, 31/31)
+
+## 2026-03-21 14:30 | branch: develop
+
+- Request: Dodelat testy, ktere potvrdi, ze nove treasury prevody `gold/coins` funguji v souladu se stavajici herni logikou trhu a ekonomiky.
+- Summary: Rozsiril jsem regresni harness o dva nove economy scenare a odpovidajici testy. Prvni overuje treasury-only prevod mezi vlastnimi leny pres existujici market-logistics kontrakt, vcetne send/cancel-refund/delivery a zaruky, ze `wood/stone/iron` zustanou beze zmeny. Druhy overuje, ze stejne treasury prevody stale podlehaji puvodnim guard pravidlum trhu: nulova zasilka je odmitnuta, bez trhu nelze odesilat, kapacita trhu se neprekroci, zdrojove leno musi mit dost prostredku a nedostupni obchodnici blokují dalsi trasu. Pri prvnim behu jsem odhalil, ze testovy scenar byl znecisten pasivni produkci cile behem `runGameTick`, proto jsem v nem vynuloval produkcni budovy, aby meril jen logistickou logiku.
+- Files: tests/regression/game-rules.scenario.mjs, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
+- Verification: `npm run test:regression` (PASS, 33/33)
+- Notes: Feature contract zustava beze zmen v runtime kodu; jde o test coverage nad existujicim market/economy flow. Hlavni riziko byla falesna negativita z tick-based resource syncu, mitigace je izolace scenare vypnutim produkce.
