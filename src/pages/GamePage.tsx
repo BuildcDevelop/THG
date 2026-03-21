@@ -2005,6 +2005,7 @@ type PersistedShortcutSettings = {
 };
 
 const MAP_ORDER_COMMAND_TYPES: MapOrderCommandType[] = ['attack', 'support', 'move'];
+const MAP_BACKGROUND_ART_PATH = '/assets/map/mapa.svg';
 const MAP_SETTLEMENT_KIND_LABELS: Record<MapSettlementKind, string> = {
   active: 'Aktuální osada',
   own: 'Moje osada',
@@ -2028,8 +2029,8 @@ const SETTLEMENT_COLOR_LABELS: Record<SettlementColorKey, string> = {
   abandoned: 'Opuštěná',
 };
 const DEFAULT_SETTLEMENT_COLOR_PALETTE: SettlementColorPalette = {
-  active: '#f8fbff',
-  own: '#f2c269',
+  active: '#fff4da',
+  own: '#e7b24f',
   bot: '#9f8cff',
   royal: '#8fc9ff',
   allied: '#5fbf8f',
@@ -2193,6 +2194,8 @@ const GAME_FONT_SCALE_STORAGE_KEY_PREFIX = 'tld_game_font_scale';
 const LEGACY_GAME_FONT_SCALE_STORAGE_KEY_PREFIX = 'thg_game_font_scale';
 const SHORTCUT_SETTINGS_STORAGE_KEY_PREFIX = 'tld_shortcut_settings';
 const LEGACY_SHORTCUT_SETTINGS_STORAGE_KEY_PREFIX = 'thg_shortcut_settings';
+const AVATAR_URL_STORAGE_KEY_PREFIX = 'tld_avatar_url';
+const LEGACY_AVATAR_URL_STORAGE_KEY_PREFIX = 'thg_avatar_url';
 const DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER: MapPreviewTravelModifierKey = 'ctrl';
 const MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS: Array<{
   value: MapPreviewTravelModifierKey;
@@ -3286,8 +3289,8 @@ const MAP_SETTLEMENT_CANVAS_KIND_STYLE: Record<
     glowRgb: [number, number, number];
   }
 > = {
-  active: { fill: 'rgba(248, 251, 255, 0.2)', border: 'rgba(248, 251, 255, 0.92)', glowRgb: [229, 241, 255] },
-  own: { fill: 'rgba(242, 194, 105, 0.18)', border: 'rgba(242, 194, 105, 0.78)', glowRgb: [242, 194, 105] },
+  active: { fill: 'rgba(255, 244, 218, 0.24)', border: 'rgba(255, 230, 175, 0.96)', glowRgb: [255, 228, 171] },
+  own: { fill: 'rgba(231, 178, 79, 0.22)', border: 'rgba(255, 201, 88, 0.9)', glowRgb: [255, 197, 92] },
   bot: { fill: 'rgba(159, 140, 255, 0.18)', border: 'rgba(159, 140, 255, 0.74)', glowRgb: [159, 140, 255] },
   royal: { fill: 'rgba(143, 201, 255, 0.2)', border: 'rgba(143, 201, 255, 0.78)', glowRgb: [143, 201, 255] },
   allied: { fill: 'rgba(97, 191, 143, 0.18)', border: 'rgba(97, 191, 143, 0.72)', glowRgb: [97, 191, 143] },
@@ -3537,6 +3540,48 @@ const saveMapWindowSize = (size: WindowSize): void => {
       height: Math.round(size.height),
     }),
   );
+};
+
+const getAvatarUrlStorageKey = (username: string): string =>
+  `${AVATAR_URL_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+const getLegacyAvatarUrlStorageKey = (username: string): string =>
+  `${LEGACY_AVATAR_URL_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+
+const readStoredAvatarUrl = (username: string): string | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw =
+      window.localStorage.getItem(getAvatarUrlStorageKey(username)) ??
+      window.localStorage.getItem(getLegacyAvatarUrlStorageKey(username));
+    if (!raw) {
+      return null;
+    }
+    const normalized = String(raw).trim();
+    return normalized.length > 0 ? normalized : null;
+  } catch {
+    return null;
+  }
+};
+
+const saveStoredAvatarUrl = (username: string, avatarUrl: string | null): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const key = getAvatarUrlStorageKey(username);
+  try {
+    const normalized = String(avatarUrl ?? '').trim();
+    if (!normalized) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, normalized);
+  } catch {
+    // Ignore storage errors.
+  }
 };
 
 const getLastOwnSettlementStorageKey = (username: string): string =>
@@ -8202,19 +8247,19 @@ const MilitaryPanel = ({
       <section>
         <h3>Válečný štáb · {currentVillageName}</h3>
         <div className="commands-kpi-strip">
-          <article>
+          <article className="military-summary-card military-summary-card--units">
             <span>🪖 Celkem jednotek</span>
             <strong>{totalUnits.toLocaleString('cs-CZ')}</strong>
           </article>
-          <article>
+          <article className="military-summary-card military-summary-card--attack">
             <span>⚔ Souhrnná síla útoku</span>
             <strong>{totalAttackPower.toLocaleString('cs-CZ')}</strong>
           </article>
-          <article>
+          <article className="military-summary-card military-summary-card--defense">
             <span>🛡 Souhrnná síla obrany</span>
             <strong>{totalDefensePower.toLocaleString('cs-CZ')}</strong>
           </article>
-          <article>
+          <article className="military-summary-card military-summary-card--loot">
             <span>📦 Kapacita kořisti</span>
             <strong>{totalLootCapacity.toLocaleString('cs-CZ')}</strong>
           </article>
@@ -8255,9 +8300,9 @@ const MilitaryPanel = ({
                 </header>
                 <p className="military-unit-amount unit-count-large">{Number(unit.amount ?? 0).toLocaleString('cs-CZ')}</p>
                 <div className="military-unit-stats">
-                  <small>Útok: {attackContribution.toLocaleString('cs-CZ')}</small>
-                  <small>Obrana: {defenseContribution.toLocaleString('cs-CZ')}</small>
-                  <small>Kořist: {(Number(unit.amount ?? 0) * lootCapacity).toLocaleString('cs-CZ')}</small>
+                  <small className="military-unit-stat military-unit-stat--attack">Útok: {attackContribution.toLocaleString('cs-CZ')}</small>
+                  <small className="military-unit-stat military-unit-stat--defense">Obrana: {defenseContribution.toLocaleString('cs-CZ')}</small>
+                  <small className="military-unit-stat military-unit-stat--loot">Kořist: {(Number(unit.amount ?? 0) * lootCapacity).toLocaleString('cs-CZ')}</small>
                 </div>
                 {isMercenaryUnitCard && mercenaryDeployment ? (
                   <small className="row-help military-unit-mercenary-timing">{mercenaryDeployment.summaryLabel}</small>
@@ -13653,33 +13698,33 @@ const PlayerProfilePanel = ({
         </div>
         {friendRequestNotice ? <p className="player-profile-action-notice">{friendRequestNotice}</p> : null}
         <div className="player-profile-main-stats">
-          <article className="player-profile-stat-card player-profile-stat-card-main">
+          <article className="player-profile-stat-card player-profile-stat-card-main player-profile-stat-card--rank">
             <span>Globální pořadí</span>
             <strong>{playerRow ? `#${playerRow.rank}` : 'N/A'}</strong>
           </article>
-          <article className="player-profile-stat-card player-profile-stat-card-main">
+          <article className="player-profile-stat-card player-profile-stat-card-main player-profile-stat-card--prestige">
             <span>Prestiž</span>
             <strong>{(playerRow?.prestige ?? 0).toLocaleString('cs-CZ')}</strong>
           </article>
-          <article className="player-profile-stat-card player-profile-stat-card-main">
+          <article className="player-profile-stat-card player-profile-stat-card-main player-profile-stat-card--villages">
             <span>Léna</span>
             <strong>{playerRow?.villages ?? villages.length}</strong>
           </article>
         </div>
         <div className="player-profile-combat-stats">
-          <article className="player-profile-stat-card player-profile-stat-card-compact">
+          <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--attack">
             <span>Útočník</span>
             <strong>{`${attackerRankLabel} (${attackerScore.toLocaleString('cs-CZ')} padlých)`}</strong>
           </article>
-          <article className="player-profile-stat-card player-profile-stat-card-compact">
+          <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--defense">
             <span>Obránce</span>
             <strong>{`${defenderRankLabel} (${defenderScore.toLocaleString('cs-CZ')} padlých)`}</strong>
           </article>
-          <article className="player-profile-stat-card player-profile-stat-card-compact">
+          <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--support">
             <span>Podporovatel</span>
             <strong>{`${supporterRankLabel} (${supporterScore.toLocaleString('cs-CZ')} padlých)`}</strong>
           </article>
-          <article className="player-profile-stat-card player-profile-stat-card-compact">
+          <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--loot">
             <span>Kořist</span>
             <strong>{`${lootRankLabel} (${lootScore.toLocaleString('cs-CZ')} uloupeno)`}</strong>
           </article>
@@ -13778,34 +13823,34 @@ const ProfilePanel = ({
       </div>
 
       <div className="player-profile-main-stats">
-        <article className="player-profile-stat-card player-profile-stat-card-main">
+        <article className="player-profile-stat-card player-profile-stat-card-main player-profile-stat-card--commander">
           <span>Velitel</span>
           <strong>{username}</strong>
         </article>
-        <article className="player-profile-stat-card player-profile-stat-card-main">
+        <article className="player-profile-stat-card player-profile-stat-card-main player-profile-stat-card--rank">
           <span>Globální pořadí</span>
           <strong>{rank ? `#${rank}` : 'N/A'}</strong>
         </article>
-        <article className="player-profile-stat-card player-profile-stat-card-main">
+        <article className="player-profile-stat-card player-profile-stat-card-main player-profile-stat-card--prestige">
           <span>Prestiž</span>
           <strong>{prestige.toLocaleString('cs-CZ')}</strong>
         </article>
       </div>
 
       <div className="player-profile-combat-stats">
-        <article className="player-profile-stat-card player-profile-stat-card-compact">
+        <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--attack">
           <span>Útočník</span>
           <strong>{attackerRank ? `#${attackerRank}` : 'N/A'}</strong>
         </article>
-        <article className="player-profile-stat-card player-profile-stat-card-compact">
+        <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--defense">
           <span>Obránce</span>
           <strong>{defenderRank ? `#${defenderRank}` : 'N/A'}</strong>
         </article>
-        <article className="player-profile-stat-card player-profile-stat-card-compact">
+        <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--support">
           <span>Podporovatel</span>
           <strong>{supporterRank ? `#${supporterRank}` : 'N/A'}</strong>
         </article>
-        <article className="player-profile-stat-card player-profile-stat-card-compact">
+        <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--loot">
           <span>Kořist</span>
           <strong>{lootRank ? `#${lootRank}` : 'N/A'}</strong>
         </article>
@@ -16253,6 +16298,14 @@ const MapPanel = memo(({
               } as CSSProperties
             }
           >
+            <img
+              className="map-background-art"
+              src={MAP_BACKGROUND_ART_PATH}
+              alt=""
+              aria-hidden="true"
+              draggable={false}
+              decoding="async"
+            />
             <MapSettlementCanvasLayer
               markers={mapCanvasMarkers}
               cellSize={cellSize}
@@ -17182,8 +17235,18 @@ export const GamePage = () => {
     setIsPinColumnsOverlayVisible(false);
     setIsPinColumnsHoldVisible(false);
     setShortcutSettingsLoadedForUser(username);
-    setMyAvatarUrl(null);
-    setPlayerAvatarByUsername({});
+    const storedAvatarUrl = readStoredAvatarUrl(username);
+    setMyAvatarUrl(storedAvatarUrl);
+    setPlayerAvatarByUsername(
+      storedAvatarUrl
+        ? {
+            [username.toLocaleLowerCase('cs-CZ')]: {
+              avatarUrl: storedAvatarUrl,
+              loaded: true,
+            },
+          }
+        : {},
+    );
     setWorldMapState(null);
     latestAppliedWorldMapKeyRef.current = null;
     battleReportDetailRequestByIdRef.current = {};
@@ -17307,6 +17370,9 @@ export const GamePage = () => {
     }
 
     const stripNativeTitle = (element: HTMLElement) => {
+      if (element.hasAttribute('data-keep-native-title')) {
+        return;
+      }
       const title = element.getAttribute('title');
       if (!title) {
         return;
@@ -17367,6 +17433,7 @@ export const GamePage = () => {
         }
         const avatarUrl = response.me?.avatarUrl ?? null;
         setMyAvatarUrl(avatarUrl);
+        saveStoredAvatarUrl(username, avatarUrl);
         setPlayerAvatarByUsername((previous) => ({
           ...previous,
           [username.toLocaleLowerCase('cs-CZ')]: {
@@ -17711,17 +17778,23 @@ export const GamePage = () => {
   const publicOrderBadgeTone =
     publicOrderBand === 'critical' ? 'is-critical' : publicOrderBand === 'warning' ? 'is-warning' : 'is-stable';
   const showPublicOrderPct = publicOrder != null && publicOrderCurrentPct < 100;
-  const publicOrderTooltipLabel = publicOrder
-    ? `${publicOrderBand === 'critical' ? 'KRIZE VEŘEJNÉHO POŘÁDKU' : publicOrderBand === 'warning' ? 'Napětí v zemi' : 'Veřejný pořádek je stabilní'}\n` +
-      `Stav: ${publicOrderCurrentPct}% · Obnova ${Math.max(0, Number(publicOrder.regenPctPerHour ?? 0)).toLocaleString('cs-CZ')}% / hod.\n` +
-      `Nábor rytíře: ${
-        publicOrder.knightRecruitBlocked ? 'blokován (pod 50 % veřejného pořádku)' : 'bez omezení'
-      }\n` +
-      `${
-        Number(publicOrder.globalSpeedPenaltyPct ?? 0) > 0
-          ? `Debuff: -${Math.floor(Number(publicOrder.globalSpeedPenaltyPct ?? 0))}% rychlost náboru, výstavby i produkce.`
-          : 'Bez globálních debuffů.'
-      }`
+  const publicOrderTooltipId = 'public-order-tooltip';
+  const publicOrderTooltipHeadline =
+    publicOrderBand === 'critical'
+      ? 'Krize veřejného pořádku'
+      : publicOrderBand === 'warning'
+        ? 'Napětí v zemi'
+        : 'Veřejný pořádek je stabilní';
+  const publicOrderTooltipRegen = `${Math.max(0, Number(publicOrder?.regenPctPerHour ?? 0)).toLocaleString('cs-CZ')}% / hod.`;
+  const publicOrderTooltipKnightRecruit = publicOrder?.knightRecruitBlocked
+    ? 'Blokován pod 50 % veřejného pořádku'
+    : 'Bez omezení';
+  const publicOrderTooltipDebuff =
+    Number(publicOrder?.globalSpeedPenaltyPct ?? 0) > 0
+      ? `-${Math.floor(Number(publicOrder?.globalSpeedPenaltyPct ?? 0))}% rychlost náboru, výstavby i produkce.`
+      : 'Bez globálních debuffů.';
+  const publicOrderTooltipAriaLabel = publicOrder
+    ? `${publicOrderTooltipHeadline}. Stav ${publicOrderCurrentPct}% · Obnova ${publicOrderTooltipRegen}. Nábor rytíře ${publicOrderTooltipKnightRecruit}. ${publicOrderTooltipDebuff}`
     : 'Veřejný pořádek se načítá.';
   const currentVillageHistoryKey =
     activeVillageResolvedId != null && Number.isFinite(activeVillageResolvedId)
@@ -19130,11 +19203,13 @@ export const GamePage = () => {
     const rect = trigger.getBoundingClientRect();
     const layoutContainer = (canvasRef.current?.closest('.game-layout-container') as HTMLElement | null) ?? null;
     const layoutRect = layoutContainer?.getBoundingClientRect();
+    const layoutLeft = Math.floor(layoutRect?.left ?? 0);
     const viewportWidth = Math.max(320, Math.floor(layoutRect?.width ?? window.innerWidth));
-    const baseLeft = Math.floor(rect.left - (layoutRect?.left ?? 0));
+    const baseLeft = Math.floor(rect.left - layoutLeft);
     const width = clamp(Math.max(280, Math.floor(rect.width)), 280, Math.max(280, viewportWidth - 16));
-    const safeLeft = clamp(baseLeft, 8, Math.max(8, viewportWidth - width - 8));
-    const safeTop = Math.floor(rect.bottom - (layoutRect?.top ?? 0) + 8);
+    const leftWithinLayout = clamp(baseLeft, 8, Math.max(8, viewportWidth - width - 8));
+    const safeLeft = clamp(layoutLeft + leftWithinLayout, 8, Math.max(8, window.innerWidth - width - 8));
+    const safeTop = Math.floor(rect.bottom + 8);
 
     setVillageMenuPosition({
       left: safeLeft,
@@ -21854,6 +21929,7 @@ export const GamePage = () => {
         const response = await setCommunicationAvatarRequest(username, nextAvatarUrl);
         const savedAvatarUrl = response.result.avatarUrl ?? null;
         setMyAvatarUrl(savedAvatarUrl);
+        saveStoredAvatarUrl(username, savedAvatarUrl);
         setPlayerAvatarByUsername((previous) => ({
           ...previous,
           [username.toLocaleLowerCase('cs-CZ')]: {
@@ -23230,18 +23306,6 @@ export const GamePage = () => {
                 <div className="village-resource-card-info">
                   <div className="village-resource-card-heading">
                     <p>Aktivní léno</p>
-                    {publicOrder ? (
-                      <span
-                        className={`public-order-badge ${publicOrderBadgeTone}`}
-                        title={publicOrderTooltipLabel}
-                        aria-label={publicOrderTooltipLabel}
-                      >
-                        <span className="public-order-icon" aria-hidden="true">
-                          {publicOrderBand === 'critical' ? '⚠' : '⚖'}
-                        </span>
-                        {showPublicOrderPct ? <strong>{publicOrderCurrentPct}%</strong> : null}
-                      </span>
-                    ) : null}
                   </div>
                   <div className="village-rename-inline" ref={villageRenameWrapRef}>
                     {isVillageRenameOpen ? (
@@ -23288,6 +23352,40 @@ export const GamePage = () => {
                     >
                       {renameVillagePending ? '…' : isVillageRenameOpen ? '✔' : '✎'}
                     </button>
+                    {publicOrder ? (
+                      <span
+                        className={`public-order-badge ${publicOrderBadgeTone}`}
+                        aria-label={publicOrderTooltipAriaLabel}
+                        aria-describedby={publicOrderTooltipId}
+                        tabIndex={0}
+                      >
+                        <span className="public-order-icon" aria-hidden="true">
+                          {publicOrderBand === 'critical' ? '⚠' : '⚖'}
+                        </span>
+                        {showPublicOrderPct ? <strong>{publicOrderCurrentPct}%</strong> : null}
+                        <span className="public-order-tooltip commands-army-tooltip" id={publicOrderTooltipId} role="tooltip">
+                          <p>{publicOrderTooltipHeadline}</p>
+                          <ul>
+                            <li>
+                              <span>Stav</span>
+                              <strong>{publicOrderCurrentPct}%</strong>
+                            </li>
+                            <li>
+                              <span>Obnova</span>
+                              <strong>{publicOrderTooltipRegen}</strong>
+                            </li>
+                            <li>
+                              <span>Nábor rytíře</span>
+                              <strong>{publicOrderTooltipKnightRecruit}</strong>
+                            </li>
+                            <li>
+                              <span>Debuff</span>
+                              <strong>{publicOrderTooltipDebuff}</strong>
+                            </li>
+                          </ul>
+                        </span>
+                      </span>
+                    ) : null}
                   </div>
                   {villageRenameNotice ? (
                     <small className={`village-rename-notice ${isVillageRenameNoticeSuccess ? 'success' : 'error'}`}>

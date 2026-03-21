@@ -1222,3 +1222,83 @@ Entry template:
 - Summary: Opravil jsem verzi vydani v package metadata i ve frontend labelu hry, aby klient i build pipeline konzistentne hlasily `0.1.15` misto `0.1.14`.
 - Files: package.json, src/version.ts, arch/chat-changelog.md
 - Verification: `npm run build`
+
+## 2026-03-21 17:41 | branch: feat/build-0.1.16
+
+- Request: Udelat UI redesign hry (odstranit rusive sede ramecky, sjednotit fonty/barvy, zvyraznit dulezita cisla), pridat detail do tlacitek mimo horni menu, opravit vyjizdeni seznamu len mimo kontejner na ultra-wide, zlepsit viditelnost ikon (vcetne verejneho poradku s tooltipem) a vyresit nekonzistentni avatar.
+- Summary: V `GamePage` jsem upravil semantiku a render kritickych casti UI: doplnil barevne tridy pro dulezite statistiky (prestiz/fialova, utok/cervena, obrana/modra, loot/zlata), presunul a zvetsil badge verejneho poradku vedle aktivniho lena s tooltipem, opravil pozicovani village menu pro fixed overlay na ultra-wide a upravil globalni stripovani native `title`, aby tooltipy nezanikaly. V avatar flow jsem pridal per-user local fallback cache URL (cteni pri bootstrapu + zapis po fetch/save), aby se avatar po relogu neztracel pri docasne nekonzistentni odpovedi. V `App.css` jsem sjednotil typografii, odstranil rusive sede ramecky na kartach, zvysil kontrast a vizualni prioritu dulezitych cisel, sjednotil velikosti ikon u army/resource prvku a pridal jemny SVG texture detail do akcních tlacitek (bez zasahu do horniho menu).
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS), `npm run dev` s `PORT=3001` a `VITE_DEV_PORT=5173` (RUNNING; client `http://localhost:5173`, backend `http://localhost:3001`)
+- Notes: Feature contract drzi beze zmen endpointu a pollingu. Hlavni rizika byla vizualni regrese v hustych panelech a chybna pozice menu na sirokych viewptech; mitigace je centralni override vrstva v CSS + fix viewport-based left clampu pro village menu.
+
+## 2026-03-21 19:09 | branch: feat/build-0.1.16
+
+- Request: Projít zbylé rámy v UI, vložit `mapa.svg` pod léna do herní mapy a doladit barvy rozlišení pro hráčská léna na mapě.
+- Summary: Do map panelu jsem přidal samostatnou background vrstvu s `mapa.svg` pod settlement layer, aby mapa měla vlastní podklad pod lény bez zásahu do gameplay logiky. Současně jsem zpřesnil defaultní paletu a canvas styly pro `active` a `own` settlements, aby hráčská léna na mapě působila jasněji odlišeně. Asset jsem zkopíroval do `public/assets/map/mapa.svg`, aby ho dev/build skutečně servíroval; `for_public/mapa.svg` zůstává jako zdrojový staging asset.
+- Files: src/pages/GamePage.tsx, src/App.css, public/assets/map/mapa.svg, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: `mapa.svg` je pro tenhle krok vizuální vrstva pod mapou, ne plnohodnotná náhrada všech bitmap v projektu. U velkých art assets zůstává lepší držet raster nebo je optimalizovat cíleně, jinak se SVG může zvětšit a zpomalit načtení místo zrychlení.
+
+## 2026-03-21 19:31 | branch: feat/build-0.1.16
+
+- Request: Dokončit sweep zbylých rámů, nahradit basic tooltip pro veřejný pořádek vylepšeným tooltipem napravo od přejmenování léna a optimalizovat vybrané bitmapy pro rychlejší načítání.
+- Summary: Rozšířil jsem frameless override vrstvu o další zbylé panely v city/army částech, hlavně `city-upgrade-queue`, `army-command-history`, `army-command-preview` a jejich související položky, aby UI méně působilo jako sada starých karet. Veřejný pořádek teď používá náš tooltip styl `commands-army-tooltip`, je ukotvený napravo od rename buttonu a má vlastní hover/focus chování i responsivní fallback pod 1180 px. Z velkých bitmap jsem převedl používané textury na WebP a přepnul na ně reference v CSS, aby se zlepšila velikost assets bez změny gameplay logiky.
+- Files: src/App.css, public/assets/backgrounds/background2.webp, public/assets/map/terrain/louka.webp, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS), dev server běží na `http://localhost:5173` a backend na `http://localhost:3001`
+- Notes: U velkých art assetů jsem zvolil WebP místo plošného převodu do SVG, protože jde o rasterové textury a SVG by v tomhle případě často zvětšilo soubor i render cost místo zrychlení.
+
+## 2026-03-21 19:48 | branch: feat/build-0.1.16
+
+- Request: Opravit neviditelný tooltip veřejného pořádku (vykresluje se pod background) a odstranit zbylé rámy v Přehledu i Armádě.
+- Summary: V `App.css` jsem opravil vrstvení tooltipu veřejného pořádku: pro slim HUD kartu jsem povolil `overflow: visible`, přidal izolaci/z-index na kartu a zvýšil z-index samotného tooltipu, aby nebyl ořezaný ani schovaný pod jinou vrstvou. Současně jsem doplnil cílený frameless override pro kontejnery `city-panel` a `military-panel`, protože dark-medieval skin přidával globální rámy na `section/article/li` uvnitř `window-body`; tím pádem se odstranily zbývající rámy v Přehledu i na stránce Armáda.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS), dev server stále běží na `http://localhost:5173` a backend na `http://localhost:3001`
+- Notes: Feature contract: UI-only změna bez zásahu do gameplay/pollingu/backendu. Hlavní riziko bylo přebití skin-specifických pravidel a clipping tooltipu; mitigace je cílené scope pravidel na `city-panel`/`military-panel` a lokální stacking kontext pro kartu aktivního léna.
+
+## 2026-03-21 19:57 | branch: feat/build-0.1.16
+
+- Request: Navrhnout před implementací efektivní způsob, jak sjednotit pozadí karet napříč projektem, aby se karty neztrácely ve stejné barvě či gradientu.
+- Summary: Prošel jsem existující CSS rodiny karet (`resource-card`, `panel-stack section`, `commands-item`, `military-unit-card`, `city-building-card`, `messages-*`, `battle-*`, `player-profile-*`) a navrhl sjednocený card systém místo dalších lokálních override. Návrh stojí na jednom sdíleném povrchovém jazyku přes CSS tokeny a malém počtu rolí karet (base, muted, elevated, interactive, semantic), aby se dal nasadit postupně bez zásahu do gameplay logiky a bez dalšího rozbití dark-medieval skin pravidly.
+- Files: arch/chat-changelog.md
+- Verification: Návrhová konzultace bez nových runtime změn; verifikace nebyla potřeba
+- Notes: Feature contract: UI-only návrh bez změny state, fetch modelu nebo pollingu. Hlavní riziko je další nárůst duplicity a selector wars v `App.css`; mitigace je zavést card tokeny a migrovat panely po rodinách místo jednorázového přepisu všeho.
+
+## 2026-03-21 20:09 | branch: feat/build-0.1.16
+
+- Request: Bez implementace zpracovat card system plán: připravit přesný CSS token systém + 5 variant, první migrační vlnu pro `resource-card`, `panel-stack section`, `commands-item`, `military-unit-card` a druhou vlnu pro semantic varianty `battle/messages/profile`.
+- Summary: Připravil jsem dva neintegrované draft artefakty. V `arch/card-system-unification-v1.md` je kompletní návrh card systému včetně feature contractu, design direction, přesných tokenů, pěti card variant, migrační mapy pro první i druhou vlnu a acceptance kritérií. V `arch/card-system-unification-v1.css` je draft CSS layer s tokeny a utility variantami `ui-card`, `ui-card--muted`, `ui-card--elevated`, `ui-card--interactive`, `ui-card--semantic` a připravenou mapou, jak na ně přepojit stávající card rodiny bez zásahu do runtime.
+- Files: arch/card-system-unification-v1.md, arch/card-system-unification-v1.css, arch/chat-changelog.md
+- Verification: Draft artefakty nejsou importované do aplikace; runtime verifikace nebyla potřeba
+- Notes: Feature contract: UI-only příprava bez změn stavu, fetch modelu nebo pollingu. Hlavní riziko je selector conflict při budoucí implementaci; mitigace je migrace po card rodinách a ponechání skinů jen jako token override vrstvy.
+
+## 2026-03-21 20:22 | branch: feat/build-0.1.16
+
+- Request: Nasadit krok 1 a 2 card systému: doladit token paletu/varianty a implementovat první migrační vlnu pro `resource-card`, `panel-stack section`, `commands-item`, `military-unit-card`.
+- Summary: V `src/App.css` jsem rozšířil `game-page` token layer o přesné card design proměnné (surface, border, edge, shadow, spacing) a nasadil wave-1 mapování pro čtyři cílové card rodiny. Nové pravidlo na konci souboru teď přemapovává `resource-card` na elevated variantu, `panel-stack section` na base variantu, `commands-item` na interactive variantu a `military-unit-card` na interactive-elevated variantu včetně sjednocených hover/focus stavů. Současně jsem doladil draft paletu i v `arch/card-system-unification-v1.css`, aby runtime implementace a návrhové artefakty používaly stejné hodnoty.
+- Files: src/App.css, arch/card-system-unification-v1.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: UI-only změna bez zásahu do gameplay/state/fetch. Hlavní riziko bylo přebití starších frameless/dark-medieval override; mitigace je wave-1 blok umístěný na konec `App.css` s cílenou prioritou jen na čtyři card rodiny.
+
+## 2026-03-21 20:54 | branch: feat/build-0.1.16
+
+- Request: Nasadit oba navazující body: 1) druhou migrační vlnu semantic variant pro `battle/messages/profile`, 2) kontrastní tuning card systému.
+- Summary: Do `src/App.css` jsem přidal wave-2 blok na konec souboru. Nasadil jsem semantic card styl pro `messages-report-item/messages-detail-card`, `battle-army-card` (attacker/defender/support přes accent rail) a `player-profile-stat-card` (accent podle typu statistiky), vše nad jednotným card surface jazykem. Současně jsem provedl kontrastní tuning: tmavší panel surface (`--tld-surface-soft`), konzistentní border/edge/shadow pro semantic rodiny a výraznější oddělení karet od pozadí panelů bez návratu tvrdých rámů.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: UI-only změna bez zásahu do datového toku a gameplay logiky. Hlavní riziko bylo přebití starších stylů `messages/battle/profile`; mitigace je wave-2 blok umístěný na konec `App.css` s cílenými selektory a explicitní prioritou.
+
+## 2026-03-21 21:07 | branch: feat/build-0.1.16
+
+- Request: Zprovoznit projekt na localhostu.
+- Summary: Spustil jsem aktuální lokální dev flow přes `npm run dev` v samostatném CMD okně (`TLD Local Dev`) a ověřil běžící procesy i otevřené porty. Frontend je dostupný přes Vite na `5175` a backend přes Express na `3003`; runtime si tedy v tomto běhu nevzal dříve používané porty `5173/3001`.
+- Files: arch/chat-changelog.md
+- Verification: `netstat -ano | findstr ":5175"` (LISTENING, PID 166200), `netstat -ano | findstr "166404"` (LISTENING na `3003`), `curl.exe -I --max-time 8 http://localhost:5175` (HTTP 200), `curl.exe -I --max-time 8 http://localhost:3003` (HTTP 404 z Express rootu, server běží)
+- Notes: Dev běží v otevřeném okně `TLD Local Dev`; pro zastavení stačí to okno zavřít nebo ukončit `npm run dev`.
+
+## 2026-03-21 21:19 | branch: feat/build-0.1.16
+
+- Request: Vrátit lokál na `5173`, zprovoznit backend s funkčními daty.
+- Summary: Doplnil jsem branch-specific runtime override v `.env.feat-build-0-1-16.local`, aby větev `feat/build-0.1.16` nepoužívala fallback porty `5175/3003`, ale očekávané `5173/3001`, přitom zůstala napojená na vlastní branch databázi `server/data/branches/feat-build-0-1-16`. Následně jsem ukončil běžící fallback dev procesy a spustil čistý `npm run dev` znovu.
+- Files: .env.feat-build-0-1-16.local, arch/chat-changelog.md
+- Verification: `netstat -ano | findstr :5173` (LISTENING, PID 165996), `netstat -ano | findstr :3001` (LISTENING, PID 147080), `curl.exe -sS -o NUL -w "%{http_code}" http://localhost:5173` (`200`), `curl.exe -sS -o NUL -w "%{http_code}" http://localhost:3001/api/health` (`200`), `curl.exe -sS -o NUL -w "%{http_code}" http://localhost:3001/api/v1/worlds` (`401`, očekávané bez přihlášení)
+- Notes: Feature contract: pouze lokální runtime konfigurace pro tuto branch; authoritative state zůstává v branch SQLite datech. Hlavní riziko bylo nechtěné sdílení DB mezi větvemi nebo rozbití API base; mitigace je samostatný branch env override s `TLD_DATA_DIR=server/data/branches/feat-build-0-1-16`. Dev běží v okně `TLD Local Dev`.
