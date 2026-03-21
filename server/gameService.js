@@ -158,6 +158,15 @@ const PLANNER_DEFAULT_EVENTS_LIMIT = 50;
 const PLANNER_MAX_EVENTS_LIMIT = 200;
 const KNIGHT_RECALL_REFUND = { wood: 1000, stone: 1000, iron: 1000 };
 const COMMAND_CANCEL_MAX_PROGRESS = 1 / 3;
+const PUBLIC_ORDER_MAX = 100;
+const PUBLIC_ORDER_MIN = 0;
+const PUBLIC_ORDER_REGEN_PER_HOUR = 2;
+const PUBLIC_ORDER_CONQUEST_PENALTY_MIN = 1;
+const PUBLIC_ORDER_CONQUEST_PENALTY_MAX = 25;
+const PUBLIC_ORDER_WARNING_THRESHOLD = 49;
+const PUBLIC_ORDER_CRITICAL_THRESHOLD = 29;
+const PUBLIC_ORDER_CRITICAL_SPEED_PENALTY_PCT = 50;
+const PUBLIC_ORDER_CRITICAL_SPEED_MULTIPLIER = 0.5;
 const NIGHT_MODE_START_HOUR = 0;
 const NIGHT_MODE_END_HOUR = 8;
 const MERCENARY_CONTRACT_COST_COINS = 1500;
@@ -716,7 +725,7 @@ const deleteInProgressUpgradesByVillageStmt = db.prepare(
   "DELETE FROM building_upgrades WHERE village_id = ? AND status = 'in_progress'",
 );
 const deleteInProgressRecruitmentsByVillageStmt = db.prepare(
-  "DELETE FROM unit_recruitments WHERE village_id = ? AND status = 'in_progress'",
+  "DELETE FROM unit_recruitments WHERE village_id = ? AND status IN ('queued', 'in_progress')",
 );
 const deleteArmyMovementUnitsByPlayerAndRegionStmt = db.prepare(
   `DELETE FROM army_movement_units
@@ -804,6 +813,15 @@ const deleteAcademicsByRegionStmt = db.prepare(
 );
 const deleteResearchProgressByRegionStmt = db.prepare(
   'DELETE FROM research_progress WHERE region = ?',
+);
+const deletePlayerWorldGovernanceEventsByRegionStmt = db.prepare(
+  'DELETE FROM player_world_governance_events WHERE region = ?',
+);
+const deletePlayerWorldGovernanceByRegionStmt = db.prepare(
+  'DELETE FROM player_world_governance WHERE region = ?',
+);
+const deleteArmyMovementEventsByRegionStmt = db.prepare(
+  'DELETE FROM army_movement_events WHERE region = ?',
 );
 const deleteMercenaryContractsByRegionStmt = db.prepare(
   'DELETE FROM mercenary_contracts WHERE region = ?',
@@ -946,28 +964,36 @@ const selectActiveRecruitmentsByVillageStmt = db.prepare(
       id,
       unit_id AS unitId,
       amount,
+      queue_index AS queueIndex,
+      status,
       wood_cost AS woodCost,
       stone_cost AS stoneCost,
       iron_cost AS ironCost,
+      base_duration_sec AS baseDurationSec,
+      effective_duration_sec AS effectiveDurationSec,
       started_at AS startedAt,
       finish_at AS finishAt
-   FROM unit_recruitments
-   WHERE village_id = ? AND status = 'in_progress'
-   ORDER BY finish_at ASC, id ASC`,
+    FROM unit_recruitments
+    WHERE village_id = ? AND status IN ('queued', 'in_progress')
+    ORDER BY queue_index ASC, id ASC`,
 );
 const selectActiveRecruitmentByIdForVillageStmt = db.prepare(
   `SELECT
       id,
       unit_id AS unitId,
       amount,
+      queue_index AS queueIndex,
+      status,
       wood_cost AS woodCost,
       stone_cost AS stoneCost,
       iron_cost AS ironCost,
+      base_duration_sec AS baseDurationSec,
+      effective_duration_sec AS effectiveDurationSec,
       started_at AS startedAt,
       finish_at AS finishAt
-   FROM unit_recruitments
-   WHERE id = ? AND village_id = ? AND status = 'in_progress'
-   LIMIT 1`,
+    FROM unit_recruitments
+    WHERE id = ? AND village_id = ? AND status IN ('queued', 'in_progress')
+    LIMIT 1`,
 );
 const selectAllVillagesForWorldStmt = db.prepare(
   `SELECT
@@ -1105,6 +1131,58 @@ const selectLeaderboardRankByRegionStmt = db.prepare(
 );
 const selectGameStateStmt = db.prepare('SELECT last_tick_at AS lastTickAt FROM game_state WHERE id = 1');
 const updateGameStateTickStmt = db.prepare('UPDATE game_state SET last_tick_at = ? WHERE id = 1');
+const selectAllPlayerWorldGovernanceRowsStmt = db.prepare(
+  `SELECT
+      player_id AS playerId,
+      region,
+      public_order AS publicOrder,
+      last_regenerated_at AS lastRegeneratedAt,
+      updated_at AS updatedAt
+   FROM player_world_governance`,
+);
+const selectPlayerWorldGovernanceByPlayerRegionStmt = db.prepare(
+  `SELECT
+      player_id AS playerId,
+      region,
+      public_order AS publicOrder,
+      last_regenerated_at AS lastRegeneratedAt,
+      updated_at AS updatedAt
+   FROM player_world_governance
+   WHERE player_id = ? AND region = ?
+   LIMIT 1`,
+);
+const upsertPlayerWorldGovernanceStmt = db.prepare(
+  `INSERT INTO player_world_governance (
+      player_id,
+      region,
+      public_order,
+      last_regenerated_at,
+      updated_at
+   ) VALUES (?, ?, ?, ?, ?)
+   ON CONFLICT(player_id, region) DO UPDATE SET
+     public_order = excluded.public_order,
+     last_regenerated_at = excluded.last_regenerated_at,
+     updated_at = excluded.updated_at`,
+);
+const updatePlayerWorldGovernanceValuesStmt = db.prepare(
+  `UPDATE player_world_governance
+   SET public_order = ?,
+       last_regenerated_at = ?,
+       updated_at = ?
+   WHERE player_id = ? AND region = ?`,
+);
+const insertPlayerWorldGovernanceEventStmt = db.prepare(
+  `INSERT INTO player_world_governance_events (
+      player_id,
+      region,
+      event_type,
+      delta,
+      before_value,
+      after_value,
+      payload_json,
+      created_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+);
 const selectDatabaseChangeCounterStmt = db.prepare('SELECT total_changes() AS totalChanges');
 const updateResourcesStmt = db.prepare(
   'UPDATE resources SET wood = ?, stone = ?, iron = ?, gold = ?, coins = ?, last_sync_at = ? WHERE village_id = ?',
@@ -1161,28 +1239,44 @@ const insertVillageGarrisonIfMissingStmt = db.prepare(
 );
 const selectDueRecruitmentsStmt = db.prepare(
   `SELECT id, village_id AS villageId, unit_id AS unitId, amount
-   FROM unit_recruitments
-   WHERE status = 'in_progress' AND finish_at <= ?
-   ORDER BY finish_at ASC, id ASC`,
+    FROM unit_recruitments
+    WHERE status = 'in_progress' AND finish_at <= ?
+    ORDER BY finish_at ASC, queue_index ASC, id ASC`,
 );
 const completeRecruitmentStmt = db.prepare(
-  "UPDATE unit_recruitments SET status = 'completed', completed_at = ? WHERE id = ?",
+  "UPDATE unit_recruitments SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?",
 );
-const deleteActiveRecruitmentByIdStmt = db.prepare(
-  "DELETE FROM unit_recruitments WHERE id = ? AND village_id = ? AND status = 'in_progress'",
+const cancelActiveRecruitmentByIdStmt = db.prepare(
+  "UPDATE unit_recruitments SET status = 'canceled', canceled_at = ?, updated_at = ? WHERE id = ? AND village_id = ? AND status IN ('queued', 'in_progress')",
+);
+const selectMaxActiveRecruitmentQueueIndexByVillageStmt = db.prepare(
+  `SELECT MAX(queue_index) AS maxQueueIndex
+   FROM unit_recruitments
+   WHERE village_id = ? AND status IN ('queued', 'in_progress')`,
+);
+const updateActiveRecruitmentTimingByIdStmt = db.prepare(
+  "UPDATE unit_recruitments SET started_at = ?, finish_at = ?, status = ?, updated_at = ? WHERE id = ? AND village_id = ? AND status IN ('queued', 'in_progress')",
+);
+const updateActiveRecruitmentQueuePositionByIdStmt = db.prepare(
+  "UPDATE unit_recruitments SET queue_index = ?, updated_at = ? WHERE id = ? AND village_id = ? AND status IN ('queued', 'in_progress')",
 );
 const insertRecruitmentStmt = db.prepare(
   `INSERT INTO unit_recruitments (
       village_id,
       unit_id,
       amount,
+      queue_index,
       wood_cost,
       stone_cost,
       iron_cost,
+      base_duration_sec,
+      effective_duration_sec,
+      created_at,
+      updated_at,
       started_at,
       finish_at,
       status
-   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'in_progress')`,
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`,
 );
 const selectVillageByIdStmt = db.prepare(
   `SELECT
@@ -1315,6 +1409,24 @@ const selectDueArmyMovementsStmt = db.prepare(
 );
 const updateArmyMovementStatusStmt = db.prepare(
   'UPDATE army_movements SET status = ?, completed_at = ? WHERE id = ?',
+);
+const updateStationedSupportMovementForRebaseStmt = db.prepare(
+  `UPDATE army_movements
+   SET status = 'completed',
+       origin_village_id = ?,
+       home_village_id = ?,
+       completed_at = ?
+   WHERE id = ? AND player_id = ? AND status = 'stationed' AND command_type = 'support'`,
+);
+const insertArmyMovementEventStmt = db.prepare(
+  `INSERT INTO army_movement_events (
+      movement_id,
+      player_id,
+      region,
+      event_type,
+      payload_json,
+      created_at
+   ) VALUES (?, ?, ?, ?, ?, ?)`,
 );
 const selectActiveArmyMovementsByPlayerStmt = db.prepare(
   `SELECT
@@ -2641,8 +2753,9 @@ const insertPlayerNotificationStmt = db.prepare(
       payload_json,
       source_type,
       source_id,
+      report_id,
       created_at
-   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 const selectPlayerNotificationCountStmt = db.prepare(
   `SELECT COUNT(*) AS total
@@ -2689,6 +2802,7 @@ const selectPlayerNotificationsStmt = db.prepare(
       payload_json AS payloadJson,
       source_type AS sourceType,
       source_id AS sourceId,
+      report_id AS reportId,
       created_at AS createdAt,
       read_at AS readAt,
       archived_at AS archivedAt
@@ -2713,6 +2827,7 @@ const selectPlayerNotificationsIncludingArchivedStmt = db.prepare(
       payload_json AS payloadJson,
       source_type AS sourceType,
       source_id AS sourceId,
+      report_id AS reportId,
       created_at AS createdAt,
       read_at AS readAt,
       archived_at AS archivedAt
@@ -2736,6 +2851,7 @@ const selectUnreadPlayerNotificationsFeedStmt = db.prepare(
       payload_json AS payloadJson,
       source_type AS sourceType,
       source_id AS sourceId,
+      report_id AS reportId,
       created_at AS createdAt,
       read_at AS readAt,
       archived_at AS archivedAt
@@ -3592,6 +3708,257 @@ const randomIntInclusive = (minRaw, maxRaw) => {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 };
 
+const clampPublicOrderValue = (valueRaw) => {
+  const value = Math.floor(Number(valueRaw));
+  if (!Number.isFinite(value)) {
+    return PUBLIC_ORDER_MAX;
+  }
+  return Math.max(PUBLIC_ORDER_MIN, Math.min(PUBLIC_ORDER_MAX, value));
+};
+
+const resolvePublicOrderBand = (valueRaw) => {
+  const value = clampPublicOrderValue(valueRaw);
+  if (value <= PUBLIC_ORDER_CRITICAL_THRESHOLD) {
+    return 'critical';
+  }
+  if (value <= PUBLIC_ORDER_WARNING_THRESHOLD) {
+    return 'warning';
+  }
+  return 'stable';
+};
+
+const buildPublicOrderSummary = (valueRaw, updatedAtRaw = nowIso()) => {
+  const currentPct = clampPublicOrderValue(valueRaw);
+  const band = resolvePublicOrderBand(currentPct);
+  const knightRecruitBlocked = currentPct <= PUBLIC_ORDER_WARNING_THRESHOLD;
+  const globalSpeedPenaltyPct = band === 'critical' ? PUBLIC_ORDER_CRITICAL_SPEED_PENALTY_PCT : 0;
+  return {
+    currentPct,
+    maxPct: PUBLIC_ORDER_MAX,
+    regenPctPerHour: PUBLIC_ORDER_REGEN_PER_HOUR,
+    band,
+    knightRecruitBlocked,
+    globalSpeedPenaltyPct,
+    updatedAt: String(updatedAtRaw ?? nowIso()),
+  };
+};
+
+const resolvePublicOrderSpeedMultiplier = (publicOrderSummary) => {
+  if (!publicOrderSummary || typeof publicOrderSummary !== 'object') {
+    return 1;
+  }
+  return String(publicOrderSummary.band ?? '') === 'critical' ? PUBLIC_ORDER_CRITICAL_SPEED_MULTIPLIER : 1;
+};
+
+const applyPublicOrderDurationPenaltySec = (durationSecRaw, publicOrderSummary) => {
+  const baseDurationSec = Math.max(1, Math.floor(Number(durationSecRaw ?? 0)));
+  const speedMultiplier = resolvePublicOrderSpeedMultiplier(publicOrderSummary);
+  if (!Number.isFinite(speedMultiplier) || speedMultiplier <= 0 || speedMultiplier >= 0.999999) {
+    return baseDurationSec;
+  }
+  return Math.max(1, Math.ceil(baseDurationSec / speedMultiplier));
+};
+
+const ensurePlayerWorldGovernanceRow = (playerIdRaw, regionRaw, referenceIso = nowIso()) => {
+  const playerId = Number(playerIdRaw);
+  const region = Number(regionRaw);
+  if (!Number.isFinite(playerId) || playerId <= 0 || !Number.isFinite(region) || region <= 0) {
+    return null;
+  }
+
+  const existing = selectPlayerWorldGovernanceByPlayerRegionStmt.get(playerId, region);
+  if (existing) {
+    return existing;
+  }
+  const timestamp = String(referenceIso ?? nowIso());
+  upsertPlayerWorldGovernanceStmt.run(playerId, region, PUBLIC_ORDER_MAX, timestamp, timestamp);
+  insertPlayerWorldGovernanceEventStmt.run(
+    playerId,
+    region,
+    'initialize',
+    0,
+    PUBLIC_ORDER_MAX,
+    PUBLIC_ORDER_MAX,
+    JSON.stringify({ reason: 'auto-initialize' }),
+    timestamp,
+  );
+  return selectPlayerWorldGovernanceByPlayerRegionStmt.get(playerId, region);
+};
+
+const updatePlayerWorldPublicOrder = ({
+  playerId,
+  region,
+  nextValue,
+  lastRegeneratedAt,
+  updatedAt = nowIso(),
+  eventType = null,
+  delta = 0,
+  beforeValue = null,
+  payload = null,
+}) => {
+  const clampedNextValue = clampPublicOrderValue(nextValue);
+  const effectiveLastRegeneratedAt = String(lastRegeneratedAt ?? updatedAt);
+  const effectiveUpdatedAt = String(updatedAt ?? nowIso());
+  upsertPlayerWorldGovernanceStmt.run(
+    Number(playerId),
+    Number(region),
+    clampedNextValue,
+    effectiveLastRegeneratedAt,
+    effectiveUpdatedAt,
+  );
+  if (eventType) {
+    const resolvedBefore = clampPublicOrderValue(beforeValue == null ? clampedNextValue - Number(delta) : beforeValue);
+    insertPlayerWorldGovernanceEventStmt.run(
+      Number(playerId),
+      Number(region),
+      String(eventType),
+      Math.floor(Number(delta)),
+      resolvedBefore,
+      clampedNextValue,
+      payload == null ? null : JSON.stringify(payload),
+      effectiveUpdatedAt,
+    );
+  }
+  return selectPlayerWorldGovernanceByPlayerRegionStmt.get(Number(playerId), Number(region));
+};
+
+const getPlayerWorldPublicOrderSummary = (playerIdRaw, regionRaw, referenceIso = nowIso()) => {
+  const row = ensurePlayerWorldGovernanceRow(playerIdRaw, regionRaw, referenceIso);
+  if (!row) {
+    return buildPublicOrderSummary(PUBLIC_ORDER_MAX, referenceIso);
+  }
+  return buildPublicOrderSummary(row.publicOrder, row.updatedAt ?? referenceIso);
+};
+
+const processPublicOrderRegenerationAt = (referenceIso = nowIso(), referenceMsRaw = Date.now()) => {
+  const referenceTimestampMs = Number(referenceMsRaw);
+  const referenceMs = Number.isFinite(referenceTimestampMs) ? referenceTimestampMs : Date.parse(String(referenceIso));
+  if (!Number.isFinite(referenceMs)) {
+    return {
+      processedRows: 0,
+      updatedRows: 0,
+      regeneratedTotal: 0,
+    };
+  }
+
+  const rows = selectAllPlayerWorldGovernanceRowsStmt.all();
+  let updatedRows = 0;
+  let regeneratedTotal = 0;
+  for (const row of rows) {
+    const playerId = Number(row.playerId);
+    const region = Number(row.region);
+    const currentValue = clampPublicOrderValue(row.publicOrder);
+    const parsedLastRegeneratedMs = Date.parse(String(row.lastRegeneratedAt ?? ''));
+    const effectiveLastRegeneratedMs = Number.isFinite(parsedLastRegeneratedMs) ? parsedLastRegeneratedMs : referenceMs;
+    const elapsedHours = Math.floor((referenceMs - effectiveLastRegeneratedMs) / (60 * 60 * 1000));
+    if (elapsedHours <= 0) {
+      continue;
+    }
+
+    const regenAmount = elapsedHours * PUBLIC_ORDER_REGEN_PER_HOUR;
+    const nextValue = clampPublicOrderValue(currentValue + regenAmount);
+    const effectiveDelta = Math.max(0, nextValue - currentValue);
+    const nextLastRegeneratedAt = new Date(
+      effectiveLastRegeneratedMs + elapsedHours * 60 * 60 * 1000,
+    ).toISOString();
+
+    updatePlayerWorldGovernanceValuesStmt.run(
+      nextValue,
+      nextLastRegeneratedAt,
+      String(referenceIso),
+      playerId,
+      region,
+    );
+    if (effectiveDelta > 0) {
+      insertPlayerWorldGovernanceEventStmt.run(
+        playerId,
+        region,
+        'hourly_regeneration',
+        effectiveDelta,
+        currentValue,
+        nextValue,
+        JSON.stringify({
+          elapsedHours,
+          regenPerHour: PUBLIC_ORDER_REGEN_PER_HOUR,
+        }),
+        String(referenceIso),
+      );
+      regeneratedTotal += effectiveDelta;
+    }
+    updatedRows += 1;
+  }
+
+  return {
+    processedRows: rows.length,
+    updatedRows,
+    regeneratedTotal,
+  };
+};
+
+const applyPublicOrderConquestPenalty = (playerIdRaw, regionRaw, conqueredVillageId, capturedByMovementId, referenceIso = nowIso()) => {
+  const row = ensurePlayerWorldGovernanceRow(playerIdRaw, regionRaw, referenceIso);
+  if (!row) {
+    return null;
+  }
+  const beforeValue = clampPublicOrderValue(row.publicOrder);
+  const penalty = randomIntInclusive(PUBLIC_ORDER_CONQUEST_PENALTY_MIN, PUBLIC_ORDER_CONQUEST_PENALTY_MAX);
+  const nextValue = clampPublicOrderValue(beforeValue - penalty);
+  const updated = updatePlayerWorldPublicOrder({
+    playerId: Number(playerIdRaw),
+    region: Number(regionRaw),
+    nextValue,
+    lastRegeneratedAt: row.lastRegeneratedAt ?? referenceIso,
+    updatedAt: referenceIso,
+    eventType: 'conquest_penalty',
+    delta: -penalty,
+    beforeValue,
+    payload: {
+      conqueredVillageId: Number(conqueredVillageId),
+      capturedByMovementId: capturedByMovementId == null ? null : Number(capturedByMovementId),
+    },
+  });
+  if (!updated) {
+    return null;
+  }
+  return {
+    before: beforeValue,
+    penalty,
+    after: clampPublicOrderValue(updated.publicOrder),
+  };
+};
+
+const createArmyMovementEvent = ({
+  movementId,
+  playerId,
+  region,
+  eventType,
+  payload = null,
+  createdAt = nowIso(),
+}) => {
+  const numericMovementId = Number(movementId);
+  const numericPlayerId = Number(playerId);
+  const numericRegion = Number(region);
+  if (
+    !Number.isFinite(numericMovementId) ||
+    numericMovementId <= 0 ||
+    !Number.isFinite(numericPlayerId) ||
+    numericPlayerId <= 0 ||
+    !Number.isFinite(numericRegion) ||
+    numericRegion <= 0
+  ) {
+    return null;
+  }
+  const result = insertArmyMovementEventStmt.run(
+    numericMovementId,
+    numericPlayerId,
+    numericRegion,
+    String(eventType ?? 'unknown'),
+    payload == null ? null : JSON.stringify(payload),
+    String(createdAt ?? nowIso()),
+  );
+  return Number(result.lastInsertRowid);
+};
+
 const normalizeSpawnDistanceRange = (
   minRaw,
   maxRaw,
@@ -3884,6 +4251,7 @@ const toNotificationItem = (row) => ({
   payload: parseJsonSafe(row.payloadJson, {}),
   sourceType: row.sourceType == null ? null : String(row.sourceType),
   sourceId: row.sourceId == null ? null : Number(row.sourceId),
+  reportId: row.reportId == null ? null : Number(row.reportId),
   createdAt: String(row.createdAt),
   readAt: row.readAt == null ? null : String(row.readAt),
   archivedAt: row.archivedAt == null ? null : String(row.archivedAt),
@@ -3900,6 +4268,7 @@ const createPlayerNotification = ({
   payload = null,
   sourceType = null,
   sourceId = null,
+  reportId = null,
   createdAt = null,
 }) => {
   const numericPlayerId = Number(playerId);
@@ -3911,6 +4280,15 @@ const createPlayerNotification = ({
     return null;
   }
 
+  const normalizedSourceType = sourceType == null ? null : String(sourceType);
+  const normalizedSourceId = sourceId == null ? null : Number(sourceId);
+  const resolvedReportId =
+    reportId == null
+      ? normalizedSourceType === 'battle_report' && Number.isFinite(normalizedSourceId) && normalizedSourceId > 0
+        ? Math.floor(normalizedSourceId)
+        : null
+      : Number(reportId);
+
   try {
     const result = insertPlayerNotificationStmt.run(
       numericPlayerId,
@@ -3921,8 +4299,9 @@ const createPlayerNotification = ({
       String(title ?? '').trim() || 'Událost',
       String(summary ?? '').trim() || 'Byla zaznamenána herní událost.',
       payload == null ? null : JSON.stringify(payload),
-      sourceType == null ? null : String(sourceType),
-      sourceId == null ? null : Number(sourceId),
+      normalizedSourceType,
+      normalizedSourceId,
+      Number.isFinite(resolvedReportId) && resolvedReportId > 0 ? Math.floor(resolvedReportId) : null,
       createdAt == null ? nowIso() : String(createdAt),
     );
     return Number(result.lastInsertRowid);
@@ -5566,6 +5945,7 @@ const wipeWorldDataTransaction = db.transaction((worldIdRaw, options = {}) => {
   }
 
   deleteArmyMovementUnitsByRegionStmt.run(region, region, region);
+  deleteArmyMovementEventsByRegionStmt.run(region);
   deleteArmyMovementsByRegionStmt.run(region, region, region);
   deleteBattleReportsByRegionVillagesStmt.run(region, region);
   deleteCombatRetaliationFlagsByRegionStmt.run(region);
@@ -5582,6 +5962,8 @@ const wipeWorldDataTransaction = db.transaction((worldIdRaw, options = {}) => {
   deleteMercenaryContractsByRegionStmt.run(region);
   deleteResearchProgressByRegionStmt.run(region);
   deleteAcademicsByRegionStmt.run(region);
+  deletePlayerWorldGovernanceEventsByRegionStmt.run(region);
+  deletePlayerWorldGovernanceByRegionStmt.run(region);
   deleteBuildingUpgradesByRegionVillagesStmt.run(region);
   deleteUnitRecruitmentsByRegionVillagesStmt.run(region);
   deleteUnitsByRegionVillagesStmt.run(region);
@@ -7270,6 +7652,12 @@ const synchronizeVillageEconomyAt = (villageId, referenceIso = nowIso(), options
 
   const villageRow = selectVillageByIdStmt.get(numericVillageId);
   const villageRegion = Number(villageRow?.region ?? DEFAULT_WORLD_REGION_ID);
+  const villageOwnerPlayerId = Number(villageRow?.playerId ?? 0);
+  const publicOrderSummary =
+    Number.isFinite(villageOwnerPlayerId) && villageOwnerPlayerId > 0
+      ? getPlayerWorldPublicOrderSummary(villageOwnerPlayerId, villageRegion, referenceIso)
+      : buildPublicOrderSummary(PUBLIC_ORDER_MAX, referenceIso);
+  const publicOrderSpeedMultiplier = resolvePublicOrderSpeedMultiplier(publicOrderSummary);
   const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(numericVillageId));
   const unitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(numericVillageId));
   const awayUnitCounts = getVillageAwayUnitCounts(numericVillageId);
@@ -7291,7 +7679,7 @@ const synchronizeVillageEconomyAt = (villageId, referenceIso = nowIso(), options
   );
   const world = resolveWorldByRegion(villageRegion);
   const developerBoost = resolveDeveloperResourceBoostForWorld(world, referenceMs);
-  const production = applyProductionMultiplier(baseProduction, developerBoost.multiplier);
+  const production = applyProductionMultiplier(baseProduction, developerBoost.multiplier * publicOrderSpeedMultiplier);
 
   let nextWood = applyCappedResourceDeltaPreservingOverflow(
     Number(resourceRow.wood ?? 0),
@@ -9620,17 +10008,29 @@ const processBotNightEconomyCycle = (tickTimeIso) => {
             if (paidPocket) {
               resourcePocket = paidPocket;
               const durationSec = calculateRecruitDurationSec('militia', recruitAmount, barracksLevel);
-              const finishAtIso = new Date(Date.parse(String(tickTimeIso)) + durationSec * 1000).toISOString();
+              const normalizedDurationSec = Math.max(1, Math.floor(Number(durationSec ?? 0)));
+              const queueTail = selectMaxActiveRecruitmentQueueIndexByVillageStmt.get(villageId);
+              const nextQueueIndex = Math.max(
+                0,
+                Math.floor(Number(queueTail?.maxQueueIndex ?? -1)) + 1,
+              );
+              const finishAtIso = new Date(Date.parse(String(tickTimeIso)) + normalizedDurationSec * 1000).toISOString();
               insertRecruitmentStmt.run(
                 villageId,
                 'militia',
                 recruitAmount,
+                nextQueueIndex,
                 recruitmentCost.wood,
                 recruitmentCost.stone,
                 recruitmentCost.iron,
+                normalizedDurationSec,
+                normalizedDurationSec,
+                String(tickTimeIso),
+                String(tickTimeIso),
                 String(tickTimeIso),
                 finishAtIso,
               );
+              rebalanceRecruitmentQueueTimeline(villageId, String(tickTimeIso));
               stats.startedRecruitments += 1;
             }
           }
@@ -9652,6 +10052,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
   const lastTickMs = Number.isFinite(parsedLastTick) ? parsedLastTick : tickTimeMs;
   const elapsedSec = Math.max(0, (tickTimeMs - lastTickMs) / 1000);
   const villagesToRecalculatePrestige = new Set();
+  processPublicOrderRegenerationAt(tickTimeIso, tickTimeMs);
 
   const dueUpgrades = selectDueUpgradesStmt.all(tickTimeIso);
   for (const upgrade of dueUpgrades) {
@@ -9688,6 +10089,7 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
   }
 
   const dueRecruitments = selectDueRecruitmentsStmt.all(tickTimeIso);
+  const villagesWithRecruitmentQueueChanges = new Set();
   for (const recruitment of dueRecruitments) {
     const villageId = Number(recruitment.villageId);
     const unitId = recruitment.unitId;
@@ -9700,7 +10102,8 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
       villagesToRecalculatePrestige.add(villageId);
     }
 
-    completeRecruitmentStmt.run(tickTimeIso, Number(recruitment.id));
+    completeRecruitmentStmt.run(tickTimeIso, tickTimeIso, Number(recruitment.id));
+    villagesWithRecruitmentQueueChanges.add(villageId);
     const villageRow = selectVillageWithOwnerByIdStmt.get(villageId);
     if (villageRow && Number(villageRow.ownerIsBot ?? 0) !== 1) {
       const unitName = String(UNIT_DEFS[unitId]?.name ?? unitId);
@@ -9731,6 +10134,9 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         createdAt: tickTimeIso,
       });
     }
+  }
+  for (const villageId of villagesWithRecruitmentQueueChanges) {
+    rebalanceRecruitmentQueueTimeline(Number(villageId), tickTimeIso);
   }
 
   const plannerDispatch = processPlannerDispatches(tickTimeIso);
@@ -10070,12 +10476,20 @@ const tickTransaction = db.transaction((tickTimeIso, tickTimeMs) => {
         removeAcademicsByVillageStmt.run(tickTimeIso, Number(targetVillage.id));
         updateVillageOwnerForConquestStmt.run(Number(movement.playerId), conquerorKingdom, Number(targetVillage.id));
         villagesToRecalculatePrestige.add(Number(targetVillage.id));
+        const publicOrderPenalty = applyPublicOrderConquestPenalty(
+          Number(movement.playerId),
+          Number(targetVillage.region),
+          Number(targetVillage.id),
+          Number(movementId),
+          tickTimeIso,
+        );
         conquestPayload = {
           conquered: true,
           previousOwner: String(targetVillage.ownerUsername ?? ''),
           newOwner: String(attackerPlayer?.username ?? ''),
           targetVillageId: Number(targetVillage.id),
           targetVillageName: String(targetVillage.name ?? ''),
+          publicOrderPenalty,
         };
       }
       const autoReturnedSupports = [];
@@ -12839,6 +13253,7 @@ export const getArmyOverview = (username = 'Hayato', worldId = null) => {
   const { player, world } = requireVillageForUser(username, null, worldId, 'center', {
     syncEconomy: false,
   });
+  const generatedAtIso = nowIso();
   const ownVillages = selectVillagesByPlayerAndRegionStmt.all(Number(player.id), Number(world.region));
   const stationedSupportRows = selectStationedSupportUnitTotalsByOwnerRegionStmt.all(
     Number(player.id),
@@ -12858,7 +13273,23 @@ export const getArmyOverview = (username = 'Hayato', worldId = null) => {
   const villages = ownVillages
     .map((villageRow) => {
       const villageId = Number(villageRow.id);
+      const buildingLevels = toBuildingLevelMap(selectBuildingsByVillageStmt.all(villageId));
       const unitCounts = toUnitCountMap(selectUnitsByVillageStmt.all(villageId));
+      const garrisonState = synchronizeVillageGarrisonAt(villageId, generatedAtIso, {
+        persist: false,
+        buildingLevels,
+      });
+      const activeRecruitments = selectActiveRecruitmentsByVillageStmt.all(villageId).map((recruitment) => ({
+        id: Number(recruitment.id),
+        unitId: String(recruitment.unitId),
+        unitName: String(UNIT_DEFS[recruitment.unitId]?.name ?? recruitment.unitId),
+        amount: Math.max(0, Math.floor(Number(recruitment.amount ?? 0))),
+        queueIndex: Math.max(0, Math.floor(Number(recruitment.queueIndex ?? 0))),
+        status: String(recruitment.status ?? 'queued'),
+        startedAt: String(recruitment.startedAt ?? generatedAtIso),
+        finishAt: String(recruitment.finishAt ?? generatedAtIso),
+        remainingSec: Math.max(0, Math.ceil((Date.parse(String(recruitment.finishAt ?? generatedAtIso)) - Date.now()) / 1000)),
+      }));
       const units = ARMY_OVERVIEW_UNITS_ORDER.map((unitId, index) => {
         const ownAmount = Math.max(0, Math.floor(Number(unitCounts[unitId] ?? 0)));
         const supportAmount = Math.max(
@@ -12891,6 +13322,20 @@ export const getArmyOverview = (username = 'Hayato', worldId = null) => {
         totalSupportUnits,
         plannerSelectable,
         plannerSelected: false,
+        fortificationLevel: Math.max(0, Math.floor(Number(buildingLevels.fortification ?? 0))),
+        gateLevel: Math.max(0, Math.floor(Number(buildingLevels.gate ?? 0))),
+        garrison: {
+          isUnlocked: Boolean(garrisonState.isUnlocked),
+          totalUnits: Math.max(0, Math.floor(Number(garrisonState.totalUnits ?? 0))),
+          totalCap: Math.max(0, Math.floor(Number(garrisonState.totalCap ?? GARRISON_RESERVED_POPULATION))),
+          reservedPopulation: Math.max(
+            0,
+            Math.floor(Number(garrisonState.reservedPopulation ?? GARRISON_RESERVED_POPULATION)),
+          ),
+          militia: Math.max(0, Math.floor(Number(garrisonState.units?.militia?.amount ?? 0))),
+          archer: Math.max(0, Math.floor(Number(garrisonState.units?.archer?.amount ?? 0))),
+        },
+        activeRecruitments,
         units,
       };
     })
@@ -12903,7 +13348,7 @@ export const getArmyOverview = (username = 'Hayato', worldId = null) => {
 
   return {
     worldId: String(world.id),
-    generatedAt: nowIso(),
+    generatedAt: generatedAtIso,
     villages,
   };
 };
@@ -12950,6 +13395,7 @@ export const getVillageSnapshot = (
     { syncEconomy: false },
   );
   const worldRegion = resolveWorldRegionDefinition(world);
+  const publicOrderSummary = getPlayerWorldPublicOrderSummary(Number(player.id), Number(world.region), snapshotIso);
   const resourcesRow = synchronizeVillageEconomyAt(Number(village.id), snapshotIso, { persist: false });
   if (!resourcesRow) {
     throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
@@ -12984,7 +13430,10 @@ export const getVillageSnapshot = (
   });
   const baseProduction = calculateProductionPerHour(buildingLevels, populationUsed, populationCap);
   const developerResourceBoost = resolveDeveloperResourceBoostForWorld(world);
-  const production = applyProductionMultiplier(baseProduction, developerResourceBoost.multiplier);
+  const production = applyProductionMultiplier(
+    baseProduction,
+    developerResourceBoost.multiplier * resolvePublicOrderSpeedMultiplier(publicOrderSummary),
+  );
   const activeUpgrades = selectActiveUpgradesByVillageStmt.all(village.id);
   const currentlyActiveUpgrade = activeUpgrades.length > 0 ? activeUpgrades[0] : null;
   const highestQueuedUpgradeLevelByBuilding = toHighestQueuedUpgradeLevelByBuildingMap(activeUpgrades);
@@ -13158,12 +13607,21 @@ export const getVillageSnapshot = (
     const maxByKnightLimit = unitId === KNIGHT_UNIT_ID ? remainingKnightCapacity : Number.POSITIVE_INFINITY;
     const maxBySingleOrder = unitId === KNIGHT_UNIT_ID ? 1 : Number.POSITIVE_INFINITY;
     const maxByVillageKnightSlot = hasVillageKnightSlotOccupied ? 0 : Number.POSITIVE_INFINITY;
+    const maxByPublicOrder =
+      unitId === KNIGHT_UNIT_ID && publicOrderSummary.knightRecruitBlocked ? 0 : Number.POSITIVE_INFINITY;
     const isSpecialNonRecruitable = def.isRecruitable === false;
     const maxRecruitable = isSpecialNonRecruitable
       ? 0
       : Math.max(
           0,
-          Math.min(maxByPopulation, maxByResources, maxByKnightLimit, maxBySingleOrder, maxByVillageKnightSlot),
+          Math.min(
+            maxByPopulation,
+            maxByResources,
+            maxByKnightLimit,
+            maxBySingleOrder,
+            maxByVillageKnightSlot,
+            maxByPublicOrder,
+          ),
         );
 
     let blockedReason = null;
@@ -13182,6 +13640,8 @@ export const getVillageSnapshot = (
           : `Vybuduj ${BUILDING_DEFS[requiredBuildingId].name} na uroveň ${requiredBuildingLevel}`;
     } else if (missingRequiredResearch) {
       blockedReason = `Vyzkum '${missingRequiredResearch}' je povinny`;
+    } else if (unitId === KNIGHT_UNIT_ID && publicOrderSummary.knightRecruitBlocked) {
+      blockedReason = 'Verejny poradek je nizky, nabor rytire je docasne zablokovan';
     } else if (hasVillageKnightSlotOccupied) {
       blockedReason = 'V osade uz je rytir nebo je ve vycviku';
     } else if (unitId === KNIGHT_UNIT_ID && remainingKnightCapacity <= 0) {
@@ -13488,6 +13948,7 @@ export const getVillageSnapshot = (
       username: player.username,
     },
     playerRanking,
+    publicOrder: publicOrderSummary,
     ...(includeKingdomHub ? { kingdomHub } : {}),
     villages: villages.map((entry) => ({
       id: Number(entry.id),
@@ -13653,11 +14114,15 @@ export const getVillageSnapshot = (
       id: Number(recruitment.id),
       unitId: recruitment.unitId,
       amount: Number(recruitment.amount),
+      queueIndex: Math.max(0, Math.floor(Number(recruitment.queueIndex ?? 0))),
+      status: String(recruitment.status ?? 'queued'),
       startedAt: recruitment.startedAt,
       finishAt: recruitment.finishAt,
       woodCost: Number(recruitment.woodCost),
       stoneCost: Number(recruitment.stoneCost),
       ironCost: Number(recruitment.ironCost),
+      baseDurationSec: Math.max(1, Math.floor(Number(recruitment.baseDurationSec ?? 1))),
+      effectiveDurationSec: Math.max(1, Math.floor(Number(recruitment.effectiveDurationSec ?? 1))),
       remainingSec: Math.max(0, Math.ceil((Date.parse(recruitment.finishAt) - Date.now()) / 1000)),
     })),
     army: armyState,
@@ -13730,6 +14195,13 @@ export const getVillageSnapshot = (
               minLootModifier: MIN_LOOT_MODIFIER,
               retaliationRule:
                 'Pokud slabsi hrac zautoci na silnejsiho, ztraci ochranu prestize vuci tomuto hraci a muze dostat odvetny utok.',
+            },
+            publicOrder: {
+              warningThreshold: PUBLIC_ORDER_WARNING_THRESHOLD,
+              criticalThreshold: PUBLIC_ORDER_CRITICAL_THRESHOLD,
+              knightRecruitBlockedAtOrBelow: PUBLIC_ORDER_WARNING_THRESHOLD,
+              criticalSpeedPenaltyPct: PUBLIC_ORDER_CRITICAL_SPEED_PENALTY_PCT,
+              regenPctPerHour: PUBLIC_ORDER_REGEN_PER_HOUR,
             },
             cancelCommandProgressLimit: COMMAND_CANCEL_MAX_PROGRESS,
           },
@@ -14207,6 +14679,100 @@ const resolveUpgradeDurationMs = (upgrade) => {
   return 1000;
 };
 
+const resolveRecruitmentDurationMs = (recruitment) => {
+  const effectiveDurationSec = Number(recruitment?.effectiveDurationSec ?? 0);
+  if (Number.isFinite(effectiveDurationSec) && effectiveDurationSec > 0) {
+    return Math.max(1000, Math.floor(effectiveDurationSec * 1000));
+  }
+  const startMs = Date.parse(String(recruitment?.startedAt ?? ''));
+  const finishMs = Date.parse(String(recruitment?.finishAt ?? ''));
+  if (Number.isFinite(startMs) && Number.isFinite(finishMs)) {
+    return Math.max(1000, finishMs - startMs);
+  }
+  return 1000;
+};
+
+const applyRecruitmentQueueTimeline = (villageIdRaw, orderedRecruitments, nowIsoRaw = nowIso()) => {
+  const villageId = Number(villageIdRaw);
+  if (
+    !Number.isFinite(villageId) ||
+    villageId <= 0 ||
+    !Array.isArray(orderedRecruitments) ||
+    orderedRecruitments.length <= 0
+  ) {
+    return;
+  }
+
+  const nowIsoValue = String(nowIsoRaw ?? nowIso());
+  const nowMsRaw = Date.parse(nowIsoValue);
+  const nowMs = Number.isFinite(nowMsRaw) ? nowMsRaw : Date.now();
+  let cursorMs = nowMs;
+
+  for (let index = 0; index < orderedRecruitments.length; index += 1) {
+    const recruitment = orderedRecruitments[index];
+    const nextStatus = index === 0 ? 'in_progress' : 'queued';
+    const originalQueueIndex = Math.max(0, Math.floor(Number(recruitment.queueIndex ?? index)));
+    const originalStatus = String(recruitment.status ?? '');
+    const originalStartMs = Date.parse(String(recruitment.startedAt ?? ''));
+    const originalFinishMs = Date.parse(String(recruitment.finishAt ?? ''));
+    const durationMs = resolveRecruitmentDurationMs(recruitment);
+
+    let nextStartMs = cursorMs;
+    let nextFinishMs = cursorMs + durationMs;
+
+    if (index === 0) {
+      const isAlreadyActive =
+        originalStatus === 'in_progress' &&
+        Number.isFinite(originalStartMs) &&
+        Number.isFinite(originalFinishMs) &&
+        originalStartMs <= nowMs &&
+        originalFinishMs > nowMs;
+      if (isAlreadyActive) {
+        nextFinishMs = originalFinishMs;
+        nextStartMs = Math.max(nowMs - durationMs, nextFinishMs - durationMs);
+      }
+    }
+
+    cursorMs = nextFinishMs;
+
+    if (originalQueueIndex !== index) {
+      updateActiveRecruitmentQueuePositionByIdStmt.run(index, nowIsoValue, Number(recruitment.id), villageId);
+    }
+
+    const timingChanged =
+      !Number.isFinite(originalStartMs) ||
+      !Number.isFinite(originalFinishMs) ||
+      Math.abs(originalStartMs - nextStartMs) > 500 ||
+      Math.abs(originalFinishMs - nextFinishMs) > 500 ||
+      originalStatus !== nextStatus;
+
+    if (!timingChanged) {
+      continue;
+    }
+
+    updateActiveRecruitmentTimingByIdStmt.run(
+      new Date(nextStartMs).toISOString(),
+      new Date(nextFinishMs).toISOString(),
+      nextStatus,
+      nowIsoValue,
+      Number(recruitment.id),
+      villageId,
+    );
+  }
+};
+
+const rebalanceRecruitmentQueueTimeline = (villageIdRaw, nowIsoRaw = nowIso()) => {
+  const villageId = Number(villageIdRaw);
+  if (!Number.isFinite(villageId) || villageId <= 0) {
+    return;
+  }
+  const activeRecruitments = selectActiveRecruitmentsByVillageStmt.all(villageId);
+  if (!Array.isArray(activeRecruitments) || activeRecruitments.length <= 0) {
+    return;
+  }
+  applyRecruitmentQueueTimeline(villageId, activeRecruitments, nowIsoRaw);
+};
+
 const applyUpgradeQueueTimeline = (villageIdRaw, orderedUpgrades, nowIsoRaw = nowIso()) => {
   const villageId = Number(villageIdRaw);
   if (!Number.isFinite(villageId) || villageId <= 0 || !Array.isArray(orderedUpgrades) || orderedUpgrades.length <= 0) {
@@ -14385,14 +14951,19 @@ const startUpgradeTransaction = db.transaction((username, buildingId, startedAtI
   if (!resources) {
     throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
   }
-
+  const publicOrderSummary = getPlayerWorldPublicOrderSummary(
+    Number(player.id),
+    Number(village.region),
+    startedAtIso,
+  );
   const effectiveFromLevel = Math.max(0, Math.floor(queuedHighestLevel));
   const cost = calculateUpgradeCost(buildingId, effectiveFromLevel);
   if (!cost) {
     throw new GameRuleError('Upgrade neni dostupny.');
   }
   const townhallLevel = buildingLevels.townhall ?? 0;
-  const durationSec = calculateUpgradeDurationSec(buildingId, effectiveFromLevel, townhallLevel);
+  const baseDurationSec = calculateUpgradeDurationSec(buildingId, effectiveFromLevel, townhallLevel);
+  const durationSec = applyPublicOrderDurationPenaltySec(baseDurationSec, publicOrderSummary);
   const nowMs = Date.parse(startedAtIso);
   const queueTailFinishMs = activeUpgrades.reduce((latestFinishMs, upgrade) => {
     const finishMs = Date.parse(String(upgrade.finishAt));
@@ -14681,6 +15252,13 @@ const conquerVillageTransaction = db.transaction((username, villageIdRaw, reques
   clearResearchAssignmentsByVillageStmt.run(Number(villageId));
   removeAcademicsByVillageStmt.run(nowIso(), Number(villageId));
   updateVillageOwnerForConquestStmt.run(Number(player.id), conquerorKingdom, villageId);
+  const publicOrderPenalty = applyPublicOrderConquestPenalty(
+    Number(player.id),
+    Number(world.region),
+    Number(villageId),
+    null,
+    nowIso(),
+  );
 
   return {
     villageId,
@@ -14688,6 +15266,7 @@ const conquerVillageTransaction = db.transaction((username, villageIdRaw, reques
     previousOwner: targetVillage.ownerUsername,
     newOwner: player.username,
     renamed: false,
+    publicOrderPenalty,
   };
 });
 
@@ -15360,6 +15939,12 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
   if (!resources) {
     throw new GameRuleError('Pro osadu chybi zaznam surovin.', 500);
   }
+  const startedAtIso = nowIso();
+  const publicOrderSummary = getPlayerWorldPublicOrderSummary(
+    Number(player.id),
+    Number(village.region),
+    startedAtIso,
+  );
 
   const requiredBuildingLevel = Math.max(1, Math.floor(Number(unitDef.requiredBuildingLevel ?? 1)));
   const currentBuildingLevel = buildingLevels[unitDef.requiredBuilding] ?? 0;
@@ -15413,6 +15998,9 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
   }
 
   if (unitId === KNIGHT_UNIT_ID) {
+    if (publicOrderSummary.knightRecruitBlocked) {
+      throw new GameRuleError('Verejny poradek je prilis nizky. Nabor rytire je docasne zablokovan.', 400);
+    }
     const currentKnightInVillage = Math.max(0, Math.floor(Number(unitCounts[KNIGHT_UNIT_ID] ?? 0)));
     const queuedKnightInVillage = activeRecruitments
       .filter((recruitment) => String(recruitment.unitId) === KNIGHT_UNIT_ID)
@@ -15469,20 +16057,38 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
     nowIso(),
     village.id,
   );
-  const startedAtIso = nowIso();
   const calculatedDurationSec = calculateRecruitDurationSec(unitId, recruitAmount, currentBuildingLevel);
-  const durationSec = Math.max(1, Math.floor(Number(calculatedDurationSec ?? 0)));
+  const durationSec = applyPublicOrderDurationPenaltySec(calculatedDurationSec, publicOrderSummary);
+  const maxQueueRow = selectMaxActiveRecruitmentQueueIndexByVillageStmt.get(Number(village.id));
+  const queueIndex = Math.max(0, Math.floor(Number(maxQueueRow?.maxQueueIndex ?? -1)) + 1);
   const finishAtIso = new Date(Date.parse(startedAtIso) + durationSec * 1000).toISOString();
 
   const insertion = insertRecruitmentStmt.run(
     village.id,
     unitId,
     recruitAmount,
+    queueIndex,
     totalCost.wood,
     totalCost.stone,
     totalCost.iron,
+    durationSec,
+    durationSec,
+    startedAtIso,
+    startedAtIso,
     startedAtIso,
     finishAtIso,
+  );
+  const insertedRecruitmentId = Number(insertion.lastInsertRowid ?? 0);
+  rebalanceRecruitmentQueueTimeline(Number(village.id), startedAtIso);
+  const insertedRecruitment =
+    insertedRecruitmentId > 0
+      ? selectActiveRecruitmentByIdForVillageStmt.get(insertedRecruitmentId, Number(village.id))
+      : null;
+  const resolvedStartedAt = insertedRecruitment?.startedAt ?? startedAtIso;
+  const resolvedFinishAt = insertedRecruitment?.finishAt ?? finishAtIso;
+  const resolvedDurationSec = Math.max(
+    1,
+    Math.floor(Number(insertedRecruitment?.effectiveDurationSec ?? durationSec)),
   );
 
   return {
@@ -15490,10 +16096,13 @@ const recruitTransaction = db.transaction((username, unitId, amount, requestedVi
     queuedAmount: recruitAmount,
     currentAmount,
     queuedTotal: queuedCountForUnit + recruitAmount,
-    orderId: Number(insertion.lastInsertRowid),
+    orderId: insertedRecruitmentId,
     totalCost,
-    durationSec,
-    finishAt: finishAtIso,
+    durationSec: resolvedDurationSec,
+    startedAt: resolvedStartedAt,
+    finishAt: resolvedFinishAt,
+    queueIndex: Math.max(0, Math.floor(Number(insertedRecruitment?.queueIndex ?? queueIndex))),
+    status: String(insertedRecruitment?.status ?? 'queued'),
   };
 });
 
@@ -15508,13 +16117,20 @@ const cancelRecruitmentTransaction = db.transaction((username, recruitmentIdRaw,
     throw new GameRuleError('Nabor nebyl nalezen nebo uz neni aktivni.', 404);
   }
 
-  deleteActiveRecruitmentByIdStmt.run(Number(recruitment.id), Number(village.id));
+  const canceledAtIso = nowIso();
+  cancelActiveRecruitmentByIdStmt.run(
+    canceledAtIso,
+    canceledAtIso,
+    Number(recruitment.id),
+    Number(village.id),
+  );
   const refunded = {
     wood: Math.max(0, Math.floor(Number(recruitment.woodCost ?? 0))),
     stone: Math.max(0, Math.floor(Number(recruitment.stoneCost ?? 0))),
     iron: Math.max(0, Math.floor(Number(recruitment.ironCost ?? 0))),
   };
   addResourcesWithoutCap(Number(village.id), refunded);
+  rebalanceRecruitmentQueueTimeline(Number(village.id), canceledAtIso);
 
   return {
     canceledRecruitmentId: Number(recruitment.id),
@@ -15523,6 +16139,175 @@ const cancelRecruitmentTransaction = db.transaction((username, recruitmentIdRaw,
     refunded,
   };
 });
+
+const reorderRecruitmentQueueTransaction = db.transaction(
+  (username, recruitmentIdRaw, targetIndexRaw, requestedVillageId = null, worldId = null) => {
+    const { village } = requireVillageForUser(username, requestedVillageId, worldId);
+    const villageId = Number(village.id);
+    const recruitmentId = requirePositiveInteger(recruitmentIdRaw, 'recruitmentId');
+    const activeRecruitments = selectActiveRecruitmentsByVillageStmt.all(villageId);
+    if (activeRecruitments.length <= 1) {
+      throw new GameRuleError('Naborova fronta nema dostatek polozek pro presun.', 400);
+    }
+
+    const fromIndex = activeRecruitments.findIndex((entry) => Number(entry.id) === recruitmentId);
+    if (fromIndex < 0) {
+      throw new GameRuleError('Nabor nebyl nalezen nebo uz neni aktivni.', 404);
+    }
+    if (fromIndex === 0) {
+      throw new GameRuleError('Aktivne probiha nabor nelze presouvat.', 400);
+    }
+
+    const rawTargetIndex = Math.floor(Number(targetIndexRaw));
+    if (!Number.isFinite(rawTargetIndex)) {
+      throw new GameRuleError('Neplatny cilovy index fronty.', 400);
+    }
+    const minTargetIndex = 1;
+    const maxTargetIndex = activeRecruitments.length - 1;
+    const targetIndex = Math.max(minTargetIndex, Math.min(maxTargetIndex, rawTargetIndex));
+
+    if (targetIndex === fromIndex) {
+      return {
+        movedRecruitmentId: recruitmentId,
+        fromIndex,
+        toIndex: targetIndex,
+        queueLength: activeRecruitments.length,
+        moved: false,
+      };
+    }
+
+    const reorderedRecruitments = [...activeRecruitments];
+    const [movedRecruitment] = reorderedRecruitments.splice(fromIndex, 1);
+    reorderedRecruitments.splice(targetIndex, 0, movedRecruitment);
+    applyRecruitmentQueueTimeline(villageId, reorderedRecruitments, nowIso());
+
+    return {
+      movedRecruitmentId: recruitmentId,
+      fromIndex,
+      toIndex: targetIndex,
+      queueLength: reorderedRecruitments.length,
+      moved: true,
+    };
+  },
+);
+
+const rebaseStationedSupportTransaction = db.transaction(
+  (username, movementIdRaw, requestedVillageId = null, worldId = null) => {
+    const { player, world } = requireVillageForUser(username, requestedVillageId, worldId);
+    const movementId = requirePositiveInteger(movementIdRaw, 'movementId');
+    const support = selectStationedSupportByIdForPlayerStmt.get(movementId, Number(player.id));
+    if (!support) {
+      throw new GameRuleError('Stacionovana podpora nebyla nalezena.', 404);
+    }
+    const targetVillage = selectVillageByIdStmt.get(Number(support.targetVillageId));
+    if (!targetVillage) {
+      throw new GameRuleError('Cilove leno podpory neexistuje.', 404);
+    }
+    if (Number(targetVillage.region) !== Number(world.region)) {
+      throw new GameRuleError('Cilove leno podpory je v jinem svete.', 400);
+    }
+    if (Number(targetVillage.playerId) !== Number(player.id)) {
+      throw new GameRuleError('Podporu lze rebasovat jen do tveho vlastniho lena.', 403);
+    }
+    if (Number(support.homeVillageId) === Number(targetVillage.id)) {
+      throw new GameRuleError('Podpora uz ma domovske leno nastaveno na toto leno.', 400);
+    }
+
+    const movementUnitsRows = selectMovementUnitsStmt.all(movementId);
+    const movementUnits = toCompleteUnitSelection(
+      Object.fromEntries(
+        movementUnitsRows.map((row) => [String(row.unitId), Math.max(0, Math.floor(Number(row.amount ?? 0)))]),
+      ),
+    );
+    const totalUnits = sumSelectedUnits(movementUnits);
+    if (totalUnits <= 0) {
+      throw new GameRuleError('Stacionovana podpora neobsahuje zadne jednotky.', 400);
+    }
+
+    const requiredPopulation = calculateSelectionPopulationCost(movementUnits);
+    const targetPopulation = getVillagePopulationStatus(Number(targetVillage.id));
+    if (requiredPopulation > Number(targetPopulation.availablePopulation ?? 0)) {
+      throw new GameRuleError(
+        `Cilove leno ma volnou populaci jen pro ${Number(targetPopulation.availablePopulation ?? 0)} populace.`,
+        400,
+      );
+    }
+
+    for (const unitId of UNIT_ORDER) {
+      const amount = Math.max(0, Math.floor(Number(movementUnits[unitId] ?? 0)));
+      if (amount <= 0) {
+        continue;
+      }
+      const currentAmount = Math.max(
+        0,
+        Math.floor(Number(selectUnitAmountByVillageAndUnitStmt.get(Number(targetVillage.id), unitId)?.amount ?? 0)),
+      );
+      updateUnitAmountStmt.run(currentAmount + amount, Number(targetVillage.id), unitId);
+      updateArmyMovementUnitAmountStmt.run(0, movementId, unitId);
+    }
+
+    const rebasedAt = nowIso();
+    const changed = Number(
+      updateStationedSupportMovementForRebaseStmt.run(
+        Number(targetVillage.id),
+        Number(targetVillage.id),
+        rebasedAt,
+        movementId,
+        Number(player.id),
+      ).changes ?? 0,
+    );
+    if (changed <= 0) {
+      throw new GameRuleError('Stacionovana podpora uz byla zpracovana.', 400);
+    }
+
+    updateVillagePrestigeFromCurrentState(Number(targetVillage.id));
+    createArmyMovementEvent({
+      movementId,
+      playerId: Number(player.id),
+      region: Number(world.region),
+      eventType: 'support_rebased',
+      payload: {
+        targetVillageId: Number(targetVillage.id),
+        targetVillageName: String(targetVillage.name ?? ''),
+        previousOriginVillageId: Number(support.originVillageId),
+        previousHomeVillageId: Number(support.homeVillageId),
+        totalUnits,
+        requiredPopulation,
+      },
+      createdAt: rebasedAt,
+    });
+    createPlayerNotification({
+      playerId: Number(player.id),
+      region: Number(world.region),
+      category: 'units',
+      eventType: 'support_rebased',
+      severity: 'success',
+      title: 'Podpora prevedena na presun',
+      summary: `Jednotky ve stacionovane podpore byly prevedeny pod domovske leno ${String(targetVillage.name)}.`,
+      payload: {
+        movementId,
+        targetVillageId: Number(targetVillage.id),
+        totalUnits,
+        requiredPopulation,
+        rebasedAt,
+      },
+      sourceType: 'army_movement',
+      sourceId: movementId,
+      createdAt: rebasedAt,
+    });
+
+    return {
+      movementId,
+      targetVillageId: Number(targetVillage.id),
+      targetVillageName: String(targetVillage.name ?? ''),
+      previousOriginVillageId: Number(support.originVillageId),
+      previousHomeVillageId: Number(support.homeVillageId),
+      totalUnits,
+      requiredPopulation,
+      rebasedAt,
+    };
+  },
+);
 
 const recallKnightTransaction = db.transaction((username, requestedVillageId, worldId = null) => {
   const { village } = requireVillageForUser(username, requestedVillageId, worldId);
@@ -16532,6 +17317,14 @@ export const recruitUnits = (username, unitId, amount, requestedVillageId = null
 export const cancelRecruitment = (username, recruitmentId, requestedVillageId = null, worldId = null) =>
   cancelRecruitmentTransaction(username, recruitmentId, requestedVillageId, worldId);
 
+export const reorderRecruitmentQueue = (
+  username,
+  recruitmentId,
+  targetIndex,
+  requestedVillageId = null,
+  worldId = null,
+) => reorderRecruitmentQueueTransaction(username, recruitmentId, targetIndex, requestedVillageId, worldId);
+
 export const recallKnight = (username, requestedVillageId = null, worldId = null) =>
   recallKnightTransaction(username, requestedVillageId, worldId);
 
@@ -16540,6 +17333,9 @@ export const issueArmyCommand = (username, payload, requestedVillageId = null, w
 
 export const cancelArmyCommand = (username, movementId, requestedVillageId = null, worldId = null) =>
   cancelArmyCommandTransaction(username, movementId, requestedVillageId, worldId);
+
+export const rebaseStationedSupport = (username, movementId, requestedVillageId = null, worldId = null) =>
+  rebaseStationedSupportTransaction(username, movementId, requestedVillageId, worldId);
 
 export const hireAcademics = (username, amount, requestedVillageId = null, worldId = null) =>
   hireAcademicsTransaction(username, amount, requestedVillageId, worldId);

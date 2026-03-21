@@ -171,6 +171,27 @@ export type ArmyVillageSummary = {
   totalSupportUnits: number;
   plannerSelectable: boolean;
   plannerSelected: boolean;
+  fortificationLevel?: number;
+  gateLevel?: number;
+  garrison?: {
+    isUnlocked: boolean;
+    totalUnits: number;
+    totalCap: number;
+    reservedPopulation: number;
+    militia: number;
+    archer: number;
+  };
+  activeRecruitments?: Array<{
+    id: number;
+    unitId: string;
+    unitName: string;
+    amount: number;
+    queueIndex: number;
+    status: 'queued' | 'in_progress' | 'completed' | 'canceled' | string;
+    startedAt: string;
+    finishAt: string;
+    remainingSec: number;
+  }>;
   units: ArmyVillageUnitSummary[];
 };
 
@@ -660,6 +681,16 @@ export type MercenaryHiringOptionState = {
   activeContractUnitAmount: number;
 };
 
+export type PublicOrderSummary = {
+  currentPct: number;
+  maxPct: number;
+  regenPctPerHour: number;
+  band: 'stable' | 'warning' | 'critical' | string;
+  knightRecruitBlocked: boolean;
+  globalSpeedPenaltyPct: number;
+  updatedAt: string;
+};
+
 export type GameStateResponse = {
   serverTime: string;
   stateVersion?: string;
@@ -668,6 +699,7 @@ export type GameStateResponse = {
     username: string;
   };
   playerRanking: PlayerRankingSummary;
+  publicOrder: PublicOrderSummary;
   kingdomHub?: KingdomHubState;
   villages: {
     id: number;
@@ -807,11 +839,15 @@ export type GameStateResponse = {
     id: number;
     unitId: string;
     amount: number;
+    queueIndex?: number;
+    status?: 'queued' | 'in_progress' | 'completed' | 'canceled' | string;
     startedAt: string;
     finishAt: string;
     woodCost: number;
     stoneCost: number;
     ironCost: number;
+    baseDurationSec?: number;
+    effectiveDurationSec?: number;
     remainingSec: number;
   }[];
   army: {
@@ -863,6 +899,13 @@ export type GameStateResponse = {
       minAttackablePrestigeRatio: number;
       minLootModifier: number;
       retaliationRule?: string;
+    };
+    publicOrder?: {
+      warningThreshold: number;
+      criticalThreshold: number;
+      knightRecruitBlockedAtOrBelow: number;
+      criticalSpeedPenaltyPct: number;
+      regenPctPerHour: number;
     };
     cancelCommandProgressLimit: number;
   };
@@ -1260,11 +1303,30 @@ export type ReorderBuildingUpgradeQueueResult = {
   moved: boolean;
 };
 
+export type ReorderRecruitmentQueueResult = {
+  movedRecruitmentId: number;
+  fromIndex: number;
+  toIndex: number;
+  queueLength: number;
+  moved: boolean;
+};
+
 export type CancelRecruitmentResult = {
   canceledRecruitmentId: number;
   unitId: string;
   amount: number;
   refunded: ResourceCost;
+};
+
+export type RebaseStationedSupportResult = {
+  movementId: number;
+  targetVillageId: number;
+  targetVillageName: string;
+  previousOriginVillageId: number;
+  previousHomeVillageId: number;
+  totalUnits: number;
+  requiredPopulation: number;
+  rebasedAt: string;
 };
 
 export type RecallKnightResult = {
@@ -2127,6 +2189,33 @@ export const reorderBuildingUpgradeQueue = async (
   };
 };
 
+export const reorderRecruitmentQueue = async (
+  username: string,
+  recruitmentId: number,
+  targetIndex: number,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: ReorderRecruitmentQueueResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: ReorderRecruitmentQueueResult }>(
+    '/api/v1/units/recruitments/reorder',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        recruitmentId,
+        targetIndex,
+        villageId,
+        worldId,
+      }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
 export const cancelRecruitment = async (
   username: string,
   recruitmentId: number,
@@ -2135,6 +2224,26 @@ export const cancelRecruitment = async (
 ): Promise<{ result: CancelRecruitmentResult; data: GameStateResponse }> => {
   const payload = await request<ApiOk<GameStateResponse> & { result: CancelRecruitmentResult }>(
     `/api/v1/units/recruitments/${encodeURIComponent(String(recruitmentId))}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ username, villageId, worldId }),
+    },
+  );
+
+  return {
+    result: payload.result,
+    data: payload.data,
+  };
+};
+
+export const rebaseStationedSupport = async (
+  username: string,
+  movementId: number,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: RebaseStationedSupportResult; data: GameStateResponse }> => {
+  const payload = await request<ApiOk<GameStateResponse> & { result: RebaseStationedSupportResult }>(
+    `/api/v1/army/support/${encodeURIComponent(String(movementId))}/rebase`,
     {
       method: 'POST',
       body: JSON.stringify({ username, villageId, worldId }),

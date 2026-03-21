@@ -9945,6 +9945,25 @@ html {
   box-shadow: 0 0 0 1px rgba(234, 178, 82, 0.3) inset;
 }
 
+.armada-village-intel-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.34rem;
+}
+
+.armada-village-intel-pill {
+  border: 1px solid rgba(125, 148, 196, 0.3);
+  border-radius: 999px;
+  background: rgba(7, 15, 24, 0.72);
+  padding: 0.15rem 0.4rem;
+  font-size: 0.69rem;
+  color: #b7c8dd;
+}
+
+.armada-village-intel-pill.is-tooltip {
+  cursor: help;
+}
+
 .armada-unit-pill-row {
   display: flex;
   flex-wrap: wrap;
@@ -10330,9 +10349,9 @@ html {
 }
 
 .village-intel-tooltip li {
-  grid-template-columns: minmax(0, 1fr);
-  align-items: start;
-  gap: 0.22rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 .village-intel-tooltip li span {
@@ -10346,7 +10365,8 @@ html {
   font-size: 0.86rem;
   color: #f6cd83;
   line-height: 1.24;
-  justify-self: start;
+  justify-self: end;
+  white-space: nowrap;
   overflow-wrap: break-word;
   word-break: normal;
 }
@@ -14166,6 +14186,47 @@ body[data-ui-skin='dark-medieval'] .game-page .top-navigation nav .menu-button-b
   display: grid;
   gap: 0.06rem;
   min-width: 0;
+}
+
+.game-page .resource-strip.resource-strip-slim .village-resource-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.36rem;
+}
+
+.game-page .resource-strip.resource-strip-slim .public-order-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.18rem;
+  padding: 0.08rem 0.34rem;
+  border-radius: 999px;
+  border: 1px solid rgba(138, 157, 192, 0.46);
+  background: rgba(11, 18, 28, 0.82);
+  color: #d9e3f3;
+  line-height: 1;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.game-page .resource-strip.resource-strip-slim .public-order-badge strong {
+  font-size: 0.68rem;
+  color: inherit;
+}
+
+.game-page .resource-strip.resource-strip-slim .public-order-badge.is-warning {
+  border-color: rgba(210, 168, 84, 0.72);
+  color: #f2d08e;
+}
+
+.game-page .resource-strip.resource-strip-slim .public-order-badge.is-critical {
+  border-color: rgba(217, 86, 86, 0.78);
+  color: #ffb6b6;
+  box-shadow: 0 0 0 1px rgba(217, 86, 86, 0.24);
+}
+
+.game-page .resource-strip.resource-strip-slim .public-order-icon {
+  font-size: 0.7rem;
 }
 
 .game-page .resource-strip.resource-strip-slim .village-resource-card-info strong {
