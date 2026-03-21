@@ -1185,3 +1185,10 @@ Entry template:
 - Summary: Prevedl jsem synchronni sync stavu z effectu na odvozene hodnoty a asynchronni commit: mercenary vyber je ted resilen pres odvozene `resolvedSelectedMercenaryVillageId`, map zoom se synchronizuje pres odlozene `setTimeout` v effectu, planner validace ma vlastni clock hook `plannerNowMs`, a `useEffectEvent` je znovu korektne importovany. Zaroven jsem vycistil chybne dependency array u souvisejicich callbacku a pridal ESLint ignorace pro generovane a backup adresare, aby lint nehlasil hluk mimo zdrojaky.
 - Files: src/pages/GamePage.tsx, eslint.config.js, arch/chat-changelog.md
 - Verification: `npm run lint` (PASS), `npm run build` (PASS), `npm run test:regression` (PASS, 31/31)
+
+## 2026-03-21 | branch: develop
+
+- Request: Mergnout aktualni praci do `develop` a spustit ji lokalne na localhostu.
+- Summary: Commitnul jsem rozpracovane zmeny na `feat/build-0.1.15` jako `11aed5f feat(gameplay): finalize 0.1.15 roadmap rollout`, lokalni `develop` jsem na ne fast-forward mergnul a provedl cisty restart lokalniho dev behu. Nova session bezi pres `npm run dev` nad vetvi `develop` s klientem na `http://localhost:5173` a backendem na `http://localhost:3001`.
+- Files: arch/chat-changelog.md
+- Verification: `git merge --ff-only feat/build-0.1.15` (PASS), `npm run dev` na `develop` (RUNNING), porty `5173` a `3001` naslouchaji
