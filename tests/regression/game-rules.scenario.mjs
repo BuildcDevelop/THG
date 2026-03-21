@@ -1521,6 +1521,265 @@ const runScenarioMarketLogisticsGoldCoinsFlow = () => {
   };
 };
 
+const runScenarioTreasuryTransferOwnVillageFlow = () => {
+  clearTransientState();
+  createAbandonedVillages(8);
+
+  const attacker = getPlayer(ATTACKER_USERNAME);
+  const sourceVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const defenderVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+  const villageIds = getVillageIdsInRegion(REGION_PRIMARY);
+  const treasuryVillageId =
+    villageIds.find(
+      (villageId) =>
+        Number(villageId) !== Number(sourceVillage.villageId) &&
+        Number(villageId) !== Number(defenderVillage.villageId),
+    ) ?? null;
+  if (treasuryVillageId == null) {
+    throw new Error('No candidate village found for treasury-own-village logistics scenario.');
+  }
+
+  assignVillageOwners([Number(treasuryVillageId)], Number(attacker.id), KINGDOM_ATTACKER);
+  setVillageBuildings(Number(sourceVillage.villageId), {
+    market: 2,
+    warehouse: 6,
+    woodcutter: 0,
+    quarry: 0,
+    'iron-mine': 0,
+    'gold-mine': 0,
+    mint: 0,
+  });
+  setVillageBuildings(Number(treasuryVillageId), {
+    warehouse: 6,
+    woodcutter: 0,
+    quarry: 0,
+    'iron-mine': 0,
+    'gold-mine': 0,
+    mint: 0,
+  });
+  setVillageResources(Number(sourceVillage.villageId), {
+    wood: 900,
+    stone: 800,
+    iron: 700,
+    gold: 180,
+    coins: 140,
+  });
+  setVillageResources(Number(treasuryVillageId), {
+    wood: 11,
+    stone: 12,
+    iron: 13,
+    gold: 3,
+    coins: 4,
+  });
+  const snapshotNowIso = new Date().toISOString();
+  updateResourceLastSyncAtByVillageStmt.run(snapshotNowIso, Number(sourceVillage.villageId));
+  updateResourceLastSyncAtByVillageStmt.run(snapshotNowIso, Number(treasuryVillageId));
+
+  const shipment = {
+    wood: 0,
+    stone: 0,
+    iron: 0,
+    gold: 70,
+    coins: 50,
+  };
+  const sourceBefore = selectResourcePocketByVillageStmt.get(Number(sourceVillage.villageId)) ?? {};
+  const targetBefore = selectResourcePocketByVillageStmt.get(Number(treasuryVillageId)) ?? {};
+  const route = sendMarketLogistics(
+    ATTACKER_USERNAME,
+    { targetVillageId: Number(treasuryVillageId), ...shipment },
+    Number(sourceVillage.villageId),
+    WORLD_PRIMARY,
+  );
+  const sourceAfterSend = selectResourcePocketByVillageStmt.get(Number(sourceVillage.villageId)) ?? {};
+  const canceled = cancelMarketLogistics(
+    ATTACKER_USERNAME,
+    Number(route.routeId),
+    Number(sourceVillage.villageId),
+    WORLD_PRIMARY,
+  );
+  const sourceAfterCancel = selectResourcePocketByVillageStmt.get(Number(sourceVillage.villageId)) ?? {};
+
+  const routeForDelivery = sendMarketLogistics(
+    ATTACKER_USERNAME,
+    { targetVillageId: Number(treasuryVillageId), ...shipment },
+    Number(sourceVillage.villageId),
+    WORLD_PRIMARY,
+  );
+  forceLogisticsArrivalNow(Number(routeForDelivery.routeId));
+  runGameTick();
+  const targetAfterDelivery = selectResourcePocketByVillageStmt.get(Number(treasuryVillageId)) ?? {};
+
+  const sourceSnapshot = getVillageSnapshot(
+    ATTACKER_USERNAME,
+    Number(sourceVillage.villageId),
+    WORLD_PRIMARY,
+    'center',
+    {
+      includeMarket: true,
+      includeWorldMap: false,
+    },
+  );
+  const deliveredRoute = (sourceSnapshot?.market?.logisticsRoutes ?? []).find(
+    (entry) => Number(entry?.id ?? 0) === Number(routeForDelivery.routeId),
+  );
+
+  return {
+    sourceVillageId: Number(sourceVillage.villageId),
+    treasuryVillageId: Number(treasuryVillageId),
+    shipment,
+    sourceBefore,
+    sourceAfterSend,
+    sourceAfterCancel,
+    targetBefore,
+    targetAfterDelivery,
+    canceledRefunded: canceled?.refunded ?? {},
+    deliveredRoute: deliveredRoute ?? null,
+  };
+};
+
+const runScenarioTreasuryTransferMarketRuleGuards = () => {
+  clearTransientState();
+  createAbandonedVillages(8);
+
+  const attacker = getPlayer(ATTACKER_USERNAME);
+  const sourceVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const defenderVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+  const villageIds = getVillageIdsInRegion(REGION_PRIMARY);
+  const treasuryVillageId =
+    villageIds.find(
+      (villageId) =>
+        Number(villageId) !== Number(sourceVillage.villageId) &&
+        Number(villageId) !== Number(defenderVillage.villageId),
+    ) ?? null;
+  if (treasuryVillageId == null) {
+    throw new Error('No candidate village found for treasury market guard scenario.');
+  }
+
+  assignVillageOwners([Number(treasuryVillageId)], Number(attacker.id), KINGDOM_ATTACKER);
+  setVillageResources(Number(sourceVillage.villageId), {
+    wood: 1000,
+    stone: 1000,
+    iron: 1000,
+    gold: 10_000,
+    coins: 10_000,
+  });
+  setVillageResources(Number(treasuryVillageId), {
+    wood: 0,
+    stone: 0,
+    iron: 0,
+    gold: 0,
+    coins: 0,
+  });
+  const snapshotNowIso = new Date().toISOString();
+  updateResourceLastSyncAtByVillageStmt.run(snapshotNowIso, Number(sourceVillage.villageId));
+  updateResourceLastSyncAtByVillageStmt.run(snapshotNowIso, Number(treasuryVillageId));
+
+  let zeroShipmentError = null;
+  setVillageBuildings(Number(sourceVillage.villageId), { market: 1, warehouse: 10 });
+  try {
+    sendMarketLogistics(
+      ATTACKER_USERNAME,
+      { targetVillageId: Number(treasuryVillageId), gold: 0, coins: 0 },
+      Number(sourceVillage.villageId),
+      WORLD_PRIMARY,
+    );
+  } catch (error) {
+    zeroShipmentError = String(error?.message ?? error);
+  }
+
+  let noMarketError = null;
+  setVillageBuildings(Number(sourceVillage.villageId), { market: 0, warehouse: 10 });
+  try {
+    sendMarketLogistics(
+      ATTACKER_USERNAME,
+      { targetVillageId: Number(treasuryVillageId), gold: 1, coins: 1 },
+      Number(sourceVillage.villageId),
+      WORLD_PRIMARY,
+    );
+  } catch (error) {
+    noMarketError = String(error?.message ?? error);
+  }
+
+  let overCapacityError = null;
+  setVillageBuildings(Number(sourceVillage.villageId), { market: 1, warehouse: 10 });
+  try {
+    sendMarketLogistics(
+      ATTACKER_USERNAME,
+      { targetVillageId: Number(treasuryVillageId), gold: 3200, coins: 2001 },
+      Number(sourceVillage.villageId),
+      WORLD_PRIMARY,
+    );
+  } catch (error) {
+    overCapacityError = String(error?.message ?? error);
+  }
+
+  let insufficientResourcesError = null;
+  setVillageResources(Number(sourceVillage.villageId), {
+    wood: 1000,
+    stone: 1000,
+    iron: 1000,
+    gold: 5,
+    coins: 5,
+  });
+  updateResourceLastSyncAtByVillageStmt.run(snapshotNowIso, Number(sourceVillage.villageId));
+  try {
+    sendMarketLogistics(
+      ATTACKER_USERNAME,
+      { targetVillageId: Number(treasuryVillageId), gold: 10, coins: 1 },
+      Number(sourceVillage.villageId),
+      WORLD_PRIMARY,
+    );
+  } catch (error) {
+    insufficientResourcesError = String(error?.message ?? error);
+  }
+
+  setVillageResources(Number(sourceVillage.villageId), {
+    wood: 1000,
+    stone: 1000,
+    iron: 1000,
+    gold: 1000,
+    coins: 1000,
+  });
+  updateResourceLastSyncAtByVillageStmt.run(snapshotNowIso, Number(sourceVillage.villageId));
+  const firstRoute = sendMarketLogistics(
+    ATTACKER_USERNAME,
+    { targetVillageId: Number(treasuryVillageId), gold: 10, coins: 10 },
+    Number(sourceVillage.villageId),
+    WORLD_PRIMARY,
+  );
+
+  let merchantExhaustedError = null;
+  try {
+    sendMarketLogistics(
+      ATTACKER_USERNAME,
+      { targetVillageId: Number(treasuryVillageId), gold: 5, coins: 5 },
+      Number(sourceVillage.villageId),
+      WORLD_PRIMARY,
+    );
+  } catch (error) {
+    merchantExhaustedError = String(error?.message ?? error);
+  }
+
+  const canceled = cancelMarketLogistics(
+    ATTACKER_USERNAME,
+    Number(firstRoute.routeId),
+    Number(sourceVillage.villageId),
+    WORLD_PRIMARY,
+  );
+
+  return {
+    sourceVillageId: Number(sourceVillage.villageId),
+    treasuryVillageId: Number(treasuryVillageId),
+    zeroShipmentError,
+    noMarketError,
+    overCapacityError,
+    insufficientResourcesError,
+    merchantExhaustedError,
+    firstRouteId: Number(firstRoute.routeId),
+    canceledRefunded: canceled?.refunded ?? {},
+  };
+};
+
 const runScenarioCombatLootLeaderboardAggregation = () => {
   clearTransientState();
 
@@ -1723,6 +1982,8 @@ const scenarioHandlers = new Map([
   ['population-overflow-no-unit-cleanup', runScenarioPopulationOverflowNoUnitCleanup],
   ['research-active-village-payment', runScenarioResearchActiveVillagePayment],
   ['market-logistics-gold-coins-flow', runScenarioMarketLogisticsGoldCoinsFlow],
+  ['treasury-transfer-own-village-flow', runScenarioTreasuryTransferOwnVillageFlow],
+  ['treasury-transfer-market-rule-guards', runScenarioTreasuryTransferMarketRuleGuards],
   ['combat-loot-leaderboard-aggregation', runScenarioCombatLootLeaderboardAggregation],
   ['map-render-scope-stress', runScenarioMapRenderScopeStress],
 ]);

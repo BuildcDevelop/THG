@@ -470,6 +470,78 @@ test('economy: market logistics supports gold/coins for send, cancel refund and 
   }
 });
 
+test('economy: treasury-only transfers between own villages preserve non-treasury resources', () => {
+  const result = runScenario('treasury-transfer-own-village-flow');
+  const shipment = result?.shipment ?? {};
+  const sourceBefore = result?.sourceBefore ?? {};
+  const sourceAfterSend = result?.sourceAfterSend ?? {};
+  const sourceAfterCancel = result?.sourceAfterCancel ?? {};
+  const targetBefore = result?.targetBefore ?? {};
+  const targetAfterDelivery = result?.targetAfterDelivery ?? {};
+  const canceledRefunded = result?.canceledRefunded ?? {};
+  const deliveredRoute = result?.deliveredRoute ?? {};
+
+  assert.ok(Number(result?.treasuryVillageId ?? 0) > 0);
+
+  for (const resourceId of ['wood', 'stone', 'iron']) {
+    assert.ok(
+      Math.abs(Number(sourceAfterSend?.[resourceId] ?? 0) - Number(sourceBefore?.[resourceId] ?? 0)) <= 0.01,
+      `treasury send must not spend ${resourceId}`,
+    );
+    assert.ok(
+      Math.abs(Number(sourceAfterCancel?.[resourceId] ?? 0) - Number(sourceBefore?.[resourceId] ?? 0)) <= 0.01,
+      `treasury cancel must keep ${resourceId} unchanged`,
+    );
+    assert.ok(
+      Math.abs(Number(targetAfterDelivery?.[resourceId] ?? 0) - Number(targetBefore?.[resourceId] ?? 0)) <= 0.01,
+      `treasury delivery must not add ${resourceId}`,
+    );
+    assert.equal(Number(canceledRefunded?.[resourceId] ?? -1), 0, `treasury cancel refund for ${resourceId} must stay zero`);
+    assert.equal(Number(deliveredRoute?.[resourceId] ?? -1), 0, `delivered treasury route ${resourceId} must stay zero`);
+  }
+
+  for (const resourceId of ['gold', 'coins']) {
+    assert.equal(
+      Number(sourceBefore?.[resourceId] ?? 0) - Number(sourceAfterSend?.[resourceId] ?? 0),
+      Number(shipment?.[resourceId] ?? -1),
+      `treasury spend mismatch for ${resourceId}`,
+    );
+    assert.equal(
+      Number(sourceAfterCancel?.[resourceId] ?? -1),
+      Number(sourceBefore?.[resourceId] ?? -2),
+      `treasury cancel must fully restore ${resourceId}`,
+    );
+    assert.equal(
+      Number(targetAfterDelivery?.[resourceId] ?? 0) - Number(targetBefore?.[resourceId] ?? 0),
+      Number(shipment?.[resourceId] ?? -1),
+      `treasury delivery mismatch for ${resourceId}`,
+    );
+    assert.equal(
+      Number(canceledRefunded?.[resourceId] ?? -1),
+      Number(shipment?.[resourceId] ?? -2),
+      `treasury cancel refund mismatch for ${resourceId}`,
+    );
+    assert.equal(
+      Number(deliveredRoute?.[resourceId] ?? -1),
+      Number(shipment?.[resourceId] ?? -2),
+      `delivered treasury route mismatch for ${resourceId}`,
+    );
+  }
+});
+
+test('economy: treasury transfers obey baseline market guard rules', () => {
+  const result = runScenario('treasury-transfer-market-rule-guards');
+
+  assert.match(String(result?.zeroShipmentError ?? ''), /vypln alespon jednu surovinu k odeslani/i);
+  assert.match(String(result?.noMarketError ?? ''), /mestsky trh alespon na urovni 1/i);
+  assert.match(String(result?.overCapacityError ?? ''), /aktualni trh pojme maximalne/i);
+  assert.match(String(result?.insufficientResourcesError ?? ''), /nedostatek surovin ve sklade zdrojove osady/i);
+  assert.match(String(result?.merchantExhaustedError ?? ''), /vsechny obchodniky jsou aktualne na cestach/i);
+  assert.ok(Number(result?.firstRouteId ?? 0) > 0);
+  assert.equal(Number(result?.canceledRefunded?.gold ?? -1), 10);
+  assert.equal(Number(result?.canceledRefunded?.coins ?? -1), 10);
+});
+
 test('combat: attacker/defender/supporter formulas and loot leaderboard aggregation stay consistent', () => {
   const result = runScenario('combat-loot-leaderboard-aggregation');
   const battle = result?.battle ?? {};

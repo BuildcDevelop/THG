@@ -1199,3 +1199,11 @@ Entry template:
 - Summary: Overil jsem, ze prevody `gold/coins` byly uz implementovane v `CommandsPanel > Trh a logistika`, ale ne ve vyzkumu. Proto jsem pridal do `ResearchPanel` novou sekci `Pokladnice mezi lény`, ktera nad existujicim market-logistics API umi z aktivniho lena posilat zlato a mince do jineho vlastniho lena, zobrazovat ETA, kapacitu trhu, aktivni prevody a zruseni prevodu. Soucasne jsem rozsiril market-dependent fetch i pro rozbaleny panel vyzkumu, aby se data nacitala bez noveho globalniho pollingu.
 - Files: src/pages/GamePage.tsx, arch/chat-changelog.md
 - Verification: `npm run lint` (PASS), `npm run build` (PASS), `npm run test:regression` (PASS, 31/31)
+
+## 2026-03-21 14:30 | branch: develop
+
+- Request: Dodelat testy, ktere potvrdi, ze nove treasury prevody `gold/coins` funguji v souladu se stavajici herni logikou trhu a ekonomiky.
+- Summary: Rozsiril jsem regresni harness o dva nove economy scenare a odpovidajici testy. Prvni overuje treasury-only prevod mezi vlastnimi leny pres existujici market-logistics kontrakt, vcetne send/cancel-refund/delivery a zaruky, ze `wood/stone/iron` zustanou beze zmeny. Druhy overuje, ze stejne treasury prevody stale podlehaji puvodnim guard pravidlum trhu: nulova zasilka je odmitnuta, bez trhu nelze odesilat, kapacita trhu se neprekroci, zdrojove leno musi mit dost prostredku a nedostupni obchodnici blokují dalsi trasu. Pri prvnim behu jsem odhalil, ze testovy scenar byl znecisten pasivni produkci cile behem `runGameTick`, proto jsem v nem vynuloval produkcni budovy, aby meril jen logistickou logiku.
+- Files: tests/regression/game-rules.scenario.mjs, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
+- Verification: `npm run test:regression` (PASS, 33/33)
+- Notes: Feature contract zustava beze zmen v runtime kodu; jde o test coverage nad existujicim market/economy flow. Hlavni riziko byla falesna negativita z tick-based resource syncu, mitigace je izolace scenare vypnutim produkce.
