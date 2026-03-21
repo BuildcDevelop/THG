@@ -1215,3 +1215,10 @@ Entry template:
 - Files: arch/chat-changelog.md, package.json, server/gameService.js, src/App.css, src/api/gameApi.ts, src/version.ts, scripts/release-doctor.mjs, arch/verejny-poradek-armada-db-spec-v1.md, plus merge zmeny z `develop` do `main`
 - Verification: `npm run build` (PASS), `npm run test:regression` (PASS, 33/33), `git push origin main` (PASS), `npx netlify deploy --prod --build` (PASS)
 - Notes: Produkcni URL je `https://thelastdominion.netlify.app` a unikatni deploy URL `https://69bea42959f45bb2f0189253--thelastdominion.netlify.app`.
+
+## 2026-03-21 15:12 | branch: main
+
+- Request: Prejit do `main` a opravit verzi hry na `0.1.15`.
+- Summary: Opravil jsem verzi vydani v package metadata i ve frontend labelu hry, aby klient i build pipeline konzistentne hlasily `0.1.15` misto `0.1.14`.
+- Files: package.json, src/version.ts, arch/chat-changelog.md
+- Verification: `npm run build`
