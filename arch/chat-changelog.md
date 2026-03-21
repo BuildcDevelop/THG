@@ -1207,3 +1207,17 @@ Entry template:
 - Files: tests/regression/game-rules.scenario.mjs, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
 - Verification: `npm run test:regression` (PASS, 33/33)
 - Notes: Feature contract zustava beze zmen v runtime kodu; jde o test coverage nad existujicim market/economy flow. Hlavni riziko byla falesna negativita z tick-based resource syncu, mitigace je izolace scenare vypnutim produkce.
+
+## 2026-03-21 15:12 | branch: develop
+
+- Request: Sepsat pro hrace srozumitelny prehled, co novy update prinesl.
+- Summary: Pripravil jsem hracsky release note shrnujici hlavni dopady updatu: kompaktnejsi prehled armad vsech len, ovladani poradi naborove fronty, research/economy zmeny kolem aktivniho lena a prevodu `gold/coins`, upravene bojove statistiky a novy zebricek koristi. Text jsem formuloval bez internich technickych detailu, tak aby byl vhodny primo do oznameni pro hrace.
+- Files: arch/chat-changelog.md
+- Verification: N/A (textovy vystup v chatu)
+
+## 2026-03-21 | branch: develop
+
+- Request: Udelat z `main` novou vetev `feat/build-0.1.16`.
+- Summary: Vytvoril jsem novou vetev `feat/build-0.1.16` z referencniho commitu vetve `main`. Kvuli lokalni necommitnute zmene v `arch/chat-changelog.md` a rozdilu tohoto souboru mezi `develop` a `main` jsem vetev pouze zalozil bez checkoutu, aby nedoslo ke konfliktu nebo preneseni rozpracovaneho stavu.
+- Files: arch/chat-changelog.md
+- Verification: `git branch feat/build-0.1.16 main` (PASS), `git rev-parse feat/build-0.1.16` = `git rev-parse main` (PASS)
