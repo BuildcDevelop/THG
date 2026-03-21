@@ -1207,3 +1207,11 @@ Entry template:
 - Files: tests/regression/game-rules.scenario.mjs, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
 - Verification: `npm run test:regression` (PASS, 33/33)
 - Notes: Feature contract zustava beze zmen v runtime kodu; jde o test coverage nad existujicim market/economy flow. Hlavni riziko byla falesna negativita z tick-based resource syncu, mitigace je izolace scenare vypnutim produkce.
+
+## 2026-03-21 14:59 | branch: main
+
+- Request: Merge `develop` do `main` (produkce) a nasadit zmeny live.
+- Summary: V `main` worktree jsem nejdriv ulozil existujici lokalni zmeny checkpoint commitem, potom mergnul `develop -> main` a vyresil konflikty ve prospech `develop`, aby produkce odpovidala testovane vetvi. Nasledne jsem dorovnal soubory, ktere po mergi rozbijely build kontrakty (`package.json`, `src/api/gameApi.ts`, `server/gameService.js`, `src/version.ts`, `src/App.css`, `scripts/release-doctor.mjs`, `arch/verejny-poradek-armada-db-spec-v1.md`), pushnul `main` na `origin` a provedl produkcni deploy pres Netlify CLI.
+- Files: arch/chat-changelog.md, package.json, server/gameService.js, src/App.css, src/api/gameApi.ts, src/version.ts, scripts/release-doctor.mjs, arch/verejny-poradek-armada-db-spec-v1.md, plus merge zmeny z `develop` do `main`
+- Verification: `npm run build` (PASS), `npm run test:regression` (PASS, 33/33), `git push origin main` (PASS), `npx netlify deploy --prod --build` (PASS)
+- Notes: Produkcni URL je `https://thelastdominion.netlify.app` a unikatni deploy URL `https://69bea42959f45bb2f0189253--thelastdominion.netlify.app`.
