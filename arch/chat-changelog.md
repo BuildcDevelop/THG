@@ -1042,3 +1042,11 @@ Entry template:
 - Files: server/db.js, scripts/release-doctor.mjs, arch/chat-changelog.md
 - Verification: `npm run test:regression` (PASS 28/28), redeploy `thg-api` na `89.167.89.109` (build + restart), `Invoke-WebRequest https://thelastdominion.netlify.app/api/health` (`build-0.1.14`), `node scripts/release-doctor.mjs --base-url https://thelastdominion.netlify.app --world-id dominion-1 --username Player001 --password 123 --check-netlify-env` (PASS 16/16)
 - Notes: Incident byl vyresen bez ztraty hernich dat; SQLite volume `/home/patrik/THG/server/data` zustal zachovan.
+
+## 2026-03-20 20:24 | branch: main
+
+- Request: Pripravit hracsky changelog nove verze proti predchozi produkcni verzi.
+- Summary: Prosel jsem rozdil mezi predchozi produkcni bazi `0581a99` a aktualnim nasazenym `main`, overil hlavni hracsky viditelne body v diffu i v produkcnim smoke checku a zformuloval changelog z pohledu hrace. Hlavni oblasti: mapa a ovladani, vykon mapy, verejny poradek, armada vsech len, recruit queue, rytir/vyzkum, tooltipy a stabilita reportu/avataru.
+- Files: arch/chat-changelog.md
+- Verification: `git diff --name-only 0581a9953b8958d3104b1f719756632512ef9c7f..3c8852f`, targeted diff review `server/gameConfig.js`, `server/gameService.js`, `src/pages/GamePage.tsx`, `src/App.css`, `src/api/gameApi.ts`, `server/communicationService.js`, produkcni `release-doctor` PASS 16/16
+- Notes: Bez dalsich runtime zmen; slo o dokumentacni shrnuti uz nasazene produkcni verze.
