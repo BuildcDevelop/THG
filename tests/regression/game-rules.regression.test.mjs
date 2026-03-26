@@ -167,6 +167,33 @@ test('large attacking army is not excessively punished', () => {
   assert.ok(Number(result.defenderLossRatio ?? 0) >= 0.8);
 });
 
+test('combat: prestige pressure still allows a real breakthrough into weak defense', () => {
+  const result = runScenario('prestige-weak-defense-breakthrough');
+  assert.equal(Boolean(result.attackerWins), true);
+  assert.ok(Number(result.finalAttackPower ?? 0) > Number(result.finalDefensePower ?? 0));
+  assert.ok(Number(result.attackerLossRatio ?? 1) < 0.25);
+  assert.equal(Number(result.defenderLossRatio ?? 0), 1);
+  assert.ok(Number(result.prestigeBalance?.attackModifier ?? 0) >= 0.35);
+  assert.ok(Number(result.prestigeBalance?.defenseMultiplier ?? 2) <= 1.18);
+});
+
+test('combat: prestige pressure still breaks light militia raids on contact', () => {
+  const result = runScenario('prestige-light-raid-still-fails');
+  assert.equal(Boolean(result.attackerWins), false);
+  assert.ok(Number(result.finalAttackPower ?? 0) < Number(result.finalDefensePower ?? 0));
+  assert.equal(Number(result.attackerLossRatio ?? 0), 1);
+  assert.ok(Number(result.defenderLossRatio ?? 1) < 0.6);
+});
+
+test('combat: mixed army punches through prestige pressure better than militia spam', () => {
+  const result = runScenario('prestige-mixed-army-breakthrough');
+  assert.equal(Boolean(result.attackerWins), true);
+  assert.ok(Number(result.finalAttackPower ?? 0) > Number(result.finalDefensePower ?? 0));
+  assert.ok(Number(result.attackerLossRatio ?? 1) < 0.2);
+  assert.equal(Number(result.defenderLossRatio ?? 0), 1);
+  assert.ok(Number(result.attackerStart?.cavalry ?? 0) > 0);
+});
+
 test('prestige protection unlocks retaliation after smaller attack', () => {
   const result = runScenario('prestige-retaliation-unlock');
   assert.match(String(result.blockedBeforeRetaliation ?? ''), /balanc prestize blokuje utok/i);

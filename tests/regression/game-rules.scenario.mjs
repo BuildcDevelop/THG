@@ -333,6 +333,113 @@ const setResearchCompleted = (playerId, region, researchId) => {
     finishedAt,
   );
 };
+const setPlayerRegionPrestige = (username, region, totalPrestige) => {
+  const player = getPlayer(username);
+  const villageCount = Math.max(
+    1,
+    Math.floor(Number(selectVillageCountByPlayerAndRegionStmt.get(Number(player.id), Number(region))?.total ?? 0)),
+  );
+  const prestigePerVillage = Math.max(0, Math.floor(Number(totalPrestige ?? 0) / villageCount));
+  updateVillagePrestigeByPlayerRegionStmt.run(
+    prestigePerVillage,
+    Number(player.id),
+    Number(region),
+  );
+  return player;
+};
+const toBattleSnapshot = (payload, context = {}) => {
+  const battle = payload?.battle ?? {};
+  const attackerStart = toCompleteSelection(battle?.attacker?.start ?? {});
+  const attackerLosses = toCompleteSelection(battle?.attacker?.losses ?? {});
+  const attackerSurvivors = toCompleteSelection(battle?.attacker?.survivors ?? {});
+  const defenderStart = toCompleteSelection(battle?.defender?.start ?? {});
+  const defenderLosses = toCompleteSelection(battle?.defender?.losses ?? {});
+  const defenderSurvivors = toCompleteSelection(battle?.defender?.survivors ?? {});
+  const attackerStartTotal = sumSelection(attackerStart);
+  const defenderStartTotal = sumSelection(defenderStart);
+  const attackerLossesTotal = sumSelection(attackerLosses);
+  const defenderLossesTotal = sumSelection(defenderLosses);
+  const attackerSurvivorsTotal = sumSelection(attackerSurvivors);
+  const defenderSurvivorsTotal = sumSelection(defenderSurvivors);
+  const prestigeBalance = battle?.prestigeBalance ?? {};
+  const baseAttackPower = Number(battle?.baseAttackPower ?? 0);
+  const baseDefensePower = Number(battle?.baseDefensePower ?? 0);
+  const finalAttackPower = Number(battle?.finalAttackPower ?? 0);
+  const finalDefensePower = Number(battle?.finalDefensePower ?? 0);
+  const scene = [
+    `${context.attackerLabel ?? 'Útočník'} poslal ${attackerStartTotal} jednotek proti ${defenderStartTotal} obráncům.`,
+    `Síla před balancem ${baseAttackPower.toFixed(2)} vs ${baseDefensePower.toFixed(2)}, po balancu ${finalAttackPower.toFixed(
+      2,
+    )} vs ${finalDefensePower.toFixed(2)}.`,
+    battle?.attackerWins
+      ? `Útok prorazil. Ztráty útočníka ${attackerLossesTotal}/${attackerStartTotal}, obránce ${defenderLossesTotal}/${defenderStartTotal}.`
+      : `Útok se rozbil. Ztráty útočníka ${attackerLossesTotal}/${attackerStartTotal}, obránce ${defenderLossesTotal}/${defenderStartTotal}.`,
+  ].join(' ');
+
+  return {
+    attackerWins: Boolean(battle?.attackerWins),
+    attackerLossRatio: Number(battle?.attackerLossRatio ?? 0),
+    defenderLossRatio: Number(battle?.defenderLossRatio ?? 0),
+    attackerStart,
+    attackerLosses,
+    attackerSurvivors,
+    defenderStart,
+    defenderLosses,
+    defenderSurvivors,
+    attackerStartTotal,
+    defenderStartTotal,
+    attackerLossesTotal,
+    defenderLossesTotal,
+    attackerSurvivorsTotal,
+    defenderSurvivorsTotal,
+    baseAttackPower,
+    baseDefensePower,
+    finalAttackPower,
+    finalDefensePower,
+    attackMultiplier: Number(battle?.attackMultiplier ?? 0),
+    defenseMultiplier: Number(battle?.defenseMultiplier ?? 0),
+    prestigeBalance: {
+      attackerPrestige: Number(prestigeBalance?.attackerPrestige ?? 0),
+      defenderPrestige: Number(prestigeBalance?.defenderPrestige ?? 0),
+      powerRatio: Number(prestigeBalance?.powerRatio ?? 0),
+      attackModifier: Number(prestigeBalance?.attackModifier ?? 0),
+      defenseMultiplier: Number(prestigeBalance?.defenseMultiplier ?? 0),
+      lootModifier: Number(prestigeBalance?.lootModifier ?? 0),
+    },
+    bonuses: Array.isArray(battle?.bonuses) ? battle.bonuses : [],
+    scene,
+  };
+};
+const runPrestigePressureBattleScenario = ({
+  attackerTotalPrestige,
+  defenderTotalPrestige,
+  attackerUnits,
+  defenderUnits,
+  defenderBuildings = {},
+  attackerLabel,
+}) => {
+  clearTransientState();
+  setPlayerRegionPrestige(ATTACKER_USERNAME, REGION_PRIMARY, attackerTotalPrestige);
+  setPlayerRegionPrestige(DEFENDER_USERNAME, REGION_PRIMARY, defenderTotalPrestige);
+
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const defenderVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+
+  setVillageUnits(attackerVillage.villageId, attackerUnits);
+  setVillageUnits(defenderVillage.villageId, defenderUnits);
+  setVillageBuildings(attackerVillage.villageId, { fortification: 0, gate: 0, townhall: 0 });
+  setVillageDefenseBaseline(defenderVillage.villageId, defenderBuildings);
+
+  const { payload } = runAttackAndGetPayload({
+    username: ATTACKER_USERNAME,
+    originVillageId: attackerVillage.villageId,
+    targetVillageId: defenderVillage.villageId,
+    units: attackerUnits,
+    lootPriority: 'balanced',
+  });
+
+  return toBattleSnapshot(payload, { attackerLabel });
+};
 const findAttackerPayloadByMovement = (username, movementId) => {
   const player = getPlayer(username);
   const reportRows = selectBattleReportsByPlayerStmt.all(Number(player.id));
@@ -808,6 +915,33 @@ const runScenarioLargeArmyBalance = () => {
     defenderLossesTotal: sumSelection(payload?.battle?.defender?.losses ?? {}),
   };
 };
+
+const runScenarioPrestigeWeakDefenseBreakthrough = () =>
+  runPrestigePressureBattleScenario({
+    attackerTotalPrestige: 30000,
+    defenderTotalPrestige: 3600,
+    attackerUnits: { militia: 346 },
+    defenderUnits: { militia: 100 },
+    attackerLabel: 'Těžký pěší tlak',
+  });
+
+const runScenarioPrestigeLightRaidStillFails = () =>
+  runPrestigePressureBattleScenario({
+    attackerTotalPrestige: 30000,
+    defenderTotalPrestige: 3600,
+    attackerUnits: { militia: 200 },
+    defenderUnits: { militia: 100 },
+    attackerLabel: 'Lehký pěší raid',
+  });
+
+const runScenarioPrestigeMixedArmyBreakthrough = () =>
+  runPrestigePressureBattleScenario({
+    attackerTotalPrestige: 30000,
+    defenderTotalPrestige: 3600,
+    attackerUnits: { militia: 200, cavalry: 80 },
+    defenderUnits: { militia: 100 },
+    attackerLabel: 'Smíšená armáda',
+  });
 
 const runScenarioKnightDefenderEliminatedOnVictory = () => {
   clearTransientState();
@@ -1969,6 +2103,9 @@ const scenarioHandlers = new Map([
   ['conquest-knight-loot-capacity', runScenarioConquestKnightLootCapacity],
   ['world-village-limit', runScenarioWorldVillageLimit],
   ['large-army-balance', runScenarioLargeArmyBalance],
+  ['prestige-weak-defense-breakthrough', runScenarioPrestigeWeakDefenseBreakthrough],
+  ['prestige-light-raid-still-fails', runScenarioPrestigeLightRaidStillFails],
+  ['prestige-mixed-army-breakthrough', runScenarioPrestigeMixedArmyBreakthrough],
   ['knight-defender-eliminated-on-victory', runScenarioKnightDefenderEliminatedOnVictory],
   ['communication-thread-isolation', runScenarioCommunicationThreadIsolation],
   ['knight-single-slot-per-village', runScenarioKnightSingleSlotPerVillage],

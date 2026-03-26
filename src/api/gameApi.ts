@@ -1824,6 +1824,8 @@ const dispatchAuthRequiredEvent = (): void => {
   window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
 };
 
+const isAuthMutationPath = (path: string): boolean => String(path ?? '').startsWith('/api/v1/auth/');
+
 const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   if (unsafeLocalhostRemoteApiMessage) {
     throw new Error(unsafeLocalhostRemoteApiMessage);
@@ -1845,7 +1847,7 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
       payload && typeof payload === 'object' && 'errorCode' in payload
         ? String((payload as ApiError).errorCode ?? '')
         : '';
-    if (response.status === 401 || errorCode === 'AUTH_REQUIRED') {
+    if ((response.status === 401 || errorCode === 'AUTH_REQUIRED') && !isAuthMutationPath(path)) {
       dispatchAuthRequiredEvent();
     }
     const message =

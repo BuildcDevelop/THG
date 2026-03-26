@@ -413,7 +413,6 @@ type VillageIntelUnitSummaryItem = {
   unitName: string;
   ownAmount: number;
   supportAmount: number;
-  icon: string;
   order: number;
 };
 
@@ -693,6 +692,8 @@ const NAV_BUTTONS: { type: StaticPanelType; text: string; glyph: string }[] = [
 ];
 
 const TOP_NAV_BUTTONS = NAV_BUTTONS.filter((button) => button.type !== 'settings' && button.type !== 'messages');
+const SETTINGS_BUTTON_ICON_SRC = '/assets/ui/settings-icon.webp';
+const VILLAGE_NAV_ARROW_ICON_SRC = '/assets/ui/village-nav-arrow.webp';
 
 const MAIN_MENU_PANEL_TYPES = new Set<StaticPanelType>(NAV_BUTTONS.map((button) => button.type));
 
@@ -723,18 +724,19 @@ const MenuButton = ({ text, title, onClick, className, glyph, badgeText = null, 
 );
 
 type FooterActionButtonProps = {
-  icon: string;
+  icon?: string;
+  iconSrc?: string;
   label: string;
   onClick: () => void;
   badgeText?: string | null;
 };
 
-const FooterActionButton = ({ icon, label, onClick, badgeText = null }: FooterActionButtonProps) => (
+const FooterActionButton = ({ icon, iconSrc, label, onClick, badgeText = null }: FooterActionButtonProps) => (
   <button type="button" className="game-footer-action icon-only" onClick={onClick} title={label} aria-label={label}>
-    <span className="symbol" aria-hidden="true">
-      {icon}
+    <span className={`symbol${iconSrc ? ' is-image' : ''}`} aria-hidden="true">
+      {iconSrc ? <img src={iconSrc} alt="" decoding="async" /> : icon}
     </span>
-    {badgeText ? <strong>{badgeText}</strong> : null}
+    {badgeText ? <span className="game-footer-action-badge tld-type-value">{badgeText}</span> : null}
   </button>
 );
 
@@ -1004,6 +1006,18 @@ const UNIT_META: Record<string, { fallbackName: string; fallbackRole: string; ic
     icon: getUnitIconPath('militia.svg'),
   },
 };
+
+const VILLAGE_UNIT_CARD_ICON_BY_ID: Record<string, string> = {
+  militia: getUnitIconPath('militia-card.webp'),
+  archer: getUnitIconPath('archer-card.webp'),
+  cavalry: getUnitIconPath('cavalry-card.webp'),
+  scout: getUnitIconPath('scout-card.webp'),
+  knight: getUnitIconPath('knight-card.webp'),
+  ram: getUnitIconPath('ram-card.webp'),
+  caravan: getUnitIconPath('caravan-card.webp'),
+  mercenary: getUnitIconPath('militia-card.webp'),
+};
+
 const getUnitMetaById = (unitId: string): { fallbackName: string; fallbackRole: string; icon: string } => {
   const meta = UNIT_META[unitId];
   if (meta) {
@@ -1030,7 +1044,6 @@ const buildVillageUnitSummaries = (units: GameStateResponse['units']): VillageIn
         unitName: unitMeta.fallbackName,
         ownAmount,
         supportAmount,
-        icon: unitMeta.icon,
         order: order >= 0 ? order : Number.MAX_SAFE_INTEGER,
       };
     })
@@ -1169,6 +1182,10 @@ const resolveLootCapacityByUnitId = (unitIdRaw: string): number => {
   }
   const powerUnitId = resolveCombatPowerUnitId(unitIdRaw);
   return powerUnitId ? UNIT_LOOT_CAPACITY[powerUnitId] : 0;
+};
+const resolveTravelSpeedByUnitId = (unitIdRaw: string): number => {
+  const powerUnitId = resolveCombatPowerUnitId(unitIdRaw);
+  return powerUnitId ? Math.max(0, Number(UNIT_TRAVEL_SPEED_TILES_PER_HOUR[powerUnitId] ?? 0)) : 0;
 };
 const UNIT_TRAVEL_SPEED_TILES_PER_HOUR: Record<CommandUnitId, number> = {
   militia: 18,
@@ -1857,7 +1874,7 @@ const VillageIntelTooltip = ({
         {rows.map((row, index) => (
           <li key={`village-intel-tooltip-row-${index}`}>
             <span>{row.label}</span>
-            <strong>{row.value}</strong>
+            <span className="village-intel-tooltip-value tld-type-value">{row.value}</span>
           </li>
         ))}
       </ul>
@@ -2141,11 +2158,10 @@ const KINGDOM_DIPLOMACY_RELATION_LABELS: Record<KingdomDiplomacyRelationKind, st
   non_aggression: 'DoN',
   war: 'Nepřátelské',
 };
-const KINGDOM_DIPLOMACY_RELATION_OPTIONS: Array<{
-  value: KingdomDiplomacyRelationKind;
+const KINGDOM_DIPLOMACY_ASSIGNABLE_OPTIONS: Array<{
+  value: Exclude<KingdomDiplomacyRelationKind, 'neutral'>;
   label: string;
 }> = [
-  { value: 'neutral', label: 'Neutrální' },
   { value: 'ally', label: 'Spojenecké' },
   { value: 'non_aggression', label: 'DoN' },
   { value: 'war', label: 'Nepřátelské' },
@@ -2257,6 +2273,7 @@ const GAME_LAYOUT_MAX_WIDTH = 1800;
 const GAME_LAYOUT_HORIZONTAL_PADDING = 40;
 const FLOATING_PANEL_BASE_Z_INDEX = 2400;
 const MAP_BACKGROUND_PANEL_Z_INDEX = 2050;
+const VILLAGE_PANEL_BASE_Z_INDEX = 2147480000;
 const WORLD_LABELS: Record<string, string> = {
   'dominion-1': 'Dominion I: První úsvit',
   'dominion-1-fire': 'Dominion I: Síla ohně',
@@ -3169,6 +3186,19 @@ const isNeutralKingdom = (kingdom: string): boolean => {
   return (
     normalized === 'neutral' || normalized === 'kralovska osada' || normalized === 'královská osada'
   );
+};
+
+const normalizeKingdomComparable = (value: string): string =>
+  String(value ?? '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLocaleLowerCase('cs-CZ')
+    .trim();
+
+const areSameKingdomComparable = (left: string, right: string): boolean => {
+  const leftComparable = normalizeKingdomComparable(left);
+  const rightComparable = normalizeKingdomComparable(right);
+  return leftComparable.length > 0 && leftComparable === rightComparable;
 };
 
 const clamp = (value: number, min: number, max: number): number =>
@@ -5285,11 +5315,11 @@ const CityPanel = memo(({
           <section className="city-stats-grid city-overview-summary">
             <article>
               <h4>{settlementPrestigeMeta.label}</h4>
-              <strong>{villageLabel}</strong>
+              <strong className="city-stat-value tld-type-stat">{villageLabel}</strong>
             </article>
             <article>
               <h4>Prestiž</h4>
-              <strong>{prestige.toLocaleString('cs-CZ')} bodů</strong>
+              <strong className="city-stat-value tld-type-stat">{prestige.toLocaleString('cs-CZ')} bodů</strong>
             </article>
             <article
               className="city-resource-stock-card"
@@ -5337,7 +5367,7 @@ const CityPanel = memo(({
                         resource.icon
                       )}
                     </span>
-                    <strong className="ui-type-resource-value city-resource-stock-amount">
+                    <strong className="ui-type-resource-value tld-type-value city-resource-stock-amount">
                       {resource.key === 'population'
                         ? `${resource.amount.toLocaleString('cs-CZ')} / ${resource.capacity.toLocaleString('cs-CZ')}`
                         : resource.amount.toLocaleString('cs-CZ')}
@@ -7069,7 +7099,7 @@ const ArmyPanel = memo(({
                           }`}
                         >
                           <span>{getUnitMetaById(unit.unitId).fallbackName}</span>
-                          <strong>{unit.visibleLabel}</strong>
+                          <span className="armada-unit-value tld-type-value">{unit.visibleLabel}</span>
                         </span>
                       ))}
                     </div>
@@ -7602,7 +7632,9 @@ const ArmyPanel = memo(({
                         <span className="unit-icon-shell tiny" aria-hidden="true">
                           <img src={BUILDING_ART.fortification.icon} alt="" className="unit-icon-image" loading="lazy" />
                         </span>
-                        <strong>{fortificationLevel.toLocaleString('cs-CZ')}</strong>
+                        <strong className="multi-village-overview-level-value tld-type-value">
+                          {fortificationLevel.toLocaleString('cs-CZ')}
+                        </strong>
                       </span>
                       <span
                         className="multi-village-overview-level-pill"
@@ -7612,7 +7644,9 @@ const ArmyPanel = memo(({
                         <span className="unit-icon-shell tiny" aria-hidden="true">
                           <img src={BUILDING_ART.gate.icon} alt="" className="unit-icon-image" loading="lazy" />
                         </span>
-                        <strong>{gateLevel.toLocaleString('cs-CZ')}</strong>
+                        <strong className="multi-village-overview-level-value tld-type-value">
+                          {gateLevel.toLocaleString('cs-CZ')}
+                        </strong>
                       </span>
                     </div>
                     {villageUnits.length > 0 ? (
@@ -7629,7 +7663,9 @@ const ArmyPanel = memo(({
                               <span className="unit-icon-shell tiny" aria-hidden="true">
                                 <img src={unitMeta.icon} alt="" className="unit-icon-image" loading="lazy" />
                               </span>
-                              <strong>{totalAmount.toLocaleString('cs-CZ')}</strong>
+                              <strong className="multi-village-unit-value tld-type-value">
+                                {totalAmount.toLocaleString('cs-CZ')}
+                              </strong>
                             </span>
                           );
                         })}
@@ -8249,19 +8285,19 @@ const MilitaryPanel = ({
         <div className="commands-kpi-strip">
           <article className="military-summary-card military-summary-card--units">
             <span>🪖 Celkem jednotek</span>
-            <strong>{totalUnits.toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">{totalUnits.toLocaleString('cs-CZ')}</strong>
           </article>
           <article className="military-summary-card military-summary-card--attack">
             <span>⚔ Souhrnná síla útoku</span>
-            <strong>{totalAttackPower.toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">{totalAttackPower.toLocaleString('cs-CZ')}</strong>
           </article>
           <article className="military-summary-card military-summary-card--defense">
             <span>🛡 Souhrnná síla obrany</span>
-            <strong>{totalDefensePower.toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">{totalDefensePower.toLocaleString('cs-CZ')}</strong>
           </article>
           <article className="military-summary-card military-summary-card--loot">
             <span>📦 Kapacita kořisti</span>
-            <strong>{totalLootCapacity.toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">{totalLootCapacity.toLocaleString('cs-CZ')}</strong>
           </article>
         </div>
       </section>
@@ -8298,7 +8334,9 @@ const MilitaryPanel = ({
                     <strong className="unit-name-large">{unit.name}</strong>
                   </div>
                 </header>
-                <p className="military-unit-amount unit-count-large">{Number(unit.amount ?? 0).toLocaleString('cs-CZ')}</p>
+                <p className="military-unit-amount unit-count-large tld-type-value">
+                  {Number(unit.amount ?? 0).toLocaleString('cs-CZ')}
+                </p>
                 <div className="military-unit-stats">
                   <small className="military-unit-stat military-unit-stat--attack">Útok: {attackContribution.toLocaleString('cs-CZ')}</small>
                   <small className="military-unit-stat military-unit-stat--defense">Obrana: {defenseContribution.toLocaleString('cs-CZ')}</small>
@@ -8443,25 +8481,31 @@ const MilitaryPanel = ({
         <div className="commands-kpi-strip">
           <article>
             <span>Mince ve vybraném lénu</span>
-            <strong>{Math.max(0, Math.floor(Number(resources?.coins ?? 0))).toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">
+              {Math.max(0, Math.floor(Number(resources?.coins ?? 0))).toLocaleString('cs-CZ')}
+            </strong>
           </article>
           <article>
             <span>Chráněné mince</span>
-            <strong>{Math.max(0, Math.floor(Number(resources?.protection.coins ?? 0))).toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">
+              {Math.max(0, Math.floor(Number(resources?.protection.coins ?? 0))).toLocaleString('cs-CZ')}
+            </strong>
           </article>
           <article>
             <span>Ražba / h</span>
-            <strong>{Math.max(0, Number(resources?.productionPerHour.mintCoins ?? 0)).toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">
+              {Math.max(0, Number(resources?.productionPerHour.mintCoins ?? 0)).toLocaleString('cs-CZ')}
+            </strong>
           </article>
           <article>
             <span>Cooldown žoldáků</span>
-            <strong>
+            <strong className="commands-kpi-value tld-type-value">
               {mercenaryCooldownRemainingSec > 0 ? formatDurationLabel(mercenaryCooldownRemainingSec) : 'Připraveno'}
             </strong>
           </article>
           <article className={mercenaryUnlocked ? '' : 'is-danger'}>
             <span>Výzkum banky</span>
-            <strong>{mercenaryUnlocked ? 'Odemčeno' : 'Zamčeno'}</strong>
+            <strong className="commands-kpi-value tld-type-value">{mercenaryUnlocked ? 'Odemčeno' : 'Zamčeno'}</strong>
           </article>
         </div>
 
@@ -8760,19 +8804,23 @@ const ResearchTreasuryTransferSection = ({
       <div className="commands-kpi-strip">
         <article>
           <span>Úroveň trhu</span>
-          <strong>{marketLevel.toLocaleString('cs-CZ')}</strong>
+          <strong className="commands-kpi-value tld-type-value">{marketLevel.toLocaleString('cs-CZ')}</strong>
         </article>
         <article>
           <span>Kapacita převodu</span>
-          <strong>{marketCapacity.toLocaleString('cs-CZ')}</strong>
+          <strong className="commands-kpi-value tld-type-value">{marketCapacity.toLocaleString('cs-CZ')}</strong>
         </article>
         <article>
           <span>Zlato v lénu</span>
-          <strong>{Math.max(0, Math.floor(Number(resources?.gold ?? 0))).toLocaleString('cs-CZ')}</strong>
+          <strong className="commands-kpi-value tld-type-value">
+            {Math.max(0, Math.floor(Number(resources?.gold ?? 0))).toLocaleString('cs-CZ')}
+          </strong>
         </article>
         <article>
           <span>Mince v lénu</span>
-          <strong>{Math.max(0, Math.floor(Number(resources?.coins ?? 0))).toLocaleString('cs-CZ')}</strong>
+          <strong className="commands-kpi-value tld-type-value">
+            {Math.max(0, Math.floor(Number(resources?.coins ?? 0))).toLocaleString('cs-CZ')}
+          </strong>
         </article>
       </div>
       {marketLevel > 0 ? (
@@ -8832,16 +8880,20 @@ const ResearchTreasuryTransferSection = ({
           <div className="army-command-preview">
             <p className="army-command-preview-target">
               Cíl:{' '}
-              <strong>
+              <strong className="army-command-inline-value tld-type-value">
                 {selectedTargetSettlement
                   ? `${selectedTargetSettlement.name} (${selectedTargetSettlement.globalX}|${selectedTargetSettlement.globalY})`
                   : '-'}
               </strong>{' '}
-              · ETA: <strong>{transferEtaSec == null ? '-' : formatDurationLabel(transferEtaSec)}</strong>
+              · ETA:{' '}
+              <strong className="army-command-inline-value tld-type-value">
+                {transferEtaSec == null ? '-' : formatDurationLabel(transferEtaSec)}
+              </strong>
             </p>
             <p>
-              Součet převodu: <strong>{transferTotal.toLocaleString('cs-CZ')}</strong> /{' '}
-              <strong>{marketCapacity.toLocaleString('cs-CZ')}</strong>
+              Součet převodu:{' '}
+              <strong className="army-command-inline-value tld-type-value">{transferTotal.toLocaleString('cs-CZ')}</strong> /{' '}
+              <strong className="army-command-inline-value tld-type-value">{marketCapacity.toLocaleString('cs-CZ')}</strong>
             </p>
           </div>
           {transferWarnings.map((warning) => (
@@ -9582,13 +9634,13 @@ const BattleArmyBreakdownCard = ({
         <>
           <div className="battle-army-kpis">
             <span>
-              Start: <strong>{startTotal.toLocaleString('cs-CZ')}</strong>
+              Start: <span className="battle-army-kpi-value tld-type-value">{startTotal.toLocaleString('cs-CZ')}</span>
             </span>
             <span>
-              Ztráty: <strong>{lossesTotal.toLocaleString('cs-CZ')}</strong>
+              Ztráty: <span className="battle-army-kpi-value tld-type-value">{lossesTotal.toLocaleString('cs-CZ')}</span>
             </span>
             <span>
-              Přežilo: <strong>{survivorsTotal.toLocaleString('cs-CZ')}</strong>
+              Přežilo: <span className="battle-army-kpi-value tld-type-value">{survivorsTotal.toLocaleString('cs-CZ')}</span>
             </span>
           </div>
           <table className="battle-army-table">
@@ -9772,16 +9824,22 @@ const BattleReportPanel = ({
         <div className={`battle-outcome-pill ${outcomeMeta.tone}`}>{outcomeMeta.label}</div>
         <div className="battle-report-meta">
           <span>
-            Čas střetu: <strong>{new Date(report.battleAt).toLocaleString('cs-CZ')}</strong>
+            Čas střetu:{' '}
+            <strong className="battle-report-meta-value tld-type-heading">
+              {new Date(report.battleAt).toLocaleString('cs-CZ')}
+            </strong>
           </span>
           <span>
-            Útočník: <strong>{attackerName}</strong>
+            Útočník: <strong className="battle-report-meta-value tld-type-heading">{attackerName}</strong>
           </span>
           <span>
-            Obránce: <strong>{defenderName}</strong>
+            Obránce: <strong className="battle-report-meta-value tld-type-heading">{defenderName}</strong>
           </span>
           <span>
-            Trasa: <strong>{payload.originVillageName ?? 'Neznámý původ'} → {payload.targetVillageName ?? 'Neznámý cíl'}</strong>
+            Trasa:{' '}
+            <strong className="battle-report-meta-value tld-type-heading">
+              {payload.originVillageName ?? 'Neznámý původ'} → {payload.targetVillageName ?? 'Neznámý cíl'}
+            </strong>
           </span>
         </div>
         {payload.armyDestroyed ? <p className="battle-alert">Útočná armáda byla zcela zničena.</p> : null}
@@ -9794,19 +9852,19 @@ const BattleReportPanel = ({
             <div className="battle-power-grid">
               <article>
                 <span>Nasazení zvědů</span>
-                <strong>{attackerScoutStart.toLocaleString('cs-CZ')}</strong>
+            <strong className="battle-power-value tld-type-stat">{attackerScoutStart.toLocaleString('cs-CZ')}</strong>
               </article>
               <article>
                 <span>Ztráty zvědů</span>
-                <strong>{attackerScoutLosses.toLocaleString('cs-CZ')}</strong>
+            <strong className="battle-power-value tld-type-stat">{attackerScoutLosses.toLocaleString('cs-CZ')}</strong>
               </article>
               <article>
                 <span>Přežilo zvědů</span>
-                <strong>{attackerScoutSurvivors.toLocaleString('cs-CZ')}</strong>
+            <strong className="battle-power-value tld-type-stat">{attackerScoutSurvivors.toLocaleString('cs-CZ')}</strong>
               </article>
               <article>
                 <span>Obranní zvědi v osadě</span>
-                <strong>{defenderScoutCount.toLocaleString('cs-CZ')}</strong>
+            <strong className="battle-power-value tld-type-stat">{defenderScoutCount.toLocaleString('cs-CZ')}</strong>
               </article>
             </div>
             {hasSpyIntel ? (
@@ -9884,9 +9942,15 @@ const BattleReportPanel = ({
             {returnMovement ? (
               <div className="battle-return-block">
                 <p>
-                  Návrat: <strong>{returnMovement.fromVillageName ?? 'Cíl'} → {returnMovement.toVillageName ?? 'Domov'}</strong>{' '}
-                  · ETA <strong>{new Date(returnMovement.arriveAt ?? report.createdAt).toLocaleString('cs-CZ')}</strong>{' '}
-                  · trvání <strong>{formatDurationLabel(returnMovement.durationSec ?? null)}</strong>
+                  Návrat:{' '}
+                  <strong className="battle-return-inline-value tld-type-value">
+                    {returnMovement.fromVillageName ?? 'Cíl'} → {returnMovement.toVillageName ?? 'Domov'}
+                  </strong>{' '}
+                  · ETA{' '}
+                  <strong className="battle-return-inline-value tld-type-value">
+                    {new Date(returnMovement.arriveAt ?? report.createdAt).toLocaleString('cs-CZ')}
+                  </strong>{' '}
+                  · trvání <strong className="battle-return-inline-value tld-type-value">{formatDurationLabel(returnMovement.durationSec ?? null)}</strong>
                 </p>
                 {returnRows.length > 0 ? (
                   <table className="battle-return-table">
@@ -9942,25 +10006,25 @@ const BattleReportPanel = ({
               <div className="battle-power-grid">
                 <article>
                   <span>Základ útok/obrana</span>
-                  <strong>
+                  <strong className="battle-power-value tld-type-stat">
                     {formatBattlePower(battle?.baseAttackPower)} / {formatBattlePower(battle?.baseDefensePower)}
                   </strong>
                 </article>
                 <article>
                   <span>Finální útok/obrana</span>
-                  <strong>
+                  <strong className="battle-power-value tld-type-stat">
                     {formatBattlePower(battle?.finalAttackPower)} / {formatBattlePower(battle?.finalDefensePower)}
                   </strong>
                 </article>
                 <article>
                   <span>Multiplikátor útok/obrana</span>
-                  <strong>
+                  <strong className="battle-power-value tld-type-stat">
                     {formatBattleMultiplier(battle?.attackMultiplier)} / {formatBattleMultiplier(battle?.defenseMultiplier)}
                   </strong>
                 </article>
                 <article>
                   <span>Ztráty útok/obrana</span>
-                  <strong>
+                  <strong className="battle-power-value tld-type-stat">
                     {attackerLosses.toLocaleString('cs-CZ')} / {defenderLosses.toLocaleString('cs-CZ')}
                   </strong>
                   <small>
@@ -10002,9 +10066,15 @@ const BattleReportPanel = ({
             {returnMovement ? (
               <div className="battle-return-block">
                 <p>
-                  Návrat: <strong>{returnMovement.fromVillageName ?? 'Cíl'} → {returnMovement.toVillageName ?? 'Domov'}</strong>{' '}
-                  · ETA <strong>{new Date(returnMovement.arriveAt ?? report.createdAt).toLocaleString('cs-CZ')}</strong> ·{' '}
-                  trvání <strong>{formatDurationLabel(returnMovement.durationSec ?? null)}</strong>
+                  Návrat:{' '}
+                  <strong className="battle-return-inline-value tld-type-value">
+                    {returnMovement.fromVillageName ?? 'Cíl'} → {returnMovement.toVillageName ?? 'Domov'}
+                  </strong>{' '}
+                  · ETA{' '}
+                  <strong className="battle-return-inline-value tld-type-value">
+                    {new Date(returnMovement.arriveAt ?? report.createdAt).toLocaleString('cs-CZ')}
+                  </strong> ·{' '}
+                  trvání <strong className="battle-return-inline-value tld-type-value">{formatDurationLabel(returnMovement.durationSec ?? null)}</strong>
                 </p>
                 {returnRows.length > 0 ? (
                   <table className="battle-return-table">
@@ -10032,22 +10102,22 @@ const BattleReportPanel = ({
             )}
             <div className="battle-loot-strip">
               <span>
-                Dřevo <strong>{lootWood.toLocaleString('cs-CZ')}</strong>
+                Dřevo <span className="battle-loot-value tld-type-value">{lootWood.toLocaleString('cs-CZ')}</span>
               </span>
               <span>
-                Kámen <strong>{lootStone.toLocaleString('cs-CZ')}</strong>
+                Kámen <span className="battle-loot-value tld-type-value">{lootStone.toLocaleString('cs-CZ')}</span>
               </span>
               <span>
-                Železo <strong>{lootIron.toLocaleString('cs-CZ')}</strong>
+                Železo <span className="battle-loot-value tld-type-value">{lootIron.toLocaleString('cs-CZ')}</span>
               </span>
               <span>
-                Zlato <strong>{lootGold.toLocaleString('cs-CZ')}</strong>
+                Zlato <span className="battle-loot-value tld-type-value">{lootGold.toLocaleString('cs-CZ')}</span>
               </span>
               <span>
-                Mince <strong>{lootCoins.toLocaleString('cs-CZ')}</strong>
+                Mince <span className="battle-loot-value tld-type-value">{lootCoins.toLocaleString('cs-CZ')}</span>
               </span>
               <span>
-                Celkem <strong>{totalLoot.toLocaleString('cs-CZ')}</strong>
+                Celkem <span className="battle-loot-value tld-type-value">{totalLoot.toLocaleString('cs-CZ')}</span>
               </span>
             </div>
           </section>
@@ -10061,7 +10131,7 @@ const BattleReportPanel = ({
               {debugRows.map((row) => (
                 <li key={`${report.id}-${row.label}`}>
                   <span>{row.label}</span>
-                  <strong>{row.value}</strong>
+                  <strong className="battle-debug-value tld-type-value">{row.value}</strong>
                 </li>
               ))}
             </ul>
@@ -10153,7 +10223,7 @@ const MessagesPanel = ({
               <p>Nové oznámení</p>
               <small>bitvy, podpory, přesuny</small>
             </div>
-            <strong>{warNoticeCount.toLocaleString('cs-CZ')}</strong>
+            <strong className="messages-signal-value tld-type-value">{warNoticeCount.toLocaleString('cs-CZ')}</strong>
           </article>
           <article className={`messages-signal-chip ${communicationUnreadCount > 0 ? 'is-active' : 'is-idle'}`}>
             <span className="messages-signal-icon" aria-hidden="true">
@@ -10163,7 +10233,9 @@ const MessagesPanel = ({
               <p>Komunikace</p>
               <small>zprávy od hráčů</small>
             </div>
-            <strong>{communicationUnreadCount.toLocaleString('cs-CZ')}</strong>
+            <strong className="messages-signal-value tld-type-value">
+              {communicationUnreadCount.toLocaleString('cs-CZ')}
+            </strong>
           </article>
         </div>
         <div className="messages-invite-block">
@@ -10180,7 +10252,7 @@ const MessagesPanel = ({
                     onClick={() => setSelectedInviteId(invite.id)}
                     disabled={actionPending}
                   >
-                    <strong>Pozvánka do království {invite.kingdom}</strong>
+                    <strong className="messages-report-title tld-type-heading">Pozvánka do království {invite.kingdom}</strong>
                     <span>Poslal: {invite.inviterUsername}</span>
                     <small>
                       {new Date(invite.createdAt).toLocaleString('cs-CZ')} · Klikni pro rozhodnutí ↗
@@ -10209,7 +10281,7 @@ const MessagesPanel = ({
                       {intelKnown ? 'Detail známý' : 'Omezený intel'}
                     </span>
                   </div>
-                  <strong>{report.title}</strong>
+                  <strong className="messages-report-title tld-type-heading">{report.title}</strong>
                   <span>{report.summary}</span>
                   <small>
                     {new Date(report.createdAt).toLocaleString('cs-CZ')} · Otevřít válečný report ↗
@@ -10245,7 +10317,7 @@ const MessagesPanel = ({
           <div className="messages-detail-card">
             <h4>{selectedInvite.kingdom}</h4>
             <p>
-              Pozvánku poslal hráč <strong>{selectedInvite.inviterUsername}</strong>.
+              Pozvánku poslal hráč <strong className="messages-detail-inline-value tld-type-heading">{selectedInvite.inviterUsername}</strong>.
             </p>
             <p>Vytvořeno: {new Date(selectedInvite.createdAt).toLocaleString('cs-CZ')}</p>
             <div className="kingdom-inline-actions">
@@ -10276,8 +10348,9 @@ const MessagesPanel = ({
             <h4>{selectedReport.title}</h4>
             <p>{selectedReport.summary}</p>
             <p>
-              Útočník: <strong>{selectedReport.payload.attacker ?? 'Neznámý'}</strong> · Obránce:{' '}
-              <strong>{selectedReport.payload.defender ?? 'Neznámý'}</strong>
+              Útočník:{' '}
+              <strong className="messages-detail-inline-value tld-type-heading">{selectedReport.payload.attacker ?? 'Neznámý'}</strong> · Obránce:{' '}
+              <strong className="messages-detail-inline-value tld-type-heading">{selectedReport.payload.defender ?? 'Neznámý'}</strong>
             </p>
             <button className="secondary-action" onClick={() => onOpenReport(selectedReport.id)}>
               Otevřít detailní válečný report
@@ -11120,19 +11193,19 @@ const CommandsPanel = ({
         <div className="commands-kpi-strip">
           <article className={incomingAttackCount > 0 ? 'is-danger' : ''}>
             <span>Příchozí útoky</span>
-            <strong>{incomingAttackCount.toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">{incomingAttackCount.toLocaleString('cs-CZ')}</strong>
           </article>
           <article>
             <span>Příchozí rozkazy celkem</span>
-            <strong>{sortedIncoming.length.toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">{sortedIncoming.length.toLocaleString('cs-CZ')}</strong>
           </article>
           <article>
             <span>Odchozí rozkazy</span>
-            <strong>{sortedOutgoing.length.toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">{sortedOutgoing.length.toLocaleString('cs-CZ')}</strong>
           </article>
           <article>
             <span>Návraty armád</span>
-            <strong>{sortedReturns.length.toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">{sortedReturns.length.toLocaleString('cs-CZ')}</strong>
           </article>
         </div>
       </section>
@@ -11339,13 +11412,13 @@ const CommandsPanel = ({
         <div className="army-command-preview army-order-preview">
           <p className="army-command-preview-target">
             Cíl:{' '}
-            <strong>
+            <strong className="army-command-inline-value tld-type-value">
               {effectiveTargetSettlement
                 ? `${effectiveTargetSettlement.name} (${effectiveTargetSettlement.globalX}|${effectiveTargetSettlement.globalY})`
                 : '-'}
             </strong>
             {' · '}
-            ETA: <strong>{selectedTargetEtaLabel}</strong>
+            ETA: <strong className="army-command-inline-value tld-type-value">{selectedTargetEtaLabel}</strong>
           </p>
           {selectedTargetPrestigeBlocked ? (
             <p className="panel-feedback is-danger">
@@ -11362,25 +11435,25 @@ const CommandsPanel = ({
           <div className="army-order-preview-metrics">
             <article>
               <span>Vybráno jednotek</span>
-              <strong>{selectedCommandUnitCount.toLocaleString('cs-CZ')}</strong>
+              <span className="army-order-preview-metric-value tld-type-value">{selectedCommandUnitCount.toLocaleString('cs-CZ')}</span>
             </article>
             {commandType === 'attack' ? (
               <>
                 <article>
                   <span>Síla útoku</span>
-                  <strong>{attackPowerWithBonuses.toLocaleString('cs-CZ')}</strong>
+                  <span className="army-order-preview-metric-value tld-type-value">{attackPowerWithBonuses.toLocaleString('cs-CZ')}</span>
                   {hasRamAttackBonus ? <small>včetně +10 % bonusu beranidel bez brány</small> : null}
                 </article>
                 <article>
                   <span>Kapacita kořisti</span>
-                  <strong>{lootCapacity.toLocaleString('cs-CZ')} surovin</strong>
+                  <span className="army-order-preview-metric-value tld-type-value">{lootCapacity.toLocaleString('cs-CZ')} surovin</span>
                   <small>bez zvědů a beranidel</small>
                 </article>
               </>
             ) : (
               <article>
                 <span>Síla obrany výpravy</span>
-                <strong>{baseDefensePower.toLocaleString('cs-CZ')}</strong>
+                <span className="army-order-preview-metric-value tld-type-value">{baseDefensePower.toLocaleString('cs-CZ')}</span>
               </article>
             )}
           </div>
@@ -11624,15 +11697,15 @@ const CommandsPanel = ({
         <div className="commands-kpi-strip">
           <article>
             <span>Úroveň trhu</span>
-            <strong>{marketLevel.toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">{marketLevel.toLocaleString('cs-CZ')}</strong>
           </article>
           <article>
             <span>Kapacita zásilky</span>
-            <strong>{marketCapacity.toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">{marketCapacity.toLocaleString('cs-CZ')}</strong>
           </article>
           <article>
             <span>Max. vzdálenost</span>
-            <strong>{marketMaxDistance.toLocaleString('cs-CZ')} polí</strong>
+            <strong className="commands-kpi-value tld-type-value">{marketMaxDistance.toLocaleString('cs-CZ')} polí</strong>
           </article>
           <article
             className={
@@ -11642,7 +11715,7 @@ const CommandsPanel = ({
             }
           >
             <span>Obchodníci</span>
-            <strong>
+            <strong className="commands-kpi-value tld-type-value">
               {Math.max(0, Math.floor(Number(market?.merchants?.available ?? 0))).toLocaleString('cs-CZ')} /{' '}
               {Math.max(0, Math.floor(Number(market?.merchants?.total ?? 0))).toLocaleString('cs-CZ')}
             </strong>
@@ -11767,16 +11840,20 @@ const CommandsPanel = ({
             <div className="army-command-preview">
               <p className="army-command-preview-target">
                 Cíl:{' '}
-                <strong>
+                <strong className="army-command-inline-value tld-type-value">
                   {effectiveLogisticsSettlement
                     ? `${effectiveLogisticsSettlement.name} (${effectiveLogisticsSettlement.globalX}|${effectiveLogisticsSettlement.globalY})`
                     : '-'}
                 </strong>{' '}
-                · ETA: <strong>{logisticsEtaSec == null ? '-' : formatDurationLabel(logisticsEtaSec)}</strong>
+                · ETA:{' '}
+                <strong className="army-command-inline-value tld-type-value">
+                  {logisticsEtaSec == null ? '-' : formatDurationLabel(logisticsEtaSec)}
+                </strong>
               </p>
               <p>
-                Součet zásilky: <strong>{logisticsTotal.toLocaleString('cs-CZ')}</strong> /{' '}
-                <strong>{marketCapacity.toLocaleString('cs-CZ')}</strong>
+                Součet zásilky:{' '}
+                <strong className="army-command-inline-value tld-type-value">{logisticsTotal.toLocaleString('cs-CZ')}</strong> /{' '}
+                <strong className="army-command-inline-value tld-type-value">{marketCapacity.toLocaleString('cs-CZ')}</strong>
               </p>
             </div>
             {logisticsWarnings.map((warning) => (
@@ -11989,7 +12066,9 @@ const CommandsPanel = ({
                         className={`market-guild-audit-item severity-${String(entry.severity ?? 'info').toLocaleLowerCase('cs-CZ')}`}
                       >
                         <div className="market-guild-audit-head">
-                          <strong>{formatDateTimeLabel(entry.createdAt)}</strong>
+                          <strong className="market-guild-audit-timestamp tld-type-meta">
+                            {formatDateTimeLabel(entry.createdAt)}
+                          </strong>
                           <span>{String(entry.reasonCode ?? 'unknown')}</span>
                         </div>
                         <p>{entry.message}</p>
@@ -12115,15 +12194,15 @@ const ActivityPanel = ({
         <div className="commands-kpi-strip">
           <article className={unreadTotal > 0 ? 'is-danger' : ''}>
             <span>Nepřečtené</span>
-            <strong>{unreadTotal.toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">{unreadTotal.toLocaleString('cs-CZ')}</strong>
           </article>
           <article className={attentionTotal > 0 ? 'is-danger' : ''}>
             <span>Vyžaduje pozornost</span>
-            <strong>{attentionTotal.toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">{attentionTotal.toLocaleString('cs-CZ')}</strong>
           </article>
           <article>
             <span>Celkem položek</span>
-            <strong>{total.toLocaleString('cs-CZ')}</strong>
+            <strong className="commands-kpi-value tld-type-value">{total.toLocaleString('cs-CZ')}</strong>
           </article>
         </div>
         <div className="messages-pagination">
@@ -12277,8 +12356,9 @@ const KingdomPanel = ({
   const [inviteTargetUsername, setInviteTargetUsername] = useState('');
   const [selectedIncomingInviteId, setSelectedIncomingInviteId] = useState<number | null>(null);
   const [selectedDiplomacyKingdom, setSelectedDiplomacyKingdom] = useState('');
-  const [selectedDiplomacyRelationKind, setSelectedDiplomacyRelationKind] =
-    useState<KingdomDiplomacyRelationKind>('neutral');
+  const [selectedDiplomacyRelationKind, setSelectedDiplomacyRelationKind] = useState<
+    Exclude<KingdomDiplomacyRelationKind, 'neutral'>
+  >('ally');
   const availableKingdoms: KingdomAvailableSummary[] =
     kingdomHub?.availableKingdoms ?? EMPTY_KINGDOM_AVAILABLE;
   const incomingInvites: KingdomIncomingInvite[] = kingdomHub?.incomingInvites ?? EMPTY_KINGDOM_INVITES;
@@ -12293,45 +12373,53 @@ const KingdomPanel = ({
   const isKingdomLeader = kingdomHub?.leaderUsername === currentUsername;
   const totalKingdomPrestige = members.reduce((sum, member) => sum + member.prestige, 0);
   const totalKingdomVillages = members.reduce((sum, member) => sum + member.villages, 0);
+  const activeDiplomacyRelations = useMemo(
+    () =>
+      diplomacyRelations
+        .filter((entry) => entry.relationKind !== 'neutral')
+        .sort((left, right) => left.kingdom.localeCompare(right.kingdom, 'cs')),
+    [diplomacyRelations],
+  );
+  const activeDiplomacyComparableSet = useMemo(
+    () => new Set(activeDiplomacyRelations.map((entry) => normalizeKingdomComparable(entry.kingdom))),
+    [activeDiplomacyRelations],
+  );
   const diplomacyTargets = useMemo(
     () =>
-      availableKingdoms.filter(
-        (entry) =>
-          !currentKingdom ||
-          entry.kingdom.toLocaleLowerCase('cs-CZ') !== currentKingdom.toLocaleLowerCase('cs-CZ'),
-      ),
-    [availableKingdoms, currentKingdom],
+      availableKingdoms.filter((entry) => {
+        if (currentKingdom && areSameKingdomComparable(entry.kingdom, currentKingdom)) {
+          return false;
+        }
+        return !activeDiplomacyComparableSet.has(normalizeKingdomComparable(entry.kingdom));
+      }),
+    [activeDiplomacyComparableSet, availableKingdoms, currentKingdom],
   );
+  const diplomacySuggestions = useMemo(() => {
+    const searchComparable = normalizeKingdomComparable(selectedDiplomacyKingdom);
+    if (!searchComparable) {
+      return diplomacyTargets.slice(0, 8);
+    }
+
+    const startsWithMatches = diplomacyTargets.filter((entry) =>
+      normalizeKingdomComparable(entry.kingdom).startsWith(searchComparable),
+    );
+    const containsMatches = diplomacyTargets.filter((entry) => {
+      const kingdomComparable = normalizeKingdomComparable(entry.kingdom);
+      return kingdomComparable.includes(searchComparable) && !kingdomComparable.startsWith(searchComparable);
+    });
+    return [...startsWithMatches, ...containsMatches].slice(0, 8);
+  }, [diplomacyTargets, selectedDiplomacyKingdom]);
   const resolvedSelectedDiplomacyKingdom = useMemo(() => {
-    if (diplomacyTargets.length === 0) {
+    const selectedComparable = normalizeKingdomComparable(selectedDiplomacyKingdom);
+    if (!selectedComparable) {
       return '';
     }
 
-    const selectedComparable = selectedDiplomacyKingdom.trim().toLocaleLowerCase('cs-CZ');
     const selectedTarget = diplomacyTargets.find(
-      (entry) => entry.kingdom.toLocaleLowerCase('cs-CZ') === selectedComparable,
+      (entry) => normalizeKingdomComparable(entry.kingdom) === selectedComparable,
     );
-    return selectedTarget?.kingdom ?? diplomacyTargets[0]?.kingdom ?? '';
+    return selectedTarget?.kingdom ?? '';
   }, [diplomacyTargets, selectedDiplomacyKingdom]);
-  const selectedDiplomacyRelationKindForRender = useMemo(() => {
-    if (!resolvedSelectedDiplomacyKingdom) {
-      return 'neutral' as KingdomDiplomacyRelationKind;
-    }
-
-    if (resolvedSelectedDiplomacyKingdom === selectedDiplomacyKingdom) {
-      return selectedDiplomacyRelationKind;
-    }
-
-    return (
-      diplomacyRelations.find((entry) => entry.kingdom === resolvedSelectedDiplomacyKingdom)?.relationKind ??
-      'neutral'
-    );
-  }, [
-    diplomacyRelations,
-    resolvedSelectedDiplomacyKingdom,
-    selectedDiplomacyKingdom,
-    selectedDiplomacyRelationKind,
-  ]);
 
   const handleCreateKingdomSubmit = () => {
     const normalizedKingdomName = createKingdomName.trim();
@@ -12381,12 +12469,51 @@ const KingdomPanel = ({
     onTransferLeadership(targetUsername);
   };
 
-  const handleSetDiplomacySubmit = () => {
-    const targetKingdom = resolvedSelectedDiplomacyKingdom.trim();
+  const hasDiplomacySearchInput = selectedDiplomacyKingdom.trim().length > 0;
+  const isDiplomacySearchSelectionValid = resolvedSelectedDiplomacyKingdom.trim().length > 0;
+
+  const requestDiplomacyChange = (
+    targetKingdomRaw: string,
+    relationKind: KingdomDiplomacyRelationKind,
+  ): boolean => {
+    const targetKingdom = targetKingdomRaw.trim();
     if (!targetKingdom) {
+      return false;
+    }
+
+    const relationLabel = KINGDOM_DIPLOMACY_RELATION_LABELS[relationKind] ?? 'Neutrální';
+    const confirmationMessage =
+      relationKind === 'neutral'
+        ? `Odebrat království ${targetKingdom} z diplomatického seznamu?`
+        : `Opravdu chceš nastavit vztah vůči ${targetKingdom} na ${relationLabel}?`;
+    if (!window.confirm(confirmationMessage)) {
+      return false;
+    }
+
+    onSetDiplomacy(targetKingdom, relationKind);
+    return true;
+  };
+
+  const handleSetDiplomacySubmit = () => {
+    if (!isDiplomacySearchSelectionValid) {
       return;
     }
-    onSetDiplomacy(targetKingdom, selectedDiplomacyRelationKindForRender);
+
+    const changed = requestDiplomacyChange(resolvedSelectedDiplomacyKingdom, selectedDiplomacyRelationKind);
+    if (changed) {
+      setSelectedDiplomacyKingdom('');
+    }
+  };
+
+  const handleQuickDiplomacyChange = (
+    targetKingdom: string,
+    relationKind: Exclude<KingdomDiplomacyRelationKind, 'neutral'>,
+  ) => {
+    requestDiplomacyChange(targetKingdom, relationKind);
+  };
+
+  const handleRemoveDiplomacyEntry = (targetKingdom: string) => {
+    requestDiplomacyChange(targetKingdom, 'neutral');
   };
 
   if (!kingdomHub) {
@@ -12535,7 +12662,7 @@ const KingdomPanel = ({
             <ul className="kingdom-audit-list">
               {auditLog.map((entry) => (
                 <li key={`kingdom-audit-${entry.id}`} className="kingdom-audit-item">
-                  <strong>{entry.message}</strong>
+                  <span className="kingdom-audit-message tld-type-heading">{entry.message}</span>
                   <span>{new Date(entry.createdAt).toLocaleString('cs-CZ')}</span>
                 </li>
               ))}
@@ -12656,17 +12783,19 @@ const KingdomPanel = ({
 
       <section>
         <h3>Diplomacie království</h3>
-        {diplomacyRelations.length > 0 ? (
+        {activeDiplomacyRelations.length > 0 ? (
           <table className="kingdom-diplomacy-table">
             <thead>
               <tr>
                 <th>Království</th>
-                <th>Vztah</th>
+                <th>Aktuální vztah</th>
+                <th>Změnit barvu</th>
+                <th>Akce</th>
                 <th>Poslední změna</th>
               </tr>
             </thead>
             <tbody>
-              {diplomacyRelations.map((entry) => (
+              {activeDiplomacyRelations.map((entry) => (
                 <tr key={`kingdom-diplomacy-${entry.kingdom}`}>
                   <td>
                     <button
@@ -12679,6 +12808,33 @@ const KingdomPanel = ({
                   </td>
                   <td>{KINGDOM_DIPLOMACY_RELATION_LABELS[entry.relationKind] ?? 'Neutrální'}</td>
                   <td>
+                    <div className="kingdom-inline-actions kingdom-diplomacy-row-picker">
+                      {KINGDOM_DIPLOMACY_ASSIGNABLE_OPTIONS.map((option) => (
+                        <button
+                          key={`diplomacy-row-option-${entry.kingdom}-${option.value}`}
+                          type="button"
+                          className={`secondary-action kingdom-action-button ${
+                            entry.relationKind === option.value ? 'is-active' : ''
+                          }`}
+                          onClick={() => handleQuickDiplomacyChange(entry.kingdom, option.value)}
+                          disabled={actionPending}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="secondary-action kingdom-action-button kingdom-diplomacy-remove-button"
+                      onClick={() => handleRemoveDiplomacyEntry(entry.kingdom)}
+                      disabled={actionPending}
+                    >
+                      Odebrat
+                    </button>
+                  </td>
+                  <td>
                     {entry.updatedAt
                       ? `${new Date(entry.updatedAt).toLocaleString('cs-CZ')}${
                           entry.updatedByUsername ? ` · ${entry.updatedByUsername}` : ''
@@ -12690,38 +12846,65 @@ const KingdomPanel = ({
             </tbody>
           </table>
         ) : (
-          <p>V tomto světě zatím nejsou dostupná další hráčská království.</p>
+          <p>Zatím nemáš v diplomacii žádné království.</p>
         )}
         {canManageDiplomacy ? (
           diplomacyTargets.length > 0 ? (
             <div className="kingdom-diplomacy-controls">
               <label>
-                Cílové království
-                <select
-                  value={resolvedSelectedDiplomacyKingdom}
-                  onChange={(event) => {
-                    const nextKingdom = event.target.value;
-                    setSelectedDiplomacyKingdom(nextKingdom);
-                    const currentRelation =
-                      diplomacyRelations.find((entry) => entry.kingdom === nextKingdom)?.relationKind ?? 'neutral';
-                    setSelectedDiplomacyRelationKind(currentRelation);
-                  }}
+                Vyhledat království
+                <input
+                  type="text"
+                  value={selectedDiplomacyKingdom}
+                  onChange={(event) => setSelectedDiplomacyKingdom(event.target.value)}
+                  onKeyDown={(event) =>
+                    handleActionOnEnter(event, () => {
+                      if (actionPending || !isDiplomacySearchSelectionValid) {
+                        return;
+                      }
+                      handleSetDiplomacySubmit();
+                    })
+                  }
+                  placeholder="Název království"
                   disabled={actionPending}
-                >
-                  {diplomacyTargets.map((entry) => (
-                    <option key={`diplomacy-target-${entry.kingdom}`} value={entry.kingdom}>
-                      {entry.kingdom}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
+              {diplomacySuggestions.length > 0 ? (
+                <ul className="kingdom-diplomacy-suggestion-list" aria-label="Napovídání království">
+                  {diplomacySuggestions.map((entry) => (
+                    <li key={`diplomacy-suggestion-${entry.kingdom}`}>
+                      <button
+                        type="button"
+                        className={`kingdom-diplomacy-suggestion-option ${
+                          areSameKingdomComparable(entry.kingdom, resolvedSelectedDiplomacyKingdom)
+                            ? 'is-active'
+                            : ''
+                        }`}
+                        onClick={() => setSelectedDiplomacyKingdom(entry.kingdom)}
+                        disabled={actionPending}
+                      >
+                        <strong>{entry.kingdom}</strong>
+                        <span>
+                          {entry.prestige.toLocaleString('cs-CZ')} prestiže · {entry.villages} osad · {entry.members}{' '}
+                          členů
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {hasDiplomacySearchInput && !isDiplomacySearchSelectionValid ? (
+                <p className="row-help">
+                  Vyber prosím království z napovídání. Po odebrání vztahu se království opět objeví ve vyhledávání.
+                </p>
+              ) : null}
               <div className="kingdom-inline-actions kingdom-diplomacy-relation-picker">
-                {KINGDOM_DIPLOMACY_RELATION_OPTIONS.map((option) => (
+                {KINGDOM_DIPLOMACY_ASSIGNABLE_OPTIONS.map((option) => (
                   <button
                     key={`diplomacy-option-${option.value}`}
                     type="button"
                     className={`secondary-action kingdom-action-button ${
-                      selectedDiplomacyRelationKindForRender === option.value ? 'is-active' : ''
+                      selectedDiplomacyRelationKind === option.value ? 'is-active' : ''
                     }`}
                     onClick={() => setSelectedDiplomacyRelationKind(option.value)}
                     disabled={actionPending}
@@ -12734,13 +12917,13 @@ const KingdomPanel = ({
                 type="button"
                 className="upgrade-action kingdom-action-button"
                 onClick={handleSetDiplomacySubmit}
-                disabled={actionPending || resolvedSelectedDiplomacyKingdom.trim().length === 0}
+                disabled={actionPending || !isDiplomacySearchSelectionValid}
               >
-                Uložit diplomatický stav
+                Přidat do diplomacie
               </button>
             </div>
           ) : (
-            <p className="row-help">Není dostupné žádné jiné aktivní království pro změnu diplomacie.</p>
+            <p className="row-help">Není dostupné žádné další aktivní království pro přidání do diplomacie.</p>
           )
         ) : (
           <p className="row-help">Diplomacii může měnit pouze Král tvého království.</p>
@@ -12753,7 +12936,7 @@ const KingdomPanel = ({
           <ul className="kingdom-audit-list">
             {auditLog.map((entry) => (
               <li key={`kingdom-audit-${entry.id}`} className="kingdom-audit-item">
-                <strong>{entry.message}</strong>
+                <span className="kingdom-audit-message tld-type-heading">{entry.message}</span>
                 <span>{new Date(entry.createdAt).toLocaleString('cs-CZ')}</span>
               </li>
             ))}
@@ -13340,7 +13523,9 @@ const RankingPanel = ({
 
         {renderPagination('bottom')}
         <p className="ranking-player-position-note ranking-player-position-epic">
-          <span>Tvé umístění je</span> <strong>{currentPlacementLabel}</strong> <span>{currentPlacementSuffix}</span>.
+          <span>Tvé umístění je</span>{' '}
+          <span className="ranking-player-position-value tld-type-heading">{currentPlacementLabel}</span>{' '}
+          <span>{currentPlacementSuffix}</span>.
         </p>
       </section>
     </div>
@@ -13351,18 +13536,24 @@ const KingdomProfilePanel = ({
   kingdomName,
   rows,
   settlements,
+  kingdomHub,
+  actionPending,
   currentManagedVillage,
+  onSetDiplomacy,
   onOpenPlayerProfile,
 }: {
   kingdomName: string;
   rows: LeaderboardRow[];
   settlements: RegionSettlement[];
+  kingdomHub: KingdomHubState | null;
+  actionPending: boolean;
   currentManagedVillage: {
     name: string;
     coordX: number;
     coordY: number;
     region: number;
   } | null;
+  onSetDiplomacy: (targetKingdom: string, relationKind: KingdomDiplomacyRelationKind) => void;
   onOpenPlayerProfile: (username: string) => void;
 }) => {
   const [view, setView] = useState<'members' | 'villages'>('members');
@@ -13429,6 +13620,31 @@ const KingdomProfilePanel = ({
   const managedVillageLabel = currentManagedVillage
     ? `${currentManagedVillage.name} (${currentManagedVillage.coordX}|${currentManagedVillage.coordY})`
     : 'Neznámá';
+  const canManageDiplomacy = kingdomHub?.canManageDiplomacy ?? false;
+  const viewerKingdom = kingdomHub?.isMember ? String(kingdomHub.kingdom ?? '') : '';
+  const isOwnKingdomProfile = viewerKingdom ? areSameKingdomComparable(viewerKingdom, kingdomName) : false;
+  const profileDiplomacyRelationKind =
+    kingdomHub?.diplomacyRelations.find((entry) => areSameKingdomComparable(entry.kingdom, kingdomName))
+      ?.relationKind ?? 'neutral';
+  const canManageProfileDiplomacy =
+    canManageDiplomacy && !isOwnKingdomProfile && !isNeutralKingdom(kingdomName);
+
+  const handleSetProfileDiplomacy = (relationKind: KingdomDiplomacyRelationKind) => {
+    if (!canManageProfileDiplomacy || actionPending) {
+      return;
+    }
+
+    const relationLabel = KINGDOM_DIPLOMACY_RELATION_LABELS[relationKind] ?? 'Neutrální';
+    const confirmationMessage =
+      relationKind === 'neutral'
+        ? `Odebrat království ${kingdomName} z diplomatického seznamu?`
+        : `Opravdu chceš nastavit vztah vůči ${kingdomName} na ${relationLabel}?`;
+    if (!window.confirm(confirmationMessage)) {
+      return;
+    }
+
+    onSetDiplomacy(kingdomName, relationKind);
+  };
 
   return (
     <div className="panel-stack kingdom-profile-panel">
@@ -13444,6 +13660,48 @@ const KingdomProfilePanel = ({
           <li>Viditelné osady v regionu: {visibleSettlements.length}</li>
           <li>Aktivně spravovaná osada: {managedVillageLabel}</li>
         </ul>
+      </section>
+      <section>
+        <h3>Diplomacie vůči tomuto království</h3>
+        {canManageProfileDiplomacy ? (
+          <div className="kingdom-profile-diplomacy-controls">
+            <p>
+              Aktuální stav:{' '}
+              <strong>{KINGDOM_DIPLOMACY_RELATION_LABELS[profileDiplomacyRelationKind] ?? 'Neutrální'}</strong>
+            </p>
+            <div className="kingdom-inline-actions kingdom-diplomacy-relation-picker">
+              {KINGDOM_DIPLOMACY_ASSIGNABLE_OPTIONS.map((option) => (
+                <button
+                  key={`kingdom-profile-diplomacy-${kingdomName}-${option.value}`}
+                  type="button"
+                  className={`secondary-action kingdom-action-button ${
+                    profileDiplomacyRelationKind === option.value ? 'is-active' : ''
+                  }`}
+                  onClick={() => handleSetProfileDiplomacy(option.value)}
+                  disabled={actionPending}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="secondary-action kingdom-action-button kingdom-diplomacy-remove-button"
+              onClick={() => handleSetProfileDiplomacy('neutral')}
+              disabled={actionPending || profileDiplomacyRelationKind === 'neutral'}
+            >
+              Odebrat z diplomacie
+            </button>
+          </div>
+        ) : canManageDiplomacy ? (
+          isOwnKingdomProfile ? (
+            <p className="row-help">Vlastní království nelze nastavit do diplomacie.</p>
+          ) : (
+            <p className="row-help">Neutrální království nelze přidat do diplomatického seznamu.</p>
+          )
+        ) : (
+          <p className="row-help">Diplomacii může měnit pouze Král tvého království.</p>
+        )}
       </section>
       <section>
         <div className="kingdom-profile-tabs">
@@ -13700,33 +13958,43 @@ const PlayerProfilePanel = ({
         <div className="player-profile-main-stats">
           <article className="player-profile-stat-card player-profile-stat-card-main player-profile-stat-card--rank">
             <span>Globální pořadí</span>
-            <strong>{playerRow ? `#${playerRow.rank}` : 'N/A'}</strong>
+            <strong className="player-profile-stat-value tld-type-stat">{playerRow ? `#${playerRow.rank}` : 'N/A'}</strong>
           </article>
           <article className="player-profile-stat-card player-profile-stat-card-main player-profile-stat-card--prestige">
             <span>Prestiž</span>
-            <strong>{(playerRow?.prestige ?? 0).toLocaleString('cs-CZ')}</strong>
+            <strong className="player-profile-stat-value tld-type-stat">
+              {(playerRow?.prestige ?? 0).toLocaleString('cs-CZ')}
+            </strong>
           </article>
           <article className="player-profile-stat-card player-profile-stat-card-main player-profile-stat-card--villages">
             <span>Léna</span>
-            <strong>{playerRow?.villages ?? villages.length}</strong>
+            <strong className="player-profile-stat-value tld-type-stat">{playerRow?.villages ?? villages.length}</strong>
           </article>
         </div>
         <div className="player-profile-combat-stats">
           <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--attack">
             <span>Útočník</span>
-            <strong>{`${attackerRankLabel} (${attackerScore.toLocaleString('cs-CZ')} padlých)`}</strong>
+            <strong className="player-profile-stat-value tld-type-stat">
+              {`${attackerRankLabel} (${attackerScore.toLocaleString('cs-CZ')} padlých)`}
+            </strong>
           </article>
           <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--defense">
             <span>Obránce</span>
-            <strong>{`${defenderRankLabel} (${defenderScore.toLocaleString('cs-CZ')} padlých)`}</strong>
+            <strong className="player-profile-stat-value tld-type-stat">
+              {`${defenderRankLabel} (${defenderScore.toLocaleString('cs-CZ')} padlých)`}
+            </strong>
           </article>
           <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--support">
             <span>Podporovatel</span>
-            <strong>{`${supporterRankLabel} (${supporterScore.toLocaleString('cs-CZ')} padlých)`}</strong>
+            <strong className="player-profile-stat-value tld-type-stat">
+              {`${supporterRankLabel} (${supporterScore.toLocaleString('cs-CZ')} padlých)`}
+            </strong>
           </article>
           <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--loot">
             <span>Kořist</span>
-            <strong>{`${lootRankLabel} (${lootScore.toLocaleString('cs-CZ')} uloupeno)`}</strong>
+            <strong className="player-profile-stat-value tld-type-stat">
+              {`${lootRankLabel} (${lootScore.toLocaleString('cs-CZ')} uloupeno)`}
+            </strong>
           </article>
         </div>
         {protectedVillages.length > 0 ? (
@@ -13825,34 +14093,34 @@ const ProfilePanel = ({
       <div className="player-profile-main-stats">
         <article className="player-profile-stat-card player-profile-stat-card-main player-profile-stat-card--commander">
           <span>Velitel</span>
-          <strong>{username}</strong>
+          <strong className="player-profile-stat-value tld-type-stat">{username}</strong>
         </article>
         <article className="player-profile-stat-card player-profile-stat-card-main player-profile-stat-card--rank">
           <span>Globální pořadí</span>
-          <strong>{rank ? `#${rank}` : 'N/A'}</strong>
+          <strong className="player-profile-stat-value tld-type-stat">{rank ? `#${rank}` : 'N/A'}</strong>
         </article>
         <article className="player-profile-stat-card player-profile-stat-card-main player-profile-stat-card--prestige">
           <span>Prestiž</span>
-          <strong>{prestige.toLocaleString('cs-CZ')}</strong>
+          <strong className="player-profile-stat-value tld-type-stat">{prestige.toLocaleString('cs-CZ')}</strong>
         </article>
       </div>
 
       <div className="player-profile-combat-stats">
         <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--attack">
           <span>Útočník</span>
-          <strong>{attackerRank ? `#${attackerRank}` : 'N/A'}</strong>
+          <strong className="player-profile-stat-value tld-type-stat">{attackerRank ? `#${attackerRank}` : 'N/A'}</strong>
         </article>
         <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--defense">
           <span>Obránce</span>
-          <strong>{defenderRank ? `#${defenderRank}` : 'N/A'}</strong>
+          <strong className="player-profile-stat-value tld-type-stat">{defenderRank ? `#${defenderRank}` : 'N/A'}</strong>
         </article>
         <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--support">
           <span>Podporovatel</span>
-          <strong>{supporterRank ? `#${supporterRank}` : 'N/A'}</strong>
+          <strong className="player-profile-stat-value tld-type-stat">{supporterRank ? `#${supporterRank}` : 'N/A'}</strong>
         </article>
         <article className="player-profile-stat-card player-profile-stat-card-compact player-profile-stat-card--loot">
           <span>Kořist</span>
-          <strong>{lootRank ? `#${lootRank}` : 'N/A'}</strong>
+          <strong className="player-profile-stat-value tld-type-stat">{lootRank ? `#${lootRank}` : 'N/A'}</strong>
         </article>
       </div>
 
@@ -14190,7 +14458,7 @@ const SettingsPanel = ({
             </label>
             <small className="row-help">
               Správa hesla bude doplněna na backendu. Pokud si aktuální heslo nepamatuješ, kontaktuj vývojáře na
-              Discordu: <strong>Mmykron</strong>.
+              Discordu: <span className="settings-help-emphasis tld-type-heading">Mmykron</span>.
             </small>
           </div>
         </section>
@@ -14277,8 +14545,9 @@ const SettingsPanel = ({
               : 'Statický režim: sloupce jsou viditelné a zkratka je pouze dočasně skryje.'}
           </small>
           <small className="row-help">
-            Nezávisle na režimu: stisknutím <strong>{holdPinColumnsShortcutLabel}</strong> přepneš overlay pin
-            sloupců (zapnuto/vypnuto).
+            Nezávisle na režimu: stisknutím{' '}
+            <span className="settings-help-emphasis tld-type-heading">{holdPinColumnsShortcutLabel}</span> přepneš overlay
+            pin sloupců (zapnuto/vypnuto).
           </small>
           <label className="settings-toggle-row">
             <span>Náhled časů přesunu na mapě (podržet klávesu)</span>
@@ -14295,7 +14564,7 @@ const SettingsPanel = ({
           </label>
           <small className="row-help">
             Na mapě se detail „Časy přesunu jednotek“ zobrazí při najetí na léno a podržení{' '}
-            <strong>{mapPreviewTravelModifierLabel}</strong>.
+            <span className="settings-help-emphasis tld-type-heading">{mapPreviewTravelModifierLabel}</span>.
           </small>
           {isTouchDevice ? (
             <small className="row-help">
@@ -16146,25 +16415,25 @@ const MapPanel = memo(({
           <div className="map-settlement-overview">
             <p className={`map-settlement-owner ${isPreviewOwnedByPlayer ? 'player-owner' : ''}`}>
               <span className="map-settlement-owner-label">Hráč</span>
-              <strong>{ownerLabel}</strong>
+              <strong className="map-settlement-owner-value tld-type-heading">{ownerLabel}</strong>
             </p>
             <p className="map-settlement-kingdom">
-              Království <strong>{kingdomLabel}</strong>{' '}
+              Království <strong className="map-settlement-owner-value tld-type-heading">{kingdomLabel}</strong>{' '}
               <em>
                 ({previewSettlementTypeLabel}
                 {shouldShowKingdomTotalPrestige ? ` · ${previewKingdomTotalPrestige.toLocaleString('cs-CZ')}` : ''})
               </em>
             </p>
             <p className="map-settlement-prestige-total">
-              Hráč celkem <strong>{playerTotalPrestige.toLocaleString('cs-CZ')}</strong>
+              Hráč celkem <strong className="map-settlement-prestige-total-value tld-type-value">{playerTotalPrestige.toLocaleString('cs-CZ')}</strong>
             </p>
             <p className="map-settlement-prestige">
-              Prestiž léna <strong>{settlementPrestige.toLocaleString('cs-CZ')}</strong>{' '}
+              Prestiž léna <strong className="map-settlement-prestige-value tld-type-value">{settlementPrestige.toLocaleString('cs-CZ')}</strong>{' '}
               {shouldShowPlayerTotalPrestige ? <em>(detail léna)</em> : null}
             </p>
             <div className="map-settlement-copy-row">
               <span>
-                Souřadnice <strong>{coordinatesLabel}</strong>
+                Souřadnice <strong className="map-settlement-detail-value tld-type-value">{coordinatesLabel}</strong>
               </span>
               <button
                 type="button"
@@ -16182,12 +16451,14 @@ const MapPanel = memo(({
             {copyCoordsFeedback ? <p className="map-settlement-copy-feedback">{copyCoordsFeedback}</p> : null}
             <p className="map-settlement-distance">
               Vzdálenost od <em>{distanceOriginSettlement?.name ?? 'aktivního léna'}</em>{' '}
-              <strong>{previewDistanceTiles == null ? '-' : `${previewDistanceTiles} polí`}</strong>
+              <strong className="map-settlement-detail-value tld-type-value">
+                {previewDistanceTiles == null ? '-' : `${previewDistanceTiles} polí`}
+              </strong>
             </p>
             {showPreviewTravelDurations ? (
               <div className="map-settlement-travel-times">
                 <p>
-                  Časy přesunu (<strong>Ctrl</strong>)
+                  Časy přesunu (<span className="map-settlement-travel-hint-key tld-type-heading">Ctrl</span>)
                 </p>
                 <ul>
                   {previewTravelRows.map((row) => (
@@ -16462,11 +16733,21 @@ const VillagePanel = memo(({
   villageIntelEntry,
   canLoadVillageIntel,
   onLoadVillageIntel,
+  showVillageNavigation,
+  canNavigateToPreviousVillage,
+  canNavigateToNextVillage,
+  onNavigateToPreviousVillage,
+  onNavigateToNextVillage,
 }: {
   settlement: RegionSettlement;
   villageIntelEntry: VillageIntelEntry | null;
   canLoadVillageIntel: boolean;
   onLoadVillageIntel: (options?: { force?: boolean }) => void;
+  showVillageNavigation: boolean;
+  canNavigateToPreviousVillage: boolean;
+  canNavigateToNextVillage: boolean;
+  onNavigateToPreviousVillage: () => void;
+  onNavigateToNextVillage: () => void;
 }) => {
   const targetVillageId =
     settlement.villageId != null && Number.isFinite(settlement.villageId)
@@ -16578,6 +16859,64 @@ const VillagePanel = memo(({
     () => villageIntelData?.unitSummaries ?? [],
     [villageIntelData?.unitSummaries],
   );
+  const villageUnitTooltipRowsById = useMemo<Record<string, Array<{ label: string; value: string }>>>(() => {
+    const rowsById: Record<string, Array<{ label: string; value: string }>> = {};
+    for (const unit of villageUnitSummaryItems) {
+      const ownAmount = Math.max(0, Math.floor(Number(unit.ownAmount ?? 0)));
+      const supportAmount = Math.max(0, Math.floor(Number(unit.supportAmount ?? 0)));
+      const totalAmount = ownAmount + supportAmount;
+      const attackPerUnit = resolveAttackPowerByUnitId(unit.unitId);
+      const defensePerUnit = resolveDefensePowerByUnitId(unit.unitId);
+      const travelSpeed = resolveTravelSpeedByUnitId(unit.unitId);
+      const totalAttack = totalAmount * attackPerUnit;
+      const totalDefense = totalAmount * defensePerUnit;
+
+      rowsById[unit.unitId] = [
+        {
+          label: 'Síla na 1 jednotku',
+          value: `Útok ${attackPerUnit.toLocaleString('cs-CZ')} · Obrana ${defensePerUnit.toLocaleString('cs-CZ')}`,
+        },
+        {
+          label: `Souhrnná síla (${unit.unitName.toLowerCase()})`,
+          value: `Útok ${formatCompactResourceAmount(totalAttack)} · Obrana ${formatCompactResourceAmount(totalDefense)}`,
+        },
+        {
+          label: 'Stav v lénu',
+          value: `${formatCompactResourceAmount(ownAmount)} vlastní · ${formatCompactResourceAmount(supportAmount)} podpora`,
+        },
+        {
+          label: 'Rychlost',
+          value: travelSpeed > 0 ? `${travelSpeed.toLocaleString('cs-CZ')} polí / hod` : 'Nehybná jednotka',
+        },
+      ];
+    }
+    return rowsById;
+  }, [villageUnitSummaryItems]);
+  const activeVillageUnitTooltip = useMemo(() => {
+    if (!hoveredIntelTooltipKey || !hoveredIntelTooltipKey.startsWith('unit-summary-')) {
+      return null;
+    }
+    const unitId = hoveredIntelTooltipKey.slice('unit-summary-'.length);
+    const unit = villageUnitSummaryItems.find((candidate) => candidate.unitId === unitId);
+    if (!unit) {
+      return null;
+    }
+    return {
+      title: unit.unitName,
+      rows: villageUnitTooltipRowsById[unitId] ?? [],
+    };
+  }, [hoveredIntelTooltipKey, villageUnitSummaryItems, villageUnitTooltipRowsById]);
+  const villagePanelContentRef = useRef<HTMLDivElement | null>(null);
+  const [titlePortalHost, setTitlePortalHost] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const panelContentNode = villagePanelContentRef.current;
+    if (!panelContentNode) {
+      return;
+    }
+    const villageWindowNode = panelContentNode.closest('.floating-window.village-panel-window');
+    setTitlePortalHost(villageWindowNode instanceof HTMLElement ? villageWindowNode : null);
+  }, []);
 
   useEffect(() => {
     if (!canLoadVillageIntel || targetVillageId == null) {
@@ -16597,38 +16936,59 @@ const VillagePanel = memo(({
     setHoveredIntelTooltipKey((previous) => (previous === tooltipKey ? null : previous));
     setIntelTooltipCursorPosition(null);
   };
-
-  return (
-    <div className="panel-stack village-panel village-panel-compact">
-      <section className="village-float-overview">
-        <header className="village-float-overview-header">
-          <div className="village-float-title-block">
+  const villageTitleModule = (
+    <div className="village-title-module-layer" aria-hidden={false}>
+      <div className="village-float-title-block" role="group" aria-label="Hlavička léna">
+        {showVillageNavigation ? (
+          <div className="village-float-title-nav">
+            <button
+              type="button"
+              className="village-title-nav-button is-prev"
+              onClick={onNavigateToPreviousVillage}
+              disabled={!canNavigateToPreviousVillage}
+              aria-label="Přejít na předchozí léno v seznamu"
+              title="Předchozí léno"
+            >
+              <img src={VILLAGE_NAV_ARROW_ICON_SRC} alt="" loading="lazy" decoding="async" draggable={false} />
+            </button>
+            <div className="village-title-nav-copy">
+              <h3>
+                {settlement.name} ({settlement.globalX}|{settlement.globalY})
+              </h3>
+              <p>
+                {settlement.owner} · {settlement.kingdom} · Region {settlement.region}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="village-title-nav-button is-next"
+              onClick={onNavigateToNextVillage}
+              disabled={!canNavigateToNextVillage}
+              aria-label="Přejít na další léno v seznamu"
+              title="Další léno"
+            >
+              <img src={VILLAGE_NAV_ARROW_ICON_SRC} alt="" loading="lazy" decoding="async" draggable={false} />
+            </button>
+          </div>
+        ) : (
+          <>
             <h3>
               {settlement.name} ({settlement.globalX}|{settlement.globalY})
             </h3>
             <p>
               {settlement.owner} · {settlement.kingdom} · Region {settlement.region}
             </p>
-          </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
 
-          <div className="village-float-header-resources" aria-label="Suroviny léna">
-            {compactResourceRows.map((resource) => {
-              const resourceIcon = resolveResourceGlyph(resource.label);
-              return (
-                <span key={`village-inline-resource-${resource.key}`} className="village-inline-resource-pill">
-                  <i aria-hidden="true" className="village-inline-resource-icon">
-                    {resourceIcon.startsWith('/') ? (
-                      <img src={resourceIcon} alt="" loading="lazy" decoding="async" draggable={false} />
-                    ) : (
-                      resourceIcon
-                    )}
-                  </i>
-                  <strong>{resource.value}</strong>
-                </span>
-              );
-            })}
-          </div>
-
+  return (
+    <div ref={villagePanelContentRef} className="panel-stack village-panel village-panel-compact">
+      {titlePortalHost ? createPortal(villageTitleModule, titlePortalHost) : null}
+      <section className="village-float-overview">
+        <header className="village-float-overview-header">
           <div className="village-float-overview-actions">
             <div className="village-float-quick-icons" role="toolbar" aria-label="Rychlé informace léna">
               <button
@@ -16682,26 +17042,64 @@ const VillagePanel = memo(({
               ) : null}
             </div>
           </div>
+
+          <div className="village-float-header-resources" aria-label="Suroviny léna">
+            {compactResourceRows.map((resource) => {
+              const resourceIcon = resolveResourceGlyph(resource.label);
+              return (
+                <span key={`village-inline-resource-${resource.key}`} className="village-inline-resource-pill">
+                  <i aria-hidden="true" className="village-inline-resource-icon">
+                    {resourceIcon.startsWith('/') ? (
+                      <img src={resourceIcon} alt="" loading="lazy" decoding="async" draggable={false} />
+                    ) : (
+                      resourceIcon
+                    )}
+                  </i>
+                  <span className="village-inline-resource-value tld-type-value">{resource.value}</span>
+                </span>
+              );
+            })}
+          </div>
         </header>
 
         <div className="village-unit-summary-grid" aria-label="Jednotky v léně">
           {villageUnitSummaryItems.length > 0 ? (
-            villageUnitSummaryItems.map((unit) => (
-              <article
-                key={`village-unit-summary-${unit.unitId}`}
-                className="village-unit-summary-card village-unit-type-card"
-                aria-label={`${unit.unitName}: vlastní ${unit.ownAmount.toLocaleString('cs-CZ')}, podpora ${unit.supportAmount.toLocaleString('cs-CZ')}`}
-                style={{ '--unit-card-image': `url("${unit.icon}")` } as CSSProperties}
-              >
-                <div className="village-unit-type-header">
-                  <span className="unit-icon-shell" aria-hidden="true">
-                    <img src={unit.icon} alt="" className="unit-icon-image" loading="lazy" />
-                  </span>
-                </div>
-                <h1>{unit.ownAmount.toLocaleString('cs-CZ')}</h1>
-                <p>({unit.supportAmount.toLocaleString('cs-CZ')})</p>
-              </article>
-            ))
+            villageUnitSummaryItems.map((unit) => {
+              const unitTooltipKey = `unit-summary-${unit.unitId}`;
+              const isUnitTooltipOpen = hoveredIntelTooltipKey === unitTooltipKey;
+              const unitMeta = getUnitMetaById(unit.unitId);
+              const unitCardImage = VILLAGE_UNIT_CARD_ICON_BY_ID[unit.unitId] ?? unitMeta.icon;
+              return (
+                <article
+                  key={`village-unit-summary-${unit.unitId}`}
+                  className={`village-unit-summary-card village-unit-type-card has-army-tooltip${isUnitTooltipOpen ? ' is-tooltip-open' : ''}`}
+                  aria-label={`${unit.unitName}: vlastní ${unit.ownAmount.toLocaleString('cs-CZ')}, podpora ${unit.supportAmount.toLocaleString('cs-CZ')}`}
+                  style={{ '--unit-card-image': `url("${unitCardImage}")` } as CSSProperties}
+                  onMouseEnter={(event) => {
+                    handleIntelTooltipEnter(unitTooltipKey, { x: event.clientX, y: event.clientY });
+                  }}
+                  onMouseMove={(event) => {
+                    if (!isUnitTooltipOpen) {
+                      return;
+                    }
+                    setIntelTooltipCursorPosition({ x: event.clientX, y: event.clientY });
+                  }}
+                  onMouseLeave={() => {
+                    handleIntelTooltipLeave(unitTooltipKey);
+                  }}
+                >
+                  <strong className="village-unit-value tld-type-value">{formatCompactResourceAmount(unit.ownAmount)}</strong>
+                  <strong className="village-unit-support tld-type-value">
+                    ({formatCompactResourceAmount(unit.supportAmount)})
+                  </strong>
+                  <div className="village-unit-type-header">
+                    <span className="unit-icon-shell" aria-hidden="true">
+                      <img src={unitMeta.icon} alt="" className="unit-icon-image" loading="lazy" />
+                    </span>
+                  </div>
+                </article>
+              );
+            })
           ) : (
             <p className="village-unit-summary-empty">
               {hasVillageIntel ? 'Bez jednotek' : isVillageIntelLoading ? 'Načítám...' : 'Bez dat'}
@@ -16715,11 +17113,11 @@ const VillagePanel = memo(({
             <div className="village-fortification-levels">
               <span>
                 <img src={BUILDING_ART.fortification.icon} alt="" loading="lazy" decoding="async" />
-                Opevnění <strong>{(villageIntelData?.fortificationLevel ?? 0).toLocaleString('cs-CZ')}</strong>
+                Opevnění <span className="village-fortification-value tld-type-value">{(villageIntelData?.fortificationLevel ?? 0).toLocaleString('cs-CZ')}</span>
               </span>
               <span>
                 <img src={BUILDING_ART.gate.icon} alt="" loading="lazy" decoding="async" />
-                Brána <strong>{(villageIntelData?.gateLevel ?? 0).toLocaleString('cs-CZ')}</strong>
+                Brána <span className="village-fortification-value tld-type-value">{(villageIntelData?.gateLevel ?? 0).toLocaleString('cs-CZ')}</span>
               </span>
             </div>
           </article>
@@ -16741,11 +17139,11 @@ const VillagePanel = memo(({
             aria-label="Detail posádky"
           >
             <h4>Posádka</h4>
-            <strong>
+            <span className="village-garrison-value tld-type-value">
               {hasVillageIntel
                 ? `${(villageIntelData?.garrisonUnits ?? 0).toLocaleString('cs-CZ')} jednotek`
                 : '300 jednotek'}
-            </strong>
+            </span>
             <span>
               {hasVillageIntel && villageIntelData && !villageIntelData.garrisonUnlocked
                 ? 'Posádka se odemyká od Radnice 5. Rezervace 300 populace je aktivní hned.'
@@ -16779,6 +17177,13 @@ const VillagePanel = memo(({
         <VillageIntelTooltip
           title="Posádka"
           rows={garrisonTooltipRows}
+          cursorPosition={intelTooltipCursorPosition}
+        />
+      ) : null}
+      {activeVillageUnitTooltip ? (
+        <VillageIntelTooltip
+          title={activeVillageUnitTooltip.title}
+          rows={activeVillageUnitTooltip.rows}
           cursorPosition={intelTooltipCursorPosition}
         />
       ) : null}
@@ -16903,7 +17308,10 @@ const BuildingPanel = memo(({
         {building.id === 'townhall' ? (
           <>
             <p className="building-knight-meta">
-              Rytíř v osadě: <strong>{Math.max(0, Math.floor(knightCount)).toLocaleString('cs-CZ')}</strong>
+              Rytíř v osadě:{' '}
+              <strong className="building-knight-value tld-type-value">
+                {Math.max(0, Math.floor(knightCount)).toLocaleString('cs-CZ')}
+              </strong>
             </p>
             <button
               type="button"
@@ -22704,6 +23112,8 @@ export const GamePage = () => {
             kingdomName={panel.kingdomName}
             rows={leaderboardRows}
             settlements={mapSettlements}
+            kingdomHub={gameState?.kingdomHub ?? null}
+            actionPending={kingdomActionPending}
             currentManagedVillage={
               gameState
                 ? {
@@ -22714,6 +23124,7 @@ export const GamePage = () => {
                   }
                 : null
             }
+            onSetDiplomacy={handleSetKingdomDiplomacy}
             onOpenPlayerProfile={openPlayerProfilePanel}
           />
         );
@@ -22829,6 +23240,60 @@ export const GamePage = () => {
           settlementVillageId != null && ownedVillageIdSet.has(settlementVillageId);
         const villageIntelEntry =
           settlementVillageId != null ? villageIntelByVillageId[settlementVillageId] ?? null : null;
+        const villageNavigationIndex =
+          settlementVillageId == null
+            ? -1
+            : playerVillages.findIndex((candidate) => {
+                const candidateVillageId = Math.floor(Number(candidate.id));
+                return Number.isFinite(candidateVillageId) && candidateVillageId === settlementVillageId;
+              });
+        const showVillageNavigation = villageNavigationIndex !== -1 && playerVillages.length > 0;
+        const canNavigateToPreviousVillage = villageNavigationIndex > 0;
+        const canNavigateToNextVillage =
+          villageNavigationIndex !== -1 && villageNavigationIndex < playerVillages.length - 1;
+        const navigateVillagePanelByOffset = (offset: -1 | 1) => {
+          if (villageNavigationIndex === -1) {
+            return;
+          }
+
+          const nextVillage = playerVillages[villageNavigationIndex + offset];
+          if (!nextVillage) {
+            return;
+          }
+
+          const nextVillageId = Math.floor(Number(nextVillage.id));
+          if (!Number.isFinite(nextVillageId) || nextVillageId <= 0) {
+            return;
+          }
+
+          const nextSettlement = ownSettlements.find(
+            (candidate) => candidate.villageId != null && Math.floor(Number(candidate.villageId)) === nextVillageId,
+          );
+          if (!nextSettlement) {
+            applyActiveVillageSelection(nextVillageId);
+            return;
+          }
+
+          syncOwnSettlementSelection(nextSettlement);
+          requestMapCenterOnSettlement(nextSettlement.id);
+          if (ownedVillageIdSet.has(nextVillageId)) {
+            void loadVillageIntel(nextVillageId);
+          }
+
+          setActivePanelId(panel.id);
+          setPanels((previous) =>
+            previous.map((candidate) =>
+              candidate.id === panel.id
+                ? {
+                    ...candidate,
+                    settlementId: nextSettlement.id,
+                    label: `${nextSettlement.name} (${nextSettlement.globalX}|${nextSettlement.globalY})`,
+                    alert: false,
+                  }
+                : candidate,
+            ),
+          );
+        };
 
         return (
           <VillagePanel
@@ -22840,6 +23305,15 @@ export const GamePage = () => {
                 return;
               }
               void loadVillageIntel(settlementVillageId, options);
+            }}
+            showVillageNavigation={showVillageNavigation}
+            canNavigateToPreviousVillage={canNavigateToPreviousVillage}
+            canNavigateToNextVillage={canNavigateToNextVillage}
+            onNavigateToPreviousVillage={() => {
+              navigateVillagePanelByOffset(-1);
+            }}
+            onNavigateToNextVillage={() => {
+              navigateVillagePanelByOffset(1);
             }}
           />
         );
@@ -23008,6 +23482,11 @@ export const GamePage = () => {
     const shouldRenderHeader = !isMapPanel && !isMainMenuPanel;
     const shouldRenderQuickWindowActions = !isMainMenuPanel;
     const shouldRenderWindowVisibilityActions = !isMainMenuPanel;
+    const panelZIndex = isMapPanel
+      ? MAP_BACKGROUND_PANEL_Z_INDEX
+      : isVillagePanel
+        ? VILLAGE_PANEL_BASE_Z_INDEX + panel.z
+        : FLOATING_PANEL_BASE_Z_INDEX + panel.z;
 
     return (
       <article
@@ -23020,12 +23499,10 @@ export const GamePage = () => {
           isDocked
             ? undefined
             : isMainMenuPanel
-              ? {
+                ? {
                   left: `${stretchedMainStageFrame.x}px`,
                   top: `${stretchedMainStageFrame.y}px`,
-                  zIndex: isMapPanel
-                    ? MAP_BACKGROUND_PANEL_Z_INDEX
-                    : FLOATING_PANEL_BASE_Z_INDEX + panel.z,
+                  zIndex: panelZIndex,
                   width: `${stretchedMainStageFrame.width}px`,
                   height: `${stretchedMainStageFrame.height}px`,
                 }
@@ -23034,9 +23511,7 @@ export const GamePage = () => {
                 top: shouldAnchorVillageToBottom ? undefined : `${panel.y}px`,
                 bottom: shouldAnchorVillageToBottom ? '4.35rem' : undefined,
                 transform: shouldAnchorVillageToBottom ? 'translateX(-50%)' : undefined,
-                zIndex: isMapPanel
-                  ? MAP_BACKGROUND_PANEL_Z_INDEX
-                  : FLOATING_PANEL_BASE_Z_INDEX + panel.z,
+                zIndex: panelZIndex,
                 width: shouldAutoSizeToContent ? 'fit-content' : `${panel.width}px`,
                 height: shouldAutoSizeToContent ? 'fit-content' : `${panel.height}px`,
                 maxWidth: shouldAutoSizeToContent
@@ -23214,7 +23689,7 @@ export const GamePage = () => {
               title="Otevřít nabídku účtu a světa"
               onClick={() => setIsWorldMenuOpen((previous) => !previous)}
             >
-              <span>Svět:</span> <strong>{selectedWorldName}</strong>
+              <span>Svět:</span> <span className="world-indicator-value tld-type-heading">{selectedWorldName}</span>
               {selectedWorldFlavor === 'test' ? <em>TEST</em> : null}
               {selectedWorldFlavor === 'prealpha' ? <em>PRE-ALPHA</em> : null}
             </button>
@@ -23252,7 +23727,7 @@ export const GamePage = () => {
                           disabled={!isPlayable}
                           onClick={() => handleSwitchWorld(world.id)}
                         >
-                          <strong>{world.name}</strong>
+                          <span className="world-switch-option-title tld-type-heading">{world.name}</span>
                           <span>{isActive ? `AKTIVNÍ · ${worldModeLabel}` : `${isPlayable ? 'ONLINE' : 'UZAVŘENO'} · ${worldModeLabel}`}</span>
                         </button>
                       </li>
@@ -23334,7 +23809,9 @@ export const GamePage = () => {
                         aria-label="Přejmenovat aktivní léno"
                       />
                     ) : (
-                      <strong title={villageLabel}>{villageLabel}</strong>
+                      <strong className="resource-card-title village-resource-card-title tld-type-stat" title={villageLabel}>
+                        {villageLabel}
+                      </strong>
                     )}
                     <button
                       type="button"
@@ -23362,25 +23839,27 @@ export const GamePage = () => {
                         <span className="public-order-icon" aria-hidden="true">
                           {publicOrderBand === 'critical' ? '⚠' : '⚖'}
                         </span>
-                        {showPublicOrderPct ? <strong>{publicOrderCurrentPct}%</strong> : null}
+                        {showPublicOrderPct ? (
+                          <strong className="public-order-badge-value tld-type-value">{publicOrderCurrentPct}%</strong>
+                        ) : null}
                         <span className="public-order-tooltip commands-army-tooltip" id={publicOrderTooltipId} role="tooltip">
                           <p>{publicOrderTooltipHeadline}</p>
                           <ul>
                             <li>
                               <span>Stav</span>
-                              <strong>{publicOrderCurrentPct}%</strong>
+                              <strong className="public-order-tooltip-value tld-type-value">{publicOrderCurrentPct}%</strong>
                             </li>
                             <li>
                               <span>Obnova</span>
-                              <strong>{publicOrderTooltipRegen}</strong>
+                              <strong className="public-order-tooltip-value tld-type-value">{publicOrderTooltipRegen}</strong>
                             </li>
                             <li>
                               <span>Nábor rytíře</span>
-                              <strong>{publicOrderTooltipKnightRecruit}</strong>
+                              <strong className="public-order-tooltip-value tld-type-value">{publicOrderTooltipKnightRecruit}</strong>
                             </li>
                             <li>
                               <span>Debuff</span>
-                              <strong>{publicOrderTooltipDebuff}</strong>
+                              <strong className="public-order-tooltip-value tld-type-value">{publicOrderTooltipDebuff}</strong>
                             </li>
                           </ul>
                         </span>
@@ -23417,7 +23896,9 @@ export const GamePage = () => {
               }
             >
               <p>Aktuální výzkum</p>
-              <strong>{currentResearchHeadline}</strong>
+              <strong className="resource-card-title research-spotlight-title tld-type-stat">
+                {currentResearchHeadline}
+              </strong>
             </button>
           </div>
         </section>
@@ -23458,7 +23939,7 @@ export const GamePage = () => {
                       closeVillageMenu();
                     }}
                   >
-                    <strong>{village.name}</strong>
+                    <span className="village-menu-option-title tld-type-heading">{village.name}</span>
                     <span>
                       {village.coordX}|{village.coordY} · Region {village.region}
                     </span>
@@ -23498,7 +23979,7 @@ export const GamePage = () => {
               </button>
             </header>
             <p>
-              <strong>{activityShareItem.title}</strong>
+              <strong className="activity-share-title tld-type-heading">{activityShareItem.title}</strong>
             </p>
             <label>
               Vyhledat hráče
@@ -23614,7 +24095,8 @@ export const GamePage = () => {
           <div className="pin-live-feed">
             <h5>Novinky</h5>
             <p>
-              Nové záznamy: <strong>{activityNavBadgeCount.toLocaleString('cs-CZ')}</strong>
+              Nové záznamy:{' '}
+              <strong className="pin-live-feed-value tld-type-value">{activityNavBadgeCount.toLocaleString('cs-CZ')}</strong>
             </p>
             <p>
               Nepřečtené: {activityUnreadCount.toLocaleString('cs-CZ')} · Vyžaduje pozornost:{' '}
@@ -23739,7 +24221,7 @@ export const GamePage = () => {
         </div>
         <div className="game-persistent-footer" role="complementary" aria-label="Stálé informace hry">
           <div className="game-persistent-footer-left">
-            <FooterActionButton icon="⚙︎" label="Otevřít nastavení hry" onClick={() => openPanel('settings')} />
+            <FooterActionButton iconSrc={SETTINGS_BUTTON_ICON_SRC} label="Otevřít nastavení hry" onClick={() => openPanel('settings')} />
             <FooterActionButton
               icon="✉︎"
               label="Otevřít komunikaci"
