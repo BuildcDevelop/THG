@@ -1200,8 +1200,9 @@ const runScenarioSameKingdomRoyalMapColor = () => {
   const memberVillage = getVillageForPlayerInWorld(MEMBER_USERNAME, WORLD_PRIMARY);
   const member = getPlayer(MEMBER_USERNAME);
 
-  // Ensure the tested village is foreign but in the same kingdom as the viewer.
-  updateVillageOwnerStmt.run(Number(member.id), KINGDOM_ATTACKER, Number(memberVillage.villageId));
+  // Ensure the tested village is foreign but in the same kingdom as the viewer
+  // even if persisted names contain inconsistent internal spacing.
+  updateVillageOwnerStmt.run(Number(member.id), 'Aurora   Pact', Number(memberVillage.villageId));
 
   const snapshot = getWorldMapSnapshot(
     ATTACKER_USERNAME,

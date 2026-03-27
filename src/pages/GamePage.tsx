@@ -3390,6 +3390,7 @@ const isNeutralKingdom = (kingdom: string): boolean => {
 
 const normalizeKingdomComparable = (value: string): string =>
   String(value ?? '')
+    .replace(/\s+/g, ' ')
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
     .toLocaleLowerCase('cs-CZ')

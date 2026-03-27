@@ -3294,6 +3294,7 @@ const isNeutralKingdom = (kingdom) => {
 
 const normalizeKingdomComparable = (value) =>
   normalizeKingdomValue(value)
+    .replace(/\s+/g, ' ')
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
     .toLowerCase();
