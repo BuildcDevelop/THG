@@ -1,4 +1,4 @@
-﻿import { memo, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useEffectEvent, useId, useMemo, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   CSSProperties,
@@ -1575,6 +1575,40 @@ type CommandCancelActionProps = {
   onClick: () => void;
 };
 
+const CommandCancelTooltip = ({
+  tooltipId,
+  label,
+  cursorPosition,
+}: {
+  tooltipId: string;
+  label: string;
+  cursorPosition: TooltipCursorPosition | null;
+}) => {
+  const estimatedTooltipSize = useMemo<TooltipSize>(
+    () => ({
+      width: 140,
+      height: 40,
+    }),
+    [],
+  );
+  const { tooltipRef, tooltipStyle } = useFollowCursorTooltipPositioning({
+    cursorPosition,
+    estimatedSize: estimatedTooltipSize,
+    isEnabled: Boolean(cursorPosition),
+  });
+
+  if (!cursorPosition || typeof document === 'undefined') {
+    return null;
+  }
+
+  return createPortal(
+    <span ref={tooltipRef} id={tooltipId} className="command-cancel-tooltip is-floating" style={tooltipStyle} role="tooltip">
+      {label}
+    </span>,
+    document.body,
+  );
+};
+
 const CommandCancelAction = ({
   disabled,
   pending,
@@ -1582,26 +1616,54 @@ const CommandCancelAction = ({
   disabledReason,
   onClick,
 }: CommandCancelActionProps) => {
+  const [tooltipCursorPosition, setTooltipCursorPosition] = useState<TooltipCursorPosition | null>(null);
+  const tooltipId = useId();
   const tooltipLabel = pending ? 'Rušení' : disabled ? 'Zrušení uzamčeno' : 'Zrušení';
   const buttonLabel = pending ? 'Ruším rozkaz' : disabled ? disabledReason : actionLabel;
 
+  const handleTooltipPointerEnter = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    setTooltipCursorPosition({ x: event.clientX, y: event.clientY });
+  };
+
+  const handleTooltipPointerMove = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    setTooltipCursorPosition({ x: event.clientX, y: event.clientY });
+  };
+
+  const handleTooltipFocus = (event: ReactFocusEvent<HTMLButtonElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setTooltipCursorPosition({
+      x: Math.round(bounds.left + bounds.width / 2),
+      y: Math.round(bounds.top - 8),
+    });
+  };
+
+  const handleTooltipDismiss = () => {
+    setTooltipCursorPosition(null);
+  };
+
   return (
-    <span className={`command-cancel-action${disabled ? ' is-disabled' : ''}${pending ? ' is-pending' : ''}`} title={buttonLabel}>
+    <span className={`command-cancel-action${disabled ? ' is-disabled' : ''}${pending ? ' is-pending' : ''}`}>
       <button
         type="button"
         className="command-cancel-icon-button"
         onClick={onClick}
         disabled={disabled}
         aria-label={buttonLabel}
+        aria-describedby={tooltipCursorPosition ? tooltipId : undefined}
         title={buttonLabel}
+        onMouseEnter={handleTooltipPointerEnter}
+        onMouseMove={handleTooltipPointerMove}
+        onMouseLeave={handleTooltipDismiss}
+        onFocus={handleTooltipFocus}
+        onBlur={handleTooltipDismiss}
       >
         <span className="command-cancel-icon-mark" aria-hidden="true">
           {pending ? '…' : '✕'}
         </span>
       </button>
-      <span className="command-cancel-tooltip" aria-hidden="true">
-        {tooltipLabel}
-      </span>
+      {tooltipCursorPosition ? (
+        <CommandCancelTooltip tooltipId={tooltipId} label={tooltipLabel} cursorPosition={tooltipCursorPosition} />
+      ) : null}
     </span>
   );
 };

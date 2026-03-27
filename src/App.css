@@ -3969,6 +3969,16 @@ html {
   transition: opacity 140ms ease, transform 140ms ease;
 }
 
+.command-cancel-tooltip.is-floating {
+  position: fixed;
+  left: 0;
+  top: 0;
+  right: auto;
+  transform: none;
+  opacity: 1;
+  z-index: 2147483200;
+}
+
 .command-cancel-action:is(:hover, :focus-within) .command-cancel-tooltip {
   opacity: 1;
   transform: translateY(-50%) translateX(0) scale(1);
@@ -4001,7 +4011,7 @@ html {
     pointer-events: auto;
   }
 
-  .command-cancel-tooltip {
+  .command-cancel-tooltip:not(.is-floating) {
     display: none;
   }
 }

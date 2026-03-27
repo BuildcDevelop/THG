@@ -1851,3 +1851,19 @@ Entry template:
 - Files: src/pages/GamePage.tsx, src/App.css, package.json, src/version.ts, server/index.js, arch/chat-changelog.md
 - Verification: `npm run build`
 - Notes: Feature contract: UI-only zviditelnění existující cancel akce pro `attack/support/move`; hlavní riziko bylo znovuzavedení divergence mezi dvěma seznamy rozkazů a drift release verze, mitigace je sdílený komponent `CommandCancelAction` použitý v obou renderech a společně commitnutý version contract `0.1.16`.
+
+## 2026-03-27 18:19 | branch: main
+
+- Request: Upřesnit semantiku rušení armádních příkazů: zrušit lze jen do 33 % cesty, poté se jednotky vrací zpět do léna po dobu odpovídající už ušlé části cesty; po 33 % už zrušení nesmí projít.
+- Summary: Ověřil jsem, že backend i regrese už přesně implementují tento kontrakt. `cancelArmyCommandTransaction` blokuje `attack/support/move` po překročení `1/3` cesty, a při včasném zrušení vytváří návratový `return` movement z cíle zpět do domovského léna s délkou návratu rovnou `elapsedSec`, tedy bez instantního teleportu.
+- Files: server/gameService.js, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
+- Verification: `node --test --test-name-pattern "army commands can be canceled only up to one third and spawn timed returns" tests/regression/game-rules.regression.test.mjs` (PASS)
+- Notes: Bez produktové změny a bez deploye; šlo o potvrzení, že nasazený kontrakt odpovídá upřesněnému zadání.
+
+## 2026-03-27 18:36 | branch: main
+
+- Request: Opravit viditelnost tooltipu u nové ikonky pro zrušení příkazu, protože se v Příkazech schovává.
+- Summary: Přepnul jsem cancel tooltip z inline absolutního prvku uvnitř scrollovaného `window-body` na portal renderovaný do `document.body` s `position: fixed`, takže už se neořezává přes `overflow-x: hidden` v okně a drží se poblíž kurzoru nebo focusu tlačítka.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: jen vizuální vrstva tooltipu cancel ikonky; hlavní riziko bylo clipping/stacking v dock okně, mitigace je reuse existujícího tooltip positioning hooku a portal render mimo scroll container.
