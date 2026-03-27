@@ -9,13 +9,13 @@
 # Keep this in sync with the backend domain/TLS (Caddy).
 [[redirects]]
   from = "/api"
-  to = "https://thg.89-167-89-109.sslip.io/api"
+  to = "https://api.thelastdominion.online/api"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/*"
-  to = "https://thg.89-167-89-109.sslip.io/api/:splat"
+  to = "https://api.thelastdominion.online/api/:splat"
   status = 200
   force = true
 

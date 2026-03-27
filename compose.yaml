@@ -11,6 +11,10 @@ services:
       CORS_ORIGIN: "https://thelastdominion.netlify.app"
     ports:
       - "3001:3001"
+    networks:
+      default:
+        aliases:
+          - thg-api
     volumes:
       - ./server/data:/data
     restart: unless-stopped

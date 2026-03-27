@@ -1221,3 +1221,601 @@ Entry template:
 - Summary: Vytvoril jsem novou vetev `feat/build-0.1.16` z referencniho commitu vetve `main`. Kvuli lokalni necommitnute zmene v `arch/chat-changelog.md` a rozdilu tohoto souboru mezi `develop` a `main` jsem vetev pouze zalozil bez checkoutu, aby nedoslo ke konfliktu nebo preneseni rozpracovaneho stavu.
 - Files: arch/chat-changelog.md
 - Verification: `git branch feat/build-0.1.16 main` (PASS), `git rev-parse feat/build-0.1.16` = `git rev-parse main` (PASS)
+
+## 2026-03-21 14:59 | branch: main
+
+- Request: Merge `develop` do `main` (produkce) a nasadit zmeny live.
+- Summary: V `main` worktree jsem nejdriv ulozil existujici lokalni zmeny checkpoint commitem, potom mergnul `develop -> main` a vyresil konflikty ve prospech `develop`, aby produkce odpovidala testovane vetvi. Nasledne jsem dorovnal soubory, ktere po mergi rozbijely build kontrakty (`package.json`, `src/api/gameApi.ts`, `server/gameService.js`, `src/version.ts`, `src/App.css`, `scripts/release-doctor.mjs`, `arch/verejny-poradek-armada-db-spec-v1.md`), pushnul `main` na `origin` a provedl produkcni deploy pres Netlify CLI.
+- Files: arch/chat-changelog.md, package.json, server/gameService.js, src/App.css, src/api/gameApi.ts, src/version.ts, scripts/release-doctor.mjs, arch/verejny-poradek-armada-db-spec-v1.md, plus merge zmeny z `develop` do `main`
+- Verification: `npm run build` (PASS), `npm run test:regression` (PASS, 33/33), `git push origin main` (PASS), `npx netlify deploy --prod --build` (PASS)
+- Notes: Produkcni URL je `https://thelastdominion.netlify.app` a unikatni deploy URL `https://69bea42959f45bb2f0189253--thelastdominion.netlify.app`.
+
+## 2026-03-21 15:12 | branch: main
+
+- Request: Prejit do `main` a opravit verzi hry na `0.1.15`.
+- Summary: Opravil jsem verzi vydani v package metadata i ve frontend labelu hry, aby klient i build pipeline konzistentne hlasily `0.1.15` misto `0.1.14`.
+- Files: package.json, src/version.ts, arch/chat-changelog.md
+- Verification: `npm run build`
+## 2026-03-21 17:41 | branch: feat/build-0.1.16
+
+- Request: Udelat UI redesign hry (odstranit rusive sede ramecky, sjednotit fonty/barvy, zvyraznit dulezita cisla), pridat detail do tlacitek mimo horni menu, opravit vyjizdeni seznamu len mimo kontejner na ultra-wide, zlepsit viditelnost ikon (vcetne verejneho poradku s tooltipem) a vyresit nekonzistentni avatar.
+- Summary: V `GamePage` jsem upravil semantiku a render kritickych casti UI: doplnil barevne tridy pro dulezite statistiky (prestiz/fialova, utok/cervena, obrana/modra, loot/zlata), presunul a zvetsil badge verejneho poradku vedle aktivniho lena s tooltipem, opravil pozicovani village menu pro fixed overlay na ultra-wide a upravil globalni stripovani native `title`, aby tooltipy nezanikaly. V avatar flow jsem pridal per-user local fallback cache URL (cteni pri bootstrapu + zapis po fetch/save), aby se avatar po relogu neztracel pri docasne nekonzistentni odpovedi. V `App.css` jsem sjednotil typografii, odstranil rusive sede ramecky na kartach, zvysil kontrast a vizualni prioritu dulezitych cisel, sjednotil velikosti ikon u army/resource prvku a pridal jemny SVG texture detail do akcních tlacitek (bez zasahu do horniho menu).
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS), `npm run dev` s `PORT=3001` a `VITE_DEV_PORT=5173` (RUNNING; client `http://localhost:5173`, backend `http://localhost:3001`)
+- Notes: Feature contract drzi beze zmen endpointu a pollingu. Hlavni rizika byla vizualni regrese v hustych panelech a chybna pozice menu na sirokych viewptech; mitigace je centralni override vrstva v CSS + fix viewport-based left clampu pro village menu.
+
+## 2026-03-21 19:09 | branch: feat/build-0.1.16
+
+- Request: Projít zbylé rámy v UI, vložit `mapa.svg` pod léna do herní mapy a doladit barvy rozlišení pro hráčská léna na mapě.
+- Summary: Do map panelu jsem přidal samostatnou background vrstvu s `mapa.svg` pod settlement layer, aby mapa měla vlastní podklad pod lény bez zásahu do gameplay logiky. Současně jsem zpřesnil defaultní paletu a canvas styly pro `active` a `own` settlements, aby hráčská léna na mapě působila jasněji odlišeně. Asset jsem zkopíroval do `public/assets/map/mapa.svg`, aby ho dev/build skutečně servíroval; `for_public/mapa.svg` zůstává jako zdrojový staging asset.
+- Files: src/pages/GamePage.tsx, src/App.css, public/assets/map/mapa.svg, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: `mapa.svg` je pro tenhle krok vizuální vrstva pod mapou, ne plnohodnotná náhrada všech bitmap v projektu. U velkých art assets zůstává lepší držet raster nebo je optimalizovat cíleně, jinak se SVG může zvětšit a zpomalit načtení místo zrychlení.
+
+## 2026-03-21 19:31 | branch: feat/build-0.1.16
+
+- Request: Dokončit sweep zbylých rámů, nahradit basic tooltip pro veřejný pořádek vylepšeným tooltipem napravo od přejmenování léna a optimalizovat vybrané bitmapy pro rychlejší načítání.
+- Summary: Rozšířil jsem frameless override vrstvu o další zbylé panely v city/army částech, hlavně `city-upgrade-queue`, `army-command-history`, `army-command-preview` a jejich související položky, aby UI méně působilo jako sada starých karet. Veřejný pořádek teď používá náš tooltip styl `commands-army-tooltip`, je ukotvený napravo od rename buttonu a má vlastní hover/focus chování i responsivní fallback pod 1180 px. Z velkých bitmap jsem převedl používané textury na WebP a přepnul na ně reference v CSS, aby se zlepšila velikost assets bez změny gameplay logiky.
+- Files: src/App.css, public/assets/backgrounds/background2.webp, public/assets/map/terrain/louka.webp, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS), dev server běží na `http://localhost:5173` a backend na `http://localhost:3001`
+- Notes: U velkých art assetů jsem zvolil WebP místo plošného převodu do SVG, protože jde o rasterové textury a SVG by v tomhle případě často zvětšilo soubor i render cost místo zrychlení.
+
+## 2026-03-21 19:48 | branch: feat/build-0.1.16
+
+- Request: Opravit neviditelný tooltip veřejného pořádku (vykresluje se pod background) a odstranit zbylé rámy v Přehledu i Armádě.
+- Summary: V `App.css` jsem opravil vrstvení tooltipu veřejného pořádku: pro slim HUD kartu jsem povolil `overflow: visible`, přidal izolaci/z-index na kartu a zvýšil z-index samotného tooltipu, aby nebyl ořezaný ani schovaný pod jinou vrstvou. Současně jsem doplnil cílený frameless override pro kontejnery `city-panel` a `military-panel`, protože dark-medieval skin přidával globální rámy na `section/article/li` uvnitř `window-body`; tím pádem se odstranily zbývající rámy v Přehledu i na stránce Armáda.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS), dev server stále běží na `http://localhost:5173` a backend na `http://localhost:3001`
+- Notes: Feature contract: UI-only změna bez zásahu do gameplay/pollingu/backendu. Hlavní riziko bylo přebití skin-specifických pravidel a clipping tooltipu; mitigace je cílené scope pravidel na `city-panel`/`military-panel` a lokální stacking kontext pro kartu aktivního léna.
+
+## 2026-03-21 19:57 | branch: feat/build-0.1.16
+
+- Request: Navrhnout před implementací efektivní způsob, jak sjednotit pozadí karet napříč projektem, aby se karty neztrácely ve stejné barvě či gradientu.
+- Summary: Prošel jsem existující CSS rodiny karet (`resource-card`, `panel-stack section`, `commands-item`, `military-unit-card`, `city-building-card`, `messages-*`, `battle-*`, `player-profile-*`) a navrhl sjednocený card systém místo dalších lokálních override. Návrh stojí na jednom sdíleném povrchovém jazyku přes CSS tokeny a malém počtu rolí karet (base, muted, elevated, interactive, semantic), aby se dal nasadit postupně bez zásahu do gameplay logiky a bez dalšího rozbití dark-medieval skin pravidly.
+- Files: arch/chat-changelog.md
+- Verification: Návrhová konzultace bez nových runtime změn; verifikace nebyla potřeba
+- Notes: Feature contract: UI-only návrh bez změny state, fetch modelu nebo pollingu. Hlavní riziko je další nárůst duplicity a selector wars v `App.css`; mitigace je zavést card tokeny a migrovat panely po rodinách místo jednorázového přepisu všeho.
+
+## 2026-03-21 20:09 | branch: feat/build-0.1.16
+
+- Request: Bez implementace zpracovat card system plán: připravit přesný CSS token systém + 5 variant, první migrační vlnu pro `resource-card`, `panel-stack section`, `commands-item`, `military-unit-card` a druhou vlnu pro semantic varianty `battle/messages/profile`.
+- Summary: Připravil jsem dva neintegrované draft artefakty. V `arch/card-system-unification-v1.md` je kompletní návrh card systému včetně feature contractu, design direction, přesných tokenů, pěti card variant, migrační mapy pro první i druhou vlnu a acceptance kritérií. V `arch/card-system-unification-v1.css` je draft CSS layer s tokeny a utility variantami `ui-card`, `ui-card--muted`, `ui-card--elevated`, `ui-card--interactive`, `ui-card--semantic` a připravenou mapou, jak na ně přepojit stávající card rodiny bez zásahu do runtime.
+- Files: arch/card-system-unification-v1.md, arch/card-system-unification-v1.css, arch/chat-changelog.md
+- Verification: Draft artefakty nejsou importované do aplikace; runtime verifikace nebyla potřeba
+- Notes: Feature contract: UI-only příprava bez změn stavu, fetch modelu nebo pollingu. Hlavní riziko je selector conflict při budoucí implementaci; mitigace je migrace po card rodinách a ponechání skinů jen jako token override vrstvy.
+
+## 2026-03-21 20:22 | branch: feat/build-0.1.16
+
+- Request: Nasadit krok 1 a 2 card systému: doladit token paletu/varianty a implementovat první migrační vlnu pro `resource-card`, `panel-stack section`, `commands-item`, `military-unit-card`.
+- Summary: V `src/App.css` jsem rozšířil `game-page` token layer o přesné card design proměnné (surface, border, edge, shadow, spacing) a nasadil wave-1 mapování pro čtyři cílové card rodiny. Nové pravidlo na konci souboru teď přemapovává `resource-card` na elevated variantu, `panel-stack section` na base variantu, `commands-item` na interactive variantu a `military-unit-card` na interactive-elevated variantu včetně sjednocených hover/focus stavů. Současně jsem doladil draft paletu i v `arch/card-system-unification-v1.css`, aby runtime implementace a návrhové artefakty používaly stejné hodnoty.
+- Files: src/App.css, arch/card-system-unification-v1.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: UI-only změna bez zásahu do gameplay/state/fetch. Hlavní riziko bylo přebití starších frameless/dark-medieval override; mitigace je wave-1 blok umístěný na konec `App.css` s cílenou prioritou jen na čtyři card rodiny.
+
+## 2026-03-21 20:54 | branch: feat/build-0.1.16
+
+- Request: Nasadit oba navazující body: 1) druhou migrační vlnu semantic variant pro `battle/messages/profile`, 2) kontrastní tuning card systému.
+- Summary: Do `src/App.css` jsem přidal wave-2 blok na konec souboru. Nasadil jsem semantic card styl pro `messages-report-item/messages-detail-card`, `battle-army-card` (attacker/defender/support přes accent rail) a `player-profile-stat-card` (accent podle typu statistiky), vše nad jednotným card surface jazykem. Současně jsem provedl kontrastní tuning: tmavší panel surface (`--tld-surface-soft`), konzistentní border/edge/shadow pro semantic rodiny a výraznější oddělení karet od pozadí panelů bez návratu tvrdých rámů.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: UI-only změna bez zásahu do datového toku a gameplay logiky. Hlavní riziko bylo přebití starších stylů `messages/battle/profile`; mitigace je wave-2 blok umístěný na konec `App.css` s cílenými selektory a explicitní prioritou.
+
+## 2026-03-21 21:07 | branch: feat/build-0.1.16
+
+- Request: Zprovoznit projekt na localhostu.
+- Summary: Spustil jsem aktuální lokální dev flow přes `npm run dev` v samostatném CMD okně (`TLD Local Dev`) a ověřil běžící procesy i otevřené porty. Frontend je dostupný přes Vite na `5175` a backend přes Express na `3003`; runtime si tedy v tomto běhu nevzal dříve používané porty `5173/3001`.
+- Files: arch/chat-changelog.md
+- Verification: `netstat -ano | findstr ":5175"` (LISTENING, PID 166200), `netstat -ano | findstr "166404"` (LISTENING na `3003`), `curl.exe -I --max-time 8 http://localhost:5175` (HTTP 200), `curl.exe -I --max-time 8 http://localhost:3003` (HTTP 404 z Express rootu, server běží)
+- Notes: Dev běží v otevřeném okně `TLD Local Dev`; pro zastavení stačí to okno zavřít nebo ukončit `npm run dev`.
+
+## 2026-03-21 21:19 | branch: feat/build-0.1.16
+
+- Request: Vrátit lokál na `5173`, zprovoznit backend s funkčními daty.
+- Summary: Doplnil jsem branch-specific runtime override v `.env.feat-build-0-1-16.local`, aby větev `feat/build-0.1.16` nepoužívala fallback porty `5175/3003`, ale očekávané `5173/3001`, přitom zůstala napojená na vlastní branch databázi `server/data/branches/feat-build-0-1-16`. Následně jsem ukončil běžící fallback dev procesy a spustil čistý `npm run dev` znovu.
+- Files: .env.feat-build-0-1-16.local, arch/chat-changelog.md
+- Verification: `netstat -ano | findstr :5173` (LISTENING, PID 165996), `netstat -ano | findstr :3001` (LISTENING, PID 147080), `curl.exe -sS -o NUL -w "%{http_code}" http://localhost:5173` (`200`), `curl.exe -sS -o NUL -w "%{http_code}" http://localhost:3001/api/health` (`200`), `curl.exe -sS -o NUL -w "%{http_code}" http://localhost:3001/api/v1/worlds` (`401`, očekávané bez přihlášení)
+- Notes: Feature contract: pouze lokální runtime konfigurace pro tuto branch; authoritative state zůstává v branch SQLite datech. Hlavní riziko bylo nechtěné sdílení DB mezi větvemi nebo rozbití API base; mitigace je samostatný branch env override s `TLD_DATA_DIR=server/data/branches/feat-build-0-1-16`. Dev běží v okně `TLD Local Dev`.
+
+## 2026-03-22 11:00 | branch: feat/build-0.1.16
+
+- Request: Nastavit novou Porkbun doménu `thelastdominion.online` pro Hetzner backend a připravit potřebné změny v projektu.
+- Summary: Prověřil jsem oficiální postup pro delegaci DNS z Porkbun na Hetzner a připravil repo na nový backend hostname. V `Caddyfile` jsem doplnil obsluhu `api.thelastdominion.online` i apex aliasů `thelastdominion.online` / `www.thelastdominion.online`, aby Caddy mohl vydat TLS certifikáty i pro novou doménu. V `netlify.toml` jsem přepnul produkční `/api` proxy z dočasného `sslip.io` hostu na kanonický backend `https://api.thelastdominion.online`. Samotné kliknutí v Hetzner/Porkbun konzoli jsem z tohoto workspace provést nemohl, proto jsem připravil přesný ruční postup pro registrar a DNS zónu.
+- Files: Caddyfile, netlify.toml, arch/chat-changelog.md
+- Verification: Kontrola výsledného obsahu `Caddyfile` a `netlify.toml` po patchi (PASS); externí DNS/TLS propagace zatím neověřena, protože změny v Hetzner/Porkbun ještě nejsou provedené
+- Notes: CORS jsem neměnil, protože repozitář aktuálně drží frontend na `https://thelastdominion.netlify.app`. Pokud se později přesune i frontend na `.online`, bude potřeba aktualizovat `CORS_ORIGIN`.
+
+## 2026-03-22 11:20 | branch: feat/build-0.1.16
+
+- Request: Provest krok 6 (backend redeploy/restart proxy) a krok 7 (produkční Netlify deploy) pro novou doménu.
+- Summary: Ověřil jsem live DNS stav před nasazením a zjistil, že doména ještě není připravená na bezpečný cutover. `thelastdominion.online` je stále delegovaná na Porkbun nameservery (`curitiba/fortaleza/maceio/salvador.ns.porkbun.com`) a `api.thelastdominion.online` nyní vede jako `CNAME` na `pixie.porkbun.com` s parking IP adresami `44.227.76.166` a `44.227.65.245`, nikoliv na Hetzner server `89.167.89.109`. Z tohoto důvodu jsem backend ani Netlify produkčně nenasadil: deploy by přepnul frontend `/api` proxy na nefunkční endpoint a rozbil produkci. Současně jsem ověřil, že Netlify CLI je přihlášené a projekt `thelastdominion` je linked, takže po opravě delegace lze deploy provést bez další přípravy.
+- Files: arch/chat-changelog.md
+- Verification: `npx netlify status` (PASS; projekt `thelastdominion` linked), `Resolve-DnsName thelastdominion.online -Type NS` (Porkbun NS), `Resolve-DnsName api.thelastdominion.online -Type A` (Porkbun parking přes `pixie.porkbun.com`), `curl.exe -I --max-time 10 https://api.thelastdominion.online/api/health` (FAIL; TLS handshake)
+- Notes: Bez přepnutí nameserverů nebo alespoň `A/CNAME` záznamů na Hetzner nelze bezpečně udělat krok 6 ani 7. Repo zůstává připravené na cutover hned po opravě DNS.
+
+## 2026-03-22 11:28 | branch: feat/build-0.1.16
+
+- Request: Zkusit deploy i přes předchozí DNS blocker.
+- Summary: Zopakoval jsem preflight těsně před deployem, abych ověřil, zda se mezičasem změnila delegace nebo `api` záznam. Stav se nezměnil: `thelastdominion.online` stále vrací Porkbun nameservery a `api.thelastdominion.online` stále míří na `pixie.porkbun.com` místo `89.167.89.109`. Samotný deploy jsem proto znovu vědomě nespustil, aby se produkční Netlify `/api` redirect nepřepnul na parking endpoint a nerozbil přihlášení ani API provoz.
+- Files: arch/chat-changelog.md
+- Verification: `Resolve-DnsName thelastdominion.online -Type NS` (stále Porkbun NS), `Resolve-DnsName api.thelastdominion.online -Type A` (stále `pixie.porkbun.com` / `44.227.65.245`, `44.227.76.166`), `curl.exe -I --max-time 10 https://api.thelastdominion.online/api/health` (FAIL; TLS handshake)
+- Notes: Bez změny registrátorové delegace nebo DNS rekordů na live autoritativních nameserverech by byl deploy provozně škodlivý.
+
+## 2026-03-22 11:35 | branch: feat/build-0.1.16
+
+- Request: Upřesnit, zda blocker souvisí s vypnutým `API ACCESS` v Porkbunu.
+- Summary: Ověřil jsem live DNS znovu po informaci o `API ACCESS`. Stav zůstal beze změny: doména `thelastdominion.online` je stále delegovaná na Porkbun nameservery a `api.thelastdominion.online` stále vede na Porkbun parking (`pixie.porkbun.com`). Potvrdil jsem tedy, že přepínač `API ACCESS` není příčinou blockeru pro DNS cutover; ten je potřeba řešit změnou nameserverů nebo live DNS záznamů v Porkbun UI.
+- Files: arch/chat-changelog.md
+- Verification: `Resolve-DnsName thelastdominion.online -Type NS` (Porkbun NS), `Resolve-DnsName api.thelastdominion.online -Type A` (stále `pixie.porkbun.com`), `Resolve-DnsName thelastdominion.online -Type SOA` (Porkbun/Cloudflare SOA), `curl.exe -I --max-time 10 https://api.thelastdominion.online/api/health` (FAIL; TLS handshake)
+- Notes: `API ACCESS` je relevantní jen pro programové volání Porkbun API, nikoliv pro samotnou delegaci domény přes webové rozhraní.
+
+## 2026-03-22 11:42 | branch: feat/build-0.1.16
+
+- Request: Zkontrolovat screenshoty Porkbun/Hetzner a potvrdit, zda je konfigurace správně.
+- Summary: Potvrdil jsem, že v Porkbun jsou nameservery zadané správně (`helium/hydrogen/oxygen` od Hetzneru), ale Hetzner screenshot ukazuje chybný `A` rekord s názvem `name` místo očekávaného `api`. Současně jsem ověřil, že live veřejná delegace se ještě nepropsala: parent NS i SOA stále vrací Porkbun/Cloudflare a jak `api.thelastdominion.online`, tak i `name.thelastdominion.online` stále vedou na `pixie.porkbun.com`. Závěr je, že nameservery v Porkbun jsou nastavené správně, ale Hetzner zóna ještě není správně připravená a veřejný DNS cutover zatím není dokončen.
+- Files: arch/chat-changelog.md
+- Verification: `Resolve-DnsName thelastdominion.online -Type NS` (stále Porkbun NS), `Resolve-DnsName thelastdominion.online -Type SOA` (stále `curitiba.ns.porkbun.com`), `Resolve-DnsName api.thelastdominion.online -Type A` (Porkbun parking), `Resolve-DnsName name.thelastdominion.online -Type A` (Porkbun parking)
+- Notes: V Hetzneru má být `A` rekord s `NAME=api` a `VALUE=89.167.89.109`, nikoliv `NAME=name`.
+
+## 2026-03-22 11:55 | branch: feat/build-0.1.16
+
+- Request: Zopakovat kontrolu a pokud to půjde, posunout nasazení nové backend domény dál.
+- Summary: Zopakoval jsem live DNS audit a stav se posunul: veřejné `api.thelastdominion.online` už vrací `A 89.167.89.109` a přímo Hetzner nameserver `hydrogen.ns.hetzner.com` vrací stejnou hodnotu, takže `api` záznam je už správně. Současně ale parent delegace `thelastdominion.online` stále vrací Porkbun nameservery a `SOA` zůstává na `curitiba.ns.porkbun.com`, takže kompletní NS cutover ještě není hotový. Na produkčním serveru jsem nahrál nový `Caddyfile` do `/home/patrik/THG` i přímo do běžícího kontejneru `thg-web` a restartoval ho. Caddy pak začal spravovat `api.thelastdominion.online`, ale issuance certifikátu selhala, protože veřejné porty `80/443` ve skutečnosti obsluhuje předřazený `zane_proxy`, který na ACME challenge pro novou doménu vrací `404`. Poslední blocker už tedy není DNS A rekord, ale routing/TLS vrstva před `thg-web`.
+- Files: arch/chat-changelog.md
+- Verification: `Resolve-DnsName api.thelastdominion.online -Type A` (`89.167.89.109`), `Resolve-DnsName api.thelastdominion.online -Server hydrogen.ns.hetzner.com -Type A` (`89.167.89.109`), `Resolve-DnsName thelastdominion.online -Type NS` (stále Porkbun NS), `Resolve-DnsName thelastdominion.online -Type SOA` (stále Porkbun SOA), `ssh ... docker exec thg-web cat /etc/caddy/Caddyfile` (nový config nahrán), `ssh ... docker logs thg-web` (ACME `http-01`/`tls-alpn-01` fail přes `404`/`tls: internal error`), `docker ps` (veřejné `80/443` drží `zane_proxy`, ne `thg-web`)
+- Notes: Pro dokončení je potřeba přidat `api.thelastdominion.online` do routingu `zane_proxy` nebo jinak pustit veřejné `80/443` přímo na `thg-web`; samotná změna Caddy configu uvnitř `thg-web` nestačí.
+
+## 2026-03-22 09:49 | branch: feat/build-0.1.16
+
+- Request: Pokračovat v opravě Zane proxy vrstvy, rozchodit `api.thelastdominion.online` end-to-end a po úspěchu udělat produkční Netlify deploy.
+- Summary: Dopsal jsem novou doménu `api.thelastdominion.online` do veřejného route `thg.frontend` v `zane_proxy` přes Caddy admin `/load` a současně ji povolil pro on-demand TLS v Zane databázi, takže se na veřejném edge úspěšně vystavil Let’s Encrypt certifikát. Následně jsem odstranil redirect loop tím, že interní `thg-web` Caddy běží už jen jako HTTP reverse proxy na `:80`. Potom jsem našel příčinu `502`: v produkční docker síti backend není resolvovatelný jako `api`, ale jako `thg-api`. Repo jsem proto upravil tak, aby `Caddyfile` používal `thg-api:3001` a `compose.yaml` přidává alias `thg-api` i pro lokální compose běh. Aktualizovaný `Caddyfile` jsem nahrál na server, restartoval `thg-web`, ověřil `200 OK` na `https://api.thelastdominion.online/api/health` i CORS preflight z `https://thelastdominion.netlify.app`, a nakonec provedl produkční `npx netlify deploy --prod --build`. Produkční frontend teď proxyuje `/api` přes novou doménu a `https://thelastdominion.netlify.app/api/health` vrací `200 OK`.
+- Files: Caddyfile, compose.yaml, netlify.toml, arch/chat-changelog.md
+- Verification: `ssh ... wget http://127.0.0.1:2019/id/thg.frontend` (PASS; route obsahuje `api.thelastdominion.online`), `curl.exe -i https://api.thelastdominion.online/api/health` (PASS; `200 OK`), `curl.exe -i -X OPTIONS https://api.thelastdominion.online/api/health ...` (PASS; `204 No Content` s CORS), `npx netlify deploy --prod --build` (PASS; production deploy live), `curl.exe -i https://thelastdominion.netlify.app/api/health` (PASS; `200 OK` přes Netlify proxy)
+- Notes: Veřejná doména backendu je funkční přes Zane edge a Netlify produkce už míří na `https://api.thelastdominion.online/api`. Ve `thg-web` logu zůstávají historické `lookup api` chyby ze starého configu a běžný internetový scan provoz, ale aktuální healthchecky už procházejí správně.
+
+## 2026-03-22 10:09 | branch: feat/build-0.1.16
+
+- Request: Prověřit regresi, kdy po přihlášení hra vrací hráče zpět na login, a opravit ji bez dalšího rozbití auth flow.
+- Summary: Rozebral jsem produkční auth flow na úrovni backend session, Netlify proxy a živých edge logů. Ověřil jsem, že nová cesta `thelastdominion.netlify.app -> api.thelastdominion.online` funguje správně: přes Netlify prochází `auth/register`, `worlds`, `spawn` i `state` a backend vrací `200/201`. Klíčový nález z produkčních logů byl, že problematické prohlížečové requesty z uživatelovy IP po loginu stále mířily na starý host `thg.89-167-89-109.sslip.io`, kde následně končily `401` a aplikace se odhlásila přes `AUTH_REQUIRED` handler. To ukazuje na stale klientský bundle nebo starý otevřený tab. Aby se i takové klienty samy přesměrovaly na správný backend, doplnil jsem do `Caddyfile` kompatibilitní pravidlo: requesty na `thg.89-167-89-109.sslip.io` teď vrací `308` na `https://api.thelastdominion.online{uri}`. Nový config jsem nasadil do produkčního `thg-web` kontejneru a ověřil, že starý host už přesměrovává na novou API doménu, zatímco nová API healthcheck cesta zůstává `200 OK`.
+- Files: Caddyfile, arch/chat-changelog.md
+- Verification: produkční logy `zane_proxy` (PASS; nové requesty přes `api.thelastdominion.online` vrací `200/201`, problematické staré requesty používaly `thg.89-167-89-109.sslip.io` a padaly `401`), `curl.exe -I https://thg.89-167-89-109.sslip.io/api/v1/worlds?username=Hayato` (PASS; `308` na `https://api.thelastdominion.online/...`), `curl.exe -I https://api.thelastdominion.online/api/health` (PASS; `200 OK`)
+- Notes: Pravděpodobnou bezprostřední příčinou byl stale frontend/tab s původní API adresou. Server teď starou adresu kompatibilně přesměrovává, takže i neobnovené klienty by se měly postupně srovnat po novém requestu nebo po hard refreshi.
+
+## 2026-03-22 10:19 | branch: feat/build-0.1.16
+
+- Request: Opravit regresi po DNS migraci, kdy login padá zpět na přihlašovací stránku a hráč se nedostane do hry.
+- Summary: Znovu jsem prošel produkční Netlify/API flow a přes live edge logy identifikoval skutečnou klientskou příčinu: při `401` z chráněného requestu klient vyvolal globální `AUTH_REQUIRED`, ale jeho handler následně volal `logout()`, který znovu posílal `/api/v1/auth/logout`. Pokud už session cookie nebyla platná, logout endpoint vracel další `401` a klient se dostával do rekurzivní logout smyčky, která průběžně mazala lokální session a vracela uživatele zpět na login. Opravil jsem to tak, že auth reset z `App.tsx` teď provádí jen lokální vyčištění session storage bez síťového logoutu a request wrapper v `src/api/gameApi.ts` už nevyvolává globální `AUTH_REQUIRED` pro `/api/v1/auth/*` endpointy. Poté jsem build ověřil, nasadil nový produkční Netlify deploy a po deploy znovu ověřil celý produkční tok `register -> worlds -> spawn -> state`, který vrací očekávané `201/200/201/200`.
+- Files: src/App.tsx, src/auth.ts, src/api/gameApi.ts, arch/chat-changelog.md
+- Verification: `npm run build` (PASS), `npx netlify deploy --prod --build` (PASS; production deploy live), post-deploy smoke přes `curl.exe` na `https://thelastdominion.netlify.app/api/v1/auth/register`, `/api/v1/worlds`, `/api/v1/worlds/dominion-1/spawn` a `/api/v1/state` (PASS; `201`, `200`, `201`, `200`)
+- Notes: Oprava řeší logout storm na klientu; pokud má uživatel stále otevřený starý tab s původním bundlem, je potřeba hard refresh nebo zavření všech starých tabů a nové otevření produkce.
+
+## 2026-03-22 11:01 | branch: feat/build-0.1.16
+
+- Request: Vzít novou ikonu `for_public/nastavení.webp` a nahradit jí aktuální ikonu nastavení ve hře.
+- Summary: Dohledal jsem, že aktuální settings ikona v herním footeru není asset, ale textový glyph `⚙︎` v `src/pages/GamePage.tsx`. Nový soubor jsem zkopíroval do veřejných UI assetů jako `public/assets/ui/settings-icon.webp`, footer action button rozšířil o podporu obrázkové ikony a settings button přepojil na nový asset. V `src/App.css` jsem doplnil image sizing a `object-fit`, aby nová ikona seděla do stávajícího buttonu bez změny layoutu nebo interakcí.
+- Files: src/pages/GamePage.tsx, src/App.css, public/assets/ui/settings-icon.webp, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: čistě UI výměna assetu bez změny state/fetch/pollingu. Hlavní riziko bylo rozbití velikosti a centru ikon v persistent footeru; mitigace je lokální image varianta jen pro `.game-footer-action .symbol`.
+
+## 2026-03-22 11:04 | branch: feat/build-0.1.16
+
+- Request: Spustit localhost, aby bylo možné zkontrolovat aktuální stav hry.
+- Summary: Ověřil jsem, že na očekávaných portech nic neběží, spustil jsem čistý lokální dev běh přes `npm run dev` v samostatném okně `TLD Local Dev` a zkontroloval, že klient i backend naskočily na branch portech `5173/3001`.
+- Files: arch/chat-changelog.md
+- Verification: `netstat -ano | findstr :5173` (LISTENING), `netstat -ano | findstr :3001` (LISTENING), `curl.exe -sS -o NUL -w "%{http_code}" http://localhost:5173` (`200`), `curl.exe -sS -o NUL -w "%{http_code}" http://localhost:3001/api/health` (`200`), `curl.exe -sS -o NUL -w "%{http_code}" http://localhost:3001/api/v1/worlds` (`401`, očekávané bez session)
+- Notes: Feature contract: pouze lokální runtime spuštění bez zásahu do gameplay nebo datového modelu. Hlavní riziko bylo spuštění na fallback portech; mitigace je branch runtime konfigurace a ověření přes listener + HTTP healthcheck.
+
+## 2026-03-22 11:13 | branch: feat/build-0.1.16
+
+- Request: Zvětšit buttony ve spodním menu jako společnou komponentu o 20 %.
+- Summary: Upravil jsem sdílený styl `.game-footer-action` v `src/App.css` tak, aby se velikost spodních footer buttonů řídila jednou scale proměnnou `--game-footer-action-scale: 1.2`. Tím se konzistentně zvětšil celý button o 20 % včetně paddingu, minimální šířky, gapu, textu, badge a ikonové/image varianty bez zásahu do komponentové logiky.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: čistě UI úprava sdílené komponenty bez změny state/fetch/pollingu. Hlavní riziko bylo rozbití responzivního footer layoutu; mitigace je použití jedné scale proměnné i v responsive override místo ručního přepisování více velikostí.
+
+## 2026-03-22 11:25 | branch: feat/build-0.1.16
+
+- Request: Přesunout jméno léna na horní část detail karty tak, aby bylo vycentrované, zasahovalo do vnitřku karty a asi z poloviny vykukovalo ven.
+- Summary: Upravil jsem kompaktní floating village panel v `src/App.css` pouze pro `.floating-window.village-panel-window`. `village-float-title-block` je teď vykreslený jako floating nameplate vycentrovaný přes horní hranu karty, s `translate(-50%, -50%)`, vlastním surface/border/shadow a akcentní levostrannou linkou. Zároveň jsem přidal horní padding na `village-float-overview` a `village-float-overview-header`, aby chip vizuálně překrýval vnitřek karty, ale nebyl oříznutý ani nerozhodil resource/quick-action řádky pod ním.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: čistě UI repositioning bez změny state/fetch/pollingu. Hlavní riziko bylo oříznutí title chipu a rozpad header layoutu v selected village window; mitigace je cílený selector jen pro `.floating-window.village-panel-window` a kompenzační horní spacing uvnitř panelu.
+
+## 2026-03-22 11:29 | branch: feat/build-0.1.16
+
+- Request: Opravit grafický glitch na levé straně floating title chipu u detailu léna.
+- Summary: V `src/App.css` jsem lokálně upravil floating title chip pro village panel tak, aby levá akcentní lišta zůstala plně uvnitř zaobleného tvaru. `village-float-title-block` teď používá `overflow: hidden` a `isolation: isolate`; zároveň jsem pseudo-prvek `::before` posunul o 1 px dovnitř a srovnal jeho radius. Tím se odstranil modrý artefakt/prosvítání u levého spodního rohu.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: čistě vizuální korekce bez změny layoutové logiky, state nebo fetch flow. Hlavní riziko bylo useknutí akcentní linky; mitigace je zachování stejné šířky a jen vnitřní odsazení + clipping.
+
+## 2026-03-22 11:34 | branch: feat/build-0.1.16
+
+- Request: Úplně odstranit levý artefakt na floating title chipu.
+- Summary: V `src/App.css` jsem odstranil levý pseudo-prvek `village-float-title-block::before`, takže title chip už nepoužívá akcentní svislou lištu vůbec. Zůstal jen surface, border a shadow samotného chipu, takže na levé straně už nemá co vytvářet vizuální artefakt.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: čistě UI cleanup bez změny state, fetch modelu nebo layoutové logiky. Hlavní riziko bylo, že chip ztratí vizuální akcent; mitigace je ponechání borderu, backgroundu a shadow, takže hierarchie prvku zůstává čitelná i bez levé lišty.
+
+## 2026-03-22 12:02 | branch: feat/build-0.1.16
+
+- Request: Přidat do title chipu detailu léna klikatelné šipky vlevo/vpravo podle assetu z `for_public`, aby navigovaly na předchozí a další léno v pořadí seznamu lén a centrovaly hráče po mapě mezi vlastními lény.
+- Summary: Zkopíroval jsem nový asset `for_public/šipka.webp` do veřejných UI ikon jako `public/assets/ui/village-nav-arrow.webp`. V `src/pages/GamePage.tsx` jsem rozšířil `VillagePanel` o title-chip navigaci: vpravo je šipka na další léno, vlevo stejný obrázek zrcadlený pro předchozí léno. Navigace je napojená na pořadí `playerVillages`; po kliknutí se přepne aktivní léno, synchronizuje se selected own settlement, vyžádá se centrování mapy a aktualizuje se právě otevřený village panel na nové settlement data místo slepého vytváření nové logiky mimo existující flow. V `src/App.css` jsem doplnil styling tlačítek, disabled stavy a hit-area přímo do floating title chipu.
+- Files: src/pages/GamePage.tsx, src/App.css, public/assets/ui/village-nav-arrow.webp, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: UI + lokální panel navigation nad existujícím village/map selection flow, bez nové sítě nebo pollingu. Hlavní riziko bylo rozjetí map focusu a otevřeného village panelu do dvou různých stavů; mitigace je reuse existujících funkcí `syncOwnSettlementSelection`, `requestMapCenterOnSettlement`, `loadVillageIntel` a in-place update aktuálního panelu.
+
+## 2026-03-22 12:08 | branch: feat/build-0.1.16
+
+- Request: Ručně přiřadit léno `325|584` hráči `Hayato` pro lokální test navigačních ikon mezi lény.
+- Summary: V lokální branch databázi `server/data/branches/feat-build-0-1-16/game.sqlite` jsem převedl vesnici `325|584` (ID `146`) z abandoned AI `__abandoned_ai__029` na hráče `Hayato` (player ID `2`). Upravil jsem `player_id`, `kingdom` na `Aurora Pact`, `settlement_kind` na `player`, `loyalty` na `100` a vyčistil `peace_until`. Název léna jsem ponechal jako `Opustene leno 31`, aby šlo snadno poznat, které testovací léno bylo převzato.
+- Files: arch/chat-changelog.md
+- Verification: přímá SQL kontrola přes `better-sqlite3` na `villages.id = 146` (PASS; `player_id = 2`, `coord_x = 325`, `coord_y = 584`, `settlement_kind = 'player'`), kontrola `SELECT ... FROM villages WHERE player_id = 2 AND region = 2` (PASS; `325|584` i `325|585` jsou pod `Hayato`)
+- Notes: Feature contract: čistě lokální datový zásah pro test, bez změny kódu nebo síťového chování. Hlavní riziko bylo rozbití ownership vztahu nebo přepis cizích návazností; mitigace je omezení na jediný řádek v `villages` a předběžná kontrola, že na vesnici neběží aktivní logistika ani army movements.
+
+## 2026-03-22 12:12 | branch: feat/build-0.1.16
+
+- Request: Změnit village navigační šipky tak, aby nebyly v button chrome, ale působily jako samostatný obrázek, při zachování stejného klikacího rozměru jako dosavadní button.
+- Summary: V `src/App.css` jsem odstranil vizuální button shell kolem `.village-title-nav-button`: pryč je background i kulatý button vzhled, šipka je teď renderovaná jako samostatný asset. Hit-area zůstala stejně velká (`1.92rem × 1.92rem`) a samotný obrázek jsem natáhl na celý klikací rozměr. Hover stav zůstal jen jako jemné zjasnění a mikropohyb bez viditelného tlačítka.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: čistě UI polish bez změny navigation flow, state nebo fetch modelu. Hlavní riziko bylo zhoršení klikatelnosti po odstranění button chrome; mitigace je zachování stejné hit-area a focus/hover interakce na stejném elementu.
+
+## 2026-03-22 12:22 | branch: feat/build-0.1.16
+
+- Request: Odstranit z village navigační šipky zbylý čtvercový button artefakt a ponechat jen samotnou šipku.
+- Summary: V `src/App.css` jsem doplnil pozdní lokální override pro `.floating-window.village-panel-window .village-title-nav-button`, který přebíjí globální `button:not(.nav-action)` skin. Navigační šipka teď už nedědí border, gradient background ani box-shadow z dark-medieval button stylu, takže v title chipu zůstává opravdu jen solo asset při stejné klikací ploše.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: čistě UI cleanup bez změny navigation flow, state nebo fetch modelu. Hlavní riziko bylo, že globální button skin bude dál přepisovat hover/focus stavy; mitigace je explicitní override i pro `:hover`, `:focus-visible`, `:active` a `:disabled` jen v kontextu village panel window.
+
+## 2026-03-22 12:28 | branch: feat/build-0.1.16
+
+- Request: Zrušit hover skok navigační šipky u jména léna a zvětšit viditelnou šipku o 15 %.
+- Summary: V `src/App.css` jsem odstranil `transform` hover animaci z `.village-title-nav-button`, takže šipka už při najetí neskáče. Současně jsem zvětšil samotný image asset z `1.92rem` na `2.21rem`, což odpovídá přibližně +15 %, a nechal `overflow: visible`, aby se zvětšení propsalo jen do vizuálu šipky bez změny navigační logiky.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: čistě lokální UI polish bez změny state, fetch modelu nebo map selection flow. Hlavní riziko bylo rozhození rozestupů title chipu nebo clipping assetu; mitigace je zachování původní klikací plochy a zvětšení pouze na image vrstvě.
+
+## 2026-03-22 12:52 | branch: feat/build-0.1.16
+
+- Request: Zvětšit village navigační šipky tak, aby opticky seděly na výšku dvou řádků title chipu, a posunout title kartu víc na vrchol sekce v 50/50 překryvu.
+- Summary: V `src/App.css` jsem výrazně zvětšil `.village-title-nav-button` i jeho image vrstvu na `2.72rem`, zároveň jsem stáhl mezery v `.village-float-title-nav`, aby zvětšené šipky zůstaly kompaktně přisazené k názvu. Pro samotný title chip jsem posunul `.village-float-overview` blíž k horní hraně sekce (`padding-top: 0.24rem`) a zvětšil horní rezervu v `.village-float-overview-header` (`padding-top: 1.96rem`), takže chip vizuálně sedí výš na vrcholu karty a stále nechává čistý prostor pro obsah pod sebou.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: čistě lokální UI polish bez změny navigation flow, state, fetch modelu nebo map selection logiky. Hlavní riziko bylo, že zvětšené šipky rozbijí šířku chipu nebo se začne překrývat header obsah; mitigace je současné utažení gapu mezi šipkami a textem a kompenzace větším top paddingem headeru.
+
+## 2026-03-22 13:05 | branch: feat/build-0.1.16
+
+- Request: Opravit ustřižení title chipu u detailu léna a posunout ho ještě mírně nahoru.
+- Summary: V `src/App.css` jsem odstranil vertikální clipping pro village panel window (`overflow-y` na `window-body` je teď `visible`), takže floating title chip už není ořezaný na horní hraně panelu. Současně jsem chip posunul jemně výš změnou `transform` z `translate(-50%, -50%)` na `translate(-50%, -56%)`.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: čistě lokální vizuální fix bez změny state, fetch modelu nebo navigační logiky mezi lény. Hlavní riziko bylo, že povolený vertikální overflow odhalí nežádoucí přesahy jiných prvků; mitigace je omezení override pouze na `.floating-window.village-panel-window`.
+
+## 2026-03-22 13:10 | branch: feat/build-0.1.16
+
+- Request: Opravit situaci, kdy se celá horní část názvu léna překrývá mapou/jinou vrstvou a nezobrazuje se nad ní.
+- Summary: V `src/App.css` jsem pro `.game-page .floating-window.village-panel-window` přidal lokální override `overflow: visible` a zrušil paint clipping (`contain: layout` místo `layout paint` zděděného z obecného `.floating-window`). Tím může floating title chip renderovat mimo hranici okna a zůstává viditelný nad mapovým podkladem.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: čistě vizuální fix vrstvení/clippingu bez změny navigační logiky, state nebo fetch modelu. Hlavní riziko bylo, že odstranění paint containmentu ovlivní jiné floating panely; mitigace je striktní scope pouze na `.village-panel-window`.
+
+## 2026-03-22 13:16 | branch: feat/build-0.1.16
+
+- Request: Opravit useknutí názvu léna uvnitř title chipu (text je nahoře oříznutý).
+- Summary: V `src/App.css` jsem upravil vnitřní metriky title chipu v village panelu: zvýšil horní padding (`0.52rem`) a line-height nadpisu (`1.24`), a zároveň změnil `overflow` title bloku na `visible`, aby glyph ascenders nebyly ořezané hranou chipu.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: čistě typografický/clipping fix bez změny navigace, state nebo fetch modelu. Hlavní riziko bylo, že `overflow: visible` může pustit nežádoucí přesah obsahu; mitigace je úzký scope jen na `.floating-window.village-panel-window .village-float-title-block`.
+
+## 2026-03-22 13:26 | branch: feat/build-0.1.16
+
+- Request: Opravit useknutí názvu léna o hranu karty, kdy obsah title chipu není vidět celý.
+- Summary: V `src/App.css` jsem upravil overflow na rodičovském dock slotu (`.game-page .central-panel-dock .dock-slot`) na `overflow-x: hidden` + `overflow-y: visible`. Tím zůstal horizontální clipping layoutu, ale vertikální přesah title chipu už není uříznutý horní hranou slotu.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run lint` (PASS), `npm run build` (PASS)
+- Notes: Feature contract: čistě UI clipping fix bez změny navigace, state nebo fetch modelu. Hlavní riziko bylo, že vertikální přesah ovlivní i jiné docked panely; mitigace je zachování horizontálního clippingu a omezení změny jen na dock slot kontejner.
+
+## 2026-03-22 13:42 | branch: feat/build-0.1.16
+
+- Request: U karty léna je hlavička názvu osady vizuálně ustřižená/překrytá vnitřní vrstvou; posunout ji nad kartu.
+- Summary: V `src/App.css` jsem upravil village panel title chip tak, aby byl renderovaný plně nad kartou: v `.village-float-overview-header` jsem přidal `z-index`, `overflow: visible` a snížil vnitřní top rezervu, zatímco `.village-float-title-block` má vyšší `z-index` a nový posun `translate(-50%, calc(-100% - 0.26rem))`. Tím už header neprochází skrz vrstvu v těle karty a zůstává čitelný nad panelem.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě lokální UI layering fix bez změny state, fetch modelu nebo map/panel lifecycle. Hlavní riziko bylo překrytí s jinými prvky floating window; mitigace je striktní scope jen na `.floating-window.village-panel-window` a zvýšení vrstvy pouze pro title chip.
+
+## 2026-03-22 13:47 | branch: feat/build-0.1.16
+
+- Request: Opravit regresi po předchozím posunu, kdy název léna a šipky zmizely; title karta má být dominantně nad kartou léna a viditelná.
+- Summary: V `src/App.css` jsem vrátil title chip níž do viditelné zóny: `.village-float-overview-header` má opět vyšší top rezervu (`padding-top: 2.08rem`) a `.village-float-title-block` je posunutý na `translate(-50%, -56%)` místo plného vytažení mimo panel. Zároveň jsem nechal `overflow: visible` pro overview wrapper, aby chip zůstal nad kartou a nepřekrýval se vnitřní vrstvou.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI layout/layer fix bez změny gameplay state, fetch modelu nebo polling flow. Hlavní riziko bylo opětovné clipping/chybná vrstva při návratu níž; mitigace je zachování explicitního `z-index` a `overflow: visible` jen v kontextu village panelu.
+
+## 2026-03-22 13:55 | branch: feat/build-0.1.16
+
+- Request: Název se šipkami má být nad oknem léna, mapou a ostatními vrstvami, ale stále pod tooltipy.
+- Summary: V `src/pages/GamePage.tsx` jsem zavedl samostatnou `z-index` základnu pro village panel (`VILLAGE_PANEL_BASE_Z_INDEX = 2147480000`) a napojil ji do výpočtu `panelZIndex`, aby village panel držel vrstvu nad mapou/HUD vrstvami i ostatními panely. V `src/App.css` jsem title kartu přesunul plně nad okno (`transform: translate(-50%, calc(-100% - 0.12rem))`, `top: 0.18rem`) a zvýšil její interní vrstvu (`z-index: 4000`) spolu s header vrstvou, aby byla dominantně čitelná.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI layering/stacking změna bez zásahu do gameplay state, polling nebo backend datového toku. Hlavní riziko bylo překrytí tooltipů nebo rozbití pořadí floating panelů; mitigace je nastavení village vrstvy pod známou tooltip vrstvou (`2147483200`) a omezení CSS změny jen na village panel title blok.
+
+## 2026-03-22 13:59 | branch: feat/build-0.1.16
+
+- Request: Opravit aktuální stav, kdy title badge (název + šipky) je po z-index fixu vytažený moc vysoko a je nahoře useknutý.
+- Summary: V `src/App.css` jsem badge stáhl níž bez změny vrstvení: `.village-float-overview-header` má opět vyšší top rezervu (`padding-top: 2.08rem`) a `.village-float-title-block` je posunutý na `translate(-50%, -58%)` s `top: 0`. Tím zůstává title karta dominantně nad obsahem okna, ale neodchází mimo horní hranu viewportu.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě vizuální pozice badge bez změny game state, fetch modelu nebo panel lifecycle. Hlavní riziko bylo, že snížení badge vrátí překryv s vnitřní vrstvou; mitigace je ponechání vysokého `z-index` village panelu i title bloku, měnil se jen vertikální offset.
+
+## 2026-03-22 14:04 | branch: feat/build-0.1.16
+
+- Request: Udělat z názvu + šipek samostatný prvek/modul a držet ho vrstvově nad kartou léna.
+- Summary: V `src/pages/GamePage.tsx` jsem title badge vyjmul z `village-float-overview-header` a renderuji ho jako samostatný modul `village-title-module-layer` přímo v `VillagePanel` nad hlavní sekcí. V `src/App.css` jsem přidal dedikovanou overlay vrstvu (`position: absolute`) s `pointer-events` split (layer none, badge auto), a upravil `village-panel-compact` na relativní kontejner s top rezervou pro tento modul. Výsledek: název se šipkami je oddělený od obsahu karty a stabilně sedí nad kartou léna.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI kompozice/layering bez změny gameplay state, polling smyček nebo backend datového toku. Hlavní riziko bylo rozbití interakce šipek v overlay vrstvě; mitigace je `pointer-events: none` jen na wrapper vrstvě a `pointer-events: auto` na title badge.
+
+## 2026-03-22 14:10 | branch: feat/build-0.1.16
+
+- Request: Fixnout, že title modul je pořád uvnitř body okna léna a schovává se za hranou; držet ho skutečně nad oknem.
+- Summary: V `src/pages/GamePage.tsx` jsem title modul převedl do portálu: `VillagePanel` nyní přes `createPortal` mountuje `village-title-module-layer` přímo do kořenového `.floating-window.village-panel-window`, nikoliv do `.window-body`. Tím se badge oddělil od content vrstvy okna. V `src/App.css` jsem selector zpřesnil na `> .village-title-module-layer` (direct child floating window) a positioning nastavil absolutně z vrchu okna (`transform: translate(-50%, calc(-100% - 0.14rem))`), takže je opravdu nad kartou léna a není clippingem body vrstvy.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI layering/DOM composition změna bez zásahu do game state, pollingu, backend toku nebo map fetch modelu. Hlavní riziko bylo rozbití focus/klik interakce na šipkách po přesunu do portálu; mitigace je pointer-events split (`layer: none`, `badge: auto`) a zachování původných handlerů navigace.
+
+## 2026-03-22 14:15 | branch: feat/build-0.1.16
+
+- Request: Posunout title modul do 50/50 pozice přes hranu karty léna (půl nad mapou, půl nad kartou).
+- Summary: V `src/App.css` jsem nastavil title badge na přesné půlení hrany okna změnou transformace na `translate(-50%, -50%)`. Současně jsem přidal horní rezervu v `village-float-overview-header` (`padding-top: 1.08rem`), aby spodní polovina badge nepřekrývala resource řádek.
+- Files: src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě vizuální pozicování overlay modulu bez změny state, fetch modelu nebo panel lifecycle. Hlavní riziko bylo překrytí header obsahu po posunu modulu níž; mitigace je kompenzační top padding jen v village overview headeru.
+
+## 2026-03-22 14:33 | branch: feat/build-0.1.16
+
+- Request: Posunout title modul léna níž (cca 50 % překryv mapy a okna), přesunout quick ikony nad suroviny a zúžit jednotkové karty na úzký formát při zachování stejné komponenty/chování.
+- Summary: V `src/pages/GamePage.tsx` jsem v headeru village panelu přehodil pořadí bloků tak, aby `village-float-overview-actions` (rekrut/stavby/refresh) byly renderované nad resource řádkem. V `src/App.css` jsem posunul title modul níž (`top: 0.62rem`) a navýšil kompenzační top rezervu headeru (`padding-top: 1.34rem`) pro čistý překryv přes hranu okna. Současně jsem přidal village-window-scoped styly pro úzké jednotkové karty (`2.5rem x 6.25rem` ~= 40x100 px), včetně zúžení ikon a typografie, bez změny komponenty `village-unit-summary-card village-unit-type-card`.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI kompozice/layout pro village panel bez zásahu do gameplay state, fetch modelu nebo pollingu. Hlavní performance riziko bylo rozšíření repaint/scroll scope při zúžení karet; mitigace je striktní scope selectorů jen na `.floating-window.village-panel-window` a žádné nové intervaly/fetch work. Verifikace: úspěšný produkční build (`tsc -b` + `vite build`).
+
+## 2026-03-22 14:47 | branch: feat/build-0.1.16
+
+- Request: U jednotek v lénu nastavit stejnou vizuální velikost písma jako u surovin, napojit obrázky jednotek z `for_public`, zkracovat množství (`1000 -> 1k`), přesunout ikony jednotek dospod karty a odstranit šedo-modré vnitřní pozadí panelu léna ve prospěch jednolité tmavé barvy.
+- Summary: V `src/pages/GamePage.tsx` jsem přidal mapu `VILLAGE_UNIT_CARD_ICON_BY_ID` a village unit summary nyní bere dedikované `.webp` ikony pro každý typ jednotky. V renderu unit karty se hodnoty vykreslují přes existující `formatCompactResourceAmount` (tedy `k/m` formát) a pořadí bylo změněno na čísla nahoře + ikona dole. V `src/App.css` jsem pro village window body vypnul obrázkový background a nastavil čistou tmavou barvu (`#0b121b`), a zároveň upravil typografii/rozložení jednotkových karet (font jako u resource pill, ikona zarovnaná dolů, bez ikonového filtru). Do `public/assets/units` jsem zkopíroval nové unit card ikony z `for_public`.
+- Files: src/pages/GamePage.tsx, src/App.css, public/assets/units/militia-card.webp, public/assets/units/archer-card.webp, public/assets/units/cavalry-card.webp, public/assets/units/scout-card.webp, public/assets/units/knight-card.webp, public/assets/units/ram-card.webp, public/assets/units/caravan-card.webp, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI prezentace village panelu (styling + lokální mapování ikon) bez změny gameplay logiky, autoritativního state nebo fetch/polling modelu. Hlavní performance riziko bylo zvýšení render nákladů kvůli obrázkům v jednotkovém stripu; mitigace je použití malých `.webp` assetů, zachování původní komponenty a úzký CSS scope jen na `.floating-window.village-panel-window`. Verifikace proběhla produkčním buildem (`tsc -b`, `vite build`).
+
+## 2026-03-22 14:57 | branch: feat/build-0.1.16
+
+- Request: Posunout modul názvu léna do 50/50 překryvu přes hranu okna, zvětšit ikony jednotek (+10 %), doladit typografii čísel jednotek na stejný vizuál jako suroviny, vrátit původní ikony jednotek pod karty v plné velikosti a přidat tooltipy jednotek s útokem/obranou/souhrnnou silou/rychlostí.
+- Summary: V `src/App.css` jsem upravil pozici title modulu na přesnější 50/50 překryv (`top: 0` + `translate(-50%, -50%)`) a doladil rezervu headeru. U unit karet jsem sjednotil font hodnot s resource hodnotami (stejné metriky + inherit font), zvětšil spodní ikony na plnější velikost (`1.45rem` shell, `0.84rem` glyph) a ponechal je zarovnané dole. V `src/pages/GamePage.tsx` jsem vrátil původní unit icon mapping (SVG z `assets/units`) pro unit summary karty a doplnil follow-cursor tooltip per jednotka: síla na 1 kus, souhrnná síla všech kusů v lénu, stav (vlastní/podpora) a rychlost přesunu.
+- Files: src/App.css, src/pages/GamePage.tsx, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI prezentace/tooltip enrichment village panelu bez zásahu do autoritativního game state, server payloadů nebo polling modelu. Hlavní performance riziko bylo zvýšení počtu hover tooltip renderů při pohybu myši nad jednotkami; mitigace je lokální on-demand rendering přes existující `VillageIntelTooltip` + reuse již používaného follow-cursor systému bez nových intervalů/fetchů. Verifikace provedena produkčním buildem (`tsc -b`, `vite build`).
+
+## 2026-03-22 15:06 | branch: feat/build-0.1.16
+
+- Request: Dorovnat jednotkové číslo na stejný font jako suroviny, odstranit background watermark ikony z jednotkových karet a místo toho použít nahrané obrázky z `for_public`, odstranit vnitřní šedý blok v kartě léna (ponechat jen tmavé pozadí), a posunout title modul léna níž při 50/50 překryvu.
+- Summary: V `src/pages/GamePage.tsx` jsem znovu zapnul mapování `VILLAGE_UNIT_CARD_ICON_BY_ID` na `public/assets/units/*-card.webp` (assety z `for_public`) a ponechal render jednotkové ikony dole v kartě. V `src/App.css` jsem přidal explicitní override pro hodnoty jednotek (`.village-unit-value`, `.village-unit-support`) se stejnou typografií jako resource hodnoty, vypnul watermark pozadí jednotky (`.village-unit-type-card::before { content: none; }`), zvětšil spodní ikonku jednotky a odstranil její tint filter. Pro vnitřní šedý objekt jsem přidal village-scoped override na overview section (`background: transparent !important; box-shadow: none !important; border: 0 !important`) tak, aby uvnitř zůstalo jen tmavé pozadí window body.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI/styling úpravy village panelu bez zásahu do game-state, backend toků nebo polling modelu. Hlavní performance riziko bylo navýšení vizuálních repaintů při hover/renderu ikon; mitigace je striktní scope změn na `.floating-window.village-panel-window` a reuse existujících lokálních tooltip handlerů bez nových fetch/interval smyček. Verifikace: produkční build (`tsc -b`, `vite build`) úspěšný.
+
+## 2026-03-22 15:16 | branch: feat/build-0.1.16
+
+- Request: Oddělit obrázky jednotky na dva účely (background karty z nových `for_public` obrázků + původní spodní ikonka jednotky), a ukotvit title modul do 50/50 překryvu přes hranu `window-body`/obsahu léna; zároveň odstranit vnitřní šedý objekt v kartě léna.
+- Summary: V `src/pages/GamePage.tsx` jsem rozlišil data pro jednotkovou kartu na `icon` (původní unit SVG ikonka) a `cardImage` (nový obrázek pozadí z `*-card.webp`). Render nyní používá `--unit-card-image` z `cardImage`, ale spodní `<img>` bere `icon`, takže background a identifikační ikonka jsou oddělené. V `src/App.css` jsem znovu zapnul pseudo-background na `.village-unit-type-card::before` (obrázek na celé pozadí), posunul title layer na hranu `window-body` (`top: 42px` + `translateY(-50%)`), a přidal tvrdší village-scoped override pro `section.village-float-overview`, aby se odstranil vnitřní šedý panel a zůstalo jen tmavé pozadí okna.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI/composition změna bez zásahu do gameplay logiky, state ownership, pollingu ani backend toku. Hlavní performance riziko je vyšší paint cost kvůli background obrázkům na unit kartách; mitigace je zachování malých `.webp` assetů a scope změn pouze na `.floating-window.village-panel-window`. Verifikace provedena produkčním buildem (`tsc -b`, `vite build`).
+
+## 2026-03-22 15:24 | branch: feat/build-0.1.16
+
+- Request: Definitivně oddělit ikonu jednotky a background jednotkové karty (dva různé obrázky pro dva různé účely) a držet 50/50 title modul přes hranu `window-body` části village panelu.
+- Summary: V `src/pages/GamePage.tsx` jsem odstranil závislost na `icon/cardImage` uložených v datech summary a render jednotkové karty teď vždy počítá obě vrstvy přímo z `unitId`: `unitMeta.icon` pro spodní ikonku a `VILLAGE_UNIT_CARD_ICON_BY_ID[unitId]` pro `--unit-card-image` background. Tím se už nemůže stát, že se oba účely smíchají do jednoho zdroje. Zároveň jsem přesunul host title modulu z `.floating-window` na `.window-body` (parent `panel-stack`) a v CSS selektorech navázal 50/50 pozici přímo na hranu `window-body`.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI composition fix bez změny gameplay state, pollingu nebo backend toku. Hlavní performance riziko je jen paint layer navíc pro unit card background; mitigace je beze změny request/polling modelu a úzký scope na village panel. Verifikace: produkční build (`tsc -b`, `vite build`) úspěšný.
+
+## 2026-03-22 15:29 | branch: feat/build-0.1.16
+
+- Request: Vrátit title modul do předchozí verze (zrušit poslední přesun hostu modulu).
+- Summary: V `src/pages/GamePage.tsx` jsem vrátil host title portálu zpět na `.floating-window.village-panel-window` přes `closest(...)` místo parent `.window-body`. V `src/App.css` jsem selektory title vrstvy přepnul zpět z `.window-body > .village-title-module-layer` na direct-child `> .village-title-module-layer` a vrátil offset vrstvy (`top: 42px`) z předchozího stavu.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI positioning rollback bez změny gameplay state, polling nebo backend toku. Hlavní riziko: možné zhoršení 50/50 ukotvení při resize/odlišných výškách hlavičky; mitigace je přesný rollback na už dříve schválený stav bez dalších zásahů. Verifikace provedena produkčním buildem (`tsc -b`, `vite build`).
+
+## 2026-03-22 15:42 | branch: feat/build-0.1.16
+
+- Request: Sjednotit i box-model hodnot jednotek se surovinami, ne jen fontové metriky.
+- Summary: V `src/pages/GamePage.tsx` jsem obě hodnoty jednotkové karty (vlastní/podpora) zabalil do nového `village-unit-value-stack` s dvěma pill obálkami. V `src/App.css` jsem přidal `village-unit-value-pill` s prakticky stejným vizuálním box-modelem jako `village-inline-resource-pill` (border, radius, background, padding), aby čísla jednotek působila stejně jako čísla surovin a rozdíl už nebyl jen ve vertikálním layoutu karty.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI styling/markup refinement bez zásahu do gameplay state, server payloadů nebo polling modelu. Hlavní riziko bylo zhoršení čitelnosti v úzké kartě jednotky; mitigace je zachování kompaktního pill paddingu a původní šířky karty bez změny interakcí. Verifikace: produkční build (`tsc -b`, `vite build`) úspěšný.
+
+## 2026-03-22 15:48 | branch: feat/build-0.1.16
+
+- Request: Odstranit nechtěné pill/buňky přidané kolem čísel jednotek a vrátit čisté zobrazení jen samotných hodnot, se spodní ikonou jednotky dole v kartě.
+- Summary: V `src/pages/GamePage.tsx` jsem odstranil wrappery `village-unit-value-stack` a `village-unit-value-pill` a vrátil render na dvě přímé hodnoty (`village-unit-value`, `village-unit-support`) následované spodní ikonou. V `src/App.css` jsem smazal odpovídající styly pro tyto wrappery a ponechal jen základní typografii hodnot. Tím se zrušily nechtěné vizuální buňky a ikona se opět řadí jako třetí položka dole v gridu karty.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistý UI rollback bez změny game state, fetch modelu nebo tooltip logiky. Hlavní riziko bylo rozbití vertikálního pořadí obsahu v kartě; mitigace je návrat na původní tříprvkový layout hodnoty/hodnoty/ikona. Verifikace: produkční build (`tsc -b`, `vite build`) úspěšný.
+
+## 2026-03-22 15:51 | branch: feat/build-0.1.16
+
+- Request: U textu zobrazujícího množství surovin použít obyčejný text místo zvýrazněného.
+- Summary: V `src/pages/GamePage.tsx` jsem v resource pill renderu nahradil `<strong>` za `<span className="village-inline-resource-value">`. V `src/App.css` jsem přesměroval styl z `.village-inline-resource-pill strong` na novou třídu a snížil `font-weight` z `700` na `400`, takže množství surovin je teď obyčejný text bez tučného zvýraznění.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě lokální UI typography change bez zásahu do game state, pollingu nebo backend toku. Hlavní riziko bylo zhoršení čitelnosti resource řádku; mitigace je zachování stejné velikosti, barvy a spacingu, mění se jen sémantika a váha textu. Verifikace: produkční build (`tsc -b`, `vite build`) úspěšný.
+
+## 2026-03-22 16:03 | branch: feat/build-0.1.16
+
+- Request: Vypsat, jak aktuálně fungují dark-medieval fonty, texty a typografie a jestli pro to existují pravidla.
+- Summary: Prošel jsem aktivní vrstvy typografie v `src/App.css` a ověřil runtime napojení font-scale v `src/pages/GamePage.tsx`. Zjistil jsem, že současný systém stojí na base type tokenech v `:root`, tematické vrstvě `body[data-ui-skin='dark-medieval']`, zvláštní amplifikaci pro `resource/unit/army` bloky a pozdější normalizační vrstvě pro `.game-page .window-body`, která část starších dark-medieval pravidel přepisuje. Bez změn kódu aplikace, šlo o audit a vysvětlení aktuálního stavu.
+- Files: src/App.css, src/pages/GamePage.tsx, arch/chat-changelog.md
+- Verification: Inspekce kódu, bez běhu build/testů
+- Notes: Hlavní zjištění je překryv více typografických systémů v jednom stylesheetu, což pravděpodobně vysvětluje nejednotný vzhled některých textů v UI.
+
+## 2026-03-22 16:27 | branch: feat/build-0.1.16
+
+- Request: Postupně udělat všechny tři kroky typografické konsolidace: připravit cílový dark-medieval contract, přesně označit legacy selektory k odstranění a implementovat první bezpečnou migrační vlnu bez zásahu do layoutu.
+- Summary: Založil jsem samostatný kontrakt dokument `arch/dark-medieval-typography-contract.md`, kde je popsán canonical source of truth, role utility třídy a přesný seznam legacy selectorů už zúžených v první fázi i těch, které zůstávají na další migraci. V `src/App.css` jsem přidal explicitní utility role `.tld-type-heading`, `.tld-type-body`, `.tld-type-note`, `.tld-type-meta`, `.tld-type-stat`, `.tld-type-value` a přepojil část broad selectorů na class-based varianty. V `src/pages/GamePage.tsx` jsem v první bezpečné vlně nasadil explicitní typografické role na city stats, city resource stock, multi-village unit pills, army unit amount, village panel resource values, village panel unit values a resource strip title texty, aby UI už méně záviselo na holém `strong` a substring selektorech.
+- Files: src/App.css, src/pages/GamePage.tsx, arch/dark-medieval-typography-contract.md, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI typography refactor bez zásahu do gameplay state, pollingu nebo backend toku. Hlavní riziko bylo nechtěné vizuální přepsání stávajících čísel a title textů kvůli širokým legacy selectorům; mitigace je první migrační vlna omezená na explicitně označené komponenty v `GamePage.tsx`, přičemž nejrizikovější blanket selektory zůstaly zatím jen zdokumentované pro pozdější odstranění. Verifikace: produkční build (`tsc -b`, `vite build`) úspěšný.
+
+## 2026-03-22 16:45 | branch: feat/build-0.1.16
+
+- Request: Pokračovat postupně všemi třemi dalšími kroky typografické konsolidace: odstranit blanket `resource/unit/army` selector po komponentách, zúžit `window-body` normalizaci na inherit/fallback a sjednotit zbývající stat/value plochy na explicitní utility role.
+- Summary: V `src/App.css` jsem odstranil blanket `body[data-ui-skin='dark-medieval'] :is([class*='resource'], [class*='unit'], [class*='army']) ...` selector i broad `.panel-stack strong` sizing. `window-body` typografii jsem zúžil tak, že velikost a line-height teď nese samotný kontejner `.game-page .window-body`, zatímco potomci už hlavně dědí a formulářové prvky explicitně používají `font: inherit`. Současně jsem převedl další stat/value plochy na explicitní role: `multi-village-overview-level-value`, `commands-kpi-value`, `player-profile-stat-value`, `battle-power-value`, `map-settlement-prestige-value`, `map-settlement-prestige-total-value` a doplnil class-based accent pravidla místo starých strong selectorů. Kontrakt dokument jsem aktualizoval tak, aby odrážel dokončenou phase 2 a phase 3 a zúžený seznam zbývajících legacy selectorů.
+- Files: src/App.css, src/pages/GamePage.tsx, arch/dark-medieval-typography-contract.md, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI typography refactor bez zásahu do gameplay state, pollingu nebo backend toku. Hlavní riziko byly vizuální regrese po odstranění broad selectorů; mitigace je přímé přepojení konkrétních value/stat ploch na explicitní utility role ještě před smazáním blanket pravidel. Produkční build zůstal zelený; zůstal pouze existující Vite warning na velikost JS chunku.
+
+## 2026-03-22 16:56 | branch: feat/build-0.1.16
+
+- Request: Dokončit poslední tři kroky resource-strip typografické migrace: odstranit `.resource-strip strong`, `.resource-card-right strong` a jejich font-scale varianty.
+- Summary: V `src/App.css` jsem odstranil poslední aktivní strong-based selektory navázané na resource strip a resource card right panel včetně font-scale variant. Zbylé vizuální nastavení title textů jsem přesměroval z tag selectorů na `.resource-card-title`, takže styling resource stripu je už v této větvi čistě class-based. Kontrakt dokument jsem doplnil o phase 4 a explicitně zaznamenal, že v resource-strip cleanup tracku už nezůstávají pending legacy selektory.
+- Files: src/App.css, arch/dark-medieval-typography-contract.md, arch/chat-changelog.md
+- Verification: `Select-String` grep na `resource-strip strong|resource-card-right strong|game-page .resource-card strong|:root[data-game-font-scale] .resource-strip strong|:root[data-game-font-scale] .resource-card-right strong` (žádný nález), `npm run build` (PASS)
+- Notes: Feature contract: čistě UI typography cleanup bez zásahu do gameplay state, pollingu nebo backend toku. Hlavní riziko bylo ztratit title styling u resource card po odstranění broad selectorů; mitigace je přesměrování na `.resource-card-title` před smazáním starých pravidel.
+
+## 2026-03-22 17:14 | branch: feat/build-0.1.16
+
+- Request: Učinit další kroky v dark-medieval typografické migraci po dokončení resource-strip tracku.
+- Summary: V `src/pages/GamePage.tsx` jsem nahradil další safe-wave strong-only prezentaci explicitními třídami a role utilities: footer action badge, village intel tooltip values, armada unit pill value, battle army KPI values, battle loot values, army order preview metrics, kingdom audit headline text a village fortification/garrison values. V `src/App.css` jsem přepojil odpovídající selektory z raw `strong` na class-based varianty a odstranil broad `.village-float-intel-card strong` fallback. Kontrakt v `arch/dark-medieval-typography-contract.md` jsem doplnil o phase 5 a zapsal, že další případný cleanup má cílit už na report/content emphasis selektory mimo tento safe-wave track.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/dark-medieval-typography-contract.md, arch/chat-changelog.md
+- Verification: `Select-String` grep na `armada-unit-pill strong|battle-army-kpis strong|battle-loot-strip strong|army-order-preview-metrics strong|kingdom-audit-item strong|village-fortification-levels strong|village-garrison-card strong|village-intel-tooltip li strong|game-footer-action strong|village-float-intel-card strong` (žádný nález), `npm run build` (PASS)
+- Notes: Feature contract: čistě UI typography cleanup bez zásahu do gameplay state, pollingu nebo backend toku. Hlavní riziko byla vizuální regrese v command/battle/village panelech po odstranění tag-based selectorů; mitigace je omezení změny jen na explicitně auditované stat/value/title plochy a ponechání semantických strongů v reportech a delších textech beze změny.
+
+## 2026-03-22 17:33 | branch: feat/build-0.1.16
+
+- Request: Učinit další kroky v dark-medieval typografické migraci, tentokrát pro report/content strong selektory.
+- Summary: V `src/pages/GamePage.tsx` jsem přepojil notifikační count values, titulky report listů, battle report meta hodnoty, battle debug values a timestamp v market guild auditu na explicitní class-based typography role (`messages-signal-value`, `messages-report-title`, `battle-report-meta-value`, `battle-debug-value`, `market-guild-audit-timestamp`). V `src/App.css` jsem odstranil odpovídající raw `strong` selektory a přesměroval i pozdější warm-theme override bloky na nové třídy. Kontrakt v `arch/dark-medieval-typography-contract.md` jsem rozšířil o phase 6 a zaznamenal, že další cleanup má mířit už na inline emphasis strongs uvnitř vět a detail row bloků.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/dark-medieval-typography-contract.md, arch/chat-changelog.md
+- Verification: `Select-String` grep na `messages-signal-chip strong|messages-report-item strong|battle-report-meta strong|battle-debug-list li strong|market-guild-audit-head strong` (žádný nález), `npm run build` (PASS)
+- Notes: Feature contract: čistě UI typography cleanup bez zásahu do gameplay state, pollingu nebo backend toku. Hlavní riziko byla vizuální regrese v report listech, battle reportu a audit panelech po odstranění tag-based selectorů; mitigace je omezení změny jen na presentation-only strong selektory s existujícím CSS stylingem a ponechání semantických inline emphasis strongů beze změny.
+
+## 2026-03-22 17:48 | branch: feat/build-0.1.16
+
+- Request: Pokračovat poslední inline-emphasis wave pro prose bloky a detail řádky.
+- Summary: V `src/pages/GamePage.tsx` jsem přepojil inline highlight hodnoty v army command preview, messages detail kartách, battle return blocích, map settlement preview, building knight metě, public-order tooltipu, activity share dialogu a pin live feedu na explicitní lokální typography classes. V `src/App.css` jsem doplnil odpovídající lokální role styly (`army-command-inline-value`, `messages-detail-inline-value`, `battle-return-inline-value`, `map-settlement-owner-value`, `map-settlement-detail-value`, `building-knight-value`, `public-order-tooltip-value`, `activity-share-title`, `pin-live-feed-value`) a odstranil z aktivního CSS tag-based selektory `building-knight-meta strong`, `map-settlement-owner strong` a `map-settlement-distance strong`. Kontrakt v `arch/dark-medieval-typography-contract.md` jsem doplnil o phase 7 a zapsal, že další cleanup track už cílí hlavně na statické copy emphasis strongy v help textech a nápovědě.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/dark-medieval-typography-contract.md, arch/chat-changelog.md
+- Verification: `Select-String` grep na `ETA: <strong>|Součet převodu: <strong>|Součet zásilky: <strong>|Pozvánku poslal hráč <strong>|Útočník: <strong>|Návrat: <strong>|trvání <strong>|Království <strong>|Souřadnice <strong>|Rytíř v osadě: <strong>|<strong>{publicOrderTooltipRegen}</strong>|<strong>{publicOrderTooltipKnightRecruit}</strong>|<strong>{publicOrderTooltipDebuff}</strong>|Nové záznamy: <strong>|<strong>{activityShareItem.title}</strong>` (žádný nález), grep na `building-knight-meta strong|map-settlement-owner strong|map-settlement-distance strong` (žádný nález), `npm run build` (PASS)
+- Notes: Feature contract: čistě UI typography cleanup bez zásahu do gameplay state, pollingu nebo backend toku. Hlavní riziko byla vizuální regrese v map preview, return blocích a command preview větách po přechodu z raw tag selectorů na lokální role; mitigace je zachování stejného layoutu a barev v rámci konkrétních kontejnerů a nepoužití broad selectorů.
+
+## 2026-03-22 18:07 | branch: feat/build-0.1.16
+
+- Request: Pokračovat poslední vlnou statického copy-emphasis cleanupu pro help texty, keyboard hinty a world label copy.
+- Summary: V `src/pages/GamePage.tsx` jsem přepojil zvýrazněné statické copy prvky na explicitní lokální role: rank label v žebříčku, Discord kontakt a shortcut hinty v nastavení, `Ctrl` hint v map travel helperu, aktuální svět v world indicatoru, názvy světů ve world switch menu a názvy lén ve village menu. V `src/App.css` jsem retargetoval `village-menu-option` a ranking note z raw `strong` na class-based varianty, doplnil lokální helper styly pro help emphasis a world indicator value a přesměroval dark-medieval world-switch override z raw `strong` na `.world-switch-option-title`. Kontrakt v `arch/dark-medieval-typography-contract.md` jsem rozšířil o phase 8 a zapsal, že další cleanup už míří mimo tento static-copy track.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/dark-medieval-typography-contract.md, arch/chat-changelog.md
+- Verification: `Select-String` grep na `village-menu-option strong|ranking-player-position-note strong|world-switch-option strong|world-switch-option :is(strong, span)` (žádný nález), `npm run build` (PASS)
+- Notes: Feature contract: čistě UI typography cleanup bez zásahu do gameplay state, pollingu nebo backend toku. Hlavní riziko byla vizuální regrese world switch a help copy po odpojení od raw tag selectorů; mitigace je použití lokálních role tříd a zachování dark-medieval override pouze přes nové explicitní názvy tříd.
+
+## 2026-03-26 00:00 | branch: feat/build-0.1.16
+
+- Request: Analyzovat, proč má útočník v aktuálním buildu slabý průraz do obrany, a navrhnout bezpečné směry úpravy před zásahem do balancu.
+- Summary: Prošel jsem combat pipeline v `server/combatBalance.js`, `server/gameService.js` a regresní scénáře. Hlavní zjištění je, že problém není jen v base unit statsech, ale hlavně v násobení dvou obranně orientovaných vrstev: prestige scaling (`attackModifier = 1 / sqrt(ratio)` plus defender bonus až `+25 %`) a samotný combat model, kde má pěchota nižší útok než obranu a čistě pěchotní útok dostává ještě `-4 %` tactical penalizaci. Read-only dotaz na lokální `server/data/game.sqlite` ukázal reálné abandoned reporty, kde hráč s 9.6x až 12.9x vyšší prestiží útočí jen s `x0.28` až `x0.32` attack modifierem proti `1.25x` defense multiplieru; konkrétně útok 346 milice do 100 milice padá při `finalAttackPower 1237.73` proti `finalDefensePower 1590.99`, i když base power ratio je přes 3:1. Z toho plyne, že nejsnazší bezpečný zásah je nejdřív změkčit prestige combat křivku, případně ji omezit proti abandoned settlementům, a teprve potom sahat do unit statů.
+- Files: arch/chat-changelog.md
+- Verification: code inspection `server/combatBalance.js`, `server/gameService.js`, `tests/regression/game-rules.scenario.mjs`; read-only SQL dotazy přes `better-sqlite3` do `server/data/game.sqlite`; numerická simulace current vs candidate prestige formulas (analysis only, bez code change)
+- Notes: Feature contract: zjistit příčinu slabého útoku bez změny fetch modelu nebo render toku; authoritative state je combat resolution v backendu a lokální battle report data. Hlavní riziko je rozbití anti-bully prestige ochrany, farmingu abandoned osad a pacingu ekonomiky; doporučená mitigace je postupovat po malých krocích od prestige curve k unit/tactical vrstvám a ověřit změnu na cílených combat scénářích.
+
+## 2026-03-26 00:00 | branch: feat/build-0.1.16
+
+- Request: Implementovat bezpečné zjemnění prestige combat křivky, přidat více cílených scénářů a ukázat konkrétní bojové výsledky.
+- Summary: V `server/combatBalance.js` jsem změkčil prestige trest pro silnějšího útočníka ze `sqrt` křivky na exponent `0.4` a současně stáhl defender prestige bonus z maxima `+25 %` na `+18 %` s plošší interpolační křivkou. Tím se útok proti slabé obraně přestal lámat až na absurdním overstacku, ale lehký raid přes vysoký prestige gap pořád failuje. Do `tests/regression/game-rules.scenario.mjs` jsem přidal helper pro total prestige setup a tři nové combat scénáře s JSON výstupem a scénickým textem: `prestige-weak-defense-breakthrough`, `prestige-light-raid-still-fails` a `prestige-mixed-army-breakthrough`. V `tests/regression/game-rules.regression.test.mjs` jsem k nim doplnil regresní asserty a současně ověřil, že retaliation unlock pravidlo zůstalo beze změny.
+- Files: server/combatBalance.js, tests/regression/game-rules.scenario.mjs, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
+- Verification: izolované scénáře přes dočasné `TLD_DATA_DIR` seedované z `server/data/game.seed.sqlite.backup` (PASS) pro `prestige-weak-defense-breakthrough`, `prestige-light-raid-still-fails`, `prestige-mixed-army-breakthrough`; izolovaný test run `node --test --test-name-pattern "large attacking army|combat: prestige|prestige protection unlocks retaliation" tests/regression/game-rules.regression.test.mjs` (PASS 4/4); izolovaný test run `node --test --test-name-pattern "mixed army punches through prestige pressure better than militia spam" tests/regression/game-rules.regression.test.mjs` (PASS 1/1)
+- Notes: Feature contract: zvýšit průraz útoku bez zásahu do fetch/render toku a bez rozbití prestige protection. Hlavní riziko bylo přestřelit anti-bully ochranu a otevřít příliš levné farmení slabých cílů; mitigace je držet loot penalty beze změny, ponechat attack block threshold a explicitně testovat jak `real breakthrough`, tak `light raid still fails`.
+
+## 2026-03-26 19:20 | branch: feat/build-0.1.16
+
+- Request: Navrhnout (bez implementace), jak v Království zavést diplomatické zabarvení jiných království pro aktivní království: Spojenecká / DoN / Nepřítel, pouze pro vůdce, sdílené všem hráčům v daném království, bez nutnosti potvrzení druhou stranou.
+- Summary: Prošel jsem frontend (`src/pages/GamePage.tsx`, `src/api/gameApi.ts`, `src/App.css`) i backend (`server/gameService.js`, `server/db.js`, `server/index.js`) a ověřil aktuální stav. Diplomacie i mapové barvy už existují, ale backend model je nyní symetrický po dvojicích království (`kingdom_low`,`kingdom_high`), což je v rozporu s požadovaným asymetrickým pohledem každé frakce. Připravil jsem návrh změny směrem na směrový model (`sourceKingdom -> targetKingdom`), zachování leader-only práv, propagaci všem členům království přes viewer-based world map snapshot a sjednocení labelů NAP -> DoN na UI.
+- Files: src/pages/GamePage.tsx, src/api/gameApi.ts, src/App.css, server/gameService.js, server/db.js, server/index.js, arch/chat-changelog.md
+- Verification: code inspection (bez implementace a bez běhu testů/build)
+- Notes: Feature contract (návrh): hráčská hodnota je rychlá lokální klasifikace cílů na mapě dle postoje jeho království; authoritative state má být směrová diplomacie uložená po regionu a zdrojovém království; fetch model zůstane bez nového polling loopu a využije stávající world/state snapshot; render impact je Království panel + mapové `mapKind`; hlavní riziko je regresní výkonnost při map read modelu a nekonzistence dat po migraci, mitigace je indexovaný směrový lookup a kompatibilní čtení během migrace.
+
+## 2026-03-26 19:26 | branch: feat/build-0.1.16
+
+- Request: Spustit local na portu 5173.
+- Summary: Spustil jsem lokální runtime přes `npm run dev` na pozadí. Ověřil jsem, že frontend poslouchá na `http://localhost:5173` a backend na `http://localhost:3001`. Logy běží do `.dev-full.log` a `.dev-full.err.log` v rootu repozitáře.
+- Files: arch/chat-changelog.md
+- Verification: kontrola poslouchajících portů (`Get-NetTCPConnection`) + kontrola startup logu (`.dev-full.log`)
+- Notes: Feature contract: provozní/dev úkon bez zásahu do gameplay state, pollingu a bez změn kódu.
+
+## 2026-03-26 19:47 | branch: feat/build-0.1.16
+
+- Request: Upravit flow diplomacie tak, aby vůdce nastavoval vztah klikem na jiné království (i z jeho stránky), šlo vztah úplně odebrat a znovu vyhledat přes textové pole s napovídáním, a aby šla barva jednoduše měnit klikem s potvrzením.
+- Summary: V `KingdomPanel` jsem nahradil původní select flow za textové vyhledávání s napovídáním, které nabízí jen aktivní království mimo vlastní a mimo už zanesené vztahy. Seznam diplomacie teď ukazuje jen skutečně nastavené (nenulové/neutrální) vztahy a v každém řádku je rychlá změna barvy (`Spojenecké`/`DoN`/`Nepřátelské`) i akce `Odebrat`, vše s potvrzením. V `KingdomProfilePanel` jsem přidal sekci „Diplomacie vůči tomuto království“, takže vůdce může přímo na stránce cílového království nastavit nebo odebrat vztah, opět s potvrzením. Dále jsem doplnil frontend helpery pro robustní porovnávání názvů království (bez citlivosti na diakritiku/case) a nové styly pro suggestion list + diplomacie akce.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: hráčská hodnota je rychlé a bezpečné řízení diplomatického zabarvení bez opuštění kontextu cílového království a s možností čistého odebrání vztahu. Authoritative state zůstává v backendové `setKingdomDiplomacy`; frontend jen mění způsob výběru/ovládání. Hlavní výkonové riziko bylo přidání drahého filtrování v renderu; mitigace je omezení výpočtů na malé kolekce (`availableKingdoms`, `diplomacyRelations`) přes `useMemo` bez nového pollingu či rozšíření globálního payloadu.
+
+## 2026-03-26 19:57 | branch: feat/build-0.1.16
+
+- Request: Nastavit v aktuální hře vůdce pro každé království, aby šla testovat diplomacie.
+- Summary: Provedl jsem jednorázovou datovou opravu v branch-local SQLite (`server/data/branches/feat-build-0-1-16/game.sqlite`): auditoval jsem aktivní království po regionech, zvalidoval aktuální resolve logiku vůdce a případně doplnil nejnovější `leadership_transferred` event tam, kde byl zvolen jiný vhodný testovací vůdce (v tomto běhu byla explicitně přepsána volba pro `Emerald Circle` na hráče `Wild`; ostatní království už měly platného vůdce). Následně jsem restartoval lokální runtime, aby se změny propsaly do běžícího serveru.
+- Files: server/data/branches/feat-build-0-1-16/game.sqlite, arch/chat-changelog.md
+- Verification: read/write SQL audit skript přes `better-sqlite3` (před/po), kontrola běžících služeb na `http://localhost:3001` a `http://localhost:5173`
+- Notes: Feature contract: čistě provozní testovací data-fix bez změny fetch modelu, pollingu nebo gameplay kódu; hlavní riziko byla nekonzistence leadership eventu vůči primárnímu členství v království, mitigace je výběr kandidátů z aktuálních členů království ve stejném regionu a validace po zápisu stejnou resolve logikou jako v backendu.
+
+## 2026-03-26 19:28 | branch: feat/build-0.1.16
+
+- Request: Pokračovat krokem 1 typografické konsolidace a podle best practices nastavit minimální doporučené velikosti textu pro čitelnost v herním dark-medieval UI.
+- Summary: V `src/App.css` jsem dokončil další bezpečný cleanup zbylých dead `strong` selectorů v relevantní větvi (`village-unit-type-header strong`, `pin-feed-item strong`, `pin-feed-summary-card strong`) bez zásahu do logiky. Současně jsem upravil typografické tokeny pro čitelnost (`--ui-type-note`, `--ui-type-meta`, `--ui-type-micro`) v `:root` i `body[data-ui-skin='dark-medieval']` a sjednotil hodnoty jednotek s resource hodnotami v village panelu na stejnou baseline (`0.88rem`, regular weight), aby vizuálně odpovídaly požadavku „stejná velikost jako suroviny“. V `arch/dark-medieval-typography-contract.md` jsem doplnil explicitní sekci minimálních baseline velikostí pro běžný text/note/meta/micro.
+- Files: src/App.css, arch/dark-medieval-typography-contract.md, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: čistě UI typography/styling change bez zásahu do gameplay state, polling loopů nebo backend toku. Hlavní riziko byla vizuální regrese hustých panelů (village overlay, nav/meta texty) po zvýšení minim; mitigace je omezení změny na typografické tokeny a konkrétní village value styly, bez změn layout logiky nebo datových struktur.
+
+## 2026-03-26 19:40 | branch: feat/build-0.1.16
+
+- Request: Přenést změny na localhost (ověřit lokální běh).
+- Summary: Ověřil jsem, že frontend už běží na `localhost:5173` (TCP listener aktivní) a endpoint vrací `HTTP 200`, takže změny jsou dostupné lokálně bez dalšího zásahu.
+- Files: arch/chat-changelog.md
+- Verification: `Get-NetTCPConnection` na port 5173 + `Invoke-WebRequest http://localhost:5173` (HTTP 200)
+- Notes: Feature contract: provozní ověření lokálního runtime bez změn gameplay logiky, pollingu a backend datového toku.
+
+## 2026-03-26 20:04 | branch: feat/build-0.1.16
+
+- Request: Commitnout a pushnout vše, co je nyní na větvi `feat/build-0.1.16`, a následně vypnout localhost.
+- Summary: Připravil jsem pracovní strom pro hromadný commit (`git add -A`), vytvořil jeden commit se všemi aktuálními změnami v této větvi a pushnul ho na vzdálený branch `origin/feat/build-0.1.16`. Po pushi jsem ukončil lokální dev runtime (frontend/backend) a ověřil, že porty `5173` a `3001` už neposlouchají.
+- Files: arch/chat-changelog.md
+- Verification: `git status`, `git commit`, `git push origin feat/build-0.1.16`, kontrola portů přes `Get-NetTCPConnection`
+- Notes: Feature contract: release/provozní úkon bez nových změn herní logiky; hlavní riziko byl nechtěný částečný commit, mitigace je explicitní `git add -A` a následná verifikace stavu větve po pushi.
+
+## 2026-03-27 16:16 | branch: feat/build-0.1.16
+
+- Request: Opravit viditelnost tooltipu veřejného pořádku a dotáhnout rušení armádních příkazů (útok/podpora/přesun) do 33 % cesty s návratem jednotek podle už ušlé doby, následně ověřit localhost:5173.
+- Summary: V `src/App.css` jsem upravil vrstvu a umístění public-order tooltipu tak, aby se otevíral pod badge a nebyl překryt horní navigací. V `src/pages/GamePage.tsx` jsem přidal jednotnou klientskou logiku pro výpočet progresu rozkazu a cancel window (limit z pravidel světa), napojil ji do `CommandsPanel` i `MilitaryPanel` a tlačítko „Zrušit rozkaz“ teď funguje konzistentně pro `attack`/`support`/`move` pouze do limitu (poté je disabled s důvodem). Backend cancel flow jsem ponechal autoritativní (server už vrací návratový čas dle ušlé cesty). Do regresí jsem přidal nový scénář `army-command-cancel-window` v `tests/regression/game-rules.scenario.mjs` a odpovídající test v `tests/regression/game-rules.regression.test.mjs`, který ověřuje úspěšné cancel pro všechny tři typy příkazů, časovaný návrat bez teleportu a blokaci po překročení 1/3.
+- Files: src/App.css, src/pages/GamePage.tsx, tests/regression/game-rules.scenario.mjs, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
+- Verification: `npm run test:regression -- --test-name-pattern "army commands can be canceled only up to one third"` (PASS; runner provedl celý regression set 37/37), `npm run build` (PASS), `npm run lint` (FAIL na existujícím `react-hooks/set-state-in-effect` v `src/pages/GamePage.tsx:17007`, mimo tento change set), `Invoke-WebRequest http://localhost:5173` (HTTP 200) + listener na 5173 aktivní.
+- Notes: Feature contract: hráč může rušit odchozí vojenské příkazy (`attack`/`support`/`move`) jen do 33 % trasy a jednotky se po zrušení vrací zpět časem odpovídajícím již ušlé části cesty; tooltip veřejného pořádku musí být čitelný bez překryvu HUD navigací. Hlavní riziko: rozpad konzistence UI vs backend pravidla a regresní zásah do renderu horního HUD. Mitigace: sdílený výpočet cancel metadat na klientu + ponechání serverového guardu jako source of truth + regresní scénář pokrývající attack/support/move i over-limit větev.
+
+## 2026-03-27 16:36 | branch: feat/build-0.1.16
+
+- Request: Dotáhnout konzistenci v rámci hlavního rizika (sjednotit pravidlo rušení rozkazu mezi UI a backendem).
+- Summary: V `server/gameService.js` jsem centralizoval timing/cancel výpočet do `resolveMovementTimingMetrics` a stejné metriky používám jak pro serializaci pohybů, tak pro serverové zrušení rozkazu. API pohybu nyní vrací explicitní cancel metadata (`isCancelable`, `cancelProgressLimit`, `commandProgressRatio`, `commandProgressPct`, `cancelWindowRemainingSec`, `elapsedSec`, `totalDurationSec`) a frontend v `src/pages/GamePage.tsx` je preferuje jako autoritativní zdroj s fallbackem na lokální výpočet. V regresích jsem scénář a test rozšířil o kontrolu preview metadat i over-limit větve, aby se nekonzistence UI/server znovu nevrátila.
+- Files: server/gameService.js, src/api/gameApi.ts, src/pages/GamePage.tsx, tests/regression/game-rules.scenario.mjs, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
+- Verification: `node --test --test-name-pattern "army commands can be canceled only up to one third" tests/regression/game-rules.regression.test.mjs` (PASS), `npm run build` (PASS), `Invoke-WebRequest http://localhost:5173` (HTTP 200) + listener na `5173` aktivní.
+- Notes: Feature contract: cancel window je 33 % trasy pro `attack`/`support`/`move`, návrat jednotek je časovaný podle již ušlé části cesty, backend je source of truth. Hlavní riziko byla divergence výpočtu mezi klientem a serverem; mitigace je sdílená serverová timing funkce, serverem publikovaná metadata a regresní pokrytí preview + blocked větve.
+
+## 2026-03-27 16:40 | branch: feat/build-0.1.16
+
+- Request: Commitnout a pushnout aktuální změny na větvi `feat/build-0.1.16`.
+- Summary: Připravil jsem všechny aktuální úpravy tooltipu veřejného pořádku, cancel flow armádních rozkazů a serverové konzistence cancel metadat do jednoho commitu a odeslal je na `origin/feat/build-0.1.16`.
+- Files: arch/chat-changelog.md, server/gameService.js, src/App.css, src/api/gameApi.ts, src/pages/GamePage.tsx, tests/regression/game-rules.regression.test.mjs, tests/regression/game-rules.scenario.mjs
+- Verification: `git status`, `git add -A`, `git commit`, `git push origin feat/build-0.1.16`
+- Notes: Feature contract: provozní release krok bez další změny logiky; hlavní riziko byl neúplný commit aktuálního change setu, mitigace je explicitní zahrnutí všech upravených souborů a následná kontrola pushnuté větve.
+
+## 2026-03-27 16:43 | branch: develop
+
+- Request: Merge větve `feat/build-0.1.16` do `develop`.
+- Summary: Na `develop` jsem mergnul `feat/build-0.1.16`, vyřešil jediný konflikt v append-only `arch/chat-changelog.md` zachováním obou historických větví záznamů a připravil výsledek k pushi na `origin/develop`.
+- Files: arch/chat-changelog.md, plus merge změny z `feat/build-0.1.16` do `develop`
+- Verification: `git checkout develop`, `git pull --ff-only origin develop`, `git merge --no-ff --no-commit feat/build-0.1.16`, vyřešení konfliktu v `arch/chat-changelog.md`, `git commit`, `git push origin develop`
+- Notes: Feature contract: integrační merge bez dalších ručních zásahů do feature logiky; hlavní riziko byl ztracený nebo přepsaný chat audit při konfliktu append-only changelogu, mitigace je explicitní zachování obou větví historie v konfliktu a nový merge záznam na `develop`.

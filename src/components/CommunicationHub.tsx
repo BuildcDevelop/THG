@@ -1272,7 +1272,11 @@ export const CommunicationHub = () => {
           }}
         >
           <span>{thread.otherPlayer.username}</span>
-          {thread.unreadCount > 0 ? <strong>{thread.unreadCount > 99 ? '99+' : thread.unreadCount}</strong> : null}
+          {thread.unreadCount > 0 ? (
+            <span className="communication-chat-badge tld-type-value">
+              {thread.unreadCount > 99 ? '99+' : thread.unreadCount}
+            </span>
+          ) : null}
         </button>
       );
     }
@@ -1306,7 +1310,7 @@ export const CommunicationHub = () => {
                 getAvatarFallback(thread.otherPlayer.username)
               )}
             </span>
-            <strong>{thread.otherPlayer.username}</strong>
+            <span className="communication-chat-username tld-type-heading">{thread.otherPlayer.username}</span>
           </span>
           <small>{thread.otherPlayer.isOnline ? 'Online' : relativeTime(thread.otherPlayer.lastActiveAt)}</small>
           <div className="communication-row-actions">

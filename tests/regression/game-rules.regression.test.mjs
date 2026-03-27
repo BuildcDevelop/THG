@@ -160,11 +160,82 @@ test('village conquest has no hard cap per world', () => {
   assert.equal(result.blockedError, null);
 });
 
+test('army commands can be canceled only up to one third and spawn timed returns', () => {
+  const result = runScenario('army-command-cancel-window');
+  const canceled = Array.isArray(result?.canceled) ? result.canceled : [];
+  const activeReturnMovements = Array.isArray(result?.activeReturnMovements) ? result.activeReturnMovements : [];
+
+  assert.equal(canceled.length, 3);
+  assert.deepEqual(
+    canceled.map((entry) => String(entry.commandType ?? '')),
+    ['attack', 'support', 'move'],
+  );
+
+  for (const entry of canceled) {
+    assert.ok(Number(entry.orderId ?? 0) > 0);
+    assert.equal(Number(entry.canceledMovementId ?? -1), Number(entry.orderId ?? -2));
+    assert.ok(Number(entry.returnMovementId ?? 0) > 0);
+    assert.ok(Number(entry.elapsedSec ?? 0) > 0);
+    assert.ok(Number(entry.returnDurationSec ?? 0) > 0);
+    assert.ok(
+      Math.abs(Number(entry.returnDurationSec ?? 0) - Number(entry.elapsedSec ?? 0)) <= 1,
+      'return duration must follow elapsed travel time',
+    );
+    assert.ok(
+      Number(entry.returnDurationSec ?? 0) >= 70,
+      'return duration should not teleport units back instantly',
+    );
+    assert.equal(Boolean(entry.previewCancelable), true);
+    assert.ok(Number(entry.previewProgressPct ?? 0) >= 0);
+    assert.ok(Number(entry.previewProgressPct ?? 0) <= 34);
+    assert.ok(Math.abs(Number(entry.previewLimitRatio ?? 0) - 1 / 3) < 0.0001);
+  }
+
+  const returnIds = new Set(canceled.map((entry) => Number(entry.returnMovementId ?? 0)));
+  assert.equal(activeReturnMovements.length, 3);
+  for (const movement of activeReturnMovements) {
+    assert.ok(returnIds.has(Number(movement.id ?? 0)));
+    assert.ok(Number(movement.remainingSec ?? 0) > 0);
+  }
+
+  assert.equal(Boolean(result?.overLimitPreview?.isCancelable), false);
+  assert.ok(Number(result?.overLimitPreview?.progressPct ?? 0) >= 40);
+  assert.ok(Math.abs(Number(result?.overLimitPreview?.limitRatio ?? 0) - 1 / 3) < 0.0001);
+  assert.match(String(result?.blockedMessage ?? ''), /zrusit pouze do 1\/3 cesty/i);
+});
+
 test('large attacking army is not excessively punished', () => {
   const result = runScenario('large-army-balance');
   assert.equal(result.attackerWins, true);
   assert.ok(Number(result.attackerLossRatio ?? 1) < 0.2);
   assert.ok(Number(result.defenderLossRatio ?? 0) >= 0.8);
+});
+
+test('combat: prestige pressure still allows a real breakthrough into weak defense', () => {
+  const result = runScenario('prestige-weak-defense-breakthrough');
+  assert.equal(Boolean(result.attackerWins), true);
+  assert.ok(Number(result.finalAttackPower ?? 0) > Number(result.finalDefensePower ?? 0));
+  assert.ok(Number(result.attackerLossRatio ?? 1) < 0.25);
+  assert.equal(Number(result.defenderLossRatio ?? 0), 1);
+  assert.ok(Number(result.prestigeBalance?.attackModifier ?? 0) >= 0.35);
+  assert.ok(Number(result.prestigeBalance?.defenseMultiplier ?? 2) <= 1.18);
+});
+
+test('combat: prestige pressure still breaks light militia raids on contact', () => {
+  const result = runScenario('prestige-light-raid-still-fails');
+  assert.equal(Boolean(result.attackerWins), false);
+  assert.ok(Number(result.finalAttackPower ?? 0) < Number(result.finalDefensePower ?? 0));
+  assert.equal(Number(result.attackerLossRatio ?? 0), 1);
+  assert.ok(Number(result.defenderLossRatio ?? 1) < 0.6);
+});
+
+test('combat: mixed army punches through prestige pressure better than militia spam', () => {
+  const result = runScenario('prestige-mixed-army-breakthrough');
+  assert.equal(Boolean(result.attackerWins), true);
+  assert.ok(Number(result.finalAttackPower ?? 0) > Number(result.finalDefensePower ?? 0));
+  assert.ok(Number(result.attackerLossRatio ?? 1) < 0.2);
+  assert.equal(Number(result.defenderLossRatio ?? 0), 1);
+  assert.ok(Number(result.attackerStart?.cavalry ?? 0) > 0);
 });
 
 test('prestige protection unlocks retaliation after smaller attack', () => {
