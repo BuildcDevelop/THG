@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactElement } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { hasSelectedWorld, isAdminAuthenticated, isAuthenticated, logout } from './auth';
+import { clearStoredSession, hasSelectedWorld, isAdminAuthenticated, isAuthenticated } from './auth';
 import { AUTH_REQUIRED_EVENT, fetchHealthStatus } from './api/gameApi';
 import { CommunicationHub } from './components/CommunicationHub';
 import { AdminPage } from './pages/AdminPage';
@@ -62,7 +62,7 @@ function App() {
 
   useEffect(() => {
     const handleAuthRequired = () => {
-      logout();
+      clearStoredSession();
       setDeploymentNotice(null);
       if (location.pathname !== '/login') {
         navigate('/login', { replace: true });

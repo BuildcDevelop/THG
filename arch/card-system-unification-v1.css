@@ -1,0 +1,162 @@
+/*
+  Card System Unification v1
+  Draft only, not imported into app runtime.
+  Purpose: prepare the target card language before migration.
+*/
+
+.game-page {
+  --ui-card-radius-sm: 10px;
+  --ui-card-radius-md: 14px;
+  --ui-card-radius-lg: 18px;
+
+  --ui-card-padding-compact: 0.5rem;
+  --ui-card-padding-base: 0.68rem;
+  --ui-card-padding-roomy: 0.86rem;
+
+  --ui-card-gap-tight: 0.24rem;
+  --ui-card-gap-base: 0.42rem;
+  --ui-card-gap-roomy: 0.62rem;
+
+  --ui-card-bg-base:
+    linear-gradient(180deg, rgba(24, 30, 40, 0.94), rgba(12, 16, 24, 0.96));
+  --ui-card-bg-muted:
+    linear-gradient(180deg, rgba(20, 25, 34, 0.9), rgba(10, 14, 21, 0.94));
+  --ui-card-bg-elevated:
+    radial-gradient(circle at 84% 12%, rgba(222, 170, 82, 0.1), transparent 46%),
+    linear-gradient(180deg, rgba(30, 37, 49, 0.96), rgba(16, 21, 30, 0.98));
+  --ui-card-bg-interactive:
+    radial-gradient(circle at 82% 8%, rgba(90, 141, 201, 0.14), transparent 45%),
+    linear-gradient(180deg, rgba(28, 35, 46, 0.95), rgba(15, 20, 29, 0.97));
+  --ui-card-bg-glass:
+    linear-gradient(180deg, rgba(34, 40, 50, 0.82), rgba(16, 20, 28, 0.88));
+
+  --ui-card-border-soft: rgba(255, 221, 168, 0.12);
+  --ui-card-border-mid: rgba(255, 221, 168, 0.2);
+
+  --ui-card-edge-soft: inset 0 1px 0 rgba(255, 241, 212, 0.06);
+  --ui-card-edge-strong: inset 0 1px 0 rgba(255, 239, 208, 0.1);
+
+  --ui-card-shadow-soft: 0 10px 24px rgba(2, 6, 12, 0.18);
+  --ui-card-shadow-mid: 0 14px 30px rgba(2, 6, 12, 0.24);
+  --ui-card-shadow-strong: 0 18px 36px rgba(2, 6, 12, 0.3);
+
+  --ui-card-accent-gold: #d8aa57;
+  --ui-card-accent-violet: #a884f6;
+  --ui-card-accent-red: #d16464;
+  --ui-card-accent-blue: #5e9fe0;
+  --ui-card-accent-green: #5ea97e;
+  --ui-card-accent-slate: #6b7f95;
+}
+
+.ui-card {
+  position: relative;
+  border: 1px solid var(--ui-card-border-soft);
+  border-radius: var(--ui-card-radius-md);
+  background: var(--ui-card-bg-base);
+  box-shadow: var(--ui-card-edge-soft), var(--ui-card-shadow-soft);
+  padding: var(--ui-card-padding-base);
+  display: grid;
+  gap: var(--ui-card-gap-base);
+}
+
+.ui-card--muted {
+  background: var(--ui-card-bg-muted);
+  box-shadow: var(--ui-card-edge-soft), var(--ui-card-shadow-soft);
+}
+
+.ui-card--elevated {
+  background: var(--ui-card-bg-elevated);
+  border-color: var(--ui-card-border-mid);
+  box-shadow: var(--ui-card-edge-strong), var(--ui-card-shadow-mid);
+}
+
+.ui-card--interactive {
+  background: var(--ui-card-bg-interactive);
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease,
+    border-color 150ms ease,
+    background 150ms ease;
+}
+
+.ui-card--interactive:hover,
+.ui-card--interactive:focus-visible {
+  transform: translateY(-1px);
+  border-color: rgba(255, 221, 168, 0.28);
+  box-shadow: var(--ui-card-edge-strong), var(--ui-card-shadow-strong);
+}
+
+.ui-card--semantic {
+  overflow: hidden;
+}
+
+.ui-card--semantic::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: var(--ui-card-accent, var(--ui-card-accent-gold));
+  opacity: 0.88;
+}
+
+.ui-card--semantic::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 84% 12%, color-mix(in srgb, var(--ui-card-accent, var(--ui-card-accent-gold)) 12%, transparent), transparent 42%);
+  opacity: 1;
+}
+
+.ui-card--accent-gold {
+  --ui-card-accent: var(--ui-card-accent-gold);
+}
+
+.ui-card--accent-violet {
+  --ui-card-accent: var(--ui-card-accent-violet);
+}
+
+.ui-card--accent-red {
+  --ui-card-accent: var(--ui-card-accent-red);
+}
+
+.ui-card--accent-blue {
+  --ui-card-accent: var(--ui-card-accent-blue);
+}
+
+.ui-card--accent-green {
+  --ui-card-accent: var(--ui-card-accent-green);
+}
+
+.ui-card--accent-slate {
+  --ui-card-accent: var(--ui-card-accent-slate);
+}
+
+.ui-card--compact {
+  padding: var(--ui-card-padding-compact);
+  gap: var(--ui-card-gap-tight);
+}
+
+.ui-card--roomy {
+  padding: var(--ui-card-padding-roomy);
+  gap: var(--ui-card-gap-roomy);
+}
+
+/*
+  Draft migration map only.
+
+  Phase 1:
+  .resource-card                 -> .ui-card .ui-card--elevated .ui-card--compact
+  .panel-stack section          -> .ui-card .ui-card--base
+  .commands-item                -> .ui-card .ui-card--interactive
+  .military-unit-card           -> .ui-card .ui-card--interactive .ui-card--elevated
+
+  Phase 2:
+  .messages-report-item         -> .ui-card .ui-card--interactive .ui-card--semantic
+  .messages-detail-card         -> .ui-card .ui-card--base
+  .battle-army-card.attacker    -> .ui-card .ui-card--semantic .ui-card--accent-red
+  .battle-army-card.defender    -> .ui-card .ui-card--semantic .ui-card--accent-blue
+  .battle-army-card.support     -> .ui-card .ui-card--semantic .ui-card--accent-slate
+  .player-profile-stat-card     -> .ui-card .ui-card--muted
+*/

@@ -1,3 +1,6 @@
-static.109.89.167.89.clients.your-server.de {
-	reverse_proxy api:3001
+:80 {
+	@legacy_sslip host thg.89-167-89-109.sslip.io
+	redir @legacy_sslip https://api.thelastdominion.online{uri} 308
+
+	reverse_proxy thg-api:3001
 }

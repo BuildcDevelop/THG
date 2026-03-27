@@ -85,10 +85,14 @@ export const setSelectedWorld = (worldId: string, spawnDirection?: string | null
   });
 };
 
-export const logout = (): void => {
-  void logoutRequest().catch(() => undefined);
+export const clearStoredSession = (): void => {
   localStorage.removeItem(AUTH_STORAGE_KEY);
   localStorage.removeItem(LEGACY_AUTH_STORAGE_KEY);
+};
+
+export const logout = (): void => {
+  void logoutRequest().catch(() => undefined);
+  clearStoredSession();
 };
 
 export const getSession = (): Session | null => {

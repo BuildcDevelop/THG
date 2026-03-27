@@ -306,7 +306,7 @@ export const WorldsPage = () => {
                       <span className="worlds-spawn-glyph" aria-hidden="true">
                         {option.glyph}
                       </span>
-                      <strong>{option.label}</strong>
+                      <span className="worlds-spawn-option-title tld-type-heading">{option.label}</span>
                     </button>
                   );
                 })}
