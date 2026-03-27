@@ -95,7 +95,7 @@ const app = express();
 const port = Number(process.env.PORT ?? 3001);
 const tickSchedule = process.env.GAME_TICK_SCHEDULE ?? '* * * * * *';
 const versionLabel =
-  String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.15').trim() || 'build-0.1.15';
+  String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.16').trim() || 'build-0.1.16';
 const buildId =
   String(process.env.TLD_BUILD_ID ?? process.env.NETLIFY_COMMIT_REF ?? process.env.COMMIT_REF ?? versionLabel).trim() ||
   versionLabel;

@@ -1567,6 +1567,45 @@ const MovementArmyTooltip = ({
   return tooltipNode;
 };
 
+type CommandCancelActionProps = {
+  disabled: boolean;
+  pending: boolean;
+  actionLabel: string;
+  disabledReason: string;
+  onClick: () => void;
+};
+
+const CommandCancelAction = ({
+  disabled,
+  pending,
+  actionLabel,
+  disabledReason,
+  onClick,
+}: CommandCancelActionProps) => {
+  const tooltipLabel = pending ? 'Rušení' : disabled ? 'Zrušení uzamčeno' : 'Zrušení';
+  const buttonLabel = pending ? 'Ruším rozkaz' : disabled ? disabledReason : actionLabel;
+
+  return (
+    <span className={`command-cancel-action${disabled ? ' is-disabled' : ''}${pending ? ' is-pending' : ''}`} title={buttonLabel}>
+      <button
+        type="button"
+        className="command-cancel-icon-button"
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={buttonLabel}
+        title={buttonLabel}
+      >
+        <span className="command-cancel-icon-mark" aria-hidden="true">
+          {pending ? '…' : '✕'}
+        </span>
+      </button>
+      <span className="command-cancel-tooltip" aria-hidden="true">
+        {tooltipLabel}
+      </span>
+    </span>
+  );
+};
+
 const BuildingUpgradePreviewTooltip = ({
   building,
   statusText,
@@ -8478,19 +8517,13 @@ const MilitaryPanel = ({
                       ETA {formatDurationLabel(movement.remainingSec)} · Postup {cancelProgressLabel} % / limit {cancelLimitLabel} %
                     </small>
                     <div className="activity-item-actions">
-                      <button
-                        type="button"
-                        className="inline-cancel-button"
-                        onClick={() => onCancelArmyCommand(movement.id)}
+                      <CommandCancelAction
                         disabled={isCancelDisabled}
-                        title={
-                          cancelMeta.canCancel
-                            ? `Zrušit tento rozkaz (do ${cancelLimitLabel} % cesty)`
-                            : `Limit zrušení ${cancelLimitLabel} % byl překročen (${cancelProgressLabel} %).`
-                        }
-                      >
-                        {isArmyCommandPending ? '…' : 'Zrušit rozkaz'}
-                      </button>
+                        pending={isArmyCommandPending}
+                        actionLabel={`Zrušit tento rozkaz (do ${cancelLimitLabel} % cesty)`}
+                        disabledReason={`Limit zrušení ${cancelLimitLabel} % byl překročen (${cancelProgressLabel} %).`}
+                        onClick={() => onCancelArmyCommand(movement.id)}
+                      />
                     </div>
                     {hoveredMovementId === movement.id ? (
                       <MovementArmyTooltip movement={movement} cursorPosition={tooltipCursorPosition} />
@@ -11674,19 +11707,13 @@ const CommandsPanel = ({
                   movement.commandType === 'support' ||
                   movement.commandType === 'move' ? (
                     <div className="activity-item-actions">
-                      <button
-                        type="button"
-                        className="inline-cancel-button"
-                        onClick={() => onCancelArmyCommand(movement.id)}
+                      <CommandCancelAction
                         disabled={isCancelDisabled}
-                        title={
-                          cancelMeta.canCancel
-                            ? `Zrušit tento rozkaz (do ${cancelLimitLabel} % cesty)`
-                            : `Limit zrušení ${cancelLimitLabel} % byl překročen (${cancelProgressLabel} %).`
-                        }
-                      >
-                        {isArmyCommandPending ? '…' : 'Zrušit rozkaz'}
-                      </button>
+                        pending={isArmyCommandPending}
+                        actionLabel={`Zrušit tento rozkaz (do ${cancelLimitLabel} % cesty)`}
+                        disabledReason={`Limit zrušení ${cancelLimitLabel} % byl překročen (${cancelProgressLabel} %).`}
+                        onClick={() => onCancelArmyCommand(movement.id)}
+                      />
                     </div>
                   ) : null}
                   {hoveredMovementId === movement.id ? (

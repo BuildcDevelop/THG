@@ -1835,3 +1835,19 @@ Entry template:
 - Files: server/index.js, tests/regression/game-rules.scenario.mjs, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
 - Verification: `node --test --test-name-pattern "kingdom diplomacy can only be managed by the current leader|army commands can be canceled only up to one third" tests/regression/game-rules.regression.test.mjs` (PASS), `npm run build` (PASS), live SSH deploy bez kopie `server/data`, `Invoke-WebRequest https://thelastdominion.netlify.app/api/health` (`build-0.1.15`), live state check `Player001` (`canManageDiplomacy: false`), live state check `Hayato` (`canManageDiplomacy: true`)
 - Notes: Feature contract: leader-only diplomacie zůstává autoritativně na backendu a release nesmí zapisovat do živých game dat mimo běžný runtime kontejneru. Hlavní riziko byla opět nekonzistence frontend/backend kontraktu a nechtěný zásah do produkční SQLite; mitigace je cílený backend-only deploy se zachováním existujícího data volume a regresní test na přepínání leadership práv.
+
+## 2026-03-27 17:23 | branch: main
+
+- Request: Přepnout verzi hry v textu ve hře na `0.1.16`.
+- Summary: Srovnal jsem celý version contract na `0.1.16`, aby se změna nepropsala jen do viditelného UI textu, ale zůstala konzistentní i v package metadata a backend health fallbacku. Tím pádem hra ve frontend textu ukazuje `0.1.16` a release tooling nezůstane v driftu mezi klientem a serverem.
+- Files: package.json, src/version.ts, server/index.js, arch/chat-changelog.md
+- Verification: `npm run build`
+- Notes: Čistě release/version change bez zásahu do gameplay, pollingu nebo herních dat.
+
+## 2026-03-27 18:11 | branch: main
+
+- Request: Přidat do armádních Příkazů viditelný křížek pro zrušení útoku/podpory/přesunu s tooltipem a změnu commitnout, pushnout na `main` a nasadit live.
+- Summary: Nahradil jsem skryté textové tlačítko pro rušení armádních rozkazů samostatnou ikonovou akcí s výrazným stylem a tooltipem, sdílenou mezi přehledem armády a panelem Příkazy, aniž bych měnil autoritativní cancel pravidla nebo timing. Současně zůstává release contract na `0.1.16` konzistentní mezi klientem a backend health fallbackem.
+- Files: src/pages/GamePage.tsx, src/App.css, package.json, src/version.ts, server/index.js, arch/chat-changelog.md
+- Verification: `npm run build`
+- Notes: Feature contract: UI-only zviditelnění existující cancel akce pro `attack/support/move`; hlavní riziko bylo znovuzavedení divergence mezi dvěma seznamy rozkazů a drift release verze, mitigace je sdílený komponent `CommandCancelAction` použitý v obou renderech a společně commitnutý version contract `0.1.16`.
