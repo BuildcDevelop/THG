@@ -204,6 +204,32 @@ test('army commands can be canceled only up to one third and spawn timed returns
   assert.match(String(result?.blockedMessage ?? ''), /zrusit pouze do 1\/3 cesty/i);
 });
 
+test('kingdom diplomacy can only be managed by the current leader', () => {
+  const result = runScenario('kingdom-diplomacy-leadership');
+
+  assert.equal(String(result?.leaderBefore?.leaderUsername ?? ''), 'Hayato');
+  assert.equal(Boolean(result?.leaderBefore?.canManageDiplomacy), true);
+  assert.equal(String(result?.memberBefore?.leaderUsername ?? ''), 'Hayato');
+  assert.equal(Boolean(result?.memberBefore?.canManageDiplomacy), false);
+
+  assert.equal(String(result?.leaderSetResult?.sourceKingdom ?? ''), 'Aurora Pact');
+  assert.equal(String(result?.leaderSetResult?.targetKingdom ?? ''), 'Iron Dominion');
+  assert.equal(String(result?.leaderSetResult?.relationKind ?? ''), 'ally');
+  assert.match(String(result?.memberBlockedMessage ?? ''), /pouze vudce kralovstvi muze provest tuto akci/i);
+
+  assert.equal(String(result?.leadershipTransfer?.kingdom ?? ''), 'Aurora Pact');
+  assert.equal(String(result?.leadershipTransfer?.previousLeaderUsername ?? ''), 'Hayato');
+  assert.equal(String(result?.leadershipTransfer?.newLeaderUsername ?? ''), 'Player001');
+
+  assert.equal(String(result?.leaderAfter?.leaderUsername ?? ''), 'Player001');
+  assert.equal(Boolean(result?.leaderAfter?.canManageDiplomacy), false);
+  assert.equal(String(result?.memberAfter?.leaderUsername ?? ''), 'Player001');
+  assert.equal(Boolean(result?.memberAfter?.canManageDiplomacy), true);
+
+  assert.equal(String(result?.newLeaderSetResult?.relationKind ?? ''), 'war');
+  assert.match(String(result?.formerLeaderBlockedMessage ?? ''), /pouze vudce kralovstvi muze provest tuto akci/i);
+});
+
 test('large attacking army is not excessively punished', () => {
   const result = runScenario('large-army-balance');
   assert.equal(result.attackerWins, true);
