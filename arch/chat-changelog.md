@@ -1867,3 +1867,11 @@ Entry template:
 - Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
 - Verification: `npm run build` (PASS)
 - Notes: Feature contract: jen vizuální vrstva tooltipu cancel ikonky; hlavní riziko bylo clipping/stacking v dock okně, mitigace je reuse existujícího tooltip positioning hooku a portal render mimo scroll container.
+
+## 2026-03-27 18:52 | branch: main
+
+- Request: Ověřit, na čem běží live Netlify a live data, a pokud se nepoužívá `master`, odstranit ji tak, aby zůstala jen `main`.
+- Summary: Ověřil jsem, že live frontend běží z Netlify deploye commitu `6428939` na `main` a backend běží z buildu zdrojáků z `main`, zatímco samotná live herní data jsou mimo Git v `/home/patrik/THG/server/data`. Potom jsem přepnul GitHub default branch repozitáře na `main`, smazal `origin/master`, nastavil `origin/HEAD` na `origin/main`, odpojil starý worktree `D:\\The Last Dominion` do detached HEAD bez zásahu do jeho untracked souborů a smazal lokální branch `master`.
+- Files: arch/chat-changelog.md
+- Verification: `git remote show origin` (`HEAD branch: master` before, `origin/HEAD -> origin/main` after lokální sync), `git push origin --delete master` (PASS), `git branch -D master` (PASS), `git branch -a -vv` (bez `master` na `origin` i lokálně)
+- Notes: Nezasahoval jsem do live game dat ani do untracked souborů ve starém worktree; `D:\\The Last Dominion` zůstává jen jako detached snapshot na commitu `02af527`, nikoliv jako branch.
