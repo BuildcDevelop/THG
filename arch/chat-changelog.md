@@ -1819,3 +1819,11 @@ Entry template:
 - Files: arch/chat-changelog.md, plus merge změny z `feat/build-0.1.16` do `develop`
 - Verification: `git checkout develop`, `git pull --ff-only origin develop`, `git merge --no-ff --no-commit feat/build-0.1.16`, vyřešení konfliktu v `arch/chat-changelog.md`, `git commit`, `git push origin develop`
 - Notes: Feature contract: integrační merge bez dalších ručních zásahů do feature logiky; hlavní riziko byl ztracený nebo přepsaný chat audit při konfliktu append-only changelogu, mitigace je explicitní zachování obou větví historie v konfliktu a nový merge záznam na `develop`.
+
+## 2026-03-27 16:47 | branch: main
+
+- Request: Merge `develop` do produkce `main`, zahrnout už staged záložní snapshot a nasadit změny live.
+- Summary: Na produkční větvi `main` jsem nejdřív beze změny obsahu zapsal už připravený soubor `server/backups/game.20260315-110212.sqlite`, potom jsem mergnul `origin/develop` do `main` bez konfliktů. Release tak zahrnuje tooltip veřejného pořádku, dokončený cancel flow armádních rozkazů se serverově autoritativními cancel metadaty i ostatní změny z `develop`, aniž bych sahal na aktivní herní databáze.
+- Files: arch/chat-changelog.md, server/backups/game.20260315-110212.sqlite, plus merge změny z `develop` do `main`
+- Verification: `git commit -m "chore(release): include game backup snapshot"`, `git pull --ff-only origin main`, `git fetch origin develop`, `git merge --no-ff --no-commit origin/develop`, `npm run test:regression` (PASS, 37/37), `npm run build` (PASS), `git commit`, `git push origin main`, `npx netlify deploy --prod --build`
+- Notes: Feature contract: produkční release a live deploy bez zápisu do živých game dat; hlavní riziko byla nechtěná manipulace s herní DB nebo neúplný merge release kandidáta, mitigace je omezení na Git merge + build/test/deploy workflow a zahrnutí pouze již existující záložní kopie místo úprav aktivních SQLite dat.
