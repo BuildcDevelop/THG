@@ -1198,6 +1198,7 @@ const UNIT_TRAVEL_SPEED_TILES_PER_HOUR: Record<CommandUnitId, number> = {
 };
 const ARMY_TRAVEL_TIME_MULTIPLIER = 1.25;
 const MIN_ARMY_TRAVEL_DURATION_SEC = 45;
+const DEFAULT_COMMAND_CANCEL_PROGRESS_LIMIT = 1 / 3;
 
 const ARMY_COMMAND_LABELS: Record<ArmyCommandType, string> = {
   attack: 'Útok',
@@ -1257,6 +1258,76 @@ const getOrderedMovementUnits = (
 
 const getMovementUnitsTotal = (movement: Pick<ArmyMovementState, 'units'>): number =>
   movement.units.reduce((sum, unit) => sum + Math.max(0, Math.floor(Number(unit.amount ?? 0))), 0);
+
+const isCancelableArmyMovementType = (commandType: ArmyMovementState['commandType']): boolean =>
+  commandType === 'attack' || commandType === 'support' || commandType === 'move';
+
+const resolveCancelCommandProgressLimit = (limitRaw: number | null | undefined): number => {
+  const parsed = Number(limitRaw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_COMMAND_CANCEL_PROGRESS_LIMIT;
+  }
+  return Math.min(1, parsed);
+};
+
+const resolveMovementProgressRatio = (
+  movement: Pick<ArmyMovementState, 'startedAt' | 'arriveAt' | 'remainingSec'>,
+): number => {
+  const startedAtMs = Date.parse(String(movement.startedAt ?? ''));
+  const arriveAtMs = Date.parse(String(movement.arriveAt ?? ''));
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(arriveAtMs) || arriveAtMs <= startedAtMs) {
+    return 1;
+  }
+
+  const totalDurationSec = Math.max(1, (arriveAtMs - startedAtMs) / 1000);
+  const parsedRemainingSec = Number(movement.remainingSec ?? Number.NaN);
+  const fallbackRemainingSec = Math.max(0, (arriveAtMs - Date.now()) / 1000);
+  const remainingSec = Number.isFinite(parsedRemainingSec)
+    ? Math.max(0, Math.min(totalDurationSec, parsedRemainingSec))
+    : Math.max(0, Math.min(totalDurationSec, fallbackRemainingSec));
+  const elapsedSec = Math.max(0, totalDurationSec - remainingSec);
+  return Math.max(0, Math.min(1, elapsedSec / totalDurationSec));
+};
+
+const resolveMovementCancelMeta = (
+  movement: Pick<
+    ArmyMovementState,
+    | 'commandType'
+    | 'startedAt'
+    | 'arriveAt'
+    | 'remainingSec'
+    | 'isCancelable'
+    | 'cancelProgressLimit'
+    | 'commandProgressRatio'
+    | 'commandProgressPct'
+  >,
+  cancelProgressLimitRaw: number | null | undefined,
+) => {
+  const limitRatio = resolveCancelCommandProgressLimit(
+    movement.cancelProgressLimit ?? cancelProgressLimitRaw,
+  );
+  const fallbackProgressRatio = resolveMovementProgressRatio(movement);
+  const serverProgressRatio = Number(movement.commandProgressRatio ?? Number.NaN);
+  const progressRatio = Number.isFinite(serverProgressRatio)
+    ? Math.max(0, Math.min(1, serverProgressRatio))
+    : fallbackProgressRatio;
+  const serverProgressPct = Number(movement.commandProgressPct ?? Number.NaN);
+  const progressPct = Number.isFinite(serverProgressPct)
+    ? Math.max(0, Math.min(100, Math.round(serverProgressPct)))
+    : Math.max(0, Math.round(progressRatio * 100));
+  const canCancelByLocalProgress = progressRatio <= limitRatio + 0.000001;
+  const canCancel =
+    typeof movement.isCancelable === 'boolean'
+      ? movement.isCancelable && isCancelableArmyMovementType(movement.commandType)
+      : isCancelableArmyMovementType(movement.commandType) && canCancelByLocalProgress;
+  return {
+    limitRatio,
+    limitPct: Math.max(0, Math.round(limitRatio * 100)),
+    progressRatio,
+    progressPct,
+    canCancel,
+  };
+};
 
 type TooltipCursorPosition = {
   x: number;
@@ -8007,6 +8078,9 @@ const MilitaryPanel = ({
   mercenaries,
   resources,
   notice,
+  isArmyCommandPending,
+  cancelCommandProgressLimit,
+  onCancelArmyCommand,
   mercenaryActionPending,
   onHireMercenaries,
 }: {
@@ -8020,6 +8094,9 @@ const MilitaryPanel = ({
     | Pick<GameStateResponse['resources'], 'coins' | 'productionPerHour' | 'protection'>
     | undefined;
   notice: string | null;
+  isArmyCommandPending: boolean;
+  cancelCommandProgressLimit: number | null | undefined;
+  onCancelArmyCommand: (movementId: number) => void;
   mercenaryActionPending: boolean;
   onHireMercenaries: (villageId: number) => void;
 }) => {
@@ -8092,6 +8169,7 @@ const MilitaryPanel = ({
         .sort((left, right) => left.id - right.id),
     [stationedSupports],
   );
+  const resolvedCancelCommandProgressLimit = resolveCancelCommandProgressLimit(cancelCommandProgressLimit);
   const [hoveredMovementId, setHoveredMovementId] = useState<number | null>(null);
   const [tooltipCursorPosition, setTooltipCursorPosition] = useState<TooltipCursorPosition | null>(null);
   const [selectedMercenaryVillageId, setSelectedMercenaryVillageId] = useState<number | null>(null);
@@ -8366,37 +8444,60 @@ const MilitaryPanel = ({
           <article>
             <h4>Odchozí rozkazy</h4>
             <ul className="commands-list">
-              {activeOutgoingForVillage.map((movement) => (
-                <li
-                  key={`military-outgoing-${movement.id}`}
-                  className={`commands-item has-army-tooltip${hoveredMovementId === movement.id ? ' is-tooltip-open' : ''}`}
-                  onMouseEnter={(event) => {
-                    setHoveredMovementId(movement.id);
-                    setTooltipCursorPosition({ x: event.clientX, y: event.clientY });
-                  }}
-                  onMouseMove={(event) => {
-                    setTooltipCursorPosition({ x: event.clientX, y: event.clientY });
-                  }}
-                  onMouseLeave={() => {
-                    setHoveredMovementId((previous) => (previous === movement.id ? null : previous));
-                    setTooltipCursorPosition(null);
-                  }}
-                >
-                  <div className="commands-item-line">
-                    <span className={`command-badge ${movement.commandType} compact`}>
-                      <span className="symbol">{getArmyCommandSymbol(movement.commandType)}</span>
-                    </span>
-                    <strong>{ARMY_COMMAND_LABELS[movement.commandType]}</strong>
-                    <span>
-                      {movement.originName} → {movement.targetName}
-                    </span>
-                  </div>
-                  <small>ETA {formatDurationLabel(movement.remainingSec)}</small>
-                  {hoveredMovementId === movement.id ? (
-                    <MovementArmyTooltip movement={movement} cursorPosition={tooltipCursorPosition} />
-                  ) : null}
-                </li>
-              ))}
+              {activeOutgoingForVillage.map((movement) => {
+                const cancelMeta = resolveMovementCancelMeta(movement, resolvedCancelCommandProgressLimit);
+                const cancelLimitLabel = cancelMeta.limitPct.toLocaleString('cs-CZ');
+                const cancelProgressLabel = cancelMeta.progressPct.toLocaleString('cs-CZ');
+                const isCancelDisabled = isArmyCommandPending || !cancelMeta.canCancel;
+                return (
+                  <li
+                    key={`military-outgoing-${movement.id}`}
+                    className={`commands-item has-army-tooltip${hoveredMovementId === movement.id ? ' is-tooltip-open' : ''}`}
+                    onMouseEnter={(event) => {
+                      setHoveredMovementId(movement.id);
+                      setTooltipCursorPosition({ x: event.clientX, y: event.clientY });
+                    }}
+                    onMouseMove={(event) => {
+                      setTooltipCursorPosition({ x: event.clientX, y: event.clientY });
+                    }}
+                    onMouseLeave={() => {
+                      setHoveredMovementId((previous) => (previous === movement.id ? null : previous));
+                      setTooltipCursorPosition(null);
+                    }}
+                  >
+                    <div className="commands-item-line">
+                      <span className={`command-badge ${movement.commandType} compact`}>
+                        <span className="symbol">{getArmyCommandSymbol(movement.commandType)}</span>
+                      </span>
+                      <strong>{ARMY_COMMAND_LABELS[movement.commandType]}</strong>
+                      <span>
+                        {movement.originName} → {movement.targetName}
+                      </span>
+                    </div>
+                    <small>
+                      ETA {formatDurationLabel(movement.remainingSec)} · Postup {cancelProgressLabel} % / limit {cancelLimitLabel} %
+                    </small>
+                    <div className="activity-item-actions">
+                      <button
+                        type="button"
+                        className="inline-cancel-button"
+                        onClick={() => onCancelArmyCommand(movement.id)}
+                        disabled={isCancelDisabled}
+                        title={
+                          cancelMeta.canCancel
+                            ? `Zrušit tento rozkaz (do ${cancelLimitLabel} % cesty)`
+                            : `Limit zrušení ${cancelLimitLabel} % byl překročen (${cancelProgressLabel} %).`
+                        }
+                      >
+                        {isArmyCommandPending ? '…' : 'Zrušit rozkaz'}
+                      </button>
+                    </div>
+                    {hoveredMovementId === movement.id ? (
+                      <MovementArmyTooltip movement={movement} cursorPosition={tooltipCursorPosition} />
+                    ) : null}
+                  </li>
+                );
+              })}
               {activeOutgoingForVillage.length === 0 ? <li>Žádný aktivní odchozí rozkaz.</li> : null}
             </ul>
           </article>
@@ -10385,6 +10486,7 @@ const CommandsPanel = ({
   logisticsActionPending,
   guildActionPending,
   cancelLogisticsPendingId,
+  cancelCommandProgressLimit,
   commandNotice,
   onSendMarketLogistics,
   onCancelMarketLogistics,
@@ -10418,6 +10520,7 @@ const CommandsPanel = ({
   logisticsActionPending: boolean;
   guildActionPending: boolean;
   cancelLogisticsPendingId: number | null;
+  cancelCommandProgressLimit: number | null | undefined;
   commandNotice: string | null;
   onSendMarketLogistics: (payload: {
     targetVillageId: number;
@@ -10453,6 +10556,7 @@ const CommandsPanel = ({
     () => [...incomingMovements].sort((left, right) => left.remainingSec - right.remainingSec || left.id - right.id),
     [incomingMovements],
   );
+  const resolvedCancelCommandProgressLimit = resolveCancelCommandProgressLimit(cancelCommandProgressLimit);
   const incomingAttackCount = sortedIncoming.filter((movement) => movement.commandType === 'attack').length;
   const [commandType, setCommandType] = useState<ArmyCommandType>('attack');
   const [lootPriority, setLootPriority] = useState<LootPriority>('balanced');
@@ -11533,6 +11637,10 @@ const CommandsPanel = ({
           <ul className="commands-list">
             {sortedOutgoing.map((movement) => {
               const unitsTotal = getMovementUnitsTotal(movement);
+              const cancelMeta = resolveMovementCancelMeta(movement, resolvedCancelCommandProgressLimit);
+              const cancelLimitLabel = cancelMeta.limitPct.toLocaleString('cs-CZ');
+              const cancelProgressLabel = cancelMeta.progressPct.toLocaleString('cs-CZ');
+              const isCancelDisabled = isArmyCommandPending || !cancelMeta.canCancel;
               return (
                 <li
                   key={`outgoing-command-${movement.id}`}
@@ -11559,7 +11667,8 @@ const CommandsPanel = ({
                     </span>
                   </div>
                   <small>
-                    Jednotky: {unitsTotal.toLocaleString('cs-CZ')} · ETA {formatDurationLabel(movement.remainingSec)}
+                    Jednotky: {unitsTotal.toLocaleString('cs-CZ')} · ETA {formatDurationLabel(movement.remainingSec)} · Postup{' '}
+                    {cancelProgressLabel} % / limit {cancelLimitLabel} %
                   </small>
                   {movement.commandType === 'attack' ||
                   movement.commandType === 'support' ||
@@ -11569,8 +11678,12 @@ const CommandsPanel = ({
                         type="button"
                         className="inline-cancel-button"
                         onClick={() => onCancelArmyCommand(movement.id)}
-                        disabled={isArmyCommandPending}
-                        title="Zrušit tento rozkaz (do 1/3 cesty)"
+                        disabled={isCancelDisabled}
+                        title={
+                          cancelMeta.canCancel
+                            ? `Zrušit tento rozkaz (do ${cancelLimitLabel} % cesty)`
+                            : `Limit zrušení ${cancelLimitLabel} % byl překročen (${cancelProgressLabel} %).`
+                        }
                       >
                         {isArmyCommandPending ? '…' : 'Zrušit rozkaz'}
                       </button>
@@ -22963,6 +23076,9 @@ export const GamePage = () => {
             mercenaries={gameState?.mercenaries}
             resources={gameState?.resources}
             notice={researchNotice}
+            isArmyCommandPending={armyCommandPending}
+            cancelCommandProgressLimit={gameState?.rules?.cancelCommandProgressLimit}
+            onCancelArmyCommand={handleCancelArmyCommand}
             mercenaryActionPending={mercenaryActionPending}
             onHireMercenaries={handleHireMercenaries}
           />
@@ -22990,6 +23106,7 @@ export const GamePage = () => {
             logisticsActionPending={logisticsActionPending}
             guildActionPending={guildActionPending}
             cancelLogisticsPendingId={cancelLogisticsPendingId}
+            cancelCommandProgressLimit={gameState?.rules?.cancelCommandProgressLimit}
             commandNotice={armyCommandNotice}
             onSendMarketLogistics={handleSendMarketLogistics}
             onCancelMarketLogistics={handleCancelMarketLogistics}

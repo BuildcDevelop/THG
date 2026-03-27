@@ -8324,7 +8324,45 @@ const simulateAttackBattle = ({
   };
 };
 
+const resolveMovementTimingMetrics = (startedAtRaw, arriveAtRaw, referenceMs = Date.now()) => {
+  const startedAtMs = Date.parse(String(startedAtRaw ?? ''));
+  const arriveAtMs = Date.parse(String(arriveAtRaw ?? ''));
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(arriveAtMs) || arriveAtMs <= startedAtMs) {
+    return {
+      valid: false,
+      totalDurationSec: 1,
+      elapsedSec: 1,
+      remainingSec: 0,
+      progressRatio: 1,
+      maxCancelableSec: 0,
+      canCancelByProgress: false,
+      cancelWindowRemainingSec: 0,
+    };
+  }
+
+  const totalDurationSec = Math.max(1, (arriveAtMs - startedAtMs) / 1000);
+  const elapsedSec = Math.max(0, Math.min(totalDurationSec, (referenceMs - startedAtMs) / 1000));
+  const remainingSec = Math.max(0, Math.ceil((arriveAtMs - referenceMs) / 1000));
+  const progressRatio = Math.max(0, Math.min(1, elapsedSec / totalDurationSec));
+  const maxCancelableSec = totalDurationSec * COMMAND_CANCEL_MAX_PROGRESS;
+  const canCancelByProgress = elapsedSec <= maxCancelableSec;
+
+  return {
+    valid: true,
+    totalDurationSec,
+    elapsedSec,
+    remainingSec,
+    progressRatio,
+    maxCancelableSec,
+    canCancelByProgress,
+    cancelWindowRemainingSec: canCancelByProgress ? Math.max(0, Math.floor(maxCancelableSec - elapsedSec)) : 0,
+  };
+};
+
 const toMovementWithUnits = (movementRow) => {
+  const commandType = String(movementRow.commandType ?? '');
+  const isCancelableCommandType = commandType === 'attack' || commandType === 'support' || commandType === 'move';
+  const timing = resolveMovementTimingMetrics(movementRow.startedAt, movementRow.arriveAt);
   const units = selectMovementUnitsStmt.all(Number(movementRow.id)).map((unitRow) => ({
     unitId: unitRow.unitId,
     amount: Number(unitRow.amount),
@@ -8333,11 +8371,10 @@ const toMovementWithUnits = (movementRow) => {
     Math.abs(Number(movementRow.targetCoordX) - Number(movementRow.originCoordX)),
     Math.abs(Number(movementRow.targetCoordY) - Number(movementRow.originCoordY)),
   );
-  const remainingSec = Math.max(0, Math.ceil((Date.parse(movementRow.arriveAt) - Date.now()) / 1000));
 
   return {
     id: Number(movementRow.id),
-    commandType: movementRow.commandType,
+    commandType,
     commanderPlayerId:
       movementRow.commanderPlayerId == null ? null : Number(movementRow.commanderPlayerId),
     commanderUsername:
@@ -8363,7 +8400,17 @@ const toMovementWithUnits = (movementRow) => {
     startedAt: movementRow.startedAt,
     arriveAt: movementRow.arriveAt,
     distance,
-    remainingSec,
+    remainingSec: timing.remainingSec,
+    commandProgressRatio: Number(timing.progressRatio.toFixed(4)),
+    commandProgressPct: Math.max(0, Math.round(timing.progressRatio * 100)),
+    cancelProgressLimit: COMMAND_CANCEL_MAX_PROGRESS,
+    isCancelable: timing.valid && isCancelableCommandType && timing.canCancelByProgress,
+    cancelWindowRemainingSec:
+      timing.valid && isCancelableCommandType && timing.canCancelByProgress
+        ? Number(timing.cancelWindowRemainingSec)
+        : 0,
+    elapsedSec: Math.max(0, Math.round(timing.elapsedSec)),
+    totalDurationSec: Math.max(1, Math.round(timing.totalDurationSec)),
     units,
   };
 };
@@ -14571,17 +14618,14 @@ const cancelArmyCommandTransaction = db.transaction((username, movementIdRaw, re
     throw new GameRuleError('Tento typ rozkazu nelze zrusit.', 400);
   }
 
-  const startedAtMs = Date.parse(String(movement.startedAt));
-  const arriveAtMs = Date.parse(String(movement.arriveAt));
-  const nowMs = Date.now();
-  if (!Number.isFinite(startedAtMs) || !Number.isFinite(arriveAtMs) || arriveAtMs <= startedAtMs) {
+  const timing = resolveMovementTimingMetrics(movement.startedAt, movement.arriveAt);
+  if (!timing.valid) {
     throw new GameRuleError('Rozkaz ma neplatna casova data a nelze jej zrusit.', 400);
   }
 
-  const totalDurationSec = Math.max(1, (arriveAtMs - startedAtMs) / 1000);
-  const elapsedSec = Math.max(0, Math.min(totalDurationSec, (nowMs - startedAtMs) / 1000));
-  const maxCancelableSec = totalDurationSec * COMMAND_CANCEL_MAX_PROGRESS;
-  if (elapsedSec > maxCancelableSec) {
+  const totalDurationSec = timing.totalDurationSec;
+  const elapsedSec = timing.elapsedSec;
+  if (!timing.canCancelByProgress) {
     throw new GameRuleError(
       `Rozkaz lze zrusit pouze do 1/3 cesty. Aktualni prubeh: ${Math.round((elapsedSec / totalDurationSec) * 100)} %.`,
       400,

@@ -1,4 +1,5 @@
 import {
+  cancelArmyCommand,
   cancelMarketLogistics,
   conquerVillage,
   createAbandonedVillages,
@@ -111,6 +112,11 @@ const updateVillageOwnerStmt = db.prepare(
 const updateMovementArrivalStmt = db.prepare(
   `UPDATE army_movements
    SET arrive_at = ?
+   WHERE id = ?`,
+);
+const updateMovementTimelineStmt = db.prepare(
+  `UPDATE army_movements
+   SET started_at = ?, arrive_at = ?
    WHERE id = ?`,
 );
 const updateVillagePrestigeByPlayerRegionStmt = db.prepare(
@@ -458,6 +464,18 @@ const findAttackerPayloadByMovement = (username, movementId) => {
 const forceMovementArrivalNow = (movementId) => {
   const pastIso = new Date(Date.now() - 60 * 1000).toISOString();
   updateMovementArrivalStmt.run(pastIso, Number(movementId));
+};
+const setMovementProgressRatio = (movementId, progressRatioRaw, totalDurationSecRaw = 300) => {
+  const progressRatio = Math.max(0, Math.min(0.95, Number(progressRatioRaw ?? 0)));
+  const totalDurationSec = Math.max(60, Math.floor(Number(totalDurationSecRaw ?? 300)));
+  const nowMs = Date.now();
+  const startedAtMs = Math.floor(nowMs - totalDurationSec * 1000 * progressRatio);
+  const arriveAtMs = Math.floor(startedAtMs + totalDurationSec * 1000);
+  updateMovementTimelineStmt.run(
+    new Date(startedAtMs).toISOString(),
+    new Date(arriveAtMs).toISOString(),
+    Number(movementId),
+  );
 };
 const forceLogisticsArrivalNow = (routeId) => {
   const pastIso = new Date(Date.now() - 60 * 1000).toISOString();
@@ -888,6 +906,156 @@ const runScenarioWorldVillageLimit = () => {
     firstConquest,
     secondConquest,
     blockedError,
+  };
+};
+
+const runScenarioArmyCommandCancelWindow = () => {
+  clearTransientState();
+  const attacker = getPlayer(ATTACKER_USERNAME);
+  const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const defenderVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+  const candidateMoveTargetVillageId = getVillageIdsInRegion(attackerVillage.region).find(
+    (villageId) => villageId !== attackerVillage.villageId && villageId !== defenderVillage.villageId,
+  );
+  if (candidateMoveTargetVillageId == null) {
+    throw new Error('No owned-village candidate found for move cancel scenario.');
+  }
+
+  assignVillageOwners([Number(candidateMoveTargetVillageId)], Number(attacker.id), KINGDOM_ATTACKER);
+
+  setVillageUnits(attackerVillage.villageId, { militia: 900, archer: 300, cavalry: 120 });
+  setVillageUnits(defenderVillage.villageId, {});
+  setVillageUnits(Number(candidateMoveTargetVillageId), {});
+
+  const progressRatio = 0.29;
+  const totalDurationSec = 300;
+  const cancelableCommands = [
+    {
+      commandType: 'attack',
+      targetVillageId: Number(defenderVillage.villageId),
+      units: { militia: 180 },
+    },
+    {
+      commandType: 'support',
+      targetVillageId: Number(defenderVillage.villageId),
+      units: { militia: 120, archer: 60 },
+    },
+    {
+      commandType: 'move',
+      targetVillageId: Number(candidateMoveTargetVillageId),
+      units: { militia: 100, cavalry: 40 },
+    },
+  ];
+
+  const canceled = cancelableCommands.map((entry) => {
+    const issued = issueArmyCommand(
+      ATTACKER_USERNAME,
+      {
+        commandType: entry.commandType,
+        targetVillageId: Number(entry.targetVillageId),
+        units: toCompleteSelection(entry.units),
+      },
+      Number(attackerVillage.villageId),
+      WORLD_PRIMARY,
+    );
+    const orderId = Number(issued.orderId);
+    setMovementProgressRatio(orderId, progressRatio, totalDurationSec);
+    const previewSnapshot = getVillageSnapshot(
+      ATTACKER_USERNAME,
+      Number(attackerVillage.villageId),
+      WORLD_PRIMARY,
+    );
+    const previewMovement =
+      (previewSnapshot?.army?.activeMovements ?? []).find((movement) => Number(movement?.id ?? 0) === orderId) ?? null;
+    const canceledResult = cancelArmyCommand(
+      ATTACKER_USERNAME,
+      orderId,
+      Number(attackerVillage.villageId),
+      WORLD_PRIMARY,
+    );
+    return {
+      commandType: String(entry.commandType),
+      orderId,
+      canceledMovementId: Number(canceledResult.canceledMovementId),
+      returnMovementId: canceledResult.returnMovementId == null ? null : Number(canceledResult.returnMovementId),
+      elapsedSec: Number(canceledResult.elapsedSec),
+      returnDurationSec: Number(canceledResult.returnDurationSec),
+      returnArriveAt: canceledResult.returnArriveAt ? String(canceledResult.returnArriveAt) : null,
+      totalUnits: Number(canceledResult.totalUnits),
+      previewCancelable: Boolean(previewMovement?.isCancelable),
+      previewProgressPct: Number(previewMovement?.commandProgressPct ?? 0),
+      previewLimitRatio: Number(previewMovement?.cancelProgressLimit ?? 0),
+    };
+  });
+
+  const overLimitMoveOrder = issueArmyCommand(
+    ATTACKER_USERNAME,
+    {
+      commandType: 'move',
+      targetVillageId: Number(candidateMoveTargetVillageId),
+      units: toCompleteSelection({ militia: 30 }),
+    },
+    Number(attackerVillage.villageId),
+    WORLD_PRIMARY,
+  );
+  setMovementProgressRatio(Number(overLimitMoveOrder.orderId), 0.45, totalDurationSec);
+  const overLimitPreviewSnapshot = getVillageSnapshot(
+    ATTACKER_USERNAME,
+    Number(attackerVillage.villageId),
+    WORLD_PRIMARY,
+  );
+  const overLimitPreviewMovement =
+    (overLimitPreviewSnapshot?.army?.activeMovements ?? []).find(
+      (movement) => Number(movement?.id ?? 0) === Number(overLimitMoveOrder.orderId),
+    ) ?? null;
+  let blockedMessage = null;
+  try {
+    cancelArmyCommand(
+      ATTACKER_USERNAME,
+      Number(overLimitMoveOrder.orderId),
+      Number(attackerVillage.villageId),
+      WORLD_PRIMARY,
+    );
+  } catch (error) {
+    blockedMessage = String(error?.message ?? error);
+  }
+
+  const expectedReturnMovementIds = new Set(
+    canceled
+      .map((entry) => Number(entry.returnMovementId ?? 0))
+      .filter((movementId) => Number.isFinite(movementId) && movementId > 0),
+  );
+  const snapshot = getVillageSnapshot(
+    ATTACKER_USERNAME,
+    Number(attackerVillage.villageId),
+    WORLD_PRIMARY,
+  );
+  const activeReturnMovements = (snapshot?.army?.activeMovements ?? [])
+    .filter((movement) => {
+      const movementId = Number(movement?.id ?? 0);
+      return String(movement?.commandType ?? '') === 'return' && expectedReturnMovementIds.has(movementId);
+    })
+    .map((movement) => ({
+      id: Number(movement.id),
+      remainingSec: Number(movement.remainingSec ?? 0),
+      originVillageId: Number(movement.originVillageId),
+      targetVillageId: Number(movement.targetVillageId),
+      homeVillageId: Number(movement.homeVillageId),
+    }));
+
+  return {
+    progressRatio,
+    totalDurationSec,
+    cancelLimitRatio: 1 / 3,
+    canceled,
+    overLimitPreview: {
+      movementId: Number(overLimitMoveOrder.orderId),
+      isCancelable: overLimitPreviewMovement?.isCancelable === true,
+      progressPct: Number(overLimitPreviewMovement?.commandProgressPct ?? 0),
+      limitRatio: Number(overLimitPreviewMovement?.cancelProgressLimit ?? 0),
+    },
+    blockedMessage,
+    activeReturnMovements,
   };
 };
 
@@ -2102,6 +2270,7 @@ const scenarioHandlers = new Map([
   ['scout-only-no-defender-scouts', runScenarioScoutOnlyNoDefenderScouts],
   ['conquest-knight-loot-capacity', runScenarioConquestKnightLootCapacity],
   ['world-village-limit', runScenarioWorldVillageLimit],
+  ['army-command-cancel-window', runScenarioArmyCommandCancelWindow],
   ['large-army-balance', runScenarioLargeArmyBalance],
   ['prestige-weak-defense-breakthrough', runScenarioPrestigeWeakDefenseBreakthrough],
   ['prestige-light-raid-still-fails', runScenarioPrestigeLightRaidStillFails],

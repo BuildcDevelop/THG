@@ -16082,6 +16082,15 @@ body[data-ui-skin='dark-medieval']
 }
 
 /* Build 0.1.16 follow-up: keep public order tooltip above HUD layers and unclipped. */
+.game-page .resource-strip {
+  overflow: visible;
+}
+
+.game-page .resource-strip.resource-strip-slim {
+  position: relative;
+  z-index: 48;
+}
+
 .game-page .resource-strip.resource-strip-slim :is(
     .village-resource-card,
     .village-resource-card-layout,
@@ -16098,11 +16107,23 @@ body[data-ui-skin='dark-medieval']
 }
 
 .game-page .resource-strip.resource-strip-slim .public-order-badge {
+  position: relative;
   z-index: 95;
 }
 
-.game-page .public-order-tooltip.commands-army-tooltip {
+.game-page .resource-strip.resource-strip-slim .public-order-tooltip.commands-army-tooltip {
+  left: 0;
+  top: calc(100% + 0.48rem);
+  width: min(320px, calc(100vw - 1.4rem));
+  max-width: 92vw;
+  transform: translateY(4px) scale(0.98);
+  transform-origin: top left;
   z-index: 2147483200;
+}
+
+.game-page .resource-strip.resource-strip-slim .public-order-badge:is(:hover, :focus-visible, :focus-within) .public-order-tooltip.commands-army-tooltip {
+  opacity: 1;
+  transform: translateY(0) scale(1);
 }
 
 /* Build 0.1.16 follow-up: remove remaining framed chrome in Overview + Army panels. */

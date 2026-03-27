@@ -134,6 +134,13 @@ export type ArmyMovementState = {
   arriveAt: string;
   distance: number;
   remainingSec: number;
+  commandProgressRatio?: number;
+  commandProgressPct?: number;
+  cancelProgressLimit?: number;
+  isCancelable?: boolean;
+  cancelWindowRemainingSec?: number;
+  elapsedSec?: number;
+  totalDurationSec?: number;
   isRelatedToCurrentVillage: boolean;
   isIncoming?: boolean;
   units: {

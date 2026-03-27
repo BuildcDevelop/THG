@@ -1774,3 +1774,27 @@ Entry template:
 - Files: arch/chat-changelog.md
 - Verification: `git status`, `git commit`, `git push origin feat/build-0.1.16`, kontrola portů přes `Get-NetTCPConnection`
 - Notes: Feature contract: release/provozní úkon bez nových změn herní logiky; hlavní riziko byl nechtěný částečný commit, mitigace je explicitní `git add -A` a následná verifikace stavu větve po pushi.
+
+## 2026-03-27 16:16 | branch: feat/build-0.1.16
+
+- Request: Opravit viditelnost tooltipu veřejného pořádku a dotáhnout rušení armádních příkazů (útok/podpora/přesun) do 33 % cesty s návratem jednotek podle už ušlé doby, následně ověřit localhost:5173.
+- Summary: V `src/App.css` jsem upravil vrstvu a umístění public-order tooltipu tak, aby se otevíral pod badge a nebyl překryt horní navigací. V `src/pages/GamePage.tsx` jsem přidal jednotnou klientskou logiku pro výpočet progresu rozkazu a cancel window (limit z pravidel světa), napojil ji do `CommandsPanel` i `MilitaryPanel` a tlačítko „Zrušit rozkaz“ teď funguje konzistentně pro `attack`/`support`/`move` pouze do limitu (poté je disabled s důvodem). Backend cancel flow jsem ponechal autoritativní (server už vrací návratový čas dle ušlé cesty). Do regresí jsem přidal nový scénář `army-command-cancel-window` v `tests/regression/game-rules.scenario.mjs` a odpovídající test v `tests/regression/game-rules.regression.test.mjs`, který ověřuje úspěšné cancel pro všechny tři typy příkazů, časovaný návrat bez teleportu a blokaci po překročení 1/3.
+- Files: src/App.css, src/pages/GamePage.tsx, tests/regression/game-rules.scenario.mjs, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
+- Verification: `npm run test:regression -- --test-name-pattern "army commands can be canceled only up to one third"` (PASS; runner provedl celý regression set 37/37), `npm run build` (PASS), `npm run lint` (FAIL na existujícím `react-hooks/set-state-in-effect` v `src/pages/GamePage.tsx:17007`, mimo tento change set), `Invoke-WebRequest http://localhost:5173` (HTTP 200) + listener na 5173 aktivní.
+- Notes: Feature contract: hráč může rušit odchozí vojenské příkazy (`attack`/`support`/`move`) jen do 33 % trasy a jednotky se po zrušení vrací zpět časem odpovídajícím již ušlé části cesty; tooltip veřejného pořádku musí být čitelný bez překryvu HUD navigací. Hlavní riziko: rozpad konzistence UI vs backend pravidla a regresní zásah do renderu horního HUD. Mitigace: sdílený výpočet cancel metadat na klientu + ponechání serverového guardu jako source of truth + regresní scénář pokrývající attack/support/move i over-limit větev.
+
+## 2026-03-27 16:36 | branch: feat/build-0.1.16
+
+- Request: Dotáhnout konzistenci v rámci hlavního rizika (sjednotit pravidlo rušení rozkazu mezi UI a backendem).
+- Summary: V `server/gameService.js` jsem centralizoval timing/cancel výpočet do `resolveMovementTimingMetrics` a stejné metriky používám jak pro serializaci pohybů, tak pro serverové zrušení rozkazu. API pohybu nyní vrací explicitní cancel metadata (`isCancelable`, `cancelProgressLimit`, `commandProgressRatio`, `commandProgressPct`, `cancelWindowRemainingSec`, `elapsedSec`, `totalDurationSec`) a frontend v `src/pages/GamePage.tsx` je preferuje jako autoritativní zdroj s fallbackem na lokální výpočet. V regresích jsem scénář a test rozšířil o kontrolu preview metadat i over-limit větve, aby se nekonzistence UI/server znovu nevrátila.
+- Files: server/gameService.js, src/api/gameApi.ts, src/pages/GamePage.tsx, tests/regression/game-rules.scenario.mjs, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
+- Verification: `node --test --test-name-pattern "army commands can be canceled only up to one third" tests/regression/game-rules.regression.test.mjs` (PASS), `npm run build` (PASS), `Invoke-WebRequest http://localhost:5173` (HTTP 200) + listener na `5173` aktivní.
+- Notes: Feature contract: cancel window je 33 % trasy pro `attack`/`support`/`move`, návrat jednotek je časovaný podle již ušlé části cesty, backend je source of truth. Hlavní riziko byla divergence výpočtu mezi klientem a serverem; mitigace je sdílená serverová timing funkce, serverem publikovaná metadata a regresní pokrytí preview + blocked větve.
+
+## 2026-03-27 16:40 | branch: feat/build-0.1.16
+
+- Request: Commitnout a pushnout aktuální změny na větvi `feat/build-0.1.16`.
+- Summary: Připravil jsem všechny aktuální úpravy tooltipu veřejného pořádku, cancel flow armádních rozkazů a serverové konzistence cancel metadat do jednoho commitu a odeslal je na `origin/feat/build-0.1.16`.
+- Files: arch/chat-changelog.md, server/gameService.js, src/App.css, src/api/gameApi.ts, src/pages/GamePage.tsx, tests/regression/game-rules.regression.test.mjs, tests/regression/game-rules.scenario.mjs
+- Verification: `git status`, `git add -A`, `git commit`, `git push origin feat/build-0.1.16`
+- Notes: Feature contract: provozní release krok bez další změny logiky; hlavní riziko byl neúplný commit aktuálního change setu, mitigace je explicitní zahrnutí všech upravených souborů a následná kontrola pushnuté větve.

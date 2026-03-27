@@ -160,6 +160,50 @@ test('village conquest has no hard cap per world', () => {
   assert.equal(result.blockedError, null);
 });
 
+test('army commands can be canceled only up to one third and spawn timed returns', () => {
+  const result = runScenario('army-command-cancel-window');
+  const canceled = Array.isArray(result?.canceled) ? result.canceled : [];
+  const activeReturnMovements = Array.isArray(result?.activeReturnMovements) ? result.activeReturnMovements : [];
+
+  assert.equal(canceled.length, 3);
+  assert.deepEqual(
+    canceled.map((entry) => String(entry.commandType ?? '')),
+    ['attack', 'support', 'move'],
+  );
+
+  for (const entry of canceled) {
+    assert.ok(Number(entry.orderId ?? 0) > 0);
+    assert.equal(Number(entry.canceledMovementId ?? -1), Number(entry.orderId ?? -2));
+    assert.ok(Number(entry.returnMovementId ?? 0) > 0);
+    assert.ok(Number(entry.elapsedSec ?? 0) > 0);
+    assert.ok(Number(entry.returnDurationSec ?? 0) > 0);
+    assert.ok(
+      Math.abs(Number(entry.returnDurationSec ?? 0) - Number(entry.elapsedSec ?? 0)) <= 1,
+      'return duration must follow elapsed travel time',
+    );
+    assert.ok(
+      Number(entry.returnDurationSec ?? 0) >= 70,
+      'return duration should not teleport units back instantly',
+    );
+    assert.equal(Boolean(entry.previewCancelable), true);
+    assert.ok(Number(entry.previewProgressPct ?? 0) >= 0);
+    assert.ok(Number(entry.previewProgressPct ?? 0) <= 34);
+    assert.ok(Math.abs(Number(entry.previewLimitRatio ?? 0) - 1 / 3) < 0.0001);
+  }
+
+  const returnIds = new Set(canceled.map((entry) => Number(entry.returnMovementId ?? 0)));
+  assert.equal(activeReturnMovements.length, 3);
+  for (const movement of activeReturnMovements) {
+    assert.ok(returnIds.has(Number(movement.id ?? 0)));
+    assert.ok(Number(movement.remainingSec ?? 0) > 0);
+  }
+
+  assert.equal(Boolean(result?.overLimitPreview?.isCancelable), false);
+  assert.ok(Number(result?.overLimitPreview?.progressPct ?? 0) >= 40);
+  assert.ok(Math.abs(Number(result?.overLimitPreview?.limitRatio ?? 0) - 1 / 3) < 0.0001);
+  assert.match(String(result?.blockedMessage ?? ''), /zrusit pouze do 1\/3 cesty/i);
+});
+
 test('large attacking army is not excessively punished', () => {
   const result = runScenario('large-army-balance');
   assert.equal(result.attackerWins, true);
