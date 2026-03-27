@@ -8778,6 +8778,9 @@ const resolveWorldSettlementMapKind = ({
   if (isRoyal) {
     return 'royal';
   }
+  if (diplomacyKind === 'same_kingdom_foreign') {
+    return 'royal';
+  }
   if (diplomacyKind === 'ally') {
     return 'allied';
   }

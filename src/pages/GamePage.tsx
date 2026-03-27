@@ -3236,10 +3236,22 @@ const getSettlementProtectionRemainingSec = (
 const getSettlementMapKind = (
   settlement: Pick<
     RegionSettlement,
-    'kind' | 'relation' | 'owner' | 'villageId' | 'protectionRemainingSec' | 'protectionUntil' | 'kingdom' | 'mapKind'
+    | 'kind'
+    | 'relation'
+    | 'owner'
+    | 'villageId'
+    | 'protectionRemainingSec'
+    | 'protectionUntil'
+    | 'kingdom'
+    | 'mapKind'
+    | 'diplomacyKind'
   >,
   activeVillageId: number | null = null,
 ): MapSettlementKind => {
+  if (settlement.diplomacyKind === 'same_kingdom_foreign') {
+    return 'royal';
+  }
+
   const mapKindRaw = String(settlement.mapKind ?? '')
     .trim()
     .toLowerCase();
@@ -3278,8 +3290,24 @@ const getSettlementMapKind = (
     return 'royal';
   }
 
+  if (settlement.diplomacyKind === 'ally') {
+    return 'allied';
+  }
+
+  if (settlement.diplomacyKind === 'non_aggression') {
+    return 'nap';
+  }
+
+  if (settlement.diplomacyKind === 'war') {
+    return 'enemy';
+  }
+
   if (settlement.relation === 'ally') {
-    return 'opponent';
+    return 'allied';
+  }
+
+  if (settlement.relation === 'enemy') {
+    return 'enemy';
   }
 
   return 'opponent';

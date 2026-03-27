@@ -230,6 +230,15 @@ test('kingdom diplomacy can only be managed by the current leader', () => {
   assert.match(String(result?.formerLeaderBlockedMessage ?? ''), /pouze vudce kralovstvi muze provest tuto akci/i);
 });
 
+test('same kingdom settlements use royal map kind', () => {
+  const result = runScenario('same-kingdom-royal-map-color');
+
+  assert.equal(String(result?.viewerKingdom ?? ''), String(result?.targetKingdom ?? ''));
+  assert.equal(String(result?.relation ?? ''), 'ally');
+  assert.equal(String(result?.diplomacyKind ?? ''), 'same_kingdom_foreign');
+  assert.equal(String(result?.mapKind ?? ''), 'royal');
+});
+
 test('large attacking army is not excessively punished', () => {
   const result = runScenario('large-army-balance');
   assert.equal(result.attackerWins, true);

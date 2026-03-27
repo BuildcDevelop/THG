@@ -1193,6 +1193,44 @@ const runScenarioKingdomDiplomacyLeadership = () => {
   };
 };
 
+const runScenarioSameKingdomRoyalMapColor = () => {
+  clearTransientState();
+
+  const leaderVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const memberVillage = getVillageForPlayerInWorld(MEMBER_USERNAME, WORLD_PRIMARY);
+  const member = getPlayer(MEMBER_USERNAME);
+
+  // Ensure the tested village is foreign but in the same kingdom as the viewer.
+  updateVillageOwnerStmt.run(Number(member.id), KINGDOM_ATTACKER, Number(memberVillage.villageId));
+
+  const snapshot = getWorldMapSnapshot(
+    ATTACKER_USERNAME,
+    Number(leaderVillage.villageId),
+    WORLD_PRIMARY,
+    'center',
+  );
+  const viewerVillageSnapshot = getVillageSnapshot(
+    ATTACKER_USERNAME,
+    Number(leaderVillage.villageId),
+    WORLD_PRIMARY,
+  );
+  const settlements = Array.isArray(snapshot?.world?.settlements) ? snapshot.world.settlements : [];
+  const memberSettlement =
+    settlements.find((entry) => Number(entry?.villageId ?? 0) === Number(memberVillage.villageId)) ?? null;
+
+  if (!memberSettlement) {
+    throw new Error('Member settlement is missing from world map snapshot.');
+  }
+
+  return {
+    viewerKingdom: String(viewerVillageSnapshot?.village?.kingdom ?? ''),
+    targetKingdom: String(memberSettlement?.kingdom ?? ''),
+    relation: String(memberSettlement?.relation ?? ''),
+    diplomacyKind: String(memberSettlement?.diplomacyKind ?? ''),
+    mapKind: String(memberSettlement?.mapKind ?? ''),
+  };
+};
+
 const runScenarioLargeArmyBalance = () => {
   clearTransientState();
   const attackerVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
@@ -2406,6 +2444,7 @@ const scenarioHandlers = new Map([
   ['world-village-limit', runScenarioWorldVillageLimit],
   ['army-command-cancel-window', runScenarioArmyCommandCancelWindow],
   ['kingdom-diplomacy-leadership', runScenarioKingdomDiplomacyLeadership],
+  ['same-kingdom-royal-map-color', runScenarioSameKingdomRoyalMapColor],
   ['large-army-balance', runScenarioLargeArmyBalance],
   ['prestige-weak-defense-breakthrough', runScenarioPrestigeWeakDefenseBreakthrough],
   ['prestige-light-raid-still-fails', runScenarioPrestigeLightRaidStillFails],
