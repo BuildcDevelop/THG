@@ -23,6 +23,7 @@ import {
   getArmyOverview,
   getBattleReport,
   getBattleReportSummary,
+  getPlayerAvatarAssetByPublicKey,
   getPlannerOpenSnapshot,
   getPlayerNotificationSummary,
   getVillageSnapshot,
@@ -49,6 +50,8 @@ import {
   restartVillageProgress,
   reorderRecruitmentQueue,
   setKingdomDiplomacy,
+  setPlayerAvatarFromDataUrl,
+  clearPlayerAvatar,
   spawnPlayerInWorld,
   runGameTick,
   sendMarketLogistics,
@@ -78,8 +81,6 @@ import {
   respondFriendRequest,
   sendCommunicationMessage,
   sendFriendRequest,
-  setCommunicationAvatar,
-  setCommunicationAvatarFromDataUrl,
   setCommunicationUiState,
   runCommunicationRetentionCleanup,
   unblockPlayer,
@@ -95,7 +96,7 @@ const app = express();
 const port = Number(process.env.PORT ?? 3001);
 const tickSchedule = process.env.GAME_TICK_SCHEDULE ?? '* * * * * *';
 const versionLabel =
-  String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.14').trim() || 'build-0.1.14';
+  String(process.env.TLD_VERSION_LABEL ?? process.env.VITE_GAME_VERSION ?? 'build-0.1.16').trim() || 'build-0.1.16';
 const buildId =
   String(process.env.TLD_BUILD_ID ?? process.env.NETLIFY_COMMIT_REF ?? process.env.COMMIT_REF ?? versionLabel).trim() ||
   versionLabel;
@@ -267,6 +268,33 @@ const toGameRuleError = (error) => {
   return new GameRuleError(message, 500);
 };
 
+const upsertPlayerAvatarFromRequest = async (usernameRaw, avatarDataUrlRaw, avatarUrlRaw) => {
+  const username = String(usernameRaw ?? '').trim();
+  if (!username) {
+    throw new GameRuleError("Pole 'username' je povinne.", 400);
+  }
+
+  const avatarDataUrl = String(avatarDataUrlRaw ?? '').trim();
+  const normalizedAvatarUrl = avatarUrlRaw == null ? '' : String(avatarUrlRaw).trim();
+  return executeWithWriteOperation(() => {
+    if (avatarDataUrl) {
+      return setPlayerAvatarFromDataUrl(username, avatarDataUrl);
+    }
+    if (
+      avatarUrlRaw === null ||
+      normalizedAvatarUrl === '' ||
+      normalizedAvatarUrl.toLowerCase() === 'null' ||
+      normalizedAvatarUrl.toLowerCase() === 'none'
+    ) {
+      return clearPlayerAvatar(username);
+    }
+    if (normalizedAvatarUrl.startsWith('data:image/')) {
+      return setPlayerAvatarFromDataUrl(username, normalizedAvatarUrl);
+    }
+    throw new GameRuleError("Avatar musi byt poslan jako 'avatarDataUrl' (data:image/...) nebo null pro odebrani.", 400);
+  });
+};
+
 app.use(
   cors(
     resolvedCorsOrigin
@@ -307,6 +335,31 @@ app.use(
     },
   }),
 );
+
+app.get('/api/v1/public/avatars/:avatarKey', async (req, res, next) => {
+  try {
+    const avatarKey = String(req.params.avatarKey ?? '').trim();
+    if (!avatarKey) {
+      throw new GameRuleError('Avatar nebyl nalezen.', 404);
+    }
+
+    const avatar = await executeWithReadOperation(() => getPlayerAvatarAssetByPublicKey(avatarKey));
+    const requestEtag = String(req.headers['if-none-match'] ?? '').trim();
+    if (requestEtag && requestEtag === avatar.etag) {
+      res.status(304).end();
+      return;
+    }
+
+    res.setHeader('Content-Type', avatar.mimeType);
+    res.setHeader('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
+    res.setHeader('ETag', avatar.etag);
+    res.setHeader('Last-Modified', avatar.updatedAt);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.send(avatar.buffer);
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
 
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -1128,20 +1181,32 @@ app.post('/api/v1/communication/avatar', async (req, res, next) => {
     if (!username) {
       throw new GameRuleError("Pole 'username' je povinne.", 400);
     }
-    const avatarDataUrl = req.body?.avatarDataUrl ?? null;
-    const avatarUrl = req.body?.avatarUrl ?? null;
-    const result = await executeWithWriteOperation(() => {
-      const normalizedAvatarDataUrl = String(avatarDataUrl ?? '').trim();
-      if (normalizedAvatarDataUrl) {
-        return setCommunicationAvatarFromDataUrl(username, normalizedAvatarDataUrl);
-      }
-      return setCommunicationAvatar(username, avatarUrl);
-    });
+    const result = await upsertPlayerAvatarFromRequest(username, req.body?.avatarDataUrl ?? null, req.body?.avatarUrl ?? null);
     const data = await executeWithReadOperation(() => listCommunicationInbox(username));
     res.status(201).json({
       ok: true,
       result,
       data,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+});
+
+app.post('/api/v1/profile/avatar', async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? '').trim();
+    if (!username) {
+      throw new GameRuleError("Pole 'username' je povinne.", 400);
+    }
+    const result = await upsertPlayerAvatarFromRequest(username, req.body?.avatarDataUrl ?? null, req.body?.avatarUrl ?? null);
+    res.status(201).json({
+      ok: true,
+      result,
+      data: {
+        avatarUrl: result.avatarUrl,
+        updatedAt: result.updatedAt,
+      },
     });
   } catch (error) {
     next(toGameRuleError(error));

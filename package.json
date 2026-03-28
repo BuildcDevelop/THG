@@ -1,13 +1,15 @@
 {
   "name": "tld-client",
   "private": true,
-  "version": "0.1.15",
+  "version": "0.1.16",
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n client,server \"npm run dev:client\" \"npm run dev:server\"",
     "dev:client": "node scripts/run-local-client.mjs",
     "dev:server": "node scripts/run-local-server.mjs",
     "dev:netlify": "npx netlify dev",
+    "check:spawn-phase2": "node scripts/check-spawn-phase2.mjs",
+    "check:world-config": "node scripts/check-world-region-config.mjs",
     "build": "tsc -b && vite build",
     "test:regression": "node --test tests/regression/game-rules.regression.test.mjs",
     "test:stage6": "node --test --test-name-pattern \"stage6\" tests/regression/game-rules.regression.test.mjs",

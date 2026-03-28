@@ -1819,3 +1819,59 @@ Entry template:
 - Files: arch/chat-changelog.md, plus merge změny z `feat/build-0.1.16` do `develop`
 - Verification: `git checkout develop`, `git pull --ff-only origin develop`, `git merge --no-ff --no-commit feat/build-0.1.16`, vyřešení konfliktu v `arch/chat-changelog.md`, `git commit`, `git push origin develop`
 - Notes: Feature contract: integrační merge bez dalších ručních zásahů do feature logiky; hlavní riziko byl ztracený nebo přepsaný chat audit při konfliktu append-only changelogu, mitigace je explicitní zachování obou větví historie v konfliktu a nový merge záznam na `develop`.
+
+## 2026-03-27 16:47 | branch: main
+
+- Request: Merge `develop` do produkce `main`, zahrnout už staged záložní snapshot a nasadit změny live.
+- Summary: Na produkční větvi `main` jsem nejdřív beze změny obsahu zapsal už připravený soubor `server/backups/game.20260315-110212.sqlite`, potom jsem mergnul `origin/develop` do `main` bez konfliktů. Release tak zahrnuje tooltip veřejného pořádku, dokončený cancel flow armádních rozkazů se serverově autoritativními cancel metadaty i ostatní změny z `develop`, aniž bych sahal na aktivní herní databáze.
+- Files: arch/chat-changelog.md, server/backups/game.20260315-110212.sqlite, plus merge změny z `develop` do `main`
+- Verification: `git commit -m "chore(release): include game backup snapshot"`, `git pull --ff-only origin main`, `git fetch origin develop`, `git merge --no-ff --no-commit origin/develop`, `npm run test:regression` (PASS, 37/37), `npm run build` (PASS), `git commit`, `git push origin main`, `npx netlify deploy --prod --build`
+- Notes: Feature contract: produkční release a live deploy bez zápisu do živých game dat; hlavní riziko byla nechtěná manipulace s herní DB nebo neúplný merge release kandidáta, mitigace je omezení na Git merge + build/test/deploy workflow a zahrnutí pouze již existující záložní kopie místo úprav aktivních SQLite dat.
+
+## 2026-03-27 17:18 | branch: main
+
+- Request: Prověřit hlášení o prázdné game stránce a ověřit/opravit leader-only práva na změnu diplomacie.
+- Summary: Nejprve jsem ověřil produkční kontrakt a našel rozpad release mezi frontendem a self-host backendem: Netlify už jelo novější klient, ale `/api/health` stále hlásil starý backend build a `kingdomHub` na produkci neposílal `canManageDiplomacy`. V repu jsem proto srovnal backend fallback verzi v `server/index.js` na `build-0.1.15` a přidal regresní scénář i test, který ověřuje, že diplomacii může nastavovat pouze aktuální vůdce království a že po předání vedení se práva korektně přepnou. Potom jsem na produkční server `89.167.89.109` zkopíroval pouze backend zdrojáky a package metadata (bez `server/data` a bez zásahu do aktivní DB), rebuildnul image `thg-api` a vrátil kontejner se stejným `/home/patrik/THG/server/data:/data` volume a stejnými env proměnnými. Produkce teď vrací `build-0.1.15` a `kingdomHub.canManageDiplomacy` je na live backendu přítomné; pro leader účet `Hayato` vrací `true`.
+- Files: server/index.js, tests/regression/game-rules.scenario.mjs, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
+- Verification: `node --test --test-name-pattern "kingdom diplomacy can only be managed by the current leader|army commands can be canceled only up to one third" tests/regression/game-rules.regression.test.mjs` (PASS), `npm run build` (PASS), live SSH deploy bez kopie `server/data`, `Invoke-WebRequest https://thelastdominion.netlify.app/api/health` (`build-0.1.15`), live state check `Player001` (`canManageDiplomacy: false`), live state check `Hayato` (`canManageDiplomacy: true`)
+- Notes: Feature contract: leader-only diplomacie zůstává autoritativně na backendu a release nesmí zapisovat do živých game dat mimo běžný runtime kontejneru. Hlavní riziko byla opět nekonzistence frontend/backend kontraktu a nechtěný zásah do produkční SQLite; mitigace je cílený backend-only deploy se zachováním existujícího data volume a regresní test na přepínání leadership práv.
+
+## 2026-03-27 17:23 | branch: main
+
+- Request: Přepnout verzi hry v textu ve hře na `0.1.16`.
+- Summary: Srovnal jsem celý version contract na `0.1.16`, aby se změna nepropsala jen do viditelného UI textu, ale zůstala konzistentní i v package metadata a backend health fallbacku. Tím pádem hra ve frontend textu ukazuje `0.1.16` a release tooling nezůstane v driftu mezi klientem a serverem.
+- Files: package.json, src/version.ts, server/index.js, arch/chat-changelog.md
+- Verification: `npm run build`
+- Notes: Čistě release/version change bez zásahu do gameplay, pollingu nebo herních dat.
+
+## 2026-03-27 18:11 | branch: main
+
+- Request: Přidat do armádních Příkazů viditelný křížek pro zrušení útoku/podpory/přesunu s tooltipem a změnu commitnout, pushnout na `main` a nasadit live.
+- Summary: Nahradil jsem skryté textové tlačítko pro rušení armádních rozkazů samostatnou ikonovou akcí s výrazným stylem a tooltipem, sdílenou mezi přehledem armády a panelem Příkazy, aniž bych měnil autoritativní cancel pravidla nebo timing. Současně zůstává release contract na `0.1.16` konzistentní mezi klientem a backend health fallbackem.
+- Files: src/pages/GamePage.tsx, src/App.css, package.json, src/version.ts, server/index.js, arch/chat-changelog.md
+- Verification: `npm run build`
+- Notes: Feature contract: UI-only zviditelnění existující cancel akce pro `attack/support/move`; hlavní riziko bylo znovuzavedení divergence mezi dvěma seznamy rozkazů a drift release verze, mitigace je sdílený komponent `CommandCancelAction` použitý v obou renderech a společně commitnutý version contract `0.1.16`.
+
+## 2026-03-27 18:19 | branch: main
+
+- Request: Upřesnit semantiku rušení armádních příkazů: zrušit lze jen do 33 % cesty, poté se jednotky vrací zpět do léna po dobu odpovídající už ušlé části cesty; po 33 % už zrušení nesmí projít.
+- Summary: Ověřil jsem, že backend i regrese už přesně implementují tento kontrakt. `cancelArmyCommandTransaction` blokuje `attack/support/move` po překročení `1/3` cesty, a při včasném zrušení vytváří návratový `return` movement z cíle zpět do domovského léna s délkou návratu rovnou `elapsedSec`, tedy bez instantního teleportu.
+- Files: server/gameService.js, tests/regression/game-rules.regression.test.mjs, arch/chat-changelog.md
+- Verification: `node --test --test-name-pattern "army commands can be canceled only up to one third and spawn timed returns" tests/regression/game-rules.regression.test.mjs` (PASS)
+- Notes: Bez produktové změny a bez deploye; šlo o potvrzení, že nasazený kontrakt odpovídá upřesněnému zadání.
+
+## 2026-03-27 18:36 | branch: main
+
+- Request: Opravit viditelnost tooltipu u nové ikonky pro zrušení příkazu, protože se v Příkazech schovává.
+- Summary: Přepnul jsem cancel tooltip z inline absolutního prvku uvnitř scrollovaného `window-body` na portal renderovaný do `document.body` s `position: fixed`, takže už se neořezává přes `overflow-x: hidden` v okně a drží se poblíž kurzoru nebo focusu tlačítka.
+- Files: src/pages/GamePage.tsx, src/App.css, arch/chat-changelog.md
+- Verification: `npm run build` (PASS)
+- Notes: Feature contract: jen vizuální vrstva tooltipu cancel ikonky; hlavní riziko bylo clipping/stacking v dock okně, mitigace je reuse existujícího tooltip positioning hooku a portal render mimo scroll container.
+
+## 2026-03-27 18:52 | branch: main
+
+- Request: Ověřit, na čem běží live Netlify a live data, a pokud se nepoužívá `master`, odstranit ji tak, aby zůstala jen `main`.
+- Summary: Ověřil jsem, že live frontend běží z Netlify deploye commitu `6428939` na `main` a backend běží z buildu zdrojáků z `main`, zatímco samotná live herní data jsou mimo Git v `/home/patrik/THG/server/data`. Potom jsem přepnul GitHub default branch repozitáře na `main`, smazal `origin/master`, nastavil `origin/HEAD` na `origin/main`, odpojil starý worktree `D:\\The Last Dominion` do detached HEAD bez zásahu do jeho untracked souborů a smazal lokální branch `master`.
+- Files: arch/chat-changelog.md
+- Verification: `git remote show origin` (`HEAD branch: master` before, `origin/HEAD -> origin/main` after lokální sync), `git push origin --delete master` (PASS), `git branch -D master` (PASS), `git branch -a -vv` (bez `master` na `origin` i lokálně)
+- Notes: Nezasahoval jsem do live game dat ani do untracked souborů ve starém worktree; `D:\\The Last Dominion` zůstává jen jako detached snapshot na commitu `02af527`, nikoliv jako branch.

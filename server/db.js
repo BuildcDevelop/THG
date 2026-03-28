@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveLocalRuntimeProfile } from './runtimeProfile.js';
@@ -98,9 +99,9 @@ db.pragma('foreign_keys = ON');
 
 const WORLD_REGION = {
   id: 1,
-  originX: 200,
-  originY: 430,
-  size: 50,
+  originX: 150,
+  originY: 380,
+  size: 150,
 };
 
 const BASE_ACCOUNTS = ['Hayato', 'Torreya', 'Pegak', 'Sentryn', 'TSN'];
@@ -222,10 +223,137 @@ const ABANDONED_MILITIA_COUNT = 100;
 const ACTIVE_BOT_STARTING_UNITS = {
   militia: 20,
 };
+const AVATAR_PUBLIC_PATH_PREFIX = '/api/v1/public/avatars';
+const LEGACY_AVATAR_PATH_PREFIXES = Object.freeze([
+  '/api/v1/public/avatars/',
+  '/api/public/avatars/',
+  '/public/avatars/',
+  '/avatars/',
+]);
+const LEGACY_AVATAR_STORAGE_DIRS = Object.freeze(
+  [
+    String(process.env.AVATAR_STORAGE_DIR ?? '').trim(),
+    path.join(process.cwd(), 'server', 'storage', 'avatars'),
+    path.join(path.dirname(dbPath), 'avatars'),
+  ].filter((value) => value),
+);
+const MAX_MIGRATED_AVATAR_BYTES = 2_000_000;
 
 const nowIso = () => new Date().toISOString();
 const resolveSeedPassword = (username, fallbackPassword = '123') =>
   String(PRIORITY_PLAYER_PASSWORDS.get(String(username)) ?? fallbackPassword);
+
+const canonicalPlayerAvatarUrl = (playerId) => `${AVATAR_PUBLIC_PATH_PREFIX}/player-${Number(playerId)}`;
+
+const detectAvatarMimeType = (buffer) => {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) {
+    return null;
+  }
+
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+
+  if (
+    buffer.length >= 12 &&
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer[8] === 0x57 &&
+    buffer[9] === 0x45 &&
+    buffer[10] === 0x42 &&
+    buffer[11] === 0x50
+  ) {
+    return 'image/webp';
+  }
+
+  return null;
+};
+
+const readAvatarBufferFromDataUrl = (avatarDataUrlRaw) => {
+  const avatarDataUrl = String(avatarDataUrlRaw ?? '').trim();
+  const match = /^data:(image\/(?:png|jpeg|jpg|webp));base64,([a-z0-9+/=]+)$/i.exec(avatarDataUrl);
+  if (!match) {
+    return null;
+  }
+
+  try {
+    const mimeTypeRaw = String(match[1] ?? '').toLowerCase();
+    const mimeType = mimeTypeRaw === 'image/jpg' ? 'image/jpeg' : mimeTypeRaw;
+    const buffer = Buffer.from(String(match[2] ?? ''), 'base64');
+    if (!Buffer.isBuffer(buffer) || buffer.length <= 0 || buffer.length > MAX_MIGRATED_AVATAR_BYTES) {
+      return null;
+    }
+    const detectedMime = detectAvatarMimeType(buffer);
+    if (!detectedMime || detectedMime !== mimeType) {
+      return null;
+    }
+    return { buffer, mimeType: detectedMime };
+  } catch {
+    return null;
+  }
+};
+
+const resolveLegacyAvatarFileName = (avatarUrlRaw) => {
+  const avatarUrl = String(avatarUrlRaw ?? '').trim();
+  if (!avatarUrl) {
+    return null;
+  }
+
+  const normalizedPath = avatarUrl.startsWith('/') ? avatarUrl : `/${avatarUrl}`;
+  if (!LEGACY_AVATAR_PATH_PREFIXES.some((prefix) => normalizedPath.startsWith(prefix))) {
+    return null;
+  }
+
+  const fileName = path.basename(normalizedPath);
+  if (!/^[a-z0-9._-]+$/i.test(fileName)) {
+    return null;
+  }
+  return fileName;
+};
+
+const readAvatarBufferFromLegacyStorage = (fileName) => {
+  for (const storageDir of LEGACY_AVATAR_STORAGE_DIRS) {
+    const absoluteDir = path.resolve(storageDir);
+    const absolutePath = path.resolve(absoluteDir, fileName);
+    if (absolutePath !== path.join(absoluteDir, fileName)) {
+      continue;
+    }
+    if (!fs.existsSync(absolutePath)) {
+      continue;
+    }
+
+    const stat = fs.statSync(absolutePath);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_MIGRATED_AVATAR_BYTES) {
+      continue;
+    }
+
+    const buffer = fs.readFileSync(absolutePath);
+    const mimeType = detectAvatarMimeType(buffer);
+    if (!mimeType) {
+      continue;
+    }
+
+    return { buffer, mimeType };
+  }
+
+  return null;
+};
 
 const createSchema = () => {
   db.exec(`
@@ -525,8 +653,14 @@ CREATE TABLE IF NOT EXISTS player_profiles (
   player_id INTEGER PRIMARY KEY,
   avatar_url TEXT,
   avatar_updated_at TEXT,
+  avatar_blob BLOB,
+  avatar_mime TEXT,
+  avatar_sha256 TEXT,
   FOREIGN KEY (player_id) REFERENCES players(id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_player_profiles_avatar_updated
+  ON player_profiles(avatar_updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS player_presence (
   player_id INTEGER PRIMARY KEY,
@@ -1114,6 +1248,28 @@ END;
        ?
      )`,
   ).run(nowIso());
+
+  const playerProfileColumns = db.prepare('PRAGMA table_info(player_profiles)').all();
+  const hasAvatarUrlColumn = playerProfileColumns.some((column) => column.name === 'avatar_url');
+  if (!hasAvatarUrlColumn) {
+    db.prepare('ALTER TABLE player_profiles ADD COLUMN avatar_url TEXT').run();
+  }
+  const hasAvatarUpdatedAtColumn = playerProfileColumns.some((column) => column.name === 'avatar_updated_at');
+  if (!hasAvatarUpdatedAtColumn) {
+    db.prepare('ALTER TABLE player_profiles ADD COLUMN avatar_updated_at TEXT').run();
+  }
+  const hasAvatarBlobColumn = playerProfileColumns.some((column) => column.name === 'avatar_blob');
+  if (!hasAvatarBlobColumn) {
+    db.prepare('ALTER TABLE player_profiles ADD COLUMN avatar_blob BLOB').run();
+  }
+  const hasAvatarMimeColumn = playerProfileColumns.some((column) => column.name === 'avatar_mime');
+  if (!hasAvatarMimeColumn) {
+    db.prepare('ALTER TABLE player_profiles ADD COLUMN avatar_mime TEXT').run();
+  }
+  const hasAvatarShaColumn = playerProfileColumns.some((column) => column.name === 'avatar_sha256');
+  if (!hasAvatarShaColumn) {
+    db.prepare('ALTER TABLE player_profiles ADD COLUMN avatar_sha256 TEXT').run();
+  }
 
   const movementColumns = db.prepare('PRAGMA table_info(army_movements)').all();
   const hasPlanIdColumn = movementColumns.some((column) => column.name === 'plan_id');
@@ -2620,6 +2776,97 @@ const ensureBuildingRebalanceMigration = db.transaction(() => {
   ).run(BUILDING_REBALANCE_MIGRATION_KEY, BUILDING_REBALANCE_MIGRATION_VERSION);
 });
 
+const ensurePlayerProfileAvatarBlobStorage = db.transaction(() => {
+  const rows = db
+    .prepare(
+      `SELECT
+          player_id AS playerId,
+          avatar_url AS avatarUrl,
+          avatar_updated_at AS avatarUpdatedAt,
+          avatar_blob AS avatarBlob,
+          avatar_mime AS avatarMime
+       FROM player_profiles`,
+    )
+    .all();
+
+  const upsertAvatarStmt = db.prepare(
+    `INSERT INTO player_profiles (
+       player_id,
+       avatar_url,
+       avatar_updated_at,
+       avatar_blob,
+       avatar_mime,
+       avatar_sha256
+     ) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(player_id) DO UPDATE SET
+       avatar_url = excluded.avatar_url,
+       avatar_updated_at = excluded.avatar_updated_at,
+       avatar_blob = excluded.avatar_blob,
+       avatar_mime = excluded.avatar_mime,
+       avatar_sha256 = excluded.avatar_sha256`,
+  );
+
+  for (const row of rows) {
+    const playerId = Number(row.playerId);
+    if (!Number.isFinite(playerId) || playerId <= 0) {
+      continue;
+    }
+
+    const currentAvatarUpdatedAt = String(row.avatarUpdatedAt ?? '').trim() || nowIso();
+    const canonicalUrl = canonicalPlayerAvatarUrl(playerId);
+    const hasBlob = Buffer.isBuffer(row.avatarBlob) && row.avatarBlob.length > 0;
+
+    if (hasBlob) {
+      const avatarBuffer = row.avatarBlob;
+      const avatarMime = String(row.avatarMime ?? '').trim() || detectAvatarMimeType(avatarBuffer);
+      const avatarSha = createHash('sha256').update(avatarBuffer).digest('hex');
+      upsertAvatarStmt.run(
+        playerId,
+        canonicalUrl,
+        currentAvatarUpdatedAt,
+        avatarBuffer,
+        avatarMime || 'application/octet-stream',
+        avatarSha,
+      );
+      continue;
+    }
+
+    const avatarDataUrl = readAvatarBufferFromDataUrl(row.avatarUrl);
+    if (avatarDataUrl) {
+      const avatarSha = createHash('sha256').update(avatarDataUrl.buffer).digest('hex');
+      upsertAvatarStmt.run(
+        playerId,
+        canonicalUrl,
+        currentAvatarUpdatedAt,
+        avatarDataUrl.buffer,
+        avatarDataUrl.mimeType,
+        avatarSha,
+      );
+      continue;
+    }
+
+    const legacyFileName = resolveLegacyAvatarFileName(row.avatarUrl);
+    if (!legacyFileName) {
+      continue;
+    }
+
+    const legacyAvatar = readAvatarBufferFromLegacyStorage(legacyFileName);
+    if (!legacyAvatar) {
+      continue;
+    }
+
+    const avatarSha = createHash('sha256').update(legacyAvatar.buffer).digest('hex');
+    upsertAvatarStmt.run(
+      playerId,
+      canonicalUrl,
+      currentAvatarUpdatedAt,
+      legacyAvatar.buffer,
+      legacyAvatar.mimeType,
+      avatarSha,
+    );
+  }
+});
+
 const ensureReferentialIntegrity = db.transaction(() => {
   const cleanupStatements = [
     db.prepare(
@@ -3075,6 +3322,7 @@ ensureAbandonedVillageTemplateMinimums();
 ensureResourceBuildingScaleMigration();
 ensureBuildingRebalanceMigration();
 ensureVillageBuildingLevelCaps();
+ensurePlayerProfileAvatarBlobStorage();
 ensureHayatoOwnsAbandonedVillage13();
 ensureHayatoLocalTestVillageState();
 ensureReferentialIntegrity();

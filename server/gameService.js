@@ -49,19 +49,23 @@ const runtimeEnv = String(process.env.TLD_ENV ?? process.env.APP_ENV ?? process.
   .trim()
   .toLowerCase();
 const isProductionRuntime = runtimeEnv === 'production';
+const WORLD_SECTOR_SIZE = 50;
 
 const WORLD_REGIONS = Object.freeze({
   dominion1: {
     id: 1,
-    originX: 200,
-    originY: 430,
-    size: 50,
+    originX: 150,
+    originY: 380,
+    size: 150,
+    sectorSize: WORLD_SECTOR_SIZE,
+    spawnBandStrategy: 'outer-ring',
   },
   dominionFire: {
     id: 2,
     originX: 300,
     originY: 560,
     size: 50,
+    sectorSize: WORLD_SECTOR_SIZE,
   },
 });
 const WORLD_STATUS_ONLINE = 'online';
@@ -202,6 +206,14 @@ const MARKET_GUILD_AUDIT_LOG_LIMIT = 25;
 const MARKET_GUILD_AUDIT_RETENTION_DAYS = 14;
 const MARKET_GUILD_AUDIT_MAX_ROWS_PER_SOURCE = 300;
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const AVATAR_PUBLIC_PATH_PREFIX = '/api/v1/public/avatars';
+const LEGACY_AVATAR_PUBLIC_PREFIXES = Object.freeze([
+  '/api/v1/public/avatars/',
+  '/api/public/avatars/',
+  '/public/avatars/',
+  '/avatars/',
+]);
+const MAX_AVATAR_BYTES = 1_200_000;
 const PLAYER_NOTIFICATION_RETENTION_DAYS = 30;
 const PLAYER_NOTIFICATION_MAX_PAGE_SIZE = 100;
 const RELEASE_0107_NOTIFICATION = Object.freeze({
@@ -1055,7 +1067,11 @@ const selectLeaderboardStmt = db.prepare(
       p.username,
       COALESCE(stats.villageCount, 0) AS villageCount,
       COALESCE(stats.totalPrestige, 0) AS prestige,
-      COALESCE(stats.primaryKingdom, 'Neutral') AS kingdom
+      COALESCE(stats.primaryKingdom, 'Neutral') AS kingdom,
+      CASE
+        WHEN profile.avatar_blob IS NOT NULL AND LENGTH(profile.avatar_blob) > 0 THEN 1
+        ELSE 0
+      END AS hasAvatar
    FROM players p
    LEFT JOIN (
      SELECT
@@ -1063,9 +1079,10 @@ const selectLeaderboardStmt = db.prepare(
        COUNT(*) AS villageCount,
        SUM(prestige) AS totalPrestige,
        MIN(kingdom) AS primaryKingdom
-     FROM villages
-     GROUP BY player_id
-     ) stats ON stats.player_id = p.id
+      FROM villages
+      GROUP BY player_id
+      ) stats ON stats.player_id = p.id
+   LEFT JOIN player_profiles profile ON profile.player_id = p.id
    WHERE p.is_bot = 0
      AND p.username NOT GLOB '__abandoned_ai__*'
    ORDER BY prestige DESC, villageCount DESC, p.username COLLATE NOCASE ASC`,
@@ -1076,9 +1093,14 @@ const selectLeaderboardByRegionStmt = db.prepare(
       p.username,
       COUNT(v.id) AS villageCount,
       COALESCE(SUM(v.prestige), 0) AS prestige,
-      COALESCE(MIN(v.kingdom), 'Neutral') AS kingdom
+      COALESCE(MIN(v.kingdom), 'Neutral') AS kingdom,
+      MAX(CASE
+        WHEN profile.avatar_blob IS NOT NULL AND LENGTH(profile.avatar_blob) > 0 THEN 1
+        ELSE 0
+      END) AS hasAvatar
    FROM players p
    INNER JOIN villages v ON v.player_id = p.id
+   LEFT JOIN player_profiles profile ON profile.player_id = p.id
    WHERE p.is_bot = 0
      AND p.username NOT GLOB '__abandoned_ai__*'
      AND v.region = ?
@@ -1127,7 +1149,58 @@ const selectLeaderboardRankByRegionStmt = db.prepare(
              )
          )
        ELSE NULL
-     END AS rank`,
+      END AS rank`,
+);
+const selectPlayerAvatarByPlayerIdStmt = db.prepare(
+  `SELECT
+      player_id AS playerId,
+      avatar_url AS avatarUrl,
+      avatar_updated_at AS avatarUpdatedAt,
+      avatar_blob AS avatarBlob,
+      avatar_mime AS avatarMime,
+      avatar_sha256 AS avatarSha256
+   FROM player_profiles
+   WHERE player_id = ?
+   LIMIT 1`,
+);
+const selectPlayerIdByAvatarUrlStmt = db.prepare(
+  `SELECT
+      player_id AS playerId
+   FROM player_profiles
+   WHERE avatar_url = ?
+   LIMIT 1`,
+);
+const upsertPlayerAvatarStmt = db.prepare(
+  `INSERT INTO player_profiles (
+      player_id,
+      avatar_url,
+      avatar_updated_at,
+      avatar_blob,
+      avatar_mime,
+      avatar_sha256
+   ) VALUES (?, ?, ?, ?, ?, ?)
+   ON CONFLICT(player_id) DO UPDATE SET
+     avatar_url = excluded.avatar_url,
+     avatar_updated_at = excluded.avatar_updated_at,
+     avatar_blob = excluded.avatar_blob,
+     avatar_mime = excluded.avatar_mime,
+     avatar_sha256 = excluded.avatar_sha256`,
+);
+const clearPlayerAvatarStmt = db.prepare(
+  `INSERT INTO player_profiles (
+      player_id,
+      avatar_url,
+      avatar_updated_at,
+      avatar_blob,
+      avatar_mime,
+      avatar_sha256
+   ) VALUES (?, NULL, ?, NULL, NULL, NULL)
+   ON CONFLICT(player_id) DO UPDATE SET
+     avatar_url = excluded.avatar_url,
+     avatar_updated_at = excluded.avatar_updated_at,
+     avatar_blob = excluded.avatar_blob,
+     avatar_mime = excluded.avatar_mime,
+     avatar_sha256 = excluded.avatar_sha256`,
 );
 const selectGameStateStmt = db.prepare('SELECT last_tick_at AS lastTickAt FROM game_state WHERE id = 1');
 const updateGameStateTickStmt = db.prepare('UPDATE game_state SET last_tick_at = ? WHERE id = 1');
@@ -3294,6 +3367,7 @@ const isNeutralKingdom = (kingdom) => {
 
 const normalizeKingdomComparable = (value) =>
   normalizeKingdomValue(value)
+    .replace(/\s+/g, ' ')
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
     .toLowerCase();
@@ -3402,6 +3476,111 @@ const resolveKingdomDiplomacyRelationBetween = (leftKingdomRaw, rightKingdomRaw,
 
 const normalizeUsername = (value) => String(value ?? '').trim();
 const normalizeUsernameComparable = (value) => normalizeUsername(value).toLocaleLowerCase('cs-CZ');
+const buildPlayerAvatarPublicUrl = (playerId) => `${AVATAR_PUBLIC_PATH_PREFIX}/player-${Number(playerId)}`;
+
+const detectAvatarMimeFromBuffer = (buffer) => {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) {
+    return null;
+  }
+
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+
+  if (
+    buffer.length >= 12 &&
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer[8] === 0x57 &&
+    buffer[9] === 0x45 &&
+    buffer[10] === 0x42 &&
+    buffer[11] === 0x50
+  ) {
+    return 'image/webp';
+  }
+
+  return null;
+};
+
+const decodeAvatarDataUrl = (avatarDataUrlRaw) => {
+  const avatarDataUrl = String(avatarDataUrlRaw ?? '').trim();
+  const match = /^data:(image\/(?:png|jpeg|jpg|webp));base64,([a-z0-9+/=]+)$/i.exec(avatarDataUrl);
+  if (!match) {
+    throw new GameRuleError('Avatar musi byt platne data URL (png, jpeg nebo webp).', 400);
+  }
+
+  const mimeTypeRaw = String(match[1] ?? '').toLowerCase();
+  const mimeType = mimeTypeRaw === 'image/jpg' ? 'image/jpeg' : mimeTypeRaw;
+  const buffer = Buffer.from(String(match[2] ?? ''), 'base64');
+  if (!Buffer.isBuffer(buffer) || buffer.length <= 0) {
+    throw new GameRuleError('Avatar je prazdny nebo neplatny.', 400);
+  }
+  if (buffer.length > MAX_AVATAR_BYTES) {
+    throw new GameRuleError('Avatar je prilis velky. Maximalni velikost je 1.2 MB.', 400);
+  }
+  const detectedMime = detectAvatarMimeFromBuffer(buffer);
+  if (!detectedMime || detectedMime !== mimeType) {
+    throw new GameRuleError('Avatar ma neplatny nebo nepodporovany format.', 400);
+  }
+  return {
+    buffer,
+    mimeType: detectedMime,
+  };
+};
+
+const parsePlayerIdFromAvatarPublicKey = (avatarKeyRaw) => {
+  const avatarKey = decodeURIComponent(String(avatarKeyRaw ?? '').trim());
+  if (!avatarKey) {
+    return null;
+  }
+
+  const match = /^player-(\d+)(?:[._-].*)?$/i.exec(avatarKey);
+  if (!match) {
+    return null;
+  }
+
+  const playerId = Number(match[1]);
+  return Number.isFinite(playerId) && playerId > 0 ? playerId : null;
+};
+
+const resolvePlayerIdFromAvatarPublicKey = (avatarKeyRaw) => {
+  const avatarKey = decodeURIComponent(String(avatarKeyRaw ?? '').trim());
+  const directPlayerId = parsePlayerIdFromAvatarPublicKey(avatarKey);
+  if (directPlayerId != null) {
+    return directPlayerId;
+  }
+
+  if (!avatarKey) {
+    return null;
+  }
+
+  const avatarUrlCandidates = LEGACY_AVATAR_PUBLIC_PREFIXES.map((prefix) => `${prefix}${avatarKey}`);
+  for (const avatarUrlCandidate of avatarUrlCandidates) {
+    const row = selectPlayerIdByAvatarUrlStmt.get(avatarUrlCandidate);
+    const candidatePlayerId = Number(row?.playerId);
+    if (Number.isFinite(candidatePlayerId) && candidatePlayerId > 0) {
+      return candidatePlayerId;
+    }
+  }
+
+  return null;
+};
 const normalizeVillageName = (value) => String(value ?? '').trim().replace(/\s+/g, ' ');
 const stripVillageCoordinateSuffix = (value) =>
   String(value ?? '')
@@ -4671,6 +4850,31 @@ const calculateNearestChebyshevDistance = (coordX, coordY, occupiedCoords) => {
   return nearestDistance;
 };
 
+const resolveSpawnSectorRing = (coordX, coordY, region) => {
+  if (String(region?.spawnBandStrategy ?? '') !== 'outer-ring') {
+    return 0;
+  }
+
+  const sectorSize = Math.max(1, Math.floor(Number(region?.sectorSize ?? 0)));
+  const regionSize = Math.max(1, Math.floor(Number(region?.size ?? 0)));
+  if (!Number.isFinite(sectorSize) || !Number.isFinite(regionSize) || sectorSize <= 0 || regionSize <= sectorSize) {
+    return 0;
+  }
+
+  const sectorCount = Math.max(1, Math.ceil(regionSize / sectorSize));
+  if (sectorCount <= 1) {
+    return 0;
+  }
+
+  const localX = Number(coordX) - Number(region.originX);
+  const localY = Number(coordY) - Number(region.originY);
+  const sectorX = Math.max(0, Math.min(sectorCount - 1, Math.floor(localX / sectorSize)));
+  const sectorY = Math.max(0, Math.min(sectorCount - 1, Math.floor(localY / sectorSize)));
+  const centerIndex = (sectorCount - 1) / 2;
+
+  return Math.max(Math.abs(sectorX - centerIndex), Math.abs(sectorY - centerIndex));
+};
+
 const calculateSpawnScore = (
   coordX,
   coordY,
@@ -4683,6 +4887,8 @@ const calculateSpawnScore = (
   const centerY = Number(region.originY) + (Number(region.size) - 1) / 2;
   const chebyshevFromCenter = Math.max(Math.abs(coordX - centerX), Math.abs(coordY - centerY));
   const manhattanFromCenter = Math.abs(coordX - centerX) + Math.abs(coordY - centerY);
+  const sectorRing = resolveSpawnSectorRing(coordX, coordY, region);
+  const outsideLegacyCoreBias = sectorRing > 0 ? 1 : 0;
   const preferredDirection = normalizeSpawnDirection(preferredDirectionRaw);
   const scoreDistanceSource = Array.isArray(scoreDistanceCoords) ? scoreDistanceCoords : occupiedCoords;
 
@@ -4711,13 +4917,14 @@ const calculateSpawnScore = (
     }
   }
 
-  // Primárně plníme svět od středu směrem ven, ale rozestup od existujících lén
-  // musí mít dostatečnou váhu, aby se nové spawny nehromadily v jedné kapse mapy.
+  // U rozšířených světů preferujeme vnější sektory mimo původní jádro mapy.
+  // V rámci stejného pásma zachováváme dosavadní pravidla: světová strana, rozptyl a plynulý přechod od jádra ven.
   return (
-    -chebyshevFromCenter * 120_000 +
-    nearestDistance * 40_000 +
-    directionalBias * 1_000 -
-    manhattanFromCenter
+    outsideLegacyCoreBias * 1_000_000_000 +
+    -chebyshevFromCenter * 1_000_000 +
+    directionalBias * 10_000 +
+    nearestDistance * 100 +
+    -manhattanFromCenter
   );
 };
 
@@ -8778,6 +8985,9 @@ const resolveWorldSettlementMapKind = ({
   if (isRoyal) {
     return 'royal';
   }
+  if (diplomacyKind === 'same_kingdom_foreign') {
+    return 'royal';
+  }
   if (diplomacyKind === 'ally') {
     return 'allied';
   }
@@ -9269,6 +9479,7 @@ export const listPlayerLeaderboard = (worldId = null) => {
       kingdom: player.kingdom,
       villages: Number(player.villageCount),
       prestige: Number(player.prestige),
+      avatarUrl: Number(player.hasAvatar ?? 0) > 0 ? buildPlayerAvatarPublicUrl(playerId) : null,
       attackerScore: Number(combatScores.attackerScore ?? 0),
       defenderScore: Number(combatScores.defenderScore ?? 0),
       supporterScore: Number(combatScores.supporterScore ?? 0),
@@ -9288,6 +9499,83 @@ export const listPlayerLeaderboard = (worldId = null) => {
     supporterRank: supporterRankByPlayerId.get(row.playerId) ?? null,
     lootRank: lootRankByPlayerId.get(row.playerId) ?? null,
   }));
+};
+
+const setPlayerAvatarFromDataUrlTransaction = db.transaction((usernameRaw, avatarDataUrlRaw) => {
+  const username = normalizeUsername(usernameRaw);
+  const player = selectPlayerByUsernameStmt.get(username);
+  if (!player) {
+    throw new GameRuleError(`Hrac '${username}' neexistuje.`, 404);
+  }
+
+  const decoded = decodeAvatarDataUrl(avatarDataUrlRaw);
+  const updatedAt = nowIso();
+  const playerId = Number(player.id);
+  const avatarUrl = buildPlayerAvatarPublicUrl(playerId);
+  const avatarSha256 = createHash('sha256').update(decoded.buffer).digest('hex');
+
+  upsertPlayerAvatarStmt.run(
+    playerId,
+    avatarUrl,
+    updatedAt,
+    decoded.buffer,
+    decoded.mimeType,
+    avatarSha256,
+  );
+
+  return {
+    playerId,
+    avatarUrl,
+    updatedAt,
+  };
+});
+
+const clearPlayerAvatarTransaction = db.transaction((usernameRaw) => {
+  const username = normalizeUsername(usernameRaw);
+  const player = selectPlayerByUsernameStmt.get(username);
+  if (!player) {
+    throw new GameRuleError(`Hrac '${username}' neexistuje.`, 404);
+  }
+
+  const updatedAt = nowIso();
+  const playerId = Number(player.id);
+  clearPlayerAvatarStmt.run(playerId, updatedAt);
+
+  return {
+    playerId,
+    avatarUrl: null,
+    updatedAt,
+  };
+});
+
+export const setPlayerAvatarFromDataUrl = (username, avatarDataUrl) =>
+  setPlayerAvatarFromDataUrlTransaction(username, avatarDataUrl);
+
+export const clearPlayerAvatar = (username) => clearPlayerAvatarTransaction(username);
+
+export const getPlayerAvatarAssetByPublicKey = (avatarKeyRaw) => {
+  const playerId = resolvePlayerIdFromAvatarPublicKey(avatarKeyRaw);
+  if (playerId == null) {
+    throw new GameRuleError('Avatar nebyl nalezen.', 404);
+  }
+
+  const row = selectPlayerAvatarByPlayerIdStmt.get(Number(playerId));
+  const avatarBlob = row?.avatarBlob;
+  if (!Buffer.isBuffer(avatarBlob) || avatarBlob.length <= 0) {
+    throw new GameRuleError('Avatar nebyl nalezen.', 404);
+  }
+
+  const detectedMime = detectAvatarMimeFromBuffer(avatarBlob);
+  const mimeType = String(row?.avatarMime ?? '').trim() || detectedMime || 'application/octet-stream';
+  const avatarSha256 = String(row?.avatarSha256 ?? '').trim() || createHash('sha256').update(avatarBlob).digest('hex');
+
+  return {
+    playerId: Number(playerId),
+    buffer: avatarBlob,
+    mimeType,
+    etag: `"avatar-${playerId}-${avatarSha256.slice(0, 24)}"`,
+    updatedAt: String(row?.avatarUpdatedAt ?? nowIso()),
+  };
 };
 
 export const listBattleReports = (username, options = {}, worldId = null) => {

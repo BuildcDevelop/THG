@@ -16,7 +16,9 @@ import {
   recruitUnits,
   runGameTick,
   sendMarketLogistics,
+  setKingdomDiplomacy,
   startResearchProject,
+  transferKingdomLeadership,
 } from '../../server/gameService.js';
 import { db } from '../../server/db.js';
 import { UNIT_ORDER } from '../../server/gameConfig.js';
@@ -24,6 +26,7 @@ import { listCommunicationInbox, sendCommunicationMessage } from '../../server/c
 
 const ATTACKER_USERNAME = 'Hayato';
 const DEFENDER_USERNAME = 'Torreya';
+const MEMBER_USERNAME = 'Player001';
 const WORLD_PRIMARY = 'dominion-1';
 const WORLD_FIRE = 'dominion-1-fire';
 const REGION_PRIMARY = 1;
@@ -1056,6 +1059,176 @@ const runScenarioArmyCommandCancelWindow = () => {
     },
     blockedMessage,
     activeReturnMovements,
+  };
+};
+
+const runScenarioKingdomDiplomacyLeadership = () => {
+  clearTransientState();
+  db.exec(`
+    DELETE FROM kingdom_diplomacy;
+    DELETE FROM kingdom_events;
+    DELETE FROM kingdom_invites;
+  `);
+
+  const leader = getPlayer(ATTACKER_USERNAME);
+  const member = getPlayer(MEMBER_USERNAME);
+  const target = getPlayer(DEFENDER_USERNAME);
+  const leaderVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const memberVillage = getVillageForPlayerInWorld(MEMBER_USERNAME, WORLD_PRIMARY);
+  const targetVillage = getVillageForPlayerInWorld(DEFENDER_USERNAME, WORLD_PRIMARY);
+
+  assignVillageOwners([Number(leaderVillage.villageId)], Number(leader.id), 'Aurora Pact');
+  assignVillageOwners([Number(memberVillage.villageId)], Number(member.id), 'Aurora Pact');
+  assignVillageOwners([Number(targetVillage.villageId)], Number(target.id), 'Iron Dominion');
+
+  const leaderBeforeHub = getVillageSnapshot(
+    ATTACKER_USERNAME,
+    Number(leaderVillage.villageId),
+    WORLD_PRIMARY,
+  )?.kingdomHub;
+  const memberBeforeHub = getVillageSnapshot(
+    MEMBER_USERNAME,
+    Number(memberVillage.villageId),
+    WORLD_PRIMARY,
+  )?.kingdomHub;
+
+  const leaderSetResult = setKingdomDiplomacy(
+    ATTACKER_USERNAME,
+    'Iron Dominion',
+    'ally',
+    Number(leaderVillage.villageId),
+    WORLD_PRIMARY,
+  );
+
+  let memberBlockedMessage = null;
+  try {
+    setKingdomDiplomacy(
+      MEMBER_USERNAME,
+      'Iron Dominion',
+      'war',
+      Number(memberVillage.villageId),
+      WORLD_PRIMARY,
+    );
+  } catch (error) {
+    memberBlockedMessage = String(error?.message ?? error);
+  }
+
+  const leadershipTransfer = transferKingdomLeadership(
+    ATTACKER_USERNAME,
+    MEMBER_USERNAME,
+    Number(leaderVillage.villageId),
+    WORLD_PRIMARY,
+  );
+
+  const leaderAfterHub = getVillageSnapshot(
+    ATTACKER_USERNAME,
+    Number(leaderVillage.villageId),
+    WORLD_PRIMARY,
+  )?.kingdomHub;
+  const memberAfterHub = getVillageSnapshot(
+    MEMBER_USERNAME,
+    Number(memberVillage.villageId),
+    WORLD_PRIMARY,
+  )?.kingdomHub;
+
+  const newLeaderSetResult = setKingdomDiplomacy(
+    MEMBER_USERNAME,
+    'Iron Dominion',
+    'war',
+    Number(memberVillage.villageId),
+    WORLD_PRIMARY,
+  );
+
+  let formerLeaderBlockedMessage = null;
+  try {
+    setKingdomDiplomacy(
+      ATTACKER_USERNAME,
+      'Iron Dominion',
+      'non_aggression',
+      Number(leaderVillage.villageId),
+      WORLD_PRIMARY,
+    );
+  } catch (error) {
+    formerLeaderBlockedMessage = String(error?.message ?? error);
+  }
+
+  return {
+    leaderBefore: {
+      username: ATTACKER_USERNAME,
+      leaderUsername: leaderBeforeHub?.leaderUsername ?? null,
+      canManageDiplomacy: leaderBeforeHub?.canManageDiplomacy === true,
+    },
+    memberBefore: {
+      username: MEMBER_USERNAME,
+      leaderUsername: memberBeforeHub?.leaderUsername ?? null,
+      canManageDiplomacy: memberBeforeHub?.canManageDiplomacy === true,
+    },
+    leaderSetResult: {
+      sourceKingdom: String(leaderSetResult?.sourceKingdom ?? ''),
+      targetKingdom: String(leaderSetResult?.targetKingdom ?? ''),
+      relationKind: String(leaderSetResult?.relationKind ?? ''),
+    },
+    memberBlockedMessage,
+    leadershipTransfer: {
+      kingdom: String(leadershipTransfer?.kingdom ?? ''),
+      previousLeaderUsername: String(leadershipTransfer?.previousLeaderUsername ?? ''),
+      newLeaderUsername: String(leadershipTransfer?.newLeaderUsername ?? ''),
+    },
+    leaderAfter: {
+      username: ATTACKER_USERNAME,
+      leaderUsername: leaderAfterHub?.leaderUsername ?? null,
+      canManageDiplomacy: leaderAfterHub?.canManageDiplomacy === true,
+    },
+    memberAfter: {
+      username: MEMBER_USERNAME,
+      leaderUsername: memberAfterHub?.leaderUsername ?? null,
+      canManageDiplomacy: memberAfterHub?.canManageDiplomacy === true,
+    },
+    newLeaderSetResult: {
+      sourceKingdom: String(newLeaderSetResult?.sourceKingdom ?? ''),
+      targetKingdom: String(newLeaderSetResult?.targetKingdom ?? ''),
+      relationKind: String(newLeaderSetResult?.relationKind ?? ''),
+    },
+    formerLeaderBlockedMessage,
+  };
+};
+
+const runScenarioSameKingdomRoyalMapColor = () => {
+  clearTransientState();
+
+  const leaderVillage = getVillageForPlayerInWorld(ATTACKER_USERNAME, WORLD_PRIMARY);
+  const memberVillage = getVillageForPlayerInWorld(MEMBER_USERNAME, WORLD_PRIMARY);
+  const member = getPlayer(MEMBER_USERNAME);
+
+  // Ensure the tested village is foreign but in the same kingdom as the viewer
+  // even if persisted names contain inconsistent internal spacing.
+  updateVillageOwnerStmt.run(Number(member.id), 'Aurora   Pact', Number(memberVillage.villageId));
+
+  const snapshot = getWorldMapSnapshot(
+    ATTACKER_USERNAME,
+    Number(leaderVillage.villageId),
+    WORLD_PRIMARY,
+    'center',
+  );
+  const viewerVillageSnapshot = getVillageSnapshot(
+    ATTACKER_USERNAME,
+    Number(leaderVillage.villageId),
+    WORLD_PRIMARY,
+  );
+  const settlements = Array.isArray(snapshot?.world?.settlements) ? snapshot.world.settlements : [];
+  const memberSettlement =
+    settlements.find((entry) => Number(entry?.villageId ?? 0) === Number(memberVillage.villageId)) ?? null;
+
+  if (!memberSettlement) {
+    throw new Error('Member settlement is missing from world map snapshot.');
+  }
+
+  return {
+    viewerKingdom: String(viewerVillageSnapshot?.village?.kingdom ?? ''),
+    targetKingdom: String(memberSettlement?.kingdom ?? ''),
+    relation: String(memberSettlement?.relation ?? ''),
+    diplomacyKind: String(memberSettlement?.diplomacyKind ?? ''),
+    mapKind: String(memberSettlement?.mapKind ?? ''),
   };
 };
 
@@ -2271,6 +2444,8 @@ const scenarioHandlers = new Map([
   ['conquest-knight-loot-capacity', runScenarioConquestKnightLootCapacity],
   ['world-village-limit', runScenarioWorldVillageLimit],
   ['army-command-cancel-window', runScenarioArmyCommandCancelWindow],
+  ['kingdom-diplomacy-leadership', runScenarioKingdomDiplomacyLeadership],
+  ['same-kingdom-royal-map-color', runScenarioSameKingdomRoyalMapColor],
   ['large-army-balance', runScenarioLargeArmyBalance],
   ['prestige-weak-defense-breakthrough', runScenarioPrestigeWeakDefenseBreakthrough],
   ['prestige-light-raid-still-fails', runScenarioPrestigeLightRaidStillFails],
