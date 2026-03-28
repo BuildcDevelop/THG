@@ -2339,9 +2339,9 @@ const KINGDOM_DIPLOMACY_ASSIGNABLE_OPTIONS: Array<{
   { value: 'war', label: 'Nepřátelské' },
 ];
 
-const REGION_SIZE = 50;
-const REGION_ORIGIN_X = 200;
-const REGION_ORIGIN_Y = 430;
+const REGION_SIZE = 150;
+const REGION_ORIGIN_X = 150;
+const REGION_ORIGIN_Y = 380;
 const REGION_CELL_SIZE = 25;
 const MAP_ZOOM_MIN = 0;
 const MAP_ZOOM_MAX = 200;
@@ -2352,6 +2352,7 @@ const MAP_ZOOM_WHEEL_MAX_DELTA = 2.4;
 const MAP_PAN_TARGET_SMOOTHNESS = 15;
 const MAP_PAN_TARGET_EPSILON_PX = 0.65;
 const MAP_CELL_GAP_PX = 2;
+const MAP_SECTOR_SIZE = 50;
 const MAP_PREVIEW_CARD_WIDTH_PX = 320;
 const MAP_PREVIEW_CARD_OFFSET_PX = 10;
 const MAP_PREVIEW_CARD_SAFE_EDGE_PX = 12;
@@ -2441,6 +2442,24 @@ const PANEL_VIEWPORT_MARGIN_X = 32;
 const PANEL_VIEWPORT_MARGIN_Y = 24;
 const PANEL_VIEWPORT_ABSOLUTE_MIN_WIDTH = 280;
 const PANEL_VIEWPORT_ABSOLUTE_MIN_HEIGHT = 220;
+const resolveSectorTintColor = (columnIndex: number, rowIndex: number, sectorCount: number): string => {
+  if (sectorCount <= 0) {
+    return 'rgba(124, 157, 180, 0.05)';
+  }
+  const centerIndex = (sectorCount - 1) / 2;
+  const deltaX = columnIndex - centerIndex;
+  const deltaY = rowIndex - centerIndex;
+  const ring = Math.max(Math.abs(deltaX), Math.abs(deltaY));
+  if (ring < 0.1) {
+    return 'rgba(124, 157, 180, 0.05)';
+  }
+  const rawHue = 194 + deltaX * 12 - deltaY * 9;
+  const hue = ((Math.round(rawHue) % 360) + 360) % 360;
+  const saturation = Math.round(40 + Math.min(18, ring * 7));
+  const lightness = Math.round(43 + ((columnIndex + rowIndex) % 3) * 2);
+  const alpha = Math.min(0.11, 0.075 + ring * 0.015);
+  return `hsla(${hue}, ${saturation}%, ${lightness}%, ${alpha.toFixed(3)})`;
+};
 const GAME_LAYOUT_MAX_WIDTH = 1800;
 const GAME_LAYOUT_HORIZONTAL_PADDING = 40;
 const FLOATING_PANEL_BASE_Z_INDEX = 2400;
@@ -15514,6 +15533,76 @@ const MapPanel = memo(({
   const baseCellSize = fitCellSize;
   const cellSize = Math.max(8, Math.round(baseCellSize * zoomScale));
   const mapGridSizePx = regionSize * cellSize + Math.max(0, regionSize - 1) * mapCellGapPx;
+  const sectorSegments = useMemo(() => {
+    const segments: Array<{ startCell: number; cells: number }> = [];
+    for (let startCell = 0; startCell < regionSize; startCell += MAP_SECTOR_SIZE) {
+      const cells = Math.min(MAP_SECTOR_SIZE, regionSize - startCell);
+      if (cells <= 0) {
+        break;
+      }
+      segments.push({ startCell, cells });
+    }
+    return segments;
+  }, [regionSize]);
+  const sectorBoundaries = useMemo(() => {
+    if (sectorSegments.length <= 1) {
+      return [];
+    }
+    return sectorSegments.slice(1).map((segment) => segment.startCell);
+  }, [sectorSegments]);
+  const resolveSectorBoundaryOffsetPx = useCallback(
+    (boundary: number): number => boundary * cellSize + Math.max(0, boundary - 0.5) * mapCellGapPx,
+    [cellSize, mapCellGapPx],
+  );
+  const sectorGridSegments = sectorSegments.length;
+  const hasSectorGuides = sectorGridSegments > 1;
+  const sectorTiles = useMemo(
+    () =>
+      sectorSegments.flatMap((rowSegment, rowIndex) =>
+        sectorSegments.map((columnSegment, columnIndex) => {
+          const leftPx = columnSegment.startCell * (cellSize + mapCellGapPx);
+          const topPx = rowSegment.startCell * (cellSize + mapCellGapPx);
+          const widthPx = columnSegment.cells * cellSize + Math.max(0, columnSegment.cells - 1) * mapCellGapPx;
+          const heightPx = rowSegment.cells * cellSize + Math.max(0, rowSegment.cells - 1) * mapCellGapPx;
+          return (
+            <span
+              key={`sector-tile-${rowIndex}-${columnIndex}`}
+              className="region-sector-tile"
+              style={{
+                left: `${Math.round(leftPx)}px`,
+                top: `${Math.round(topPx)}px`,
+                width: `${Math.round(widthPx)}px`,
+                height: `${Math.round(heightPx)}px`,
+                backgroundColor: resolveSectorTintColor(columnIndex, rowIndex, sectorGridSegments),
+              }}
+              aria-hidden="true"
+            />
+          );
+        }),
+      ),
+    [cellSize, mapCellGapPx, sectorGridSegments, sectorSegments],
+  );
+  const sectorGuideLines = useMemo(
+    () =>
+      sectorBoundaries.flatMap((boundary) => {
+        const offsetPx = resolveSectorBoundaryOffsetPx(boundary);
+        return [
+          <span
+            key={`sector-v-${boundary}`}
+            className="region-sector-guide vertical"
+            style={{ left: `${Math.round(offsetPx)}px` }}
+            aria-hidden="true"
+          />,
+          <span
+            key={`sector-h-${boundary}`}
+            className="region-sector-guide horizontal"
+            style={{ top: `${Math.round(offsetPx)}px` }}
+            aria-hidden="true"
+          />,
+        ];
+      }),
+    [resolveSectorBoundaryOffsetPx, sectorBoundaries],
+  );
   const renderedCellRange = useMemo(() => {
     const cellSpan = Math.max(1, cellSize + mapCellGapPx);
     const clientWidth = Math.max(0, Number(gridViewportState.clientWidth ?? 0));
@@ -16564,6 +16653,53 @@ const MapPanel = memo(({
       }),
     [activeVillageId, focusedSettlementId, mapDisplaySettlements, regionSize],
   );
+  const miniMapSectorGuides = useMemo(
+    () =>
+      sectorBoundaries.flatMap((boundary) => {
+        const offsetPct = (boundary / regionSize) * 100;
+        return [
+          <span
+            key={`mini-sector-v-${boundary}`}
+            className="mini-map-sector-guide vertical"
+            style={{ left: `${offsetPct}%` }}
+            aria-hidden="true"
+          />,
+          <span
+            key={`mini-sector-h-${boundary}`}
+            className="mini-map-sector-guide horizontal"
+            style={{ top: `${offsetPct}%` }}
+            aria-hidden="true"
+          />,
+        ];
+      }),
+    [regionSize, sectorBoundaries],
+  );
+  const miniMapSectorTiles = useMemo(
+    () =>
+      sectorSegments.flatMap((rowSegment, rowIndex) =>
+        sectorSegments.map((columnSegment, columnIndex) => {
+          const leftPct = (columnSegment.startCell / regionSize) * 100;
+          const topPct = (rowSegment.startCell / regionSize) * 100;
+          const widthPct = (columnSegment.cells / regionSize) * 100;
+          const heightPct = (rowSegment.cells / regionSize) * 100;
+          return (
+            <span
+              key={`mini-sector-tile-${rowIndex}-${columnIndex}`}
+              className="mini-map-sector-tile"
+              style={{
+                left: `${leftPct}%`,
+                top: `${topPct}%`,
+                width: `${widthPct}%`,
+                height: `${heightPct}%`,
+                backgroundColor: resolveSectorTintColor(columnIndex, rowIndex, sectorGridSegments),
+              }}
+              aria-hidden="true"
+            />
+          );
+        }),
+      ),
+    [regionSize, sectorGridSegments, sectorSegments],
+  );
   const previewCardPortalStyle = useMemo<CSSProperties | null>(() => {
     if (!previewCardStyle || !previewSettlement || typeof window === 'undefined') {
       return null;
@@ -16808,6 +16944,8 @@ const MapPanel = memo(({
               draggable={false}
               decoding="async"
             />
+            {sectorTiles}
+            {sectorGuideLines}
             <MapSettlementCanvasLayer
               markers={mapCanvasMarkers}
               cellSize={cellSize}
@@ -16878,6 +17016,8 @@ const MapPanel = memo(({
                 aria-label="Minimapa pro rychlou navigaci"
                 tabIndex={0}
               >
+                {miniMapSectorTiles}
+                {miniMapSectorGuides}
                 {miniMapDots}
                 <div
                   className="mini-map-viewport"
@@ -16949,6 +17089,14 @@ const MapPanel = memo(({
                 </div>
               </div>
             </div>
+            {hasSectorGuides ? (
+              <div className="map-nav-hint">
+                <p>
+                  Sektorové rozdělení {sectorGridSegments}x{sectorGridSegments} má vlastní paletu a zvýrazněné čáry po{' '}
+                  {MAP_SECTOR_SIZE} polích.
+                </p>
+              </div>
+            ) : null}
           </section>
         </div>
       </div>
@@ -17137,15 +17285,13 @@ const VillagePanel = memo(({
       rows: villageUnitTooltipRowsById[unitId] ?? [],
     };
   }, [hoveredIntelTooltipKey, villageUnitSummaryItems, villageUnitTooltipRowsById]);
-  const villagePanelContentRef = useRef<HTMLDivElement | null>(null);
   const [titlePortalHost, setTitlePortalHost] = useState<HTMLElement | null>(null);
-
-  useEffect(() => {
-    const panelContentNode = villagePanelContentRef.current;
-    if (!panelContentNode) {
+  const handleVillagePanelContentRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) {
+      setTitlePortalHost(null);
       return;
     }
-    const villageWindowNode = panelContentNode.closest('.floating-window.village-panel-window');
+    const villageWindowNode = node.closest('.floating-window.village-panel-window');
     setTitlePortalHost(villageWindowNode instanceof HTMLElement ? villageWindowNode : null);
   }, []);
 
@@ -17216,7 +17362,7 @@ const VillagePanel = memo(({
   );
 
   return (
-    <div ref={villagePanelContentRef} className="panel-stack village-panel village-panel-compact">
+    <div ref={handleVillagePanelContentRef} className="panel-stack village-panel village-panel-compact">
       {titlePortalHost ? createPortal(villageTitleModule, titlePortalHost) : null}
       <section className="village-float-overview">
         <header className="village-float-overview-header">

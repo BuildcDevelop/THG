@@ -99,9 +99,9 @@ db.pragma('foreign_keys = ON');
 
 const WORLD_REGION = {
   id: 1,
-  originX: 200,
-  originY: 430,
-  size: 50,
+  originX: 150,
+  originY: 380,
+  size: 150,
 };
 
 const BASE_ACCOUNTS = ['Hayato', 'Torreya', 'Pegak', 'Sentryn', 'TSN'];

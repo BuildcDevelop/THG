@@ -49,19 +49,23 @@ const runtimeEnv = String(process.env.TLD_ENV ?? process.env.APP_ENV ?? process.
   .trim()
   .toLowerCase();
 const isProductionRuntime = runtimeEnv === 'production';
+const WORLD_SECTOR_SIZE = 50;
 
 const WORLD_REGIONS = Object.freeze({
   dominion1: {
     id: 1,
-    originX: 200,
-    originY: 430,
-    size: 50,
+    originX: 150,
+    originY: 380,
+    size: 150,
+    sectorSize: WORLD_SECTOR_SIZE,
+    spawnBandStrategy: 'outer-ring',
   },
   dominionFire: {
     id: 2,
     originX: 300,
     originY: 560,
     size: 50,
+    sectorSize: WORLD_SECTOR_SIZE,
   },
 });
 const WORLD_STATUS_ONLINE = 'online';
@@ -4846,6 +4850,31 @@ const calculateNearestChebyshevDistance = (coordX, coordY, occupiedCoords) => {
   return nearestDistance;
 };
 
+const resolveSpawnSectorRing = (coordX, coordY, region) => {
+  if (String(region?.spawnBandStrategy ?? '') !== 'outer-ring') {
+    return 0;
+  }
+
+  const sectorSize = Math.max(1, Math.floor(Number(region?.sectorSize ?? 0)));
+  const regionSize = Math.max(1, Math.floor(Number(region?.size ?? 0)));
+  if (!Number.isFinite(sectorSize) || !Number.isFinite(regionSize) || sectorSize <= 0 || regionSize <= sectorSize) {
+    return 0;
+  }
+
+  const sectorCount = Math.max(1, Math.ceil(regionSize / sectorSize));
+  if (sectorCount <= 1) {
+    return 0;
+  }
+
+  const localX = Number(coordX) - Number(region.originX);
+  const localY = Number(coordY) - Number(region.originY);
+  const sectorX = Math.max(0, Math.min(sectorCount - 1, Math.floor(localX / sectorSize)));
+  const sectorY = Math.max(0, Math.min(sectorCount - 1, Math.floor(localY / sectorSize)));
+  const centerIndex = (sectorCount - 1) / 2;
+
+  return Math.max(Math.abs(sectorX - centerIndex), Math.abs(sectorY - centerIndex));
+};
+
 const calculateSpawnScore = (
   coordX,
   coordY,
@@ -4858,6 +4887,8 @@ const calculateSpawnScore = (
   const centerY = Number(region.originY) + (Number(region.size) - 1) / 2;
   const chebyshevFromCenter = Math.max(Math.abs(coordX - centerX), Math.abs(coordY - centerY));
   const manhattanFromCenter = Math.abs(coordX - centerX) + Math.abs(coordY - centerY);
+  const sectorRing = resolveSpawnSectorRing(coordX, coordY, region);
+  const outsideLegacyCoreBias = sectorRing > 0 ? 1 : 0;
   const preferredDirection = normalizeSpawnDirection(preferredDirectionRaw);
   const scoreDistanceSource = Array.isArray(scoreDistanceCoords) ? scoreDistanceCoords : occupiedCoords;
 
@@ -4886,13 +4917,14 @@ const calculateSpawnScore = (
     }
   }
 
-  // Primárně plníme svět od středu směrem ven, ale rozestup od existujících lén
-  // musí mít dostatečnou váhu, aby se nové spawny nehromadily v jedné kapse mapy.
+  // U rozšířených světů preferujeme vnější sektory mimo původní jádro mapy.
+  // V rámci stejného pásma zachováváme dosavadní pravidla: světová strana, rozptyl a plynulý přechod od jádra ven.
   return (
-    -chebyshevFromCenter * 120_000 +
-    nearestDistance * 40_000 +
-    directionalBias * 1_000 -
-    manhattanFromCenter
+    outsideLegacyCoreBias * 1_000_000_000 +
+    -chebyshevFromCenter * 1_000_000 +
+    directionalBias * 10_000 +
+    nearestDistance * 100 +
+    -manhattanFromCenter
   );
 };
 
