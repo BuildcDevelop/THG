@@ -50,6 +50,7 @@ import {
   restartVillageProgress,
   reorderRecruitmentQueue,
   setKingdomDiplomacy,
+  setVillageArmyGroup,
   setPlayerAvatarFromDataUrl,
   clearPlayerAvatar,
   spawnPlayerInWorld,
@@ -1553,10 +1554,46 @@ const handleVillageRenameRequest = async (req, res, next) => {
   }
 };
 
+const handleVillageArmyGroupRequest = async (req, res, next) => {
+  try {
+    const username = String(req.body?.username ?? 'Hayato').trim() || 'Hayato';
+    const group = String(req.body?.group ?? '').trim();
+    const worldId = parseOptionalWorldId(req.body?.worldId);
+    const villageIdRaw = req.body?.villageId ?? req.params?.villageId;
+    const villageId =
+      villageIdRaw == null || String(villageIdRaw).trim() === ''
+        ? null
+        : Number(String(villageIdRaw).trim());
+    const normalizedVillageId = Number.isFinite(villageId) ? villageId : null;
+    const payload = await executeWithWriteOperation(() => {
+      runGameTick();
+      const result = setVillageArmyGroup(username, group, normalizedVillageId, worldId);
+      const state = getVillageSnapshot(username, normalizedVillageId, worldId, 'center', { includeWorldMap: false });
+      return { result, state };
+    });
+
+    res.status(200).json({
+      ok: true,
+      result: payload.result,
+      data: payload.state,
+    });
+  } catch (error) {
+    next(toGameRuleError(error));
+  }
+};
+
 app.post('/api/v1/villages/rename', handleVillageRenameRequest);
 app.post('/api/v1/village/rename', handleVillageRenameRequest);
 app.post('/api/v1/villages/:villageId/rename', handleVillageRenameRequest);
 app.post('/api/v1/village/:villageId/rename', handleVillageRenameRequest);
+app.post('/api/v1/villages/group', handleVillageArmyGroupRequest);
+app.post('/api/v1/village/group', handleVillageArmyGroupRequest);
+app.post('/api/v1/villages/army-group', handleVillageArmyGroupRequest);
+app.post('/api/v1/village/army-group', handleVillageArmyGroupRequest);
+app.post('/api/v1/villages/:villageId/group', handleVillageArmyGroupRequest);
+app.post('/api/v1/village/:villageId/group', handleVillageArmyGroupRequest);
+app.post('/api/v1/villages/:villageId/army-group', handleVillageArmyGroupRequest);
+app.post('/api/v1/village/:villageId/army-group', handleVillageArmyGroupRequest);
 
 app.post('/api/v1/admin/abandoned-villages/create', async (req, res, next) => {
   try {
@@ -2283,4 +2320,3 @@ if (!isServerlessRuntime) {
 
 export { app };
 export default app;
-

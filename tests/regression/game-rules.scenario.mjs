@@ -445,6 +445,7 @@ const runPrestigePressureBattleScenario = ({
     targetVillageId: defenderVillage.villageId,
     units: attackerUnits,
     lootPriority: 'balanced',
+    payloadPerspective: 'richest',
   });
 
   return toBattleSnapshot(payload, { attackerLabel });
@@ -463,6 +464,49 @@ const findAttackerPayloadByMovement = (username, movementId) => {
     }
   }
   throw new Error(`Attacker report for movement ${movementId} was not found.`);
+};
+
+const scoreBattlePayloadDetail = (payload) => {
+  const battle = payload?.battle ?? {};
+  return (
+    sumSelection(battle?.attacker?.start ?? {}) +
+    sumSelection(battle?.defender?.start ?? {}) +
+    sumSelection(battle?.attacker?.losses ?? {}) +
+    sumSelection(battle?.defender?.losses ?? {}) +
+    (Number.isFinite(Number(battle?.finalAttackPower ?? null)) ? 1 : 0) +
+    (Number.isFinite(Number(battle?.finalDefensePower ?? null)) ? 1 : 0)
+  );
+};
+
+const findRichestBattlePayloadByMovement = (usernames, movementId) => {
+  let richestPayload = null;
+  let richestScore = -1;
+
+  for (const username of usernames) {
+    const player = getPlayer(username);
+    const reportRows = selectBattleReportsByPlayerStmt.all(Number(player.id));
+    for (const row of reportRows) {
+      try {
+        const payload = JSON.parse(String(row.payloadJson ?? '{}'));
+        if (Number(payload?.movementId) !== Number(movementId)) {
+          continue;
+        }
+        const score = scoreBattlePayloadDetail(payload);
+        if (score > richestScore) {
+          richestScore = score;
+          richestPayload = payload;
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  if (richestPayload == null) {
+    throw new Error(`Battle payload for movement ${movementId} was not found.`);
+  }
+
+  return richestPayload;
 };
 const forceMovementArrivalNow = (movementId) => {
   const pastIso = new Date(Date.now() - 60 * 1000).toISOString();
@@ -490,6 +534,7 @@ const runAttackAndGetPayload = ({
   targetVillageId,
   units,
   lootPriority,
+  payloadPerspective = 'attacker',
 }) => {
   const commandPayload = {
     commandType: 'attack',
@@ -507,7 +552,10 @@ const runAttackAndGetPayload = ({
   );
   forceMovementArrivalNow(Number(order.orderId));
   runGameTick();
-  const payload = findAttackerPayloadByMovement(username, Number(order.orderId));
+  const payload =
+    payloadPerspective === 'richest'
+      ? findRichestBattlePayloadByMovement([ATTACKER_USERNAME, DEFENDER_USERNAME], Number(order.orderId))
+      : findAttackerPayloadByMovement(username, Number(order.orderId));
   return { orderId: Number(order.orderId), payload };
 };
 const getBuildingLevel = (villageId, buildingId) =>
