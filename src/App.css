@@ -357,15 +357,68 @@ html {
   gap: 0.24rem;
 }
 
+.intro-update-item.is-open {
+  border-color: rgba(226, 186, 110, 0.48);
+}
+
+.intro-update-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.intro-update-toggle {
+  border: 1px solid rgba(143, 186, 220, 0.34);
+  border-radius: 999px;
+  background: rgba(10, 19, 30, 0.82);
+  color: #cfe0f1;
+  font-size: 0.73rem;
+  line-height: 1;
+  padding: 0.24rem 0.5rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.intro-update-toggle:hover {
+  border-color: rgba(230, 186, 108, 0.74);
+  color: #ffe7bf;
+}
+
 .intro-update-item strong {
   color: #edf6fe;
   font-size: 0.9rem;
 }
 
-.intro-update-item p {
+.intro-update-item p,
+.intro-update-summary {
   margin: 0;
   color: #b8cce0;
   font-size: 0.81rem;
+  line-height: 1.42;
+}
+
+.intro-update-details {
+  display: grid;
+  gap: 0.36rem;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 240ms ease, opacity 180ms ease;
+}
+
+.intro-update-details.is-open {
+  max-height: 320px;
+  opacity: 1;
+}
+
+.intro-update-details ul {
+  margin: 0;
+  padding: 0 0 0 1rem;
+  display: grid;
+  gap: 0.2rem;
+  color: #bfd4e8;
+  font-size: 0.79rem;
   line-height: 1.42;
 }
 

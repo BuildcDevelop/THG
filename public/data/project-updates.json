@@ -1,55 +1,28 @@
 {
   "updates": [
     {
-      "id": "v0-1-13",
-      "date": "2026-03-15",
-      "title": "Verze 0.1.13: UI shell, village panel a minimapa",
-      "summary": "Lepsi ukotveni hlavniho UI na herni kontejner, vyrazny redesign panelu lena (posadka + podpora) a presnejsi centrovani mapy/minimapy pro rychlou orientaci behem hry.",
-      "status": "live"
-    },
-    {
-      "id": "v0-1-12",
-      "date": "2026-03-14",
-      "title": "Verze 0.1.12: Planner flow, armada a reporty",
-      "summary": "Stabilizace Planneru, lepsi prace s zoldaky v Armade, opravy detailu battle reportu a panel-scoped optimalizace datoveho nacitani v klientu.",
-      "status": "live"
-    },
-    {
-      "id": "v0-1-11",
-      "date": "2026-03-13",
-      "title": "Verze 0.1.11: Planovac v1 a koordinace utoku",
-      "summary": "Do hry pribyl Planovac v1 (DB + API + UI), validace vice vln utoku a priprava koordinovanych armadnich akci z vice len na jeden cil.",
-      "status": "live"
-    },
-    {
-      "id": "v0-1-09",
-      "date": "2026-03-06",
-      "title": "Verze 0.1.09: Prestizni balanc boje a nova ekonomika",
-      "summary": "Prestige anti-snowball system, nove ekonomicke budovy (zlato/mince) a regionalni vyzkumny progres rozsiril strategicke moznosti stredni hry.",
+      "id": "v0-1-17",
+      "date": "2026-03-29",
+      "title": "Verze 0.1.17: Trh, logistika a skupiny len",
+      "summary": "Rychlejsi posilani surovin, rucni souradnice cile a cistsi sprava skupin len.",
+      "details": [
+        "Automaticke posilani surovin umi obslouzit vice cilu v jednom cyklu.",
+        "Ze seznamu automatizace lze cile primo odebrat.",
+        "Suroviny lze poslat i rucne na zadane souradnice.",
+        "Na mape pribyla volba Poslat suroviny v pravem menu.",
+        "Prehled skupin len ma cistsi zobrazeni a lepsi citelnost.",
+        "Sprava lepe ukazuje obranne ukazatele: opevneni, brana a rytir."
+      ],
       "status": "live"
     },
     {
       "id": "discord-channel",
-      "date": "2026-03-01",
+      "date": "2026-03-29",
       "title": "Komunitni komunikace pres Discord",
-      "summary": "Vsechny novinky, patch notes a koordinace jsou centralizovane na Discordu.",
+      "summary": "Detailni patch notes a koordinace komunity najdes na Discordu.",
       "status": "live",
       "href": "https://discord.com/channels/1358102394180730944/1473961374949441628",
       "hrefLabel": "Prejit na Discord"
-    },
-    {
-      "id": "v0-1-14-track",
-      "date": "2026-03-20",
-      "title": "Verze 0.1.14: Balanc, vykon a quality-of-life",
-      "summary": "Doladovani ekonomiky a boje podle realneho hrani, redukce zbytecne zateze UI a dalsi UX zlepseni pro mapu, armadu a spravu len.",
-      "status": "in-progress"
-    },
-    {
-      "id": "ruleset-track",
-      "date": "2026-04-01",
-      "title": "Smer: svet podle plnych pravidel",
-      "summary": "Dalsi krok je dotazeni ekonomiky, boje a mapove dominance podle kompletnich pravidel.",
-      "status": "planned"
     }
   ]
 }
