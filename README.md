@@ -144,6 +144,19 @@ Production deploy:
 npx netlify deploy --prod --build
 ```
 
+### Release doctor smoke credentials
+
+`npm run release:doctor` umí smoke login přes explicitni credentials.
+Priorita je:
+
+- `--smoke-username` / `--smoke-password`
+- `--username` / `--password` pro zpetnou kompatibilitu
+- `RELEASE_DOCTOR_USERNAME` / `RELEASE_DOCTOR_PASSWORD`
+- `SMOKE_USERNAME` / `SMOKE_PASSWORD`
+- `TLD_SMOKE_USERNAME` / `TLD_SMOKE_PASSWORD`
+
+Kdyz se pouzije jen default fallback a login na live neprojde, auth smoke se pouze preskoci a zbytek release checku zustane aktivni. Pro vynuceni auth smoku pouzij explicitni credentials.
+
 ## Prihlaseni (prototyp)
 
 - Specialni ucty:

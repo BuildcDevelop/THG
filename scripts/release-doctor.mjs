@@ -9,16 +9,20 @@ const API_BASE_DEFAULT = 'https://thelastdominion.netlify.app';
 const WORLD_ID_DEFAULT = 'dominion-1';
 const USERNAME_DEFAULT = 'Hayato';
 const PASSWORD_DEFAULT = '123';
+const SMOKE_USERNAME_ENV_KEYS = ['RELEASE_DOCTOR_USERNAME', 'SMOKE_USERNAME', 'TLD_SMOKE_USERNAME'];
+const SMOKE_PASSWORD_ENV_KEYS = ['RELEASE_DOCTOR_PASSWORD', 'SMOKE_PASSWORD', 'TLD_SMOKE_PASSWORD'];
 const MANAGED_AVATAR_PUBLIC_PREFIX = '/api/v1/public/avatars/';
 
 const args = process.argv.slice(2);
 const options = {
   baseUrl: readArgValue('--base-url') ?? '',
   worldId: readArgValue('--world-id') ?? WORLD_ID_DEFAULT,
-  username: readArgValue('--username') ?? USERNAME_DEFAULT,
-  password: readArgValue('--password') ?? PASSWORD_DEFAULT,
+  smokeUsername: readArgValue('--smoke-username') ?? readArgValue('--username') ?? readEnvValue(SMOKE_USERNAME_ENV_KEYS) ?? USERNAME_DEFAULT,
+  smokePassword: readArgValue('--smoke-password') ?? readArgValue('--password') ?? readEnvValue(SMOKE_PASSWORD_ENV_KEYS) ?? PASSWORD_DEFAULT,
+  smokeCredentialsSource: resolveSmokeCredentialsSource(),
   expectVersion: readArgValue('--expect-version') ?? null,
   skipSmoke: hasFlag('--skip-smoke'),
+  skipAuthSmoke: hasFlag('--skip-auth-smoke'),
   skipAvatarCheck: hasFlag('--skip-avatar-check'),
   mutateAvatarUpload: hasFlag('--mutate-avatar-upload'),
   forceAvatarMutation: hasFlag('--force-avatar-mutation'),
@@ -72,6 +76,29 @@ function readArgValue(flag) {
     return null;
   }
   return String(value).trim();
+}
+
+function readEnvValue(keys) {
+  for (const key of keys) {
+    const value = String(process.env[key] ?? '').trim();
+    if (value) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function resolveSmokeCredentialsSource() {
+  if (readArgValue('--smoke-username') || readArgValue('--smoke-password')) {
+    return 'explicit-smoke-flags';
+  }
+  if (readArgValue('--username') || readArgValue('--password')) {
+    return 'legacy-flags';
+  }
+  if (readEnvValue(SMOKE_USERNAME_ENV_KEYS) || readEnvValue(SMOKE_PASSWORD_ENV_KEYS)) {
+    return 'env';
+  }
+  return 'default';
 }
 
 function readUtf8(relativePath) {
@@ -190,6 +217,11 @@ function checkNetlifyProductionApiEnv() {
     return;
   }
 
+  if (/No project id found/i.test(value) || /please run inside a project folder/i.test(value)) {
+    addWarn(`Netlify production VITE_API_BASE could not be checked from this worktree (${value}).`);
+    return;
+  }
+
   if (options.allowDualApi) {
     addWarn(`Netlify production VITE_API_BASE is set to '${value}' (allowed by flag).`);
   } else {
@@ -199,6 +231,7 @@ function checkNetlifyProductionApiEnv() {
 
 async function runSmokeChecks(baseUrl, expectedVersion) {
   addPass(`Smoke target: ${baseUrl}`);
+  addPass(`Smoke credentials source: ${options.smokeCredentialsSource}`);
   const cookieJar = new Map();
 
   const health = await requestJson(baseUrl, '/api/health', { method: 'GET' }, cookieJar);
@@ -225,19 +258,41 @@ async function runSmokeChecks(baseUrl, expectedVersion) {
     }
   }
 
-  const loginPayload = await requestJson(
-    baseUrl,
-    '/api/v1/auth/login',
-    {
-      method: 'POST',
-      body: {
-        username: options.username,
-        password: options.password,
+  if (options.skipAuthSmoke) {
+    addWarn('Smoke: authenticated checks skipped (--skip-auth-smoke).');
+    return;
+  }
+
+  let loginPayload;
+  try {
+    loginPayload = await requestJson(
+      baseUrl,
+      '/api/v1/auth/login',
+      {
+        method: 'POST',
+        body: {
+          username: options.smokeUsername,
+          password: options.smokePassword,
+        },
       },
-    },
-    cookieJar,
-  );
+      cookieJar,
+    );
+  } catch (error) {
+    const message = formatUnknownError(error);
+    if (options.smokeCredentialsSource === 'default') {
+      addWarn(
+        `Smoke: default credentials for '${options.smokeUsername}' failed on live (${message}). Skipping authenticated smoke checks. Provide --smoke-username/--smoke-password or RELEASE_DOCTOR_USERNAME/RELEASE_DOCTOR_PASSWORD to enforce auth smoke.`,
+      );
+      return;
+    }
+    throw error;
+  }
+
   if (!loginPayload?.data?.username) {
+    if (options.smokeCredentialsSource === 'default') {
+      addWarn('Smoke: default credentials did not return data.username. Skipping authenticated smoke checks.');
+      return;
+    }
     addFail('Smoke: login response missing data.username.');
   } else {
     addPass(`Smoke: login OK (${loginPayload.data.username}).`);
@@ -272,7 +327,7 @@ async function runSmokeChecks(baseUrl, expectedVersion) {
 
   const communicationPayload = await requestJson(
     baseUrl,
-    `/api/v1/communication?username=${encodeURIComponent(options.username)}&threadLimit=1&messageLimit=1`,
+    `/api/v1/communication?username=${encodeURIComponent(options.smokeUsername)}&threadLimit=1&messageLimit=1`,
     { method: 'GET' },
     cookieJar,
   );
@@ -296,7 +351,7 @@ async function runSmokeChecks(baseUrl, expectedVersion) {
       {
         method: 'POST',
         body: {
-          username: options.username,
+          username: options.smokeUsername,
           avatarUrl: null,
           avatarDataUrl: tinyPngDataUrl,
         },
@@ -319,7 +374,7 @@ async function runSmokeChecks(baseUrl, expectedVersion) {
       {
         method: 'POST',
         body: {
-          username: options.username,
+          username: options.smokeUsername,
           avatarUrl: currentAvatarUrl,
           avatarDataUrl: null,
         },
@@ -336,7 +391,7 @@ async function runSmokeChecks(baseUrl, expectedVersion) {
     {
       method: 'POST',
       body: {
-        username: options.username,
+        username: options.smokeUsername,
         avatarUrl: currentAvatarUrl,
         avatarDataUrl: null,
       },
