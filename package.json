@@ -1,7 +1,7 @@
 {
   "name": "tld-client",
   "private": true,
-  "version": "0.1.16",
+  "version": "0.1.17",
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n client,server \"npm run dev:client\" \"npm run dev:server\"",
