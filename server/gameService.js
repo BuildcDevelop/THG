@@ -3380,6 +3380,14 @@ const isNeutralKingdom = (kingdom) => {
   return normalized === '' || normalized === 'neutral' || normalized === 'kralovska osada';
 };
 
+const isRoyalKingdom = (kingdom) => {
+  const normalized = normalizeKingdomValue(kingdom)
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  return normalized === 'kralovska osada';
+};
+
 const normalizeKingdomComparable = (value) =>
   normalizeKingdomValue(value)
     .replace(/\s+/g, ' ')
@@ -7515,7 +7523,7 @@ const applyCaravanBinarySurvivalRule = (startSelection, survivorsSelection) => {
   return normalizedSurvivors;
 };
 
-const resolveArmyTacticalModifier = (selection, role) => {
+const analyzeArmyComposition = (selection) => {
   let totalCombatants = 0;
   for (const unitId of UNIT_ORDER) {
     const amount = Math.max(0, Math.floor(Number(selection?.[unitId] ?? 0)));
@@ -7526,16 +7534,28 @@ const resolveArmyTacticalModifier = (selection, role) => {
     totalCombatants += amount;
   }
 
+  const share =
+    totalCombatants > 0
+      ? (unitId) => Math.max(0, Math.floor(Number(selection?.[unitId] ?? 0))) / totalCombatants
+      : () => 0;
+
+  return {
+    totalCombatants,
+    cavalryShare: share('cavalry'),
+    archerShare: share('archer'),
+    scoutShare: share('scout'),
+    militiaShare: share('militia'),
+    hasKnight: Math.max(0, Math.floor(Number(selection?.[KNIGHT_UNIT_ID] ?? 0))) > 0,
+  };
+};
+
+const resolveArmyTacticalModifier = (selection, role) => {
+  const { totalCombatants, cavalryShare, archerShare, scoutShare, militiaShare, hasKnight } =
+    analyzeArmyComposition(selection);
+
   if (totalCombatants <= 0) {
     return { multiplier: 1, notes: [] };
   }
-
-  const share = (unitId) => Math.max(0, Math.floor(Number(selection?.[unitId] ?? 0))) / totalCombatants;
-  const cavalryShare = share('cavalry');
-  const archerShare = share('archer');
-  const scoutShare = share('scout');
-  const militiaShare = share('militia');
-  const hasKnight = Math.max(0, Math.floor(Number(selection?.[KNIGHT_UNIT_ID] ?? 0))) > 0;
 
   let multiplier = 1;
   const notes = [];
@@ -8486,6 +8506,20 @@ const simulateAttackBattle = ({
   bonuses.push(...attackerTactical.notes);
   bonuses.push(...defenderTactical.notes);
 
+  const attackerComposition = analyzeArmyComposition(attackerUnits);
+  const isMilitiaRaidUnderPrestigePressure =
+    prestigeAttackModifier < 0.95 &&
+    attackerComposition.totalCombatants >= 120 &&
+    attackerComposition.militiaShare >= 0.92 &&
+    attackerComposition.cavalryShare < 0.05 &&
+    attackerComposition.archerShare < 0.05 &&
+    attackerComposition.scoutShare < 0.05 &&
+    !attackerComposition.hasKnight;
+  if (isMilitiaRaidUnderPrestigePressure) {
+    attackMultiplier *= 0.62;
+    bonuses.push('Neorganizovany pesi raid pod tlakem prestize: utok -38 %');
+  }
+
   if (gateStillStanding) {
     defenseMultiplier *= 1.05;
     bonuses.push('Brana drzi vstup: obrana +5 %');
@@ -9175,9 +9209,13 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
     const isActive = isOwn && Number(row.id) === Number(viewerVillage?.id ?? 0);
     const rowKingdom = normalizeKingdomValue(row.kingdom) || 'Neutral';
     const rowKingdomComparable = normalizeKingdomComparable(rowKingdom);
+    const viewerIsNeutralKingdom = isNeutralKingdom(viewerKingdom);
+    const rowIsNeutralKingdom = isNeutralKingdom(rowKingdom);
     const sameKingdom =
       !isAbandonedBot &&
       !isBotSettlement &&
+      !viewerIsNeutralKingdom &&
+      !rowIsNeutralKingdom &&
       viewerKingdomComparable &&
       rowKingdomComparable &&
       rowKingdomComparable === viewerKingdomComparable;
@@ -9190,7 +9228,7 @@ const buildWorldSettlements = (viewerVillage, viewerUsername, viewerPlayerId, wo
       !isOwn &&
       !isAbandonedBot &&
       !isBotSettlement &&
-      isNeutralKingdom(rowKingdom);
+      isRoyalKingdom(rowKingdom);
     const protectionUntil = isAbandonedBot
       ? null
       : resolveVillageProtectionUntilIso(row, villageProtectionRuleDays);

@@ -762,6 +762,12 @@ const resolveResourceGlyph = (resourceName: string): string => {
   if (normalized.includes('popul') || normalized.includes('obyvat')) {
     return '/assets/ui/resources/population.svg';
   }
+  if (normalized.includes('opev') || normalized.includes('fortif')) {
+    return '/assets/ui/fortification-icon.svg';
+  }
+  if (normalized.includes('bran') || normalized.includes('gate')) {
+    return '/assets/ui/gate-icon.svg';
+  }
   return '◈';
 };
 
@@ -2153,6 +2159,12 @@ type MarketLogisticsQuickTarget = {
   coordY: number;
   targetVillageId: number | null;
 };
+
+type EpicCenterNotice = {
+  id: number;
+  heading: string;
+  message: string;
+};
 type GameFontScaleOption = 'base' | 'plus5' | 'plus10' | 'plus15' | 'plus20';
 type ShortcutActionId =
   | 'togglePinColumns'
@@ -2248,6 +2260,26 @@ const getArmyCommandSymbol = (commandType: ArmyCommandType | MapOrderCommandType
     return '➜';
   }
   return '↩';
+};
+
+const resolveRecruitQueueStatusLabel = (statusRaw: string): string => {
+  const normalized = String(statusRaw ?? '').trim().toLowerCase();
+  if (normalized === 'in_progress' || normalized === 'in-progress') {
+    return 'Probíhá';
+  }
+  if (normalized === 'queued') {
+    return 'Ve frontě';
+  }
+  if (normalized === 'completed') {
+    return 'Dokončeno';
+  }
+  if (normalized === 'cancelled') {
+    return 'Zrušeno';
+  }
+  if (normalized === 'failed') {
+    return 'Selhalo';
+  }
+  return normalized || 'Neznámý stav';
 };
 
 const normalizeRecruitBlockedReason = (blockedReason: string | null): string =>
@@ -2393,6 +2425,8 @@ const SHORTCUT_SETTINGS_STORAGE_KEY_PREFIX = 'tld_shortcut_settings';
 const LEGACY_SHORTCUT_SETTINGS_STORAGE_KEY_PREFIX = 'thg_shortcut_settings';
 const AVATAR_URL_STORAGE_KEY_PREFIX = 'tld_avatar_url';
 const LEGACY_AVATAR_URL_STORAGE_KEY_PREFIX = 'thg_avatar_url';
+const MANUAL_LOGISTICS_TARGET_STORAGE_KEY_PREFIX = 'tld_manual_logistics_target';
+const LEGACY_MANUAL_LOGISTICS_TARGET_STORAGE_KEY_PREFIX = 'thg_manual_logistics_target';
 const DEFAULT_MAP_PREVIEW_TRAVEL_MODIFIER: MapPreviewTravelModifierKey = 'ctrl';
 const MAP_PREVIEW_TRAVEL_MODIFIER_OPTIONS: Array<{
   value: MapPreviewTravelModifierKey;
@@ -3275,8 +3309,12 @@ const getSettlementMapKind = (
   >,
   activeVillageId: number | null = null,
 ): MapSettlementKind => {
+  const settlementKingdom = String(settlement.kingdom ?? '');
+  const isRoyalSettlementByKingdom = isRoyalKingdom(settlementKingdom);
+  const isNeutralSettlementByKingdom = isNeutralKingdom(settlementKingdom);
+
   if (settlement.diplomacyKind === 'same_kingdom_foreign') {
-    return 'royal';
+    return isNeutralSettlementByKingdom ? 'opponent' : 'royal';
   }
 
   const mapKindRaw = String(settlement.mapKind ?? '')
@@ -3313,8 +3351,12 @@ const getSettlementMapKind = (
     return 'bot';
   }
 
-  if (isNeutralKingdom(String(settlement.kingdom ?? ''))) {
+  if (isRoyalSettlementByKingdom) {
     return 'royal';
+  }
+
+  if (isNeutralSettlementByKingdom) {
+    return 'opponent';
   }
 
   if (settlement.diplomacyKind === 'ally') {
@@ -3413,6 +3455,11 @@ const isNeutralKingdom = (kingdom: string): boolean => {
   return (
     normalized === 'neutral' || normalized === 'kralovska osada' || normalized === 'královská osada'
   );
+};
+
+const isRoyalKingdom = (kingdom: string): boolean => {
+  const normalized = kingdom.trim().toLowerCase();
+  return normalized === 'kralovska osada' || normalized === 'královská osada';
 };
 
 const normalizeKingdomComparable = (value: string): string =>
@@ -3982,6 +4029,44 @@ const saveActiveVillageId = (username: string, villageId: number | null): void =
       return;
     }
     window.localStorage.setItem(key, String(Math.floor(villageId)));
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
+const getManualLogisticsTargetStorageKey = (username: string): string =>
+  `${MANUAL_LOGISTICS_TARGET_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+const getLegacyManualLogisticsTargetStorageKey = (username: string): string =>
+  `${LEGACY_MANUAL_LOGISTICS_TARGET_STORAGE_KEY_PREFIX}:${username.toLowerCase()}`;
+
+const readStoredManualLogisticsTargetDraft = (username: string): string => {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  try {
+    const raw =
+      window.localStorage.getItem(getManualLogisticsTargetStorageKey(username)) ??
+      window.localStorage.getItem(getLegacyManualLogisticsTargetStorageKey(username));
+    return String(raw ?? '').trim();
+  } catch {
+    return '';
+  }
+};
+
+const saveStoredManualLogisticsTargetDraft = (username: string, draft: string | null): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const key = getManualLogisticsTargetStorageKey(username);
+  try {
+    const normalized = String(draft ?? '').trim();
+    if (!normalized) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, normalized);
   } catch {
     // Ignore storage errors.
   }
@@ -5708,6 +5793,8 @@ const CityPanel = memo(({
                 className="city-village-group-trigger"
                 aria-expanded={isVillageArmyGroupMenuOpen}
                 aria-controls={villageArmyGroupMenuId}
+                aria-label={`Skupina léna: ${villageArmyGroupMeta.label}. ${villageArmyGroupMeta.description}`}
+                title={villageArmyGroupMeta.description}
                 onClick={() => {
                   if (isVillageArmyGroupPending) {
                     return;
@@ -5717,9 +5804,19 @@ const CityPanel = memo(({
               >
                 <h4>Skupina</h4>
                 <strong className="city-stat-value tld-type-stat city-village-group-title">
-                  {villageArmyGroupMeta.label}
+                  <span className="city-village-group-title-content">
+                    {villageArmyGroupMeta.id !== 'none' ? (
+                      <img
+                        src={villageArmyGroupMeta.iconPath}
+                        alt=""
+                        className="city-village-group-title-icon"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    ) : null}
+                    <span>{villageArmyGroupMeta.label}</span>
+                  </span>
                 </strong>
-                <span className="city-village-group-description">{villageArmyGroupMeta.description}</span>
               </button>
               {villageArmyGroupNotice ? (
                 <span
@@ -7579,10 +7676,32 @@ const ArmyPanel = memo(({
                       {village.totalSupportUnits.toLocaleString('cs-CZ')})
                     </small>
                     <div className="armada-village-intel-row">
-                      <span className="armada-village-intel-pill">
+                      <span
+                        className="armada-village-intel-pill"
+                        title={`Opevnění: úroveň ${Math.max(0, Math.floor(Number(village.fortificationLevel ?? 0))).toLocaleString('cs-CZ')}`}
+                        aria-label={`Opevnění: úroveň ${Math.max(0, Math.floor(Number(village.fortificationLevel ?? 0))).toLocaleString('cs-CZ')}`}
+                      >
+                        <img
+                          src="/assets/ui/fortification-icon.svg"
+                          alt=""
+                          className="village-intel-mini-icon"
+                          loading="lazy"
+                          decoding="async"
+                        />
                         Opevnění L{Math.max(0, Math.floor(Number(village.fortificationLevel ?? 0)))}
                       </span>
-                      <span className="armada-village-intel-pill">
+                      <span
+                        className="armada-village-intel-pill"
+                        title={`Brána: úroveň ${Math.max(0, Math.floor(Number(village.gateLevel ?? 0))).toLocaleString('cs-CZ')}`}
+                        aria-label={`Brána: úroveň ${Math.max(0, Math.floor(Number(village.gateLevel ?? 0))).toLocaleString('cs-CZ')}`}
+                      >
+                        <img
+                          src="/assets/ui/gate-icon.svg"
+                          alt=""
+                          className="village-intel-mini-icon"
+                          loading="lazy"
+                          decoding="async"
+                        />
                         Brána L{Math.max(0, Math.floor(Number(village.gateLevel ?? 0)))}
                       </span>
                       <span
@@ -8147,9 +8266,13 @@ const ArmyPanel = memo(({
                         title={`Opevnění: úroveň ${fortificationLevel.toLocaleString('cs-CZ')}`}
                         aria-label={`Opevnění: úroveň ${fortificationLevel.toLocaleString('cs-CZ')}`}
                       >
-                        <span className="unit-icon-shell tiny" aria-hidden="true">
-                          <img src={BUILDING_ART.fortification.icon} alt="" className="unit-icon-image" loading="lazy" />
-                        </span>
+                        <img
+                          src="/assets/ui/fortification-icon.svg"
+                          alt=""
+                          className="village-intel-mini-icon"
+                          loading="lazy"
+                          decoding="async"
+                        />
                         <strong className="multi-village-overview-level-value tld-type-value">
                           {fortificationLevel.toLocaleString('cs-CZ')}
                         </strong>
@@ -8159,9 +8282,13 @@ const ArmyPanel = memo(({
                         title={`Brána: úroveň ${gateLevel.toLocaleString('cs-CZ')}`}
                         aria-label={`Brána: úroveň ${gateLevel.toLocaleString('cs-CZ')}`}
                       >
-                        <span className="unit-icon-shell tiny" aria-hidden="true">
-                          <img src={BUILDING_ART.gate.icon} alt="" className="unit-icon-image" loading="lazy" />
-                        </span>
+                        <img
+                          src="/assets/ui/gate-icon.svg"
+                          alt=""
+                          className="village-intel-mini-icon"
+                          loading="lazy"
+                          decoding="async"
+                        />
                         <strong className="multi-village-overview-level-value tld-type-value">
                           {gateLevel.toLocaleString('cs-CZ')}
                         </strong>
@@ -11023,7 +11150,9 @@ const CommandsPanel = ({
   const [hoveredMovementId, setHoveredMovementId] = useState<number | null>(null);
   const [tooltipCursorPosition, setTooltipCursorPosition] = useState<TooltipCursorPosition | null>(null);
   const [logisticsTargetVillageId, setLogisticsTargetVillageId] = useState<number | null>(null);
-  const [manualLogisticsTargetDraft, setManualLogisticsTargetDraft] = useState('');
+  const [manualLogisticsTargetDraft, setManualLogisticsTargetDraft] = useState(() =>
+    readStoredManualLogisticsTargetDraft(currentUsername),
+  );
   const [logisticsDraft, setLogisticsDraft] = useState<{
     wood: string;
     stone: string;
@@ -11072,17 +11201,17 @@ const CommandsPanel = ({
     }
 
     lastAppliedQuickLogisticsTargetRef.current = quickLogisticsTarget.requestId;
+    const nextTargetDraft = `${quickLogisticsTarget.coordX}|${quickLogisticsTarget.coordY}`;
     const frameId = window.requestAnimationFrame(() => {
-      setManualLogisticsTargetDraft(`${quickLogisticsTarget.coordX}|${quickLogisticsTarget.coordY}`);
-      if (quickLogisticsTarget.targetVillageId != null) {
-        setLogisticsTargetVillageId(Number(quickLogisticsTarget.targetVillageId));
-      }
+      setManualLogisticsTargetDraft(nextTargetDraft);
+      saveStoredManualLogisticsTargetDraft(currentUsername, nextTargetDraft);
+      setLogisticsTargetVillageId(null);
     });
 
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [quickLogisticsTarget]);
+  }, [currentUsername, quickLogisticsTarget]);
 
   const parseCoordinateDraft = (value: string): GridPosition | null => {
     const normalized = String(value ?? '').trim();
@@ -12494,6 +12623,12 @@ const CommandsPanel = ({
                 onClick={() => {
                   if (effectiveLogisticsTarget == null) {
                     return;
+                  }
+                  if (manualLogisticsModeActive) {
+                    saveStoredManualLogisticsTargetDraft(
+                      currentUsername,
+                      `${Number(effectiveLogisticsTarget.globalX)}|${Number(effectiveLogisticsTarget.globalY)}`,
+                    );
                   }
                   onSendMarketLogistics({
                     targetVillageId:
@@ -18163,6 +18298,8 @@ export const GamePage = () => {
   const initialAutoStretchAppliedRef = useRef(false);
   const armyQuickSelectionRequestIdRef = useRef(0);
   const marketLogisticsQuickTargetRequestIdRef = useRef(0);
+  const epicCenterNoticeSeqRef = useRef(0);
+  const epicCenterNoticeTimeoutRef = useRef<number | null>(null);
   const logisticsSendLockRef = useRef(false);
   const username = session?.username ?? 'Hayato';
   const selectedWorldId = session?.selectedWorldId ?? null;
@@ -18389,7 +18526,40 @@ export const GamePage = () => {
   );
   const [armyQuickSelection, setArmyQuickSelection] = useState<ArmyQuickSelection | null>(null);
   const [marketLogisticsQuickTarget, setMarketLogisticsQuickTarget] = useState<MarketLogisticsQuickTarget | null>(null);
+  const [epicCenterNotice, setEpicCenterNotice] = useState<EpicCenterNotice | null>(null);
   const [mapCenterRequest, setMapCenterRequest] = useState<{ settlementId: string; nonce: number } | null>(null);
+
+  const clearEpicCenterNoticeTimeout = useCallback(() => {
+    if (epicCenterNoticeTimeoutRef.current != null) {
+      window.clearTimeout(epicCenterNoticeTimeoutRef.current);
+      epicCenterNoticeTimeoutRef.current = null;
+    }
+  }, []);
+
+  const showEpicCenterNotice = useCallback(
+    (heading: string, message: string) => {
+      clearEpicCenterNoticeTimeout();
+      epicCenterNoticeSeqRef.current += 1;
+      const noticeId = epicCenterNoticeSeqRef.current;
+      setEpicCenterNotice({
+        id: noticeId,
+        heading: String(heading ?? '').trim() || 'Potvrzeno',
+        message: String(message ?? '').trim() || 'Změna byla uložena.',
+      });
+      epicCenterNoticeTimeoutRef.current = window.setTimeout(() => {
+        setEpicCenterNotice((previous) => (previous?.id === noticeId ? null : previous));
+        epicCenterNoticeTimeoutRef.current = null;
+      }, 2400);
+    },
+    [clearEpicCenterNoticeTimeout],
+  );
+
+  useEffect(
+    () => () => {
+      clearEpicCenterNoticeTimeout();
+    },
+    [clearEpicCenterNoticeTimeout],
+  );
 
   useEffect(() => {
     mutationPendingRef.current = Boolean(
@@ -18782,6 +18952,17 @@ export const GamePage = () => {
         finishAt: order.finishAt,
       }));
   }, [gameState]);
+  const activeKnightRecruitQueue = useMemo(
+    () =>
+      recruitQueueOrders.filter((order) => {
+        if (order.unitId !== 'knight') {
+          return false;
+        }
+        const normalizedStatus = String(order.status ?? '').trim().toLowerCase();
+        return normalizedStatus !== 'completed' && normalizedStatus !== 'cancelled' && normalizedStatus !== 'failed';
+      }),
+    [recruitQueueOrders],
+  );
 
   const buildingUpgradeQueueByBuilding = useMemo<Map<string, BuildingUpgradeQueueOrder[]>>(() => {
     const grouped = new Map<string, BuildingUpgradeQueueOrder[]>();
@@ -18822,6 +19003,11 @@ export const GamePage = () => {
 
     return grouped;
   }, [gameState]);
+  const fortificationUpgradeQueue = useMemo(
+    () => buildingUpgradeQueueByBuilding.get('fortification') ?? [],
+    [buildingUpgradeQueueByBuilding],
+  );
+  const gateUpgradeQueue = useMemo(() => buildingUpgradeQueueByBuilding.get('gate') ?? [], [buildingUpgradeQueueByBuilding]);
   const armyActiveMovements = useMemo<ArmyMovementState[]>(
     () => gameState?.army?.activeMovements ?? [],
     [gameState],
@@ -19014,6 +19200,39 @@ export const GamePage = () => {
   const publicOrderTooltipAriaLabel = publicOrder
     ? `${publicOrderTooltipHeadline}. Stav ${publicOrderCurrentPct}% · Obnova ${publicOrderTooltipRegen}. Nábor rytíře ${publicOrderTooltipKnightRecruit}. ${publicOrderTooltipDebuff}`
     : 'Veřejný pořádek se načítá.';
+  const publicOrderFortificationTooltipId = 'public-order-fortification-tooltip';
+  const publicOrderGateTooltipId = 'public-order-gate-tooltip';
+  const publicOrderKnightTooltipId = 'public-order-knight-tooltip';
+  const fortificationBuilding = buildings.find((building) => building.id === 'fortification') ?? null;
+  const gateBuilding = buildings.find((building) => building.id === 'gate') ?? null;
+  const fortificationLevel = Math.max(0, Math.floor(Number(fortificationBuilding?.level ?? 0)));
+  const gateLevel = Math.max(0, Math.floor(Number(gateBuilding?.level ?? 0)));
+  const activeFortificationUpgrade = fortificationUpgradeQueue[0] ?? null;
+  const activeGateUpgrade = gateUpgradeQueue[0] ?? null;
+  const fortificationProductionLabel = activeFortificationUpgrade
+    ? `L${Math.max(0, Number(activeFortificationUpgrade.fromLevel))} → L${Math.max(
+        0,
+        Number(activeFortificationUpgrade.toLevel),
+      )} · ETA ${formatDurationLabel(Math.max(0, Number(activeFortificationUpgrade.remainingSec)))}`
+    : 'Neprobíhá vylepšení';
+  const gateProductionLabel = activeGateUpgrade
+    ? `L${Math.max(0, Number(activeGateUpgrade.fromLevel))} → L${Math.max(0, Number(activeGateUpgrade.toLevel))} · ETA ${formatDurationLabel(
+        Math.max(0, Number(activeGateUpgrade.remainingSec)),
+      )}`
+    : 'Neprobíhá vylepšení';
+  const fortificationMetricAriaLabel = `Opevnění úroveň ${fortificationLevel.toLocaleString('cs-CZ')}. ${fortificationProductionLabel}.`;
+  const gateMetricAriaLabel = `Brána úroveň ${gateLevel.toLocaleString('cs-CZ')}. ${gateProductionLabel}.`;
+  const activeKnightRecruitOrder = activeKnightRecruitQueue[0] ?? null;
+  const knightRecruitQueuedTotal = activeKnightRecruitQueue.reduce(
+    (sum, order) => sum + Math.max(0, Math.floor(Number(order.amount ?? 0))),
+    0,
+  );
+  const knightProductionLabel = activeKnightRecruitOrder
+    ? `${resolveRecruitQueueStatusLabel(activeKnightRecruitOrder.status)} · +${knightRecruitQueuedTotal.toLocaleString(
+        'cs-CZ',
+      )} · ETA ${formatDurationLabel(Math.max(0, Number(activeKnightRecruitOrder.remainingSec ?? 0)))}`
+    : 'Neprobíhá nábor';
+  const knightMetricAriaLabel = `Rytířů ${currentVillageKnightCount.toLocaleString('cs-CZ')}. ${knightProductionLabel}.`;
   const currentVillageHistoryKey =
     activeVillageResolvedId != null && Number.isFinite(activeVillageResolvedId)
       ? String(Math.floor(activeVillageResolvedId))
@@ -21079,9 +21298,42 @@ export const GamePage = () => {
   );
 
   const queueMarketLogisticsQuickTarget = useCallback((settlement: RegionSettlement) => {
-    const coordX = Number(settlement.globalX);
-    const coordY = Number(settlement.globalY);
-    if (!Number.isFinite(coordX) || !Number.isFinite(coordY)) {
+    const resolveCoordPair = (coordXRaw: unknown, coordYRaw: unknown): { coordX: number; coordY: number } | null => {
+      const coordX = Number(coordXRaw);
+      const coordY = Number(coordYRaw);
+      if (!Number.isFinite(coordX) || !Number.isFinite(coordY)) {
+        return null;
+      }
+      return {
+        coordX: Math.floor(coordX),
+        coordY: Math.floor(coordY),
+      };
+    };
+
+    const settlementWithLegacyCoords = settlement as RegionSettlement & {
+      coordX?: number;
+      coordY?: number;
+      x?: number;
+      y?: number;
+    };
+    let resolvedCoords =
+      resolveCoordPair(settlementWithLegacyCoords.globalX, settlementWithLegacyCoords.globalY) ??
+      resolveCoordPair(settlementWithLegacyCoords.coordX, settlementWithLegacyCoords.coordY) ??
+      resolveCoordPair(settlementWithLegacyCoords.x, settlementWithLegacyCoords.y);
+    if (!resolvedCoords) {
+      resolvedCoords = resolveCoordPair(
+        Number(mapRegionOriginX) + Number(settlement.localX) - 1,
+        Number(mapRegionOriginY) + Number(settlement.localY) - 1,
+      );
+    }
+    if (!resolvedCoords) {
+      const rawText = `${String(settlement.name ?? '')} ${String(settlement.id ?? '')}`;
+      const match = rawText.match(/(-?\d{1,4})\s*\|\s*(-?\d{1,4})/);
+      if (match) {
+        resolvedCoords = resolveCoordPair(Number(match[1]), Number(match[2]));
+      }
+    }
+    if (!resolvedCoords) {
       return;
     }
     const targetVillageId =
@@ -21092,11 +21344,11 @@ export const GamePage = () => {
     marketLogisticsQuickTargetRequestIdRef.current += 1;
     setMarketLogisticsQuickTarget({
       requestId: marketLogisticsQuickTargetRequestIdRef.current,
-      coordX: Math.floor(coordX),
-      coordY: Math.floor(coordY),
+      coordX: resolvedCoords.coordX,
+      coordY: resolvedCoords.coordY,
       targetVillageId,
     });
-  }, []);
+  }, [mapRegionOriginX, mapRegionOriginY]);
 
   const handleMapQuickArmyCommand = useCallback(
     (commandType: ArmyCommandSelectableType, settlement: RegionSettlement) => {
@@ -22501,10 +22753,12 @@ export const GamePage = () => {
         setArmyOverviewSyncToken((previous) => previous + 1);
         const previousMeta = getVillageArmyGroupMeta(response.result.previousGroup);
         const nextMeta = getVillageArmyGroupMeta(response.result.newGroup);
-        setVillageArmyGroupNotice(
+        setVillageArmyGroupNotice(null);
+        showEpicCenterNotice(
+          'Skupina léna',
           response.result.changed
-            ? `Skupina léna změněna: ${previousMeta.label} → ${nextMeta.label}.`
-            : `Skupina léna zůstává ${nextMeta.label.toLocaleLowerCase('cs-CZ')}.`,
+            ? `${previousMeta.label} → ${nextMeta.label}`
+            : `Skupina zůstává ${nextMeta.label.toLocaleLowerCase('cs-CZ')}.`,
         );
         return true;
       } catch (error) {
@@ -22525,6 +22779,7 @@ export const GamePage = () => {
       gameState?.village.id,
       gameState?.world.id,
       selectedWorldId,
+      showEpicCenterNotice,
       username,
       villageArmyGroupPending,
     ],
@@ -22544,16 +22799,27 @@ export const GamePage = () => {
       return;
     }
     const notice = await handleRenameVillage(villageRenameDraft);
-    setVillageRenameNotice(notice);
     const normalizedNotice = notice.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
     const isSuccessfulRename =
       normalizedNotice.includes('premenovano') || normalizedNotice.includes('beze zmeny');
     if (!isSuccessfulRename) {
+      setVillageRenameNotice(notice);
       return;
     }
+    setVillageRenameNotice(null);
+    showEpicCenterNotice(
+      normalizedNotice.includes('beze zmeny') ? 'Název léna' : 'Léno přejmenováno',
+      notice,
+    );
     setIsVillageRenameOpen(false);
     setVillageRenameDraft(activeVillageBaseName);
-  }, [activeVillageBaseName, handleRenameVillage, renameVillagePending, villageRenameDraft]);
+  }, [
+    activeVillageBaseName,
+    handleRenameVillage,
+    renameVillagePending,
+    showEpicCenterNotice,
+    villageRenameDraft,
+  ]);
 
   const handleRecallKnight = useCallback(async () => {
     setRecallKnightPending(true);
@@ -24540,18 +24806,21 @@ export const GamePage = () => {
     return null;
   }
 
-  const normalizedVillageRenameNotice = (villageRenameNotice ?? '')
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .toLowerCase();
-  const isVillageRenameNoticeSuccess =
-    normalizedVillageRenameNotice.includes('premenovano') ||
-    normalizedVillageRenameNotice.includes('beze zmeny');
-
   return (
     <div className="game-page" style={settlementColorCssVariables}>
       <div className="game-bg-layer" />
       <div className="game-grid-layer" />
+      {epicCenterNotice ? (
+        <div className="epic-center-notice-overlay" aria-live="polite" aria-atomic="true">
+          <div key={`epic-notice-${epicCenterNotice.id}`} className="epic-center-notice-card" role="status">
+            <span className="epic-center-notice-flare" aria-hidden="true">
+              ✦
+            </span>
+            <p className="epic-center-notice-heading">{epicCenterNotice.heading}</p>
+            <strong className="epic-center-notice-message tld-type-stat">{epicCenterNotice.message}</strong>
+          </div>
+        </div>
+      ) : null}
 
       <div className="app-content-container game-layout-container">
         <div className="game-canvas-hud">
@@ -24771,9 +25040,117 @@ export const GamePage = () => {
                         </span>
                       </span>
                     ) : null}
+                    <span
+                      className={`village-mini-metric-badge ${activeFortificationUpgrade ? 'is-active' : ''}`}
+                      aria-label={fortificationMetricAriaLabel}
+                      aria-describedby={publicOrderFortificationTooltipId}
+                      tabIndex={0}
+                    >
+                      <span className="village-mini-metric-icon" aria-hidden="true">
+                        <img
+                          src="/assets/ui/fortification-icon.svg"
+                          alt=""
+                          className="village-mini-metric-icon-image"
+                          loading="lazy"
+                          decoding="async"
+                        />
+                      </span>
+                      <strong className="village-mini-metric-value tld-type-value">
+                        {fortificationLevel.toLocaleString('cs-CZ')}
+                      </strong>
+                      <span
+                        className="village-mini-metric-tooltip commands-army-tooltip"
+                        id={publicOrderFortificationTooltipId}
+                        role="tooltip"
+                      >
+                        <p>Opevnění</p>
+                        <ul>
+                          <li>
+                            <span>Úroveň</span>
+                            <strong className="public-order-tooltip-value tld-type-value">
+                              {fortificationLevel.toLocaleString('cs-CZ')}
+                            </strong>
+                          </li>
+                          <li>
+                            <span>Produkce</span>
+                            <strong className="public-order-tooltip-value tld-type-value">
+                              {fortificationProductionLabel}
+                            </strong>
+                          </li>
+                        </ul>
+                      </span>
+                    </span>
+                    <span
+                      className={`village-mini-metric-badge ${activeGateUpgrade ? 'is-active' : ''}`}
+                      aria-label={gateMetricAriaLabel}
+                      aria-describedby={publicOrderGateTooltipId}
+                      tabIndex={0}
+                    >
+                      <span className="village-mini-metric-icon" aria-hidden="true">
+                        <img
+                          src="/assets/ui/gate-icon.svg"
+                          alt=""
+                          className="village-mini-metric-icon-image"
+                          loading="lazy"
+                          decoding="async"
+                        />
+                      </span>
+                      <strong className="village-mini-metric-value tld-type-value">{gateLevel.toLocaleString('cs-CZ')}</strong>
+                      <span className="village-mini-metric-tooltip commands-army-tooltip" id={publicOrderGateTooltipId} role="tooltip">
+                        <p>Brána</p>
+                        <ul>
+                          <li>
+                            <span>Úroveň</span>
+                            <strong className="public-order-tooltip-value tld-type-value">{gateLevel.toLocaleString('cs-CZ')}</strong>
+                          </li>
+                          <li>
+                            <span>Produkce</span>
+                            <strong className="public-order-tooltip-value tld-type-value">{gateProductionLabel}</strong>
+                          </li>
+                        </ul>
+                      </span>
+                    </span>
+                    <span
+                      className={`village-mini-metric-badge ${activeKnightRecruitOrder ? 'is-active' : ''}`}
+                      aria-label={knightMetricAriaLabel}
+                      aria-describedby={publicOrderKnightTooltipId}
+                      tabIndex={0}
+                    >
+                      <span className="village-mini-metric-icon" aria-hidden="true">
+                        <img
+                          src={UNIT_META.knight.icon}
+                          alt=""
+                          className="village-mini-metric-icon-image is-knight"
+                          loading="lazy"
+                          decoding="async"
+                        />
+                      </span>
+                      <strong className="village-mini-metric-value tld-type-value">
+                        {currentVillageKnightCount.toLocaleString('cs-CZ')}
+                      </strong>
+                      <span
+                        className="village-mini-metric-tooltip commands-army-tooltip"
+                        id={publicOrderKnightTooltipId}
+                        role="tooltip"
+                      >
+                        <p>Rytíři</p>
+                        <ul>
+                          <li>
+                            <span>Počet</span>
+                            <strong className="public-order-tooltip-value tld-type-value">
+                              {currentVillageKnightCount.toLocaleString('cs-CZ')}
+                            </strong>
+                          </li>
+                          <li>
+                            <span>Produkce</span>
+                            <strong className="public-order-tooltip-value tld-type-value">{knightProductionLabel}</strong>
+                          </li>
+                        </ul>
+                      </span>
+                    </span>
                   </div>
                   {villageRenameNotice ? (
-                    <small className={`village-rename-notice ${isVillageRenameNoticeSuccess ? 'success' : 'error'}`}>
+                    <small className="village-rename-notice error">
                       {villageRenameNotice}
                     </small>
                   ) : null}
