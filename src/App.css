@@ -1074,6 +1074,94 @@ html {
   color: #f2b0b0;
 }
 
+.game-page .epic-center-notice-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  padding: 0.9rem;
+}
+
+.game-page .epic-center-notice-card {
+  position: relative;
+  display: grid;
+  gap: 0.36rem;
+  width: min(38rem, calc(100vw - 1.8rem));
+  padding: 0.95rem 1.15rem 1.05rem;
+  border: 1px solid rgba(244, 208, 129, 0.5);
+  border-radius: 16px;
+  text-align: center;
+  background:
+    radial-gradient(circle at 50% 12%, rgba(244, 176, 92, 0.24), transparent 56%),
+    radial-gradient(circle at 14% 86%, rgba(92, 138, 205, 0.2), transparent 48%),
+    linear-gradient(180deg, rgba(16, 25, 40, 0.96), rgba(7, 14, 26, 0.98));
+  box-shadow:
+    0 0 0 1px rgba(255, 234, 184, 0.18),
+    0 20px 44px rgba(2, 7, 14, 0.5),
+    0 0 28px rgba(246, 189, 106, 0.25);
+  animation:
+    epic-center-notice-in 280ms cubic-bezier(0.2, 0.72, 0.16, 1),
+    epic-center-notice-out 420ms ease 1.95s forwards;
+}
+
+.game-page .epic-center-notice-flare {
+  position: absolute;
+  top: -0.82rem;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 1.2rem;
+  color: #f7cf8f;
+  text-shadow: 0 0 16px rgba(248, 198, 112, 0.66);
+}
+
+.game-page .epic-center-notice-heading {
+  margin: 0;
+  color: #f0d19f;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.game-page .epic-center-notice-message {
+  margin: 0;
+  color: #f5f7fc;
+  font-size: clamp(1rem, 0.92rem + 0.32vw, 1.2rem);
+  line-height: 1.26;
+}
+
+@keyframes epic-center-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.96);
+    filter: saturate(0.84);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: saturate(1);
+  }
+}
+
+@keyframes epic-center-notice-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-14px) scale(0.985);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .game-page .epic-center-notice-card {
+    animation: none;
+  }
+}
+
 .village-resource-card span {
   font-size: 0.64rem;
 }
@@ -10473,6 +10561,9 @@ html {
   border-radius: 999px;
   background: rgba(7, 15, 24, 0.72);
   padding: 0.15rem 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.24rem;
   font-size: 0.69rem;
   color: #b7c8dd;
 }
@@ -12220,6 +12311,14 @@ html {
   align-items: center;
   gap: 0.24rem;
   padding: 0.12rem 0.38rem 0.12rem 0.14rem;
+}
+
+.village-intel-mini-icon {
+  width: 0.74rem;
+  height: 0.74rem;
+  object-fit: contain;
+  filter: none;
+  flex: 0 0 auto;
 }
 
 .multi-village-overview-level-pill .unit-icon-shell.tiny {
@@ -16298,9 +16397,20 @@ body[data-ui-skin='dark-medieval']
 }
 
 .game-page .resource-strip.resource-strip-slim .village-rename-inline {
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  display: flex;
   align-items: center;
   gap: 0.34rem;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.game-page .resource-strip.resource-strip-slim .village-rename-inline > :first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.game-page .resource-strip.resource-strip-slim .village-rename-inline > :not(:first-child) {
+  flex: 0 0 auto;
 }
 
 .game-page .resource-strip.resource-strip-slim .public-order-badge {
@@ -16319,7 +16429,67 @@ body[data-ui-skin='dark-medieval']
   font-size: 0.9rem;
 }
 
+.game-page .resource-strip.resource-strip-slim .village-mini-metric-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-height: 1.44rem;
+  padding: 0.18rem 0.46rem;
+  border-radius: 999px;
+  border: 1px solid rgba(138, 157, 192, 0.46);
+  background: rgba(11, 18, 28, 0.82);
+  color: #d9e3f3;
+  line-height: 1;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  position: relative;
+  overflow: visible;
+  cursor: help;
+  z-index: 95;
+}
+
+.game-page .resource-strip.resource-strip-slim .village-mini-metric-badge.is-active {
+  border-color: rgba(226, 182, 101, 0.72);
+  color: #f2d08e;
+}
+
+.game-page .resource-strip.resource-strip-slim .village-mini-metric-icon {
+  width: 1rem;
+  height: 1rem;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.game-page .resource-strip.resource-strip-slim .village-mini-metric-icon-image {
+  width: 0.72rem;
+  height: 0.72rem;
+  object-fit: contain;
+  filter: none;
+}
+
+.game-page .resource-strip.resource-strip-slim .village-mini-metric-icon-image.is-knight {
+  filter: brightness(0) saturate(100%) invert(90%) sepia(11%) saturate(457%) hue-rotate(172deg) brightness(103%)
+    contrast(93%);
+}
+
+.game-page .resource-strip.resource-strip-slim .village-mini-metric-value {
+  --tld-type-value-family: 'Noto Sans', 'Segoe UI', 'Trebuchet MS', sans-serif;
+  --tld-type-value-size: 0.68rem;
+  --tld-type-value-weight: 700;
+  font-size: var(--tld-type-value-size);
+  font-weight: var(--tld-type-value-weight);
+  line-height: 1;
+  color: inherit;
+}
+
 .game-page .public-order-badge:focus-visible {
+  outline: 2px solid rgba(222, 175, 79, 0.32);
+  outline-offset: 2px;
+}
+
+.game-page .village-mini-metric-badge:focus-visible {
   outline: 2px solid rgba(222, 175, 79, 0.32);
   outline-offset: 2px;
 }
@@ -16340,6 +16510,24 @@ body[data-ui-skin='dark-medieval']
 .game-page .public-order-badge:is(:hover, :focus-visible, :focus-within) .public-order-tooltip.commands-army-tooltip {
   opacity: 1;
   transform: translateY(-50%) scale(1);
+}
+
+.game-page .resource-strip.resource-strip-slim .village-mini-metric-tooltip.commands-army-tooltip {
+  left: 0;
+  top: calc(100% + 0.48rem);
+  width: min(320px, calc(100vw - 1.4rem));
+  max-width: 92vw;
+  transform: translateY(4px) scale(0.98);
+  transform-origin: top left;
+  z-index: 2147483200;
+}
+
+.game-page
+  .resource-strip.resource-strip-slim
+  .village-mini-metric-badge:is(:hover, :focus-visible, :focus-within)
+  .village-mini-metric-tooltip.commands-army-tooltip {
+  opacity: 1;
+  transform: translateY(0) scale(1);
 }
 
 .game-page .village-menu-overlay {
@@ -16583,31 +16771,103 @@ body[data-ui-skin='dark-medieval']
   position: relative;
   isolation: isolate;
   overflow: visible;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: rgba(28, 33, 42, 0.96) !important;
+  background-image: none !important;
+  border-color: rgba(138, 164, 196, 0.24) !important;
+}
+
+.game-page .city-panel .city-overview-summary > article.city-village-group-card {
+  background: rgba(28, 33, 42, 0.96) !important;
+  background-image: none !important;
+}
+
+.game-page .city-panel .city-overview-summary > article.city-village-group-card:is(:hover, :focus-within),
+.game-page .city-panel .city-overview-summary > article.city-village-group-card > button.city-village-group-trigger,
+.game-page
+  .city-panel
+  .city-overview-summary
+  > article.city-village-group-card
+  > button.city-village-group-trigger:is(:hover, :focus, :focus-visible, :active) {
+  background: rgba(28, 33, 42, 0.96) !important;
+  background-image: none !important;
+}
+
+.game-page .city-panel .city-overview-summary > article.city-village-group-card > button.city-village-group-trigger::before,
+.game-page .city-panel .city-overview-summary > article.city-village-group-card > button.city-village-group-trigger::after {
+  content: none !important;
+  display: none !important;
+  background: none !important;
 }
 
 .game-page .city-village-group-card.is-open {
   z-index: 24;
 }
 
+.game-page .city-village-group-card:is(:hover, :focus-within) {
+  border-color: rgba(181, 206, 233, 0.36) !important;
+}
+
 .game-page .city-village-group-trigger {
   display: grid;
-  gap: 0.14rem;
+  gap: 0.2rem;
   width: 100%;
   border: 0;
-  padding: 0;
+  padding: 0.02rem;
+  min-height: 0;
   background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
 }
 
+.game-page button.city-village-group-trigger {
+  border: 0 !important;
+  box-shadow: none !important;
+  transition: none !important;
+}
+
+.game-page button.city-village-group-trigger:hover {
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.game-page button.city-village-group-trigger:active {
+  transform: none !important;
+}
+
 .game-page .city-village-group-trigger h4 {
   margin: 0;
+  color: #e0d4bc;
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .game-page .city-village-group-title {
-  display: flex;
+  display: block;
+  color: var(--tld-highlight-gold);
+  font-size: var(--tld-type-stat-size, 1.04rem);
+  font-weight: var(--tld-type-stat-weight, 800);
+  line-height: 1.06;
+  letter-spacing: var(--tld-type-stat-spacing, 0.04em);
+  font-variant-numeric: tabular-nums;
+}
+
+.game-page .city-village-group-title-content {
+  display: inline-flex;
   align-items: center;
+  gap: 0.34rem;
+}
+
+.game-page .city-village-group-title-icon {
+  width: 0.86rem;
+  height: 0.86rem;
+  object-fit: contain;
+  filter: none;
+  flex: 0 0 auto;
 }
 
 .game-page .city-village-group-title .village-army-group-badge {
@@ -16626,15 +16886,9 @@ body[data-ui-skin='dark-medieval']
   display: none;
 }
 
-.game-page .city-village-group-description {
-  color: #bfd5e7;
-  font-size: 0.83rem;
-  line-height: 1.3;
-}
-
 .game-page .city-village-group-notice {
   display: block;
-  margin-top: 0.34rem;
+  margin-top: 0.46rem;
   font-size: 0.74rem;
   line-height: 1.3;
 }
@@ -16651,12 +16905,12 @@ body[data-ui-skin='dark-medieval']
   position: absolute;
   inset: calc(100% + 0.5rem) 0 auto 0;
   display: grid;
-  gap: 0.34rem;
-  padding: 0.52rem;
+  gap: 0.38rem;
+  padding: 0.56rem;
   border: 1px solid var(--ui-card-border-soft);
   border-radius: var(--ui-card-radius-md);
   background: var(--ui-card-bg-base);
-  box-shadow: var(--ui-card-edge-soft), var(--ui-card-shadow-mid);
+  box-shadow: var(--ui-card-edge-soft), var(--ui-card-shadow-strong);
   z-index: 36;
 }
 
