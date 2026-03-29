@@ -105,6 +105,12 @@ import {
   type CommunicationSummaryEventDetail,
 } from '../components/communicationEvents';
 
+const GAME_RELEASE_NOTE_ITEMS = [
+  'Trh umí v jednom cyklu rozeslat suroviny do více lén.',
+  'Na mapě lze rovnou otevřít Poslat suroviny.',
+  'Skupiny lén a správa mají čistší přehled.',
+] as const;
+
 type PanelType =
   | 'city'
   | 'map'
@@ -18528,6 +18534,7 @@ export const GamePage = () => {
   const [marketLogisticsQuickTarget, setMarketLogisticsQuickTarget] = useState<MarketLogisticsQuickTarget | null>(null);
   const [epicCenterNotice, setEpicCenterNotice] = useState<EpicCenterNotice | null>(null);
   const [mapCenterRequest, setMapCenterRequest] = useState<{ settlementId: string; nonce: number } | null>(null);
+  const [isReleaseNoteOpen, setIsReleaseNoteOpen] = useState(false);
 
   const clearEpicCenterNoticeTimeout = useCallback(() => {
     if (epicCenterNoticeTimeoutRef.current != null) {
@@ -25513,6 +25520,26 @@ export const GamePage = () => {
             />
           </div>
           <div className="game-persistent-footer-right">
+            <div className={`game-release-note-shell${isReleaseNoteOpen ? ' is-open' : ''}`}>
+              <button
+                type="button"
+                className="game-release-note-trigger"
+                aria-expanded={isReleaseNoteOpen}
+                aria-controls="game-release-note-popover"
+                onClick={() => setIsReleaseNoteOpen((previous) => !previous)}
+              >
+                Aktualizace {GAME_VERSION_LABEL}
+              </button>
+              <div id="game-release-note-popover" className="game-release-note-popover" aria-hidden={!isReleaseNoteOpen}>
+                <p className="game-release-note-heading">Co je nového</p>
+                <p className="game-release-note-summary">Trh, logistika a skupiny lén dostaly poslední větší úpravy.</p>
+                <ul className="game-release-note-list">
+                  {GAME_RELEASE_NOTE_ITEMS.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
             <p className="game-version-footer">Verze hry {GAME_VERSION_LABEL}</p>
           </div>
         </div>
