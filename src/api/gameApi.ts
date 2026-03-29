@@ -157,6 +157,8 @@ export type RecentAttackTargetState = {
   lastIssuedAt: string;
 };
 
+export type VillageArmyGroup = 'none' | 'defensive' | 'offensive' | 'mixed';
+
 export type ArmyVillageUnitSummary = {
   unitId: string;
   unitName: string;
@@ -173,6 +175,7 @@ export type ArmyVillageSummary = {
   coordX: number;
   coordY: number;
   kingdom: string;
+  armyGroup: VillageArmyGroup;
   sortLabel: string;
   totalOwnUnits: number;
   totalSupportUnits: number;
@@ -715,6 +718,7 @@ export type GameStateResponse = {
     coordY: number;
     region: number;
     kingdom: string;
+    armyGroup: VillageArmyGroup;
     prestige: number;
     loyalty: number;
     protectionUntil?: string | null;
@@ -728,6 +732,7 @@ export type GameStateResponse = {
     coordY: number;
     region: number;
     kingdom: string;
+    armyGroup: VillageArmyGroup;
     prestige: number;
     loyalty: number;
     protectionUntil?: string | null;
@@ -1074,6 +1079,7 @@ export type BattleReportPayload = {
   gateBlocked?: boolean;
   armyDestroyed?: boolean;
   attackerForcesUnknown?: boolean;
+  defenderForcesUnknown?: boolean;
   lootPriority?: LootPriority;
   lootTaken?: {
     wood: number;
@@ -1761,6 +1767,14 @@ export type RenameVillageResult = {
   changedAt: string;
 };
 
+export type SetVillageArmyGroupResult = {
+  villageId: number;
+  previousGroup: VillageArmyGroup;
+  newGroup: VillageArmyGroup;
+  changed: boolean;
+  changedAt: string;
+};
+
 type ApiOk<T> = {
   ok: true;
   data: T;
@@ -2401,6 +2415,67 @@ export const renameVillage = async (
   throw new Error('Přejmenování léna selhalo: endpoint nebyl nalezen.');
 };
 
+export const setVillageArmyGroup = async (
+  username: string,
+  group: VillageArmyGroup,
+  villageId?: number | null,
+  worldId?: string | null,
+): Promise<{ result: SetVillageArmyGroupResult; data: GameStateResponse }> => {
+  const body = JSON.stringify({ username, group, villageId, worldId });
+  const candidatePaths = [
+    '/api/v1/villages/group',
+    '/api/v1/villages/group/',
+    '/api/v1/villages/army-group',
+    '/api/v1/villages/army-group/',
+    villageId != null && Number.isFinite(Number(villageId))
+      ? `/api/v1/villages/${encodeURIComponent(String(villageId))}/group`
+      : null,
+    villageId != null && Number.isFinite(Number(villageId))
+      ? `/api/v1/villages/${encodeURIComponent(String(villageId))}/group/`
+      : null,
+    villageId != null && Number.isFinite(Number(villageId))
+      ? `/api/v1/villages/${encodeURIComponent(String(villageId))}/army-group`
+      : null,
+    villageId != null && Number.isFinite(Number(villageId))
+      ? `/api/v1/villages/${encodeURIComponent(String(villageId))}/army-group/`
+      : null,
+    villageId != null && Number.isFinite(Number(villageId))
+      ? `/api/v1/village/${encodeURIComponent(String(villageId))}/group`
+      : null,
+    '/api/v1/village/group',
+    '/api/v1/village/group/',
+    villageId != null && Number.isFinite(Number(villageId))
+      ? `/api/v1/village/${encodeURIComponent(String(villageId))}/army-group`
+      : null,
+    '/api/v1/village/army-group',
+    '/api/v1/village/army-group/',
+  ].filter((path): path is string => path != null);
+
+  let lastError: unknown = null;
+  for (const path of candidatePaths) {
+    try {
+      const payload = await request<ApiOk<GameStateResponse> & { result: SetVillageArmyGroupResult }>(path, {
+        method: 'POST',
+        body,
+      });
+      return {
+        result: payload.result,
+        data: payload.data,
+      };
+    } catch (error) {
+      lastError = error;
+      if (!isHttp404Error(error)) {
+        throw error;
+      }
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+  throw new Error('Změna skupiny léna selhala: endpoint nebyl nalezen.');
+};
+
 export const createAbandonedVillages = async (
   count = 1,
 ): Promise<CreateAbandonedVillagesResult> => {
@@ -2545,7 +2620,9 @@ export const hireMercenaryContract = async (
 export const sendMarketLogistics = async (
   username: string,
   payload: {
-    targetVillageId: number;
+    targetVillageId?: number;
+    manualTargetCoordX?: number;
+    manualTargetCoordY?: number;
     wood?: number;
     stone?: number;
     iron?: number;
@@ -2564,6 +2641,8 @@ export const sendMarketLogistics = async (
         villageId: payload.villageId ?? null,
         worldId: payload.worldId ?? null,
         targetVillageId: payload.targetVillageId,
+        manualTargetCoordX: payload.manualTargetCoordX,
+        manualTargetCoordY: payload.manualTargetCoordY,
         wood: payload.wood ?? 0,
         stone: payload.stone ?? 0,
         iron: payload.iron ?? 0,

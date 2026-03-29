@@ -10,11 +10,11 @@ const toSafePrestige = (value) => {
 
 const DEFENSE_BONUS_POINTS = Object.freeze([
   { ratio: 1, bonus: 0 },
-  { ratio: 2, bonus: 0.07 },
-  { ratio: 4, bonus: 0.12 },
-  { ratio: 6, bonus: 0.18 },
+  { ratio: 2, bonus: 0.025 },
+  { ratio: 4, bonus: 0.045 },
+  { ratio: 6, bonus: 0.06 },
 ]);
-const ATTACK_MODIFIER_EXPONENT = 0.4;
+const ATTACK_MODIFIER_EXPONENT = 0.08;
 
 const interpolateDefenseBonus = (ratio) => {
   if (!Number.isFinite(ratio) || ratio <= DEFENSE_BONUS_POINTS[0].ratio) {
@@ -58,7 +58,7 @@ export const calculateAttackModifier = (attackerPrestigeRaw, defenderPrestigeRaw
     return 1;
   }
   const powerRatio = attackerPrestige / defenderPrestige;
-  return clampNumber(1 / Math.pow(powerRatio, ATTACK_MODIFIER_EXPONENT), 0, 1);
+  return clampNumber(1 / Math.pow(powerRatio, ATTACK_MODIFIER_EXPONENT), 0.9, 1);
 };
 
 export const calculateDefenseBonus = (attackerPrestigeRaw, defenderPrestigeRaw) => {
@@ -68,7 +68,7 @@ export const calculateDefenseBonus = (attackerPrestigeRaw, defenderPrestigeRaw) 
     return 0;
   }
   const ratio = attackerPrestige / defenderPrestige;
-  return clampNumber(interpolateDefenseBonus(ratio), 0, 0.18);
+  return clampNumber(interpolateDefenseBonus(ratio), 0, 0.06);
 };
 
 export const calculateLootModifier = (attackerPrestigeRaw, defenderPrestigeRaw) => {
