@@ -54,18 +54,19 @@ import {
   reconfirmPlannerPlan as reconfirmPlannerPlanRequest,
   recruitUnit,
   rebaseStationedSupport as rebaseStationedSupportRequest,
-  reorderBuildingUpgradeQueue as reorderBuildingUpgradeQueueRequest,
-  reorderRecruitmentQueue as reorderRecruitmentQueueRequest,
-  renameVillage as renameVillageRequest,
-  restartVillageProgress as restartVillageProgressRequest,
-  sendMarketLogistics as sendMarketLogisticsRequest,
-  sendCommunicationFriendRequest,
-  sendCommunicationMessageRequest,
-  startResearchProject as startResearchProjectRequest,
-  setKingdomDiplomacy as setKingdomDiplomacyRequest,
-  setCommunicationAvatarRequest,
-  transferKingdomLeadership as transferKingdomLeadershipRequest,
-  updatePlannerPlan as updatePlannerPlanRequest,
+    reorderBuildingUpgradeQueue as reorderBuildingUpgradeQueueRequest,
+    reorderRecruitmentQueue as reorderRecruitmentQueueRequest,
+    renameVillage as renameVillageRequest,
+    restartVillageProgress as restartVillageProgressRequest,
+    sendMarketLogistics as sendMarketLogisticsRequest,
+    sendCommunicationFriendRequest,
+    sendCommunicationMessageRequest,
+    setVillageArmyGroup as setVillageArmyGroupRequest,
+    startResearchProject as startResearchProjectRequest,
+    setKingdomDiplomacy as setKingdomDiplomacyRequest,
+    setCommunicationAvatarRequest,
+    transferKingdomLeadership as transferKingdomLeadershipRequest,
+    updatePlannerPlan as updatePlannerPlanRequest,
   upgradeBuilding,
   validatePlannerPlan as validatePlannerPlanRequest,
   type ArmyCommandType,
@@ -91,11 +92,12 @@ import {
   type KingdomDiplomacyRelationKind,
   type LeaderboardRow,
   type LootPriority,
-  type MarketGuildVillageEconomyState,
-  type PlayerRankingSummary,
-  type PlannerOpenResponse,
-  type WorldPortalItem,
-} from '../api/gameApi';
+    type MarketGuildVillageEconomyState,
+    type PlayerRankingSummary,
+    type PlannerOpenResponse,
+    type VillageArmyGroup,
+    type WorldPortalItem,
+  } from '../api/gameApi';
 import {
   COMMUNICATION_SUMMARY_EVENT,
   openCommunicationHub,
@@ -2145,6 +2147,12 @@ type ArmyQuickSelection = {
   commandType: ArmyCommandSelectableType;
   targetVillageId: number;
 };
+type MarketLogisticsQuickTarget = {
+  requestId: number;
+  coordX: number;
+  coordY: number;
+  targetVillageId: number | null;
+};
 type GameFontScaleOption = 'base' | 'plus5' | 'plus10' | 'plus15' | 'plus20';
 type ShortcutActionId =
   | 'togglePinColumns'
@@ -3500,6 +3508,66 @@ const resolveSettlementPrestigeTier = (prestigeRaw: number): SettlementPrestigeT
 
 const resolveSettlementPrestigeMeta = (prestigeRaw: number): SettlementPrestigeMeta =>
   SETTLEMENT_PRESTIGE_META_BY_TIER[resolveSettlementPrestigeTier(prestigeRaw)];
+
+type VillageArmyGroupMeta = {
+  id: VillageArmyGroup;
+  label: string;
+  shortLabel: string;
+  description: string;
+  iconPath: string;
+};
+
+const VILLAGE_ARMY_GROUP_ORDER: VillageArmyGroup[] = ['none', 'defensive', 'offensive', 'mixed'];
+
+const VILLAGE_ARMY_GROUP_META: Record<VillageArmyGroup, VillageArmyGroupMeta> = {
+  none: {
+    id: 'none',
+    label: 'V žádné',
+    shortLabel: 'Bez skupiny',
+    description: 'Léno zatím nemá armádní zařazení a nezapočítává se do žádného specializovaného balíku.',
+    iconPath: '/assets/ui/village-group-none.svg',
+  },
+  defensive: {
+    id: 'defensive',
+    label: 'Obranná',
+    shortLabel: 'Obranná',
+    description: 'Drží opevněná léna s důrazem na posádku, podporu a rychlou reakci na příchozí útoky.',
+    iconPath: '/assets/ui/village-group-defensive.svg',
+  },
+  offensive: {
+    id: 'offensive',
+    label: 'Útočná',
+    shortLabel: 'Útočná',
+    description: 'Shromažďuje léna určená pro výpadové armády, rytíře a tlak do pole.',
+    iconPath: '/assets/ui/village-group-offensive.svg',
+  },
+  mixed: {
+    id: 'mixed',
+    label: 'Mixovaná',
+    shortLabel: 'Mixovaná',
+    description: 'Kombinuje útok i obranu a hodí se pro univerzální léna s vyváženým rozložením sil.',
+    iconPath: '/assets/ui/village-group-mixed.svg',
+  },
+};
+
+const normalizeVillageArmyGroupId = (groupRaw: VillageArmyGroup | string | null | undefined): VillageArmyGroup => {
+  const normalized = String(groupRaw ?? '')
+    .trim()
+    .toLocaleLowerCase('en-US');
+  return VILLAGE_ARMY_GROUP_ORDER.includes(normalized as VillageArmyGroup)
+    ? (normalized as VillageArmyGroup)
+    : 'none';
+};
+
+const getVillageArmyGroupMeta = (groupRaw: VillageArmyGroup | string | null | undefined): VillageArmyGroupMeta =>
+  VILLAGE_ARMY_GROUP_META[normalizeVillageArmyGroupId(groupRaw)];
+
+const hasKnightInArmyVillage = (village: Pick<ArmyVillageSummary, 'units'>): boolean =>
+  (village.units ?? []).some(
+    (unit) =>
+      String(unit.unitId ?? '') === 'knight' &&
+      Math.max(0, Math.floor(Number(unit.ownAmount ?? 0))) > 0,
+  );
 
 const resolveUnitTravelDurationSec = (
   unitId: CommandUnitId,
@@ -5282,9 +5350,33 @@ const extractVillageBaseName = (label: string): string => {
     .trim();
 };
 
+const VillageArmyGroupBadge = memo(
+  ({
+    group,
+    className = '',
+    compact = false,
+  }: {
+    group: VillageArmyGroup | string | null | undefined;
+    className?: string;
+    compact?: boolean;
+  }) => {
+    const meta = getVillageArmyGroupMeta(group);
+    return (
+      <span className={`village-army-group-badge is-${meta.id}${compact ? ' is-compact' : ''}${className ? ` ${className}` : ''}`}>
+        <span className="unit-icon-shell tiny village-army-group-icon-shell" aria-hidden="true">
+          <img src={meta.iconPath} alt="" className="unit-icon-image" loading="lazy" decoding="async" />
+        </span>
+        <span>{compact ? meta.shortLabel : meta.label}</span>
+      </span>
+    );
+  },
+);
+
 const CityPanel = memo(({
   villageLabel,
   prestige,
+  villageArmyGroup,
+  villageArmyGroupNotice,
   cityResourceSnapshot,
   availableResources,
   buildings,
@@ -5299,9 +5391,13 @@ const CityPanel = memo(({
   reorderUpgradePendingOrderId,
   cancelUpgradeQueuePending,
   buildingNotices,
+  isVillageArmyGroupPending,
+  onSetVillageArmyGroup,
 }: {
   villageLabel: string;
   prestige: number;
+  villageArmyGroup: VillageArmyGroup;
+  villageArmyGroupNotice: string | null;
   cityResourceSnapshot: CityPanelResourceSnapshot;
   availableResources: ResourceCost;
   buildings: Building[];
@@ -5316,6 +5412,8 @@ const CityPanel = memo(({
   reorderUpgradePendingOrderId: number | null;
   cancelUpgradeQueuePending: boolean;
   buildingNotices: Record<string, string>;
+  isVillageArmyGroupPending: boolean;
+  onSetVillageArmyGroup: (group: VillageArmyGroup) => Promise<boolean>;
 }) => {
   const [hoveredBuildingId, setHoveredBuildingId] = useState<string | null>(null);
   const [buildingTooltipCursorPosition, setBuildingTooltipCursorPosition] = useState<TooltipCursorPosition | null>(
@@ -5330,6 +5428,45 @@ const CityPanel = memo(({
     description: string;
     cursorPosition: TooltipCursorPosition | null;
   } | null>(null);
+  const villageArmyGroupMeta = useMemo(
+    () => getVillageArmyGroupMeta(villageArmyGroup),
+    [villageArmyGroup],
+  );
+  const villageArmyGroupMenuId = useId();
+  const villageArmyGroupCardRef = useRef<HTMLElement | null>(null);
+  const [isVillageArmyGroupMenuOpen, setVillageArmyGroupMenuOpen] = useState(false);
+  const closeVillageArmyGroupMenu = useCallback(() => {
+    setVillageArmyGroupMenuOpen(false);
+  }, []);
+  useEffect(() => {
+    if (!isVillageArmyGroupMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (villageArmyGroupCardRef.current?.contains(target)) {
+        return;
+      }
+      setVillageArmyGroupMenuOpen(false);
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setVillageArmyGroupMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [isVillageArmyGroupMenuOpen]);
   const openQueueActionTooltipAtCursor = useCallback(
     (event: ReactMouseEvent<HTMLElement>, title: string, description: string) => {
       setQueueActionTooltip({
@@ -5527,6 +5664,27 @@ const CityPanel = memo(({
   }, [upgradeQueueRows]);
   const isQueueActionPending =
     cancelUpgradeQueuePending || cancelUpgradePendingOrderId != null || reorderUpgradePendingOrderId != null;
+  const handleSelectVillageArmyGroup = useCallback(
+    async (group: VillageArmyGroup) => {
+      if (isVillageArmyGroupPending) {
+        return;
+      }
+      if (group === villageArmyGroup) {
+        closeVillageArmyGroupMenu();
+        return;
+      }
+      const changed = await onSetVillageArmyGroup(group);
+      if (changed) {
+        closeVillageArmyGroupMenu();
+      }
+    },
+    [
+      closeVillageArmyGroupMenu,
+      isVillageArmyGroupPending,
+      onSetVillageArmyGroup,
+      villageArmyGroup,
+    ],
+  );
 
   return (
     <div className="city-panel">
@@ -5540,6 +5698,63 @@ const CityPanel = memo(({
             <article>
               <h4>Prestiž</h4>
               <strong className="city-stat-value tld-type-stat">{prestige.toLocaleString('cs-CZ')} bodů</strong>
+            </article>
+            <article
+              ref={villageArmyGroupCardRef}
+              className={`city-village-group-card${isVillageArmyGroupMenuOpen ? ' is-open' : ''}`}
+            >
+              <button
+                type="button"
+                className="city-village-group-trigger"
+                aria-expanded={isVillageArmyGroupMenuOpen}
+                aria-controls={villageArmyGroupMenuId}
+                onClick={() => {
+                  if (isVillageArmyGroupPending) {
+                    return;
+                  }
+                  setVillageArmyGroupMenuOpen((previous) => !previous);
+                }}
+              >
+                <h4>Skupina</h4>
+                <strong className="city-stat-value tld-type-stat city-village-group-title">
+                  {villageArmyGroupMeta.label}
+                </strong>
+                <span className="city-village-group-description">{villageArmyGroupMeta.description}</span>
+              </button>
+              {villageArmyGroupNotice ? (
+                <span
+                  className={`city-village-group-notice ${
+                    /nepoda|selha|chyb|neplat/i.test(villageArmyGroupNotice) ? 'is-error' : 'is-success'
+                  }`}
+                >
+                  {villageArmyGroupNotice}
+                </span>
+              ) : null}
+              {isVillageArmyGroupMenuOpen ? (
+                <div id={villageArmyGroupMenuId} className="city-village-group-sheet" role="listbox" aria-label="Skupina léna">
+                  {VILLAGE_ARMY_GROUP_ORDER.map((groupId) => {
+                    const groupMeta = VILLAGE_ARMY_GROUP_META[groupId];
+                    return (
+                      <button
+                        key={`city-village-group-option-${groupId}`}
+                        type="button"
+                        role="option"
+                        aria-selected={groupId === villageArmyGroupMeta.id}
+                        className={`city-village-group-option ${
+                          groupId === villageArmyGroupMeta.id ? 'is-active' : ''
+                        }`}
+                        disabled={isVillageArmyGroupPending}
+                        onClick={() => {
+                          void handleSelectVillageArmyGroup(groupId);
+                        }}
+                      >
+                        <VillageArmyGroupBadge group={groupId} />
+                        <span>{groupMeta.description}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
             </article>
             <article
               className="city-resource-stock-card"
@@ -5991,6 +6206,7 @@ const ArmyPanel = memo(({
   upgradePendingBuildingId,
   notice,
   noticeUnitId,
+  overviewSyncToken,
 }: {
   units: Unit[];
   buildings: Building[];
@@ -6010,6 +6226,7 @@ const ArmyPanel = memo(({
   upgradePendingBuildingId: string | null;
   notice: string | null;
   noticeUnitId: string | null;
+  overviewSyncToken: number;
 }) => {
   const [recruitDraftAmounts, setRecruitDraftAmounts] = useState<Record<string, string>>({});
   const [draggedRecruitQueueOrderId, setDraggedRecruitQueueOrderId] = useState<number | null>(null);
@@ -6023,6 +6240,8 @@ const ArmyPanel = memo(({
   const [plannerOpenLoading, setPlannerOpenLoading] = useState(false);
   const [plannerOpenError, setPlannerOpenError] = useState<string | null>(null);
   const [plannerRefreshToken, setPlannerRefreshToken] = useState(0);
+  const [armyOverviewGroupFilter, setArmyOverviewGroupFilter] = useState<'all' | VillageArmyGroup>('all');
+  const [armyOverviewKnightFilter, setArmyOverviewKnightFilter] = useState<'all' | 'withKnight'>('all');
   const [plannerDraft, setPlannerDraft] = useState<PlannerDraftState>({
     targetPlayerUsername: '',
     targetVillageId: null,
@@ -6233,7 +6452,7 @@ const ArmyPanel = memo(({
     return () => {
       cancelled = true;
     };
-  }, [currentUsername, isExpanded, plannerRefreshToken, worldId]);
+  }, [currentUsername, isExpanded, overviewSyncToken, plannerRefreshToken, worldId]);
 
   useEffect(() => {
     if (!isExpanded || !worldId) {
@@ -6515,6 +6734,20 @@ const ArmyPanel = memo(({
         plannerSelected: plannerSelectedOriginIds.has(Number(village.villageId)),
       })),
     [armyOverview?.villages, plannerSelectedOriginIds],
+  );
+  const filteredArmyOverviewVillages = useMemo(
+    () =>
+      armyOverviewVillages.filter((village) => {
+        const normalizedGroup = normalizeVillageArmyGroupId(village.armyGroup);
+        if (armyOverviewGroupFilter !== 'all' && normalizedGroup !== armyOverviewGroupFilter) {
+          return false;
+        }
+        if (armyOverviewKnightFilter === 'withKnight' && !hasKnightInArmyVillage(village)) {
+          return false;
+        }
+        return true;
+      }),
+    [armyOverviewGroupFilter, armyOverviewKnightFilter, armyOverviewVillages],
   );
 
   const plannerLegRows = useMemo(() => {
@@ -7222,6 +7455,58 @@ const ArmyPanel = memo(({
     },
     [applyPlannerDraftMutation, draggedPlannerLegOriginVillageId],
   );
+  const armyOverviewFilterBar =
+    armyOverviewVillages.length > 0 ? (
+      <section className="army-overview-filter-shell" aria-label="Filtry armádních přehledů">
+        <div className="army-overview-filter-row">
+          <span className="army-overview-filter-label">Skupina</span>
+          <div className="army-overview-filter-options">
+            <button
+              type="button"
+              className={`secondary-action compact ${armyOverviewGroupFilter === 'all' ? 'is-active' : ''}`}
+              onClick={() => setArmyOverviewGroupFilter('all')}
+            >
+              Vše
+            </button>
+            {VILLAGE_ARMY_GROUP_ORDER.map((groupId) => (
+              <button
+                key={`army-overview-group-filter-${groupId}`}
+                type="button"
+                className={`secondary-action compact village-army-group-filter-chip ${
+                  armyOverviewGroupFilter === groupId ? 'is-active' : ''
+                }`}
+                onClick={() => setArmyOverviewGroupFilter(groupId)}
+              >
+                <VillageArmyGroupBadge group={groupId} compact />
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="army-overview-filter-row">
+          <span className="army-overview-filter-label">Speciál</span>
+          <div className="army-overview-filter-options">
+            <button
+              type="button"
+              className={`secondary-action compact ${armyOverviewKnightFilter === 'all' ? 'is-active' : ''}`}
+              onClick={() => setArmyOverviewKnightFilter('all')}
+            >
+              Všechna léna
+            </button>
+            <button
+              type="button"
+              className={`secondary-action compact ${armyOverviewKnightFilter === 'withKnight' ? 'is-active' : ''}`}
+              onClick={() => setArmyOverviewKnightFilter('withKnight')}
+            >
+              Jen s rytířem
+            </button>
+          </div>
+        </div>
+        <p className="army-overview-filter-summary">
+          Zobrazeno {filteredArmyOverviewVillages.length.toLocaleString('cs-CZ')} z{' '}
+          {armyOverviewVillages.length.toLocaleString('cs-CZ')} lén.
+        </p>
+      </section>
+    ) : null;
 
   return (
     <div className="panel-stack">
@@ -7264,12 +7549,16 @@ const ArmyPanel = memo(({
           {plannerOpenError ? <p className="panel-feedback">{plannerOpenError}</p> : null}
           {plannerNoticeMessage ? <p className="panel-feedback">{plannerNoticeMessage}</p> : null}
           {armyOverviewLoading ? <p>Načítám armádní přehled…</p> : null}
+          {!armyOverviewLoading ? armyOverviewFilterBar : null}
           {!armyOverviewLoading && armyOverviewVillages.length <= 0 ? (
             <p>V tomto světě zatím nemáš žádná dostupná léna.</p>
           ) : null}
-          {armyOverviewVillages.length > 0 ? (
+          {!armyOverviewLoading && armyOverviewVillages.length > 0 && filteredArmyOverviewVillages.length <= 0 ? (
+            <p>Aktivní filtr zatím nevrátil žádné léno.</p>
+          ) : null}
+          {filteredArmyOverviewVillages.length > 0 ? (
             <ul className="armada-overview-grid">
-              {armyOverviewVillages.map((village) => (
+              {filteredArmyOverviewVillages.map((village) => (
                 <li key={`armada-overview-${village.villageId}`}>
                   <button
                     type="button"
@@ -7284,6 +7573,7 @@ const ArmyPanel = memo(({
                         {village.coordX}|{village.coordY}
                       </span>
                     </div>
+                    <VillageArmyGroupBadge group={village.armyGroup} compact className="armada-village-group-badge" />
                     <small>
                       Království: {village.kingdom} · Jednotky {village.totalOwnUnits.toLocaleString('cs-CZ')} (
                       {village.totalSupportUnits.toLocaleString('cs-CZ')})
@@ -7309,6 +7599,9 @@ const ArmyPanel = memo(({
                       >
                         Nábor {Math.max(0, Math.floor(Number(village.activeRecruitments?.length ?? 0))).toLocaleString('cs-CZ')}
                       </span>
+                      {hasKnightInArmyVillage(village) ? (
+                        <span className="armada-village-intel-pill is-knight">Rytíř</span>
+                      ) : null}
                     </div>
                     <div className="armada-unit-pill-row">
                       {village.units.map((unit) => (
@@ -7792,9 +8085,13 @@ const ArmyPanel = memo(({
           </p>
           {armyOverviewError ? <p className="panel-feedback">{armyOverviewError}</p> : null}
           {armyOverviewLoading ? <p>Načítám armádní přehled…</p> : null}
-          {!armyOverviewLoading && armyOverviewVillages.length > 0 ? (
+          {!armyOverviewLoading ? armyOverviewFilterBar : null}
+          {!armyOverviewLoading && armyOverviewVillages.length > 0 && filteredArmyOverviewVillages.length <= 0 ? (
+            <p>Aktivní filtr zatím nevrátil žádné léno.</p>
+          ) : null}
+          {!armyOverviewLoading && filteredArmyOverviewVillages.length > 0 ? (
             <ul className="commands-list multi-village-overview-list">
-              {armyOverviewVillages.map((village) => {
+              {filteredArmyOverviewVillages.map((village) => {
                 const villageId = Math.max(0, Math.floor(Number(village.villageId ?? 0)));
                 const fortificationLevel = Math.max(0, Math.floor(Number(village.fortificationLevel ?? 0)));
                 const gateLevel = Math.max(0, Math.floor(Number(village.gateLevel ?? 0)));
@@ -7821,6 +8118,7 @@ const ArmyPanel = memo(({
                             {village.coordX}|{village.coordY}
                           </span>
                         </div>
+                        <VillageArmyGroupBadge group={village.armyGroup} compact className="multi-village-group-badge" />
                         <small>
                           Království: {village.kingdom} · Vlastní {village.totalOwnUnits.toLocaleString('cs-CZ')} ·
                           Podpora {village.totalSupportUnits.toLocaleString('cs-CZ')}
@@ -7868,6 +8166,14 @@ const ArmyPanel = memo(({
                           {gateLevel.toLocaleString('cs-CZ')}
                         </strong>
                       </span>
+                      {hasKnightInArmyVillage(village) ? (
+                        <span className="multi-village-overview-level-pill is-knight">
+                          <span className="unit-icon-shell tiny" aria-hidden="true">
+                            <img src={getUnitMetaById('knight').icon} alt="" className="unit-icon-image" loading="lazy" />
+                          </span>
+                          <strong className="multi-village-overview-level-value tld-type-value">Rytíř</strong>
+                        </span>
+                      ) : null}
                     </div>
                     {villageUnits.length > 0 ? (
                       <div className="multi-village-unit-pill-row">
@@ -9945,6 +10251,8 @@ const BattleReportPanel = ({
   const defenderSnapshot = payload.role === 'support' ? payload.support : battle?.defender;
   const attackerIsUnknown =
     spy == null && payload.attackerForcesUnknown === true && payload.perspective === 'defender';
+  const defenderIsUnknown =
+    spy == null && payload.defenderForcesUnknown === true && payload.perspective === 'attacker';
   const bonuses = battle?.bonuses ?? [];
   const returnMovement = payload.returnMovement;
   const returnRows = collectSelectionRows(returnMovement?.units);
@@ -10240,6 +10548,8 @@ const BattleReportPanel = ({
                 subheading={payload.targetVillageName}
                 tone={payload.role === 'support' ? 'support' : 'defender'}
                 snapshot={defenderSnapshot}
+                hidden={defenderIsUnknown}
+                hiddenReason="Obranná síla nebyla odhalena. Potřebuješ vítězství nebo přeživší zvědy po střetu se zvědy obránce."
               />
             </div>
           </section>
@@ -10621,6 +10931,7 @@ const CommandsPanel = ({
   commandHistory,
   recentAttackTargets,
   quickSelection,
+  quickLogisticsTarget,
   onIssueArmyCommand,
   onCancelArmyCommand,
   onReturnSupport,
@@ -10648,6 +10959,7 @@ const CommandsPanel = ({
   commandHistory: Partial<Record<MapOrderCommandType, number>>;
   recentAttackTargets: NonNullable<GameStateResponse['army']['recentAttackTargets']>;
   quickSelection: ArmyQuickSelection | null;
+  quickLogisticsTarget: MarketLogisticsQuickTarget | null;
   onIssueArmyCommand: (payload: {
       commandType: ArmyCommandType;
       targetVillageId: number;
@@ -10666,7 +10978,9 @@ const CommandsPanel = ({
   cancelCommandProgressLimit: number | null | undefined;
   commandNotice: string | null;
   onSendMarketLogistics: (payload: {
-    targetVillageId: number;
+    targetVillageId?: number;
+    manualTargetCoordX?: number;
+    manualTargetCoordY?: number;
     wood: number;
     stone: number;
     iron: number;
@@ -10726,6 +11040,7 @@ const CommandsPanel = ({
   const [guildAddVillageIdDraft, setGuildAddVillageIdDraft] = useState('');
   const [draggedGuildTargetVillageId, setDraggedGuildTargetVillageId] = useState<number | null>(null);
   const lastAppliedQuickSelectionRef = useRef<number | null>(null);
+  const lastAppliedQuickLogisticsTargetRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!quickSelection) {
@@ -10746,6 +11061,28 @@ const CommandsPanel = ({
       window.cancelAnimationFrame(frameId);
     };
   }, [quickSelection]);
+
+  useEffect(() => {
+    if (!quickLogisticsTarget) {
+      return;
+    }
+
+    if (lastAppliedQuickLogisticsTargetRef.current === quickLogisticsTarget.requestId) {
+      return;
+    }
+
+    lastAppliedQuickLogisticsTargetRef.current = quickLogisticsTarget.requestId;
+    const frameId = window.requestAnimationFrame(() => {
+      setManualLogisticsTargetDraft(`${quickLogisticsTarget.coordX}|${quickLogisticsTarget.coordY}`);
+      if (quickLogisticsTarget.targetVillageId != null) {
+        setLogisticsTargetVillageId(Number(quickLogisticsTarget.targetVillageId));
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [quickLogisticsTarget]);
 
   const parseCoordinateDraft = (value: string): GridPosition | null => {
     const normalized = String(value ?? '').trim();
@@ -11140,41 +11477,72 @@ const CommandsPanel = ({
         ) ?? null;
   const manualLogisticsCoordinates = parseCoordinateDraft(manualLogisticsTargetDraft);
   const manualLogisticsSettlement = manualLogisticsCoordinates
-    ? logisticsTargets.find(
+    ? settlements.find(
         (candidate) =>
+          Number(candidate.villageId ?? 0) > 0 &&
           Number(candidate.globalX) === Number(manualLogisticsCoordinates.x) &&
-          Number(candidate.globalY) === Number(manualLogisticsCoordinates.y),
+          Number(candidate.globalY) === Number(manualLogisticsCoordinates.y) &&
+          (currentVillageId == null || Number(candidate.villageId) !== Number(currentVillageId)),
       ) ?? null
     : null;
   const manualLogisticsHasInput = manualLogisticsTargetDraft.trim().length > 0;
-  const effectiveLogisticsSettlement =
-    manualLogisticsHasInput && manualLogisticsSettlement ? manualLogisticsSettlement : selectedLogisticsSettlement;
-  const logisticsDistanceTiles = useMemo(() => {
-    if (!effectiveLogisticsSettlement) {
+  const manualLogisticsModeActive = manualLogisticsHasInput && manualLogisticsCoordinates != null;
+  const effectiveLogisticsTarget = useMemo(() => {
+    if (manualLogisticsModeActive && manualLogisticsCoordinates) {
+      return {
+        targetVillageId:
+          manualLogisticsSettlement?.villageId != null
+            ? Number(manualLogisticsSettlement.villageId)
+            : null,
+        name:
+          manualLogisticsSettlement?.name ??
+          `Souřadnice ${Number(manualLogisticsCoordinates.x)}|${Number(manualLogisticsCoordinates.y)}`,
+        globalX: Number(manualLogisticsCoordinates.x),
+        globalY: Number(manualLogisticsCoordinates.y),
+      };
+    }
+    if (!selectedLogisticsSettlement) {
       return null;
     }
-    const originSettlement =
-      settlements.find((settlement) => Number(settlement.villageId) === Number(currentVillageId)) ?? null;
-    if (!originSettlement) {
+    return {
+      targetVillageId:
+        selectedLogisticsSettlement.villageId != null
+          ? Number(selectedLogisticsSettlement.villageId)
+          : null,
+      name: String(selectedLogisticsSettlement.name ?? 'Cíl'),
+      globalX: Number(selectedLogisticsSettlement.globalX),
+      globalY: Number(selectedLogisticsSettlement.globalY),
+    };
+  }, [manualLogisticsCoordinates, manualLogisticsModeActive, manualLogisticsSettlement, selectedLogisticsSettlement]);
+  const originLogisticsSettlement =
+    settlements.find((settlement) => Number(settlement.villageId) === Number(currentVillageId)) ?? null;
+  const logisticsDistanceTiles = useMemo(() => {
+    if (!effectiveLogisticsTarget || !originLogisticsSettlement) {
       return null;
     }
     return calculateCellDistance(
-      originSettlement.globalX,
-      originSettlement.globalY,
-      effectiveLogisticsSettlement.globalX,
-      effectiveLogisticsSettlement.globalY,
+      Number(originLogisticsSettlement.globalX),
+      Number(originLogisticsSettlement.globalY),
+      Number(effectiveLogisticsTarget.globalX),
+      Number(effectiveLogisticsTarget.globalY),
     );
-  }, [currentVillageId, effectiveLogisticsSettlement, settlements]);
+  }, [effectiveLogisticsTarget, originLogisticsSettlement]);
   const logisticsEtaSec =
     logisticsDistanceTiles == null ? null : Math.max(60, Math.floor((10 + logisticsDistanceTiles * 2) * 60));
   const logisticsWarnings: string[] = [];
   if (manualLogisticsHasInput && !manualLogisticsCoordinates) {
     logisticsWarnings.push('Ruční cíl musí mít formát X|Y.');
-  } else if (manualLogisticsHasInput && !manualLogisticsSettlement) {
-    logisticsWarnings.push('Na zadaných souřadnicích nebylo nalezeno žádné tvoje léno.');
   }
-  if (marketLevel > 0 && logisticsTargets.length <= 0) {
-    logisticsWarnings.push('Pro logistiku nejsou dostupná žádná další vlastní léna.');
+  if (manualLogisticsHasInput && manualLogisticsCoordinates && originLogisticsSettlement) {
+    const isSameAsOrigin =
+      Number(manualLogisticsCoordinates.x) === Number(originLogisticsSettlement.globalX) &&
+      Number(manualLogisticsCoordinates.y) === Number(originLogisticsSettlement.globalY);
+    if (isSameAsOrigin) {
+      logisticsWarnings.push('Cílové léno musí být odlišné od zdrojového.');
+    }
+  }
+  if (!manualLogisticsHasInput && selectedLogisticsSettlement == null) {
+    logisticsWarnings.push('Vyber cílové léno nebo zadej souřadnice X|Y.');
   }
   if (logisticsTotal > marketCapacity && marketLevel > 0) {
     logisticsWarnings.push(
@@ -11201,11 +11569,18 @@ const CommandsPanel = ({
   }
   const canSendLogistics =
     marketLevel > 0 &&
-    effectiveLogisticsSettlement != null &&
+    effectiveLogisticsTarget != null &&
     logisticsTotal > 0 &&
     logisticsWarnings.length === 0 &&
     !logisticsActionPending;
   const guildAutomation = market?.guildAutomation;
+  const marketGuildUnlocked = Boolean(market?.guildUnlocked);
+  const marketGuildStatusLabel = marketGuildUnlocked
+    ? 'Aktivní'
+    : marketLevel < 4
+      ? 'Nedostupné (chybí Trh L4)'
+      : 'Nedostupné (chybí výzkum)';
+  const marketGuildStatusHint = marketGuildUnlocked ? '08:00 - 20:00 UTC' : 'Vyžaduje Trh L4 + Vliv cechů';
   const guildEnabledDraft = Boolean(guildAutomation?.enabled ?? false);
   const guildTargetVillageIdsDraft = useMemo(
     () => (guildAutomation?.targets ?? []).map((target) => Number(target.targetVillageId)),
@@ -11970,15 +12345,16 @@ const CommandsPanel = ({
               {Math.max(0, Math.floor(Number(market?.merchants?.total ?? 0))).toLocaleString('cs-CZ')}
             </strong>
           </article>
-          <article className={market?.guildUnlocked ? '' : 'is-danger'}>
+          <article className={marketGuildUnlocked ? '' : 'is-danger'}>
             <span>Cech obchodníků</span>
-            <strong>{market?.guildUnlocked ? '08:00 - 20:00' : 'Připravuje se'}</strong>
+            <strong>{marketGuildStatusLabel}</strong>
+            <small className="tld-type-meta">{marketGuildStatusHint}</small>
           </article>
         </div>
         {marketLevel > 0 ? (
           <div className="research-logistics-form">
             <label>
-              Cílové léno (výběr)
+              Cílové léno (rychlý výběr vlastních)
               <select
                 value={effectiveLogisticsTargetVillageId == null ? '' : String(effectiveLogisticsTargetVillageId)}
                 onChange={(event) => {
@@ -11996,7 +12372,7 @@ const CommandsPanel = ({
               </select>
             </label>
             <label>
-              Ruční cíl (X|Y)
+              Ruční cíl (X|Y, libovolné léno)
               <input
                 type="text"
                 value={manualLogisticsTargetDraft}
@@ -12091,8 +12467,8 @@ const CommandsPanel = ({
               <p className="army-command-preview-target">
                 Cíl:{' '}
                 <strong className="army-command-inline-value tld-type-value">
-                  {effectiveLogisticsSettlement
-                    ? `${effectiveLogisticsSettlement.name} (${effectiveLogisticsSettlement.globalX}|${effectiveLogisticsSettlement.globalY})`
+                  {effectiveLogisticsTarget
+                    ? `${effectiveLogisticsTarget.name} (${effectiveLogisticsTarget.globalX}|${effectiveLogisticsTarget.globalY})`
                     : '-'}
                 </strong>{' '}
                 · ETA:{' '}
@@ -12116,11 +12492,16 @@ const CommandsPanel = ({
                 type="button"
                 className="secondary-action"
                 onClick={() => {
-                  if (effectiveLogisticsSettlement == null) {
+                  if (effectiveLogisticsTarget == null) {
                     return;
                   }
                   onSendMarketLogistics({
-                    targetVillageId: Number(effectiveLogisticsSettlement.villageId ?? 0),
+                    targetVillageId:
+                      effectiveLogisticsTarget.targetVillageId != null
+                        ? Number(effectiveLogisticsTarget.targetVillageId)
+                        : undefined,
+                    manualTargetCoordX: manualLogisticsModeActive ? Number(effectiveLogisticsTarget.globalX) : undefined,
+                    manualTargetCoordY: manualLogisticsModeActive ? Number(effectiveLogisticsTarget.globalY) : undefined,
                     wood: logisticsWood,
                     stone: logisticsStone,
                     iron: logisticsIron,
@@ -12195,7 +12576,7 @@ const CommandsPanel = ({
                   const nextEnabled = Boolean(event.target.checked);
                   applyGuildConfiguration(nextEnabled, guildTargetVillageIdsDraft);
                 }}
-                disabled={!market?.guildUnlocked || guildActionPending}
+                disabled={!marketGuildUnlocked || guildActionPending}
               />
               <span>Zapnout cyklus po 5 hodinách</span>
             </label>
@@ -12208,7 +12589,7 @@ const CommandsPanel = ({
           {Number(guildAutomation?.merchants?.total ?? 0) > 0 && Number(guildAutomation?.merchants?.available ?? 0) <= 0 ? (
             <p className="panel-feedback is-danger">Všichni obchodníci jsou na cestě, další auto-zásilka čeká.</p>
           ) : null}
-          {market?.guildUnlocked ? (
+          {marketGuildUnlocked ? (
             <>
               <div className="market-guild-add-row">
                 <select
@@ -15134,6 +15515,7 @@ const MapPanel = memo(({
   onOpenSettlement,
   onPinSettlement,
   onQuickArmyCommand,
+  onQuickMarketLogistics,
 }: {
   settlements: RegionSettlement[];
   regionId: number;
@@ -15152,6 +15534,7 @@ const MapPanel = memo(({
   onOpenSettlement: (settlement: RegionSettlement) => void;
   onPinSettlement: (settlement: RegionSettlement, side: PinSide) => void;
   onQuickArmyCommand: (commandType: ArmyCommandSelectableType, settlement: RegionSettlement) => void;
+  onQuickMarketLogistics: (settlement: RegionSettlement) => void;
 }) => {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [pinnedSettlementId, setPinnedSettlementId] = useState<string | null>(null);
@@ -16749,6 +17132,14 @@ const MapPanel = memo(({
       previewSettlement != null
         ? `${Math.round(Number(previewSettlement.globalX))}|${Math.round(Number(previewSettlement.globalY))}`
         : '-';
+    const previewTargetVillageId =
+      previewSettlement?.villageId != null && Number.isFinite(previewSettlement.villageId)
+        ? Math.floor(Number(previewSettlement.villageId))
+        : null;
+    const canQuickSendLogistics =
+      previewSettlement != null &&
+      previewTargetVillageId != null &&
+      (activeVillageId == null || previewTargetVillageId !== Number(activeVillageId));
     const isPreviewOwnedByPlayer =
       previewSettlementKind === 'active' ||
       previewSettlementKind === 'own' ||
@@ -16879,6 +17270,25 @@ const MapPanel = memo(({
                   </button>
                 );
               })}
+              <button
+                type="button"
+                className="secondary-action map-settlement-action logistics"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (!previewSettlement || !canQuickSendLogistics) {
+                    return;
+                  }
+                  onQuickMarketLogistics(previewSettlement);
+                }}
+                disabled={!canQuickSendLogistics}
+                title={
+                  canQuickSendLogistics
+                    ? 'Přejít do Příkazů a předvyplnit cíl logistiky'
+                    : 'Na vlastní zdrojové léno nelze poslat logistiku'
+                }
+              >
+                <span className="symbol">📦</span> Poslat suroviny
+              </button>
             </div>
             <div className="map-settlement-pin-controls">
               <button
@@ -17199,7 +17609,7 @@ const VillagePanel = memo(({
       return [
         {
           label: 'Posádka uzamčena',
-          value: 'Odemkne se od Radnice 5.',
+          value: 'Detail posádky zatím není dostupný.',
         },
       ];
     }
@@ -17447,11 +17857,10 @@ const VillagePanel = memo(({
               const unitMeta = getUnitMetaById(unit.unitId);
               const unitCardImage = VILLAGE_UNIT_CARD_ICON_BY_ID[unit.unitId] ?? unitMeta.icon;
               return (
-                <article
+                <div
                   key={`village-unit-summary-${unit.unitId}`}
-                  className={`village-unit-summary-card village-unit-type-card has-army-tooltip${isUnitTooltipOpen ? ' is-tooltip-open' : ''}`}
+                  className={`village-unit-summary-item has-army-tooltip${isUnitTooltipOpen ? ' is-tooltip-open' : ''}`}
                   aria-label={`${unit.unitName}: vlastní ${unit.ownAmount.toLocaleString('cs-CZ')}, podpora ${unit.supportAmount.toLocaleString('cs-CZ')}`}
-                  style={{ '--unit-card-image': `url("${unitCardImage}")` } as CSSProperties}
                   onMouseEnter={(event) => {
                     handleIntelTooltipEnter(unitTooltipKey, { x: event.clientX, y: event.clientY });
                   }}
@@ -17465,16 +17874,25 @@ const VillagePanel = memo(({
                     handleIntelTooltipLeave(unitTooltipKey);
                   }}
                 >
-                  <strong className="village-unit-value tld-type-value">{formatCompactResourceAmount(unit.ownAmount)}</strong>
-                  <strong className="village-unit-support tld-type-value">
-                    ({formatCompactResourceAmount(unit.supportAmount)})
-                  </strong>
-                  <div className="village-unit-type-header">
-                    <span className="unit-icon-shell" aria-hidden="true">
-                      <img src={unitMeta.icon} alt="" className="unit-icon-image" loading="lazy" />
-                    </span>
-                  </div>
-                </article>
+                  <header className="village-unit-card-header">
+                    <div className="village-unit-card-header-values">
+                      <strong className="village-unit-value tld-type-value">{formatCompactResourceAmount(unit.ownAmount)}</strong>
+                      <strong className="village-unit-support tld-type-value">
+                        ({formatCompactResourceAmount(unit.supportAmount)})
+                      </strong>
+                    </div>
+                  </header>
+                  <article
+                    className="village-unit-summary-card village-unit-type-card"
+                    style={{ '--unit-card-image': `url("${unitCardImage}")` } as CSSProperties}
+                  >
+                    <div className="village-unit-type-header">
+                      <span className="unit-icon-shell" aria-hidden="true">
+                        <img src={unitMeta.icon} alt="" className="unit-icon-image" loading="lazy" />
+                      </span>
+                    </div>
+                  </article>
+                </div>
               );
             })
           ) : (
@@ -17488,13 +17906,23 @@ const VillagePanel = memo(({
           <article className="village-float-intel-card village-fortification-card">
             <h4>Obrana</h4>
             <div className="village-fortification-levels">
-              <span>
-                <img src={BUILDING_ART.fortification.icon} alt="" loading="lazy" decoding="async" />
-                Opevnění <span className="village-fortification-value tld-type-value">{(villageIntelData?.fortificationLevel ?? 0).toLocaleString('cs-CZ')}</span>
+              <span className="village-fortification-row">
+                <span className="unit-icon-shell tiny village-fortification-icon-shell" aria-hidden="true">
+                  <img src="/assets/ui/fortification-icon.svg" alt="" className="unit-icon-image" loading="lazy" decoding="async" />
+                </span>
+                <span className="village-fortification-label">Opevnění</span>
+                <span className="village-fortification-value tld-type-value">
+                  {(villageIntelData?.fortificationLevel ?? 0).toLocaleString('cs-CZ')}
+                </span>
               </span>
-              <span>
-                <img src={BUILDING_ART.gate.icon} alt="" loading="lazy" decoding="async" />
-                Brána <span className="village-fortification-value tld-type-value">{(villageIntelData?.gateLevel ?? 0).toLocaleString('cs-CZ')}</span>
+              <span className="village-fortification-row">
+                <span className="unit-icon-shell tiny village-fortification-icon-shell" aria-hidden="true">
+                  <img src="/assets/ui/gate-icon.svg" alt="" className="unit-icon-image" loading="lazy" decoding="async" />
+                </span>
+                <span className="village-fortification-label">Brána</span>
+                <span className="village-fortification-value tld-type-value">
+                  {(villageIntelData?.gateLevel ?? 0).toLocaleString('cs-CZ')}
+                </span>
               </span>
             </div>
           </article>
@@ -17520,11 +17948,6 @@ const VillagePanel = memo(({
               {hasVillageIntel
                 ? `${(villageIntelData?.garrisonUnits ?? 0).toLocaleString('cs-CZ')} jednotek`
                 : '300 jednotek'}
-            </span>
-            <span>
-              {hasVillageIntel && villageIntelData && !villageIntelData.garrisonUnlocked
-                ? 'Posádka se odemyká od Radnice 5. Rezervace 300 populace je aktivní hned.'
-                : 'Statická obrana léna (ozbrojenci + lučištníci) s průběžnou obnovou.'}
             </span>
           </article>
         </div>
@@ -17739,6 +18162,7 @@ export const GamePage = () => {
   const skipPanelPlacementSaveScopeRef = useRef<string | null>(null);
   const initialAutoStretchAppliedRef = useRef(false);
   const armyQuickSelectionRequestIdRef = useRef(0);
+  const marketLogisticsQuickTargetRequestIdRef = useRef(0);
   const logisticsSendLockRef = useRef(false);
   const username = session?.username ?? 'Hayato';
   const selectedWorldId = session?.selectedWorldId ?? null;
@@ -17832,6 +18256,7 @@ export const GamePage = () => {
   const [cancelUpgradeQueuePending, setCancelUpgradeQueuePending] = useState(false);
   const [recallKnightPending, setRecallKnightPending] = useState(false);
   const [renameVillagePending, setRenameVillagePending] = useState(false);
+  const [villageArmyGroupPending, setVillageArmyGroupPending] = useState(false);
   const [buildingNotices, setBuildingNotices] = useState<Record<string, string>>({});
   const [battleReports, setBattleReports] = useState<BattleReportListResponse | null>(null);
   const [battleReportsSummary, setBattleReportsSummary] = useState<BattleReportSummaryResponse | null>(null);
@@ -17955,12 +18380,15 @@ export const GamePage = () => {
   const [isVillageRenameOpen, setIsVillageRenameOpen] = useState(false);
   const [villageRenameDraft, setVillageRenameDraft] = useState('');
   const [villageRenameNotice, setVillageRenameNotice] = useState<string | null>(null);
+  const [villageArmyGroupNotice, setVillageArmyGroupNotice] = useState<string | null>(null);
   const [isVillageHotkeyMode, setIsVillageHotkeyMode] = useState(false);
   const [villageHotkeyIndex, setVillageHotkeyIndex] = useState(0);
+  const [armyOverviewSyncToken, setArmyOverviewSyncToken] = useState(0);
   const [armyTargetHistoryByVillageId, setArmyTargetHistoryByVillageId] = useState<ArmyTargetHistoryByVillageId>(
     () => readStoredArmyTargetHistory(username),
   );
   const [armyQuickSelection, setArmyQuickSelection] = useState<ArmyQuickSelection | null>(null);
+  const [marketLogisticsQuickTarget, setMarketLogisticsQuickTarget] = useState<MarketLogisticsQuickTarget | null>(null);
   const [mapCenterRequest, setMapCenterRequest] = useState<{ settlementId: string; nonce: number } | null>(null);
 
   useEffect(() => {
@@ -17981,6 +18409,7 @@ export const GamePage = () => {
         kingdomActionPending ||
         restartVillagePending ||
         renameVillagePending ||
+        villageArmyGroupPending ||
         recallKnightPending ||
         activityActionPending,
     );
@@ -18003,6 +18432,7 @@ export const GamePage = () => {
     renameVillagePending,
     restartVillagePending,
     upgradePendingBuildingId,
+    villageArmyGroupPending,
   ]);
 
   useEffect(() => {
@@ -18557,6 +18987,9 @@ export const GamePage = () => {
     : 'Načítám město...';
   const activeVillageBaseName = gameState?.village.name ?? extractVillageBaseName(villageLabel);
   const activeVillageResolvedId = gameState?.village.id ?? activeVillageId ?? null;
+  useEffect(() => {
+    setVillageArmyGroupNotice(null);
+  }, [activeVillageResolvedId, selectedWorldId]);
   const publicOrder = gameState?.publicOrder ?? null;
   const publicOrderCurrentPct = Math.max(0, Math.min(100, Math.floor(Number(publicOrder?.currentPct ?? 100))));
   const publicOrderBand = String(publicOrder?.band ?? 'stable');
@@ -20645,6 +21078,26 @@ export const GamePage = () => {
     [],
   );
 
+  const queueMarketLogisticsQuickTarget = useCallback((settlement: RegionSettlement) => {
+    const coordX = Number(settlement.globalX);
+    const coordY = Number(settlement.globalY);
+    if (!Number.isFinite(coordX) || !Number.isFinite(coordY)) {
+      return;
+    }
+    const targetVillageId =
+      settlement.villageId != null && Number.isFinite(settlement.villageId)
+        ? Math.floor(Number(settlement.villageId))
+        : null;
+
+    marketLogisticsQuickTargetRequestIdRef.current += 1;
+    setMarketLogisticsQuickTarget({
+      requestId: marketLogisticsQuickTargetRequestIdRef.current,
+      coordX: Math.floor(coordX),
+      coordY: Math.floor(coordY),
+      targetVillageId,
+    });
+  }, []);
+
   const handleMapQuickArmyCommand = useCallback(
     (commandType: ArmyCommandSelectableType, settlement: RegionSettlement) => {
       const targetVillageId =
@@ -20659,6 +21112,14 @@ export const GamePage = () => {
       openPanel('commands');
     },
     [openPanel, queueArmyQuickSelection],
+  );
+
+  const handleMapQuickMarketLogistics = useCallback(
+    (settlement: RegionSettlement) => {
+      queueMarketLogisticsQuickTarget(settlement);
+      openPanel('commands');
+    },
+    [openPanel, queueMarketLogisticsQuickTarget],
   );
 
   const openBuildingPanel = useCallback((building: Building) => {
@@ -21840,7 +22301,9 @@ export const GamePage = () => {
 
   const handleSendMarketLogistics = useCallback(
     async (payload: {
-      targetVillageId: number;
+      targetVillageId?: number;
+      manualTargetCoordX?: number;
+      manualTargetCoordY?: number;
       wood: number;
       stone: number;
       iron: number;
@@ -21856,6 +22319,8 @@ export const GamePage = () => {
       try {
         const response = await sendMarketLogisticsRequest(username, {
           targetVillageId: payload.targetVillageId,
+          manualTargetCoordX: payload.manualTargetCoordX,
+          manualTargetCoordY: payload.manualTargetCoordY,
           wood: payload.wood,
           stone: payload.stone,
           iron: payload.iron,
@@ -22014,6 +22479,54 @@ export const GamePage = () => {
       loadGameState,
       selectedWorldId,
       username,
+    ],
+  );
+
+  const handleSetVillageArmyGroup = useCallback(
+    async (nextGroup: VillageArmyGroup): Promise<boolean> => {
+      if (villageArmyGroupPending) {
+        return false;
+      }
+
+      setVillageArmyGroupPending(true);
+      setVillageArmyGroupNotice(null);
+      try {
+        const response = await setVillageArmyGroupRequest(
+          username,
+          nextGroup,
+          gameState?.village.id ?? activeVillageId,
+          selectedWorldId ?? gameState?.world.id ?? null,
+        );
+        applyIncomingGameState(response.data);
+        setArmyOverviewSyncToken((previous) => previous + 1);
+        const previousMeta = getVillageArmyGroupMeta(response.result.previousGroup);
+        const nextMeta = getVillageArmyGroupMeta(response.result.newGroup);
+        setVillageArmyGroupNotice(
+          response.result.changed
+            ? `Skupina léna změněna: ${previousMeta.label} → ${nextMeta.label}.`
+            : `Skupina léna zůstává ${nextMeta.label.toLocaleLowerCase('cs-CZ')}.`,
+        );
+        return true;
+      } catch (error) {
+        const resolvedMessage = getErrorMessage(error);
+        if (/\b404\b/.test(resolvedMessage) || /endpoint nebyl nalezen/i.test(resolvedMessage)) {
+          setVillageArmyGroupNotice('API pro skupiny lén nebylo nalezeno (404). Restartuj backend na aktuální větvi.');
+        } else {
+          setVillageArmyGroupNotice(resolvedMessage);
+        }
+        return false;
+      } finally {
+        setVillageArmyGroupPending(false);
+      }
+    },
+    [
+      activeVillageId,
+      applyIncomingGameState,
+      gameState?.village.id,
+      gameState?.world.id,
+      selectedWorldId,
+      username,
+      villageArmyGroupPending,
     ],
   );
 
@@ -23260,6 +23773,8 @@ export const GamePage = () => {
           <CityPanel
             villageLabel={villageLabel}
             prestige={gameState?.village.prestige ?? 0}
+            villageArmyGroup={normalizeVillageArmyGroupId(gameState?.village.armyGroup)}
+            villageArmyGroupNotice={villageArmyGroupNotice}
             cityResourceSnapshot={cityPanelResourceSnapshot}
             availableResources={cityPanelAvailableResources}
             buildings={buildings}
@@ -23278,6 +23793,8 @@ export const GamePage = () => {
             reorderUpgradePendingOrderId={reorderUpgradePendingOrderId}
             cancelUpgradeQueuePending={cancelUpgradeQueuePending}
             buildingNotices={buildingNotices}
+            isVillageArmyGroupPending={villageArmyGroupPending}
+            onSetVillageArmyGroup={handleSetVillageArmyGroup}
           />
         );
       case 'map':
@@ -23302,6 +23819,7 @@ export const GamePage = () => {
             }}
             onPinSettlement={pinSettlementPanelToSide}
             onQuickArmyCommand={handleMapQuickArmyCommand}
+            onQuickMarketLogistics={handleMapQuickMarketLogistics}
           />
         );
       case 'army':
@@ -23327,6 +23845,7 @@ export const GamePage = () => {
             upgradePendingBuildingId={upgradePendingBuildingId}
             notice={armyNotice}
             noticeUnitId={armyNoticeUnitId}
+            overviewSyncToken={armyOverviewSyncToken}
           />
         );
       case 'military':
@@ -23362,6 +23881,7 @@ export const GamePage = () => {
             commandHistory={currentVillageCommandHistory}
             recentAttackTargets={gameState?.army.recentAttackTargets ?? []}
             quickSelection={armyQuickSelection}
+            quickLogisticsTarget={marketLogisticsQuickTarget}
             onIssueArmyCommand={handleIssueArmyCommand}
             onCancelArmyCommand={handleCancelArmyCommand}
             onReturnSupport={handleReturnSupport}
@@ -23863,6 +24383,11 @@ export const GamePage = () => {
     const shouldRenderHeader = !isMapPanel && !isMainMenuPanel;
     const shouldRenderQuickWindowActions = !isMainMenuPanel;
     const shouldRenderWindowVisibilityActions = !isMainMenuPanel;
+    if (isVillagePanel && !isMapStageActive) {
+      return null;
+    }
+    const resolvedFloatingWidthPx = isVillagePanel ? Math.max(860, Math.floor(Number(panel.width ?? 0))) : panel.width;
+    const resolvedFloatingHeightPx = isVillagePanel ? Math.max(360, Math.floor(Number(panel.height ?? 0))) : panel.height;
     const panelZIndex = isMapPanel
       ? MAP_BACKGROUND_PANEL_Z_INDEX
       : isVillagePanel
@@ -23893,8 +24418,8 @@ export const GamePage = () => {
                 bottom: shouldAnchorVillageToBottom ? '4.35rem' : undefined,
                 transform: shouldAnchorVillageToBottom ? 'translateX(-50%)' : undefined,
                 zIndex: panelZIndex,
-                width: shouldAutoSizeToContent ? 'fit-content' : `${panel.width}px`,
-                height: shouldAutoSizeToContent ? 'fit-content' : `${panel.height}px`,
+                width: shouldAutoSizeToContent ? 'fit-content' : `${resolvedFloatingWidthPx}px`,
+                height: shouldAutoSizeToContent ? 'fit-content' : `${resolvedFloatingHeightPx}px`,
                 maxWidth: shouldAutoSizeToContent
                   ? `${Math.round(autoSizeMaxWidthPx)}px`
                   : undefined,

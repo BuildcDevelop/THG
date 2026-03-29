@@ -373,6 +373,7 @@ CREATE TABLE IF NOT EXISTS villages (
   player_id INTEGER NOT NULL,
   name TEXT NOT NULL,
   kingdom TEXT NOT NULL DEFAULT 'Neutral',
+  army_group TEXT NOT NULL DEFAULT 'none',
   coord_x INTEGER NOT NULL,
   coord_y INTEGER NOT NULL,
   region INTEGER NOT NULL,
@@ -1128,6 +1129,18 @@ CREATE TABLE IF NOT EXISTS app_meta (
   if (!hasPeaceUntilColumn) {
     db.prepare('ALTER TABLE villages ADD COLUMN peace_until TEXT').run();
   }
+  const hasArmyGroupColumn = villageColumns.some((column) => column.name === 'army_group');
+  if (!hasArmyGroupColumn) {
+    db.prepare("ALTER TABLE villages ADD COLUMN army_group TEXT NOT NULL DEFAULT 'none'").run();
+  }
+  db.prepare(
+    `UPDATE villages
+     SET army_group = CASE
+       WHEN LOWER(TRIM(COALESCE(army_group, ''))) IN ('defensive', 'offensive', 'mixed')
+         THEN LOWER(TRIM(army_group))
+       ELSE 'none'
+     END`,
+  ).run();
   const hasSettlementKindColumn = villageColumns.some((column) => column.name === 'settlement_kind');
   if (!hasSettlementKindColumn) {
     db.prepare(`ALTER TABLE villages ADD COLUMN settlement_kind TEXT NOT NULL DEFAULT '${PLAYER_SETTLEMENT_KIND}'`).run();
