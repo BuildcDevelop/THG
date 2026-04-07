@@ -1945,3 +1945,10 @@ Entry template:
 - Summary: Reviewed the pending battle2 implementation, verified the client build, and prepared a clean commit path that keeps generated screenshots and playtest scratch files out of version control.
 - Files: arch/chat-changelog.md, src/App.tsx, src/features/battle2/**, docs/battle2/**, convex/_generated/**
 - Verification: `npm run build` (PASS); commit and push to follow in this chat
+
+## 2026-04-07 | branch: feat/battle-2.0
+
+- Request: Add ignore rules for generated artifact folders.
+- Summary: Added root-level ignore rules for `.codex-artifacts/` and `/artifacts/` so generated screenshots and playtest scratch files stop polluting `git status` while tracked files inside those trees remain untouched.
+- Files: .gitignore, arch/chat-changelog.md
+- Verification: Not run; ignore-rule-only change
