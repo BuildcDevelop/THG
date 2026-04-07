@@ -1875,3 +1875,73 @@ Entry template:
 - Files: arch/chat-changelog.md
 - Verification: `git remote show origin` (`HEAD branch: master` before, `origin/HEAD -> origin/main` after lokální sync), `git push origin --delete master` (PASS), `git branch -D master` (PASS), `git branch -a -vv` (bez `master` na `origin` i lokálně)
 - Notes: Nezasahoval jsem do live game dat ani do untracked souborů ve starém worktree; `D:\\The Last Dominion` zůstává jen jako detached snapshot na commitu `02af527`, nikoliv jako branch.
+
+## 2026-04-03 | branch: feat/battle-2.0
+
+- Request: Update `src/features/battle2/battle2.css` only to add clear mirrored direction cues for player and enemy battle boards.
+- Summary: Added lightweight CSS-only direction badges to the battleboard header and slot header so the player board reads forward-right and the enemy board reads forward-left, while preserving the existing dark war-table look and mobile wrapping behavior.
+- Files: src/features/battle2/battle2.css, arch/chat-changelog.md
+- Verification: Not run; CSS-only change, so `npx tsc -b --pretty false` was skipped as not relevant.
+
+## 2026-04-04 12:00 | branch: feat/battle-2.0
+
+- Request: Task 4 ownership: add staged turn playback pacing and visual turn cues to the battle2 simulator without changing engine logic, touching only `BattleSimulatorPage`, `battle2.css`, and an optional helper under `src/features/battle2/hooks/`.
+- Summary: Added a render-only playback timeline hook that stages each resolved turn through `target lock -> ranged -> charge/melee -> casualties`, keeps autoplay under page-level control, and advances the sim only after each staged timeline completes. The battlefield now highlights participating slots per phase, pulses casualties from pre/post-turn slot diffs, spotlights the current phase in a new timeline rail, and highlights the corresponding log row, while leaving `stepBattle` and runtime authority unchanged.
+- Files: src/features/battle2/pages/BattleSimulatorPage.tsx, src/features/battle2/battle2.css, src/features/battle2/hooks/useBattleTurnPlaybackTimeline.ts, arch/chat-changelog.md
+- Verification: `npx tsc -b --pretty false`
+- Notes: Feature contract: UI-only playback pacing and phase cues over existing deterministic turn snapshots; main performance risk was introducing frame-driven rerenders or duplicating sim state. Mitigation: timeout-based phase transitions, one cached pre-step slot snapshot for casualty diffing, and no engine/polling changes.
+
+## 2026-04-04 | branch: feat/battle-2.0
+
+- Request: Task 2 ownership: add pre-battle manual vs auto deployment to `battle2`, keep it isolated, allow auto layout generation from the current selected unit pool, and let the user tweak manually before start.
+- Summary: Added a local-only deployment mode contract to the `battle2` controller and page. Manual deployment starts the exact current 9-slot board, while auto deployment derives a recommended formation from the currently selected unit pool with deterministic slot priorities that keep archers out of the front line unless the pool composition forces them forward. Added an explicit "Vygenerovat auto layout" action that writes the recommended formation into the draft and returns the page to manual mode so the user can fine-tune before starting the battle.
+- Files: src/features/battle2/hooks/useBattleSimulatorController.ts, src/features/battle2/pages/BattleSimulatorPage.tsx, src/features/battle2/engine/autoDeployment.ts, arch/chat-changelog.md
+- Verification: `npx tsc -b --pretty false` (PASS)
+- Notes: Feature contract: authoritative deployment state stays inside the `battle2` hook, fetch model stays none, and the engine helper remains pure with no backend coupling. Main risk was introducing a second deployment truth or broad rerender behavior; mitigation was to keep one editable draft, derive auto deployment in a pure helper on demand, and expose only mode metadata plus an explicit apply action to the page.
+
+## 2026-04-04 | branch: feat/battle-2.0
+
+- Request: Enforce battle engine front-line-only melee participation by default, keep archers as the ranged exception, restrict charge/flank contact to valid front targets, and disable automatic reinforcement promotion.
+- Summary: Updated battle planning so only front-rank non-archers acquire default melee targets, limited melee contact resolution and flank exposure checks to front-rank contact, cleared non-contact melee intents before recovery, and removed automatic reinforcement promotion from the turn loop while keeping the existing step/run APIs unchanged.
+- Files: src/features/battle2/engine/planning.ts, src/features/battle2/engine/simCore.ts, src/features/battle2/engine/slotUtils.ts, arch/chat-changelog.md
+- Verification: `npx tsc -b --pretty false` (PASS)
+- Notes: Feature contract: runtime slot state remains authoritative and only front-rank slots can participate in default melee while archers keep ranged targeting; main risk was invalid rear-line or non-contact targets leaking into charge/flank resolution and end-state updates, mitigated by shared front-contact targeting rules plus post-phase intent cleanup and verified with a full TypeScript project build.
+
+## 2026-04-04 | branch: feat/battle-2.0
+
+- Request: Replace direct right-click pointer behavior in battle2 with a context menu and add richer tooltip/help UX for battle commands.
+- Summary: Added a reusable `BattleCommandContextMenu` component and exported it from the battle2 UI surface. During implementation I found that `src/features/battle2/pages/BattleSimulatorPage.tsx` in the current worktree is only a stub returning `null`, so the requested page integration could not be completed safely in this branch state. The new menu component is ready to integrate once the actual simulator page file is restored.
+- Files: src/features/battle2/ui/BattleCommandContextMenu.tsx, src/features/battle2/ui/index.ts, arch/chat-changelog.md
+- Verification: `npx tsc -b --pretty false` (PASS)
+- Notes: Feature contract: kept the new menu in isolated battle2 UI code with no sim-core or backend changes. Main risk was wiring against a missing page implementation; mitigation was to stop short of speculative page reconstruction and leave a typed reusable menu component instead.
+
+## 2026-04-04 | branch: feat/battle-2.0
+
+- Request: Rebuild and implement the battle2 simulator page with center-first layout, command dock, right-click context commands, and target-arrow overlay, then verify on localhost.
+- Summary: Reconstructed `BattleSimulatorPage` from the battle2 controller/hooks after the page file had been replaced by a stub, and integrated the new center trays (`BattlePreparationTray`, `BattleCommandDock`), right-click command workflow (`BattleCommandContextMenu`), and animated target overlay (`useBattleTargetOverlay` + `BattleTargetOverlay`) on battlefield cards. Added supporting CSS for stage stacking and command menu styling while keeping simulator logic in `battle2` isolated from the main game flow.
+- Files: src/features/battle2/pages/BattleSimulatorPage.tsx, src/features/battle2/battle2.css, src/features/battle2/ui/index.ts, arch/chat-changelog.md
+- Verification: `npx tsc -b --pretty false` (PASS), `npm run build` (PASS), `Invoke-WebRequest http://localhost:5175/battle-simulator` (STATUS=200)
+- Notes: Feature contract: page-local simulator UI owns interaction state (selection/menu/overlay), while battle state remains authoritative in `useBattleSimulatorController` with no backend coupling. Main risk was regressions from reconstructing a missing page file; mitigation was strict reuse of existing battle2 hooks/components, TypeScript/build validation, and route-level localhost smoke verification.
+
+## 2026-04-04 | branch: feat/battle-2.0
+
+- Request: Fine-tune battle playback visuals and add a keyboard shortcut for next turn using Space.
+- Summary: Added a global `Space` shortcut on the simulator page that triggers `Dalsi kolo` (with guards for inputs, menu context, modifiers, repeat, and finished battles). Improved phase visuals by adding impact/casualty slot animation states (`slot-card--impact-source`, `slot-card--impact-target`, `slot-card--casualty-hit`) bound to timeline cue roles, including reduced-motion fallbacks.
+- Files: src/features/battle2/pages/BattleSimulatorPage.tsx, src/features/battle2/battle2.css, arch/chat-changelog.md
+- Verification: `npx tsc -b --pretty false` (PASS), `npm run build` (PASS), `Invoke-WebRequest http://localhost:5175/battle-simulator` (STATUS=200)
+- Notes: Feature contract: only battle2 page interaction layer and CSS animation cues changed; sim state authority remains in existing battle2 controller/runtime. Main risk was accidental keyboard conflicts and noisy re-renders during timeline phases; mitigation was strict target filtering for Space shortcut and lightweight class-based CSS animations driven by existing cue/phase state.
+
+## 2026-04-04 12:50 | branch: feat/battle-2.0
+
+- Request: Domyslet rozšíření bitev o boční bloky a tlak na křídla, zároveň opravit nesmyslné útoky mimo pozici a vizuálně přiblížit střet front.
+- Summary: Zavedl jsem sdílená battle2 pravidla pro ruční rozkazy a validní cílení, aby UI ani ruční povely nedovolily melee útok mimo fyzický kontakt nebo agresivní příkaz ze zadní řady bez platného zapojení. Stránka simulátoru teď filtruje cíle podle slotu a zvolené akce, při výběru cíle drží kompatibilní agresivní akci a context menu umí explicitně zablokovat neplatný cíl. Současně jsem vizuálně přisunul frontové řady blíž ke clash linii a doplnil izolovaný návrh `extended-front-model.md`, který popisuje runtime-only boční bloky `far_left/far_right`, rychlost pohybu pěchoty vs. jízdy, tlak na levé křídlo/střed/pravé křídlo, cenu za commit do boku a neautomatické zalepování průlomů.
+- Files: src/features/battle2/engine/commandRules.ts, src/features/battle2/engine/simCore.ts, src/features/battle2/hooks/useBattleSimulatorController.ts, src/features/battle2/pages/BattleSimulatorPage.tsx, src/features/battle2/battle2.css, src/features/battle2/design/extended-front-model.md, arch/chat-changelog.md
+- Verification: `npx tsc -b --pretty false` (PASS), `npm run build` (PASS), `Invoke-WebRequest http://localhost:5175/battle-simulator` (STATUS=200)
+- Notes: Feature contract: změny zůstávají izolované v `battle2` a nerozšiřují se do hlavní hry ani backend datového toku. Hlavní riziko bylo zavést jen napůl implementovaný flank model do runtime; mitigace je staged přístup: teď se zpřesnil kontakt/cílení a vznikl explicitní design kontrakt pro další implementační fázi.
+
+## 2026-04-07 | branch: feat/battle-2.0
+
+- Request: Complete commit and push for the current battle2 worktree.
+- Summary: Reviewed the pending battle2 implementation, verified the client build, and prepared a clean commit path that keeps generated screenshots and playtest scratch files out of version control.
+- Files: arch/chat-changelog.md, src/App.tsx, src/features/battle2/**, docs/battle2/**, convex/_generated/**
+- Verification: `npm run build` (PASS); commit and push to follow in this chat

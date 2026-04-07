@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-
 import { clearStoredSession, hasSelectedWorld, isAdminAuthenticated, isAuthenticated } from './auth';
 import { AUTH_REQUIRED_EVENT, fetchHealthStatus } from './api/gameApi';
 import { CommunicationHub } from './components/CommunicationHub';
+import { BattleSimulatorPage } from './features/battle2/pages/BattleSimulatorPage';
 import { AdminPage } from './pages/AdminPage';
 import { GamePage } from './pages/GamePage';
 import { LoginPage } from './pages/LoginPage';
@@ -133,6 +134,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Navigate to={isAuthenticated() ? '/worlds' : '/login'} replace />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/battle-simulator" element={<BattleSimulatorPage />} />
         <Route
           path="/admin"
           element={

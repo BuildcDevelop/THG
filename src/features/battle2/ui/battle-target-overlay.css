@@ -1,0 +1,159 @@
+.battle-target-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.battle-target-overlay__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.battle-target-overlay__marker-path {
+  fill: currentColor;
+}
+
+.battle-target-overlay__arrow {
+  color: rgba(228, 222, 204, 0.88);
+  --battle-overlay-core: currentColor;
+  --battle-overlay-glow: color-mix(in srgb, currentColor 42%, transparent);
+  --battle-overlay-dash: none;
+  --battle-overlay-opacity: 0.94;
+}
+
+.battle-target-overlay__arrow--player {
+  color: rgba(214, 182, 115, 0.96);
+}
+
+.battle-target-overlay__arrow--enemy {
+  color: rgba(214, 124, 102, 0.96);
+}
+
+.battle-target-overlay__arrow--lock {
+  --battle-overlay-dash: 7 9;
+  --battle-overlay-opacity: 0.78;
+}
+
+.battle-target-overlay__arrow--preview {
+  --battle-overlay-dash: 7 10;
+  --battle-overlay-opacity: 0.72;
+  color: rgba(140, 207, 238, 0.95);
+}
+
+.battle-target-overlay__arrow--target {
+  --battle-overlay-dash: none;
+  --battle-overlay-opacity: 0.96;
+}
+
+.battle-target-overlay__arrow--impact {
+  --battle-overlay-dash: none;
+  --battle-overlay-opacity: 1;
+  color: rgba(255, 207, 118, 1);
+}
+
+.battle-target-overlay__path {
+  fill: none;
+  vector-effect: non-scaling-stroke;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: var(--battle-overlay-opacity);
+}
+
+.battle-target-overlay__path--glow {
+  stroke: var(--battle-overlay-glow);
+  stroke-width: 8;
+  filter: blur(4px);
+}
+
+.battle-target-overlay__path--core {
+  stroke: var(--battle-overlay-core);
+  stroke-width: 2.6;
+  stroke-dasharray: var(--battle-overlay-dash);
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--battle-overlay-core) 44%, transparent));
+}
+
+.battle-target-overlay__arrow--lock .battle-target-overlay__path--core {
+  animation: battle-target-overlay-lock 1.15s linear infinite;
+}
+
+.battle-target-overlay__arrow--preview .battle-target-overlay__path--core {
+  animation: battle-target-overlay-preview 1.35s ease-in-out infinite;
+}
+
+.battle-target-overlay__arrow--impact .battle-target-overlay__path--core {
+  animation: battle-target-overlay-impact 520ms ease-out infinite alternate;
+}
+
+.battle-target-overlay__label-wrap {
+  overflow: visible;
+  pointer-events: none;
+}
+
+.battle-target-overlay__label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 3.4rem;
+  max-width: 8rem;
+  padding: 0.22rem 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(9, 13, 19, 0.9), rgba(12, 16, 24, 0.72)),
+    rgba(8, 12, 18, 0.78);
+  color: rgba(249, 243, 229, 0.94);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 10px 24px rgba(2, 6, 12, 0.3);
+  transform: var(--battle-overlay-label-transform);
+}
+
+@keyframes battle-target-overlay-lock {
+  from {
+    stroke-dashoffset: 0;
+  }
+
+  to {
+    stroke-dashoffset: -32;
+  }
+}
+
+@keyframes battle-target-overlay-preview {
+  0%,
+  100% {
+    opacity: 0.58;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.01);
+  }
+}
+
+@keyframes battle-target-overlay-impact {
+  from {
+    stroke-width: 2.4;
+    filter: drop-shadow(0 0 8px rgba(255, 216, 145, 0.3));
+  }
+
+  to {
+    stroke-width: 3.4;
+    filter: drop-shadow(0 0 14px rgba(255, 216, 145, 0.76));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .battle-target-overlay__arrow--lock .battle-target-overlay__path--core,
+  .battle-target-overlay__arrow--preview .battle-target-overlay__path--core,
+  .battle-target-overlay__arrow--impact .battle-target-overlay__path--core {
+    animation: none;
+  }
+}
